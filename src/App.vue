@@ -17,12 +17,6 @@ import classBox from './pages/classBox/classBox.vue'
 import itemListBox from './pages/itemListBox/itemListBox.vue'
 import editContentBox from './pages/editContentBox/editContentBox.vue'
 
-// const { ipcRenderer } = window.electron;
-
-// ipcRenderer.send('app-path','exe');
-// ipcRenderer.on('app-path', (event, path) => {
-//   console.log(path);
-// });
 </script>
 
 <style>
