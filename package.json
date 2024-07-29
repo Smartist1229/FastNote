@@ -12,31 +12,19 @@
     "electron:build": "vite build && electron-builder"
   },
   "dependencies": {
-    "@electron-toolkit/preload": "^3.0.1",
     "better-sqlite3": "^11.1.2",
-    "install": "^0.13.0",
-    "knex": "^3.1.0",
-    "mitt": "^3.0.1",
     "moment": "^2.30.1",
     "nanoid": "^5.0.7",
     "npm": "^10.8.2",
-    "objection": "^3.1.4",
-    "path-browserify": "^1.0.1",
-    "sqlite3": "^5.1.7",
-    "vue": "^3.4.31",
-    "vue-router": "^4.4.0"
+    "vue": "^3.4.31"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@vitejs/plugin-vue": "^5.0.5",
-    "@vue/cli-plugin-typescript": "~5.0.0",
     "electron": "^31.3.0",
     "electron-builder": "^24.13.3",
-    "electron-devtools-installer": "^3.2.0",
-    "electron-rebuild": "^3.2.9",
     "typescript": "^5.2.2",
     "vite": "^5.3.4",
-    "vite-plugin-electron": "^0.28.7",
-    "vue-tsc": "^2.0.24"
+    "vite-plugin-electron": "^0.28.7"
   }
 }
