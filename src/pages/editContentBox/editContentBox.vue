@@ -2,10 +2,20 @@
   <div class="editContentBox">
     <div v-if="NoteId">
       <div class="Title">
-        <input type="text" class="titleInput" placeholder="标题" v-model="title"/>
+        <input
+          type="text"
+          class="titleInput"
+          placeholder="标题"
+          v-model="title"
+        />
       </div>
       <div class="Edit">
-        <textarea placeholder="文档内容" v-model="content" v-myfocus="true" spellcheck="false"></textarea>
+        <textarea
+          placeholder="文档内容"
+          v-model.lazy="content"
+          v-myfocus="true"
+          spellcheck="false"
+        ></textarea>
       </div>
     </div>
 
@@ -28,14 +38,15 @@ const { ipcRenderer } = window.electron;
 
 // 初始化数据
 let NoteData = reactive([]);
-let NoteId = ref('');
-let title = ref('');
-let content = ref('');
+let NoteId = ref("");
+let title = ref("");
+let content = ref("");
 
-ipcRenderer.on('NodeList-id',(event,response) => {
-  if(response.success){
+// 获取点击的笔记id
+ipcRenderer.on("NodeList-id", (event, response) => {
+  if (response.success) {
     NoteId.value = response.id;
-    
+
     const responseEvent = "sql-get-note-data";
     ipcRenderer.send("execute-sql", {
       sql: `SELECT * FROM notes WHERE id = ?`,
@@ -53,24 +64,30 @@ ipcRenderer.on('NodeList-id',(event,response) => {
       }
     });
   }
-  
-})
+});
+
+// 获取被修改item的title
+ipcRenderer.on("update-title", (event, response) => {
+  if (response.success) {
+    title.value = response.title;
+  }
+});
 
 // 修改内容
 watch(title, (newValue) => {
-  ipcRenderer.send('update-content',{
+  ipcRenderer.send("update-content", {
     id: NoteId.value,
     title: newValue,
-    content: content.value
-  })
-})
+    content: content.value,
+  });
+});
 watch(content, (newValue) => {
-  ipcRenderer.send('update-content',{
+  ipcRenderer.send("update-content", {
     id: NoteId.value,
     title: title.value,
-    content: newValue
-  })
-})
+    content: newValue,
+  });
+});
 </script>
 
 <style scoped>

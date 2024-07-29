@@ -2,7 +2,12 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const Database = require("better-sqlite3");
-let dir = path.resolve(process.resourcesPath, "notedbdata.noteData");
+let dir;
+if (process.env.VITE_DEV_SERVER_URL) {
+  dir = path.resolve(app.getPath("userData"), "notedbdata.noteData");
+} else {
+  dir = path.resolve(process.resourcesPath, "notedbdata.noteData");
+}
 const db = new Database(dir, {
   mode: Database.OPEN_READWRITE | Database.OPEN_CREATE
 });
@@ -94,4 +99,7 @@ ipcMain.on("update-content", (event, { id, title, content }) => {
   } else {
     event.reply("update-content", { success: false, error: "参数不能为空" });
   }
+});
+ipcMain.on("update-title", (event, { id, title }) => {
+  event.reply("update-title", { success: true, id, title });
 });
