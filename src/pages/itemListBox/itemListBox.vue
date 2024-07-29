@@ -26,6 +26,7 @@
           v-for="item in AllNotes"
           :key="item.id"
           @click="changeIsActive(item)"
+          @dblclick="changeNote"
         >
           <div class="Title">
             <span v-if="!item.isEdit">{{ item.title }}</span>
@@ -61,6 +62,7 @@ export default {
 import { onMounted, ref, watch, nextTick } from "vue";
 import { nanoid } from "nanoid";
 import moment from "moment";
+import { getId } from "../../hooks/useGetId";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
@@ -133,6 +135,7 @@ ipcRenderer.on("classList-id", (event, response) => {
   }
 });
 
+// 获取全部笔记
 const getAllNotes = () => {
   const responseEvent = "sql-result-notes";
   if (classId.value) {
@@ -247,24 +250,60 @@ const addNote = () => {
     }
   });
   // 暂时的解决方案，还没想好怎么写(添加后将editContentBox组件的id设置为空)
-  deleteEditContent();
+  getId("","NodeList-id");
 };
 
 // 保存笔记
 const saveNote = (item: any) => {
   if (item.isEdit) {
     item.title = item.title.trim() || "未命名笔记";
-    // 插入新分类
-    ipcRenderer.send("execute-sql", {
-      sql: `INSERT INTO notes VALUES ('${item.id}','${item.title}','${item.date}','${item.content}','${item.classId}')`,
-      type: "insert",
-      responseEvent: "sql-result-notes",
-    });
+    const foundItem = AllNotes.value.find((i) => i.id === item.id);
+    console.log(foundItem);
+
+    if (foundItem) {
+      // 判断新增的item.id是不是当前选中的item.id，是就更新不是就新建
+      if (foundItem.id === activeId.value) {
+        console.log(2);
+
+        // 存在则更新现有分类
+        ipcRenderer.send("execute-sql", {
+          sql: `UPDATE notes SET title = ? WHERE id = ?`,
+          type: "update",
+          params: [item.title, item.id],
+          responseEvent: "sql-result-notes",
+        });
+
+        // 更新editContentBox显示的title
+        ipcRenderer.send('update-title',{
+          id: item.id,
+          title: item.title
+        })
+      } else {
+        console.log(1);
+
+        // 不存在则插入新分类
+        ipcRenderer.send("execute-sql", {
+          sql: `INSERT INTO notes VALUES ('${item.id}','${item.title}','${item.date}','${item.content}','${item.classId}')`,
+          type: "insert",
+          responseEvent: "sql-result-notes",
+        });
+      }
+    }
   }
   item.isEdit = false;
   activeId.value = "";
   searchContent.value = "";
   getAllNotes();
+};
+
+
+// 修改笔记
+const changeNote = () => {
+  AllNotes.value.forEach((item) => {
+    if (item.id === activeId.value) {
+      item.isEdit = true;
+    }
+  });
 };
 
 // 删除笔记
@@ -280,7 +319,7 @@ const delNote = () => {
       responseEvent: "sql-result-notes",
     });
     // 删除后将editContentBox组件的id设置为空
-    deleteEditContent();
+    getId("","NodeList-id");
   }
   getAllNotes();
 };
@@ -299,13 +338,7 @@ ipcRenderer.on("update-content", (event, response) => {
   }
 });
 
-// 将editContentBox组件的id设置为空
-const deleteEditContent = () => {
-  ipcRenderer.send("get-id", {
-    id: "",
-    responseEvent: "NodeList-id",
-  });
-};
+
 </script>
 
 <style scoped>

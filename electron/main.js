@@ -3,7 +3,15 @@ const path = require('path');
 const Database = require('better-sqlite3');
 
 // let dir = path.resolve(app.getPath('userData'), 'notedbdata.noteData');
-let dir = path.resolve(process.resourcesPath, 'notedbdata.noteData');
+// let dir = path.resolve(process.resourcesPath, 'notedbdata.noteData');
+let dir;
+
+// 判断是否是开发模式，根据开发模式选择数据库路径
+if (process.env.VITE_DEV_SERVER_URL) {
+  dir = path.resolve(app.getPath('userData'), 'notedbdata.noteData');
+} else {
+  dir = path.resolve(process.resourcesPath, 'notedbdata.noteData');
+}
 
 // 创建或打开数据库
 const db = new Database(dir, {
@@ -71,7 +79,7 @@ ipcMain.on('execute-sql', (event, { sql, type, params = [], responseEvent }) => 
     event.reply('sql-result', { success: false, error: 'Missing responseEvent parameter' });
     return;
   }
- 
+
   try {
     const stmt = db.prepare(sql);
     let result;
@@ -100,21 +108,26 @@ ipcMain.on('execute-sql', (event, { sql, type, params = [], responseEvent }) => 
   }
 });
 
-  
+
 // 获取用户点击的id
-ipcMain.on('get-id', (event, {id, responseEvent}) => {
-  event.reply(responseEvent, {success: true, id});
+ipcMain.on('get-id', (event, { id, responseEvent }) => {
+  event.reply(responseEvent, { success: true, id });
 
 });
 
 // 用户修改内容
-ipcMain.on('update-content', (event, {id, title, content}) => {
-  if(id && title){
-    event.reply('update-content', {success: true, id, title, content});
-  }else{
-    event.reply('update-content', {success: false, error: '参数不能为空'});
+ipcMain.on('update-content', (event, { id, title, content }) => {
+  if (id && title) {
+    event.reply('update-content', { success: true, id, title, content });
+  } else {
+    event.reply('update-content', { success: false, error: '参数不能为空' });
   }
 });
+
+// 用户修改标题
+ipcMain.on('update-title', (event, { id, title }) => {
+  event.reply('update-title', { success: true, id, title });
+})
 
 // 测试路径
 // ipcMain.on('app-path', (event,type) => {

@@ -4,11 +4,17 @@
     <span>默认分组</span>
     <div class="Header">
       <div class="defaultClass">
-        <div :class="allClassActive?'item activeClass':'item'" @click="getAllClassNote()">
+        <div
+          :class="allClassActive ? 'item activeClass' : 'item'"
+          @click="getAllClassNote()"
+        >
           <span class="iconfont">&#xe60a;</span>
           <span>所有分组</span>
         </div>
-        <div :class="noClassActive?'item activeClass':'item'" @click="getNoteNoClass">
+        <div
+          :class="noClassActive ? 'item activeClass' : 'item'"
+          @click="getNoteNoClass"
+        >
           <span class="iconfont">&#xe60a;</span>
           <span>未分组</span>
         </div>
@@ -23,6 +29,7 @@
         :class="item.isActive ? 'item active' : 'item'"
         :key="item.id"
         @click="changeIsActive(item)"
+        @dblclick="changClass"
       >
         <span class="iconfont">&#xec17;</span>
         <span v-if="!item.isEdit">{{ item.className }}</span>
@@ -65,6 +72,7 @@
 <script lang="ts" setup>
 import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
+import { getId } from "../../hooks/useGetId";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
@@ -122,8 +130,10 @@ const addClass = () => {
     }
   });
   // 清空itemList的id
-  deleteItemList();
-
+  activeId.value = "";
+  getId("","classList-id");
+  // 清空editContentBox组件的id
+  getId("","NodeList-id")
 };
 
 // 保存类别
@@ -133,7 +143,10 @@ const saveClass = (item: any) => {
   if (item.isEdit) {
     item.className = item.className.trim() || "未命名分组";
     const foundItem = AllClass.value.find((i) => i.id === item.id);
+    console.log(foundItem);
+    
     if (foundItem) {
+      // 判断新增的item.id是不是当前选中的item.id，是就更新不是就新建
       if (foundItem.id === activeId.value) {
         // 更新现有分类
         ipcRenderer.send("execute-sql", {
@@ -153,12 +166,16 @@ const saveClass = (item: any) => {
       }
     }
     item.isEdit = false;
-    activeId.value = "";
     // 清空itemList的id
-    deleteItemList();
+    activeId.value = "";
+    getId("","classList-id");
+    // 清空editContentBox组件的id
+    getId("","NodeList-id")
+    // 刷新页面
     getAllClass();
   }
 };
+
 
 // 修改isActive => classitem被选中
 const changeIsActive = (item: any) => {
@@ -174,7 +191,7 @@ const changeIsActive = (item: any) => {
     responseEvent: "classList-id",
   });
   // 清空editContentBox组件的id
-  deleteEditContent()
+  getId("","NodeList-id")
 };
 
 // 修改class
@@ -189,6 +206,8 @@ const changClass = () => {
 
 // 删除class
 const deleteClass = () => {
+  // console.log(123);
+  
   allClassActive.value = true;
   noClassActive.value = false;
   const itemToDelete = AllClass.value.find(
@@ -212,12 +231,10 @@ const deleteClass = () => {
       responseEvent: "sql-result-notes",
     });
     // 删除后将editContentBox组件的id设置为空
-    ipcRenderer.send("get-id", {
-      id: "",
-      responseEvent: "NodeList-id",
-    });
+    getId("","NodeList-id")
     // 清空itemList的id
-    deleteItemList();
+    activeId.value = "";
+    getId("","classList-id");
     getAllClass();
   }
 };
@@ -226,12 +243,10 @@ const deleteClass = () => {
 const getAllClassNote = () => {
   allClassActive.value = true;
   noClassActive.value = false;
-  ipcRenderer.send("get-id", {
-    id: "",
-    responseEvent: "classList-id",
-  });
+  activeId.value = "";
+  getId("","classList-id");
   AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
-  
+  getId("","NodeList-id")
 };
 
 // 未分组
@@ -243,23 +258,8 @@ const getNoteNoClass = () => {
     responseEvent: "classList-id",
   });
   AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
-};
-
-// 清空传递给itemListBox组件的id
-const deleteItemList = () => {
-  // 删除后将传递给itemList的id设置为空
-  activeId.value = "";
-  ipcRenderer.send("get-id", {
-    id: '',
-    responseEvent: "classList-id",
-  });
-};
-// 将editContentBox组件的id设置为空
-const deleteEditContent = () => {
-  ipcRenderer.send("get-id", {
-    id: "",
-    responseEvent: "NodeList-id",
-  });
+  // 清空editContentBox组件的id
+  getId("","NodeList-id")
 };
 
 

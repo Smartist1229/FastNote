@@ -5,6 +5,7 @@
   "directories": {
     "output": "release"
   },
+  "afterPack": "./build/hooks/afterPack.js",
   "files": ["dist/**/*", "package.json", "electron/**/*"],
   "win": {
     "target": ["nsis"],
