@@ -12,7 +12,7 @@
       <div class="Edit">
         <textarea
           placeholder="文档内容"
-          v-model.lazy="content"
+          v-model="content"
           v-myfocus="true"
           spellcheck="false"
         ></textarea>
@@ -73,7 +73,7 @@ ipcRenderer.on("update-title", (event, response) => {
   }
 });
 
-// 修改内容
+// 修改标题
 watch(title, (newValue) => {
   ipcRenderer.send("update-content", {
     id: NoteId.value,
@@ -81,12 +81,20 @@ watch(title, (newValue) => {
     content: content.value,
   });
 });
+// 修改内容
+let conentTimer:any; // 定义计时器
 watch(content, (newValue) => {
-  ipcRenderer.send("update-content", {
+  // 清空计时器
+  clearTimeout(conentTimer);
+  // 只要停止输入0.5秒，就保存
+  conentTimer = setTimeout(() => {
+    ipcRenderer.send("update-content", {
     id: NoteId.value,
     title: title.value,
     content: newValue,
   });
+  }, 500);
+  
 });
 </script>
 
@@ -98,6 +106,10 @@ watch(content, (newValue) => {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+}
+/* 禁止复制 */
+span {
+  user-select: none;
 }
 /* 标题区 */
 .Title {
@@ -123,13 +135,13 @@ watch(content, (newValue) => {
 /* 编辑区 */
 .Edit textarea {
   resize: none;
-}
-.Edit textarea {
   width: 100%;
   height: calc(100vh - 54px);
   box-sizing: border-box;
   border: none;
   padding: 10px;
+  /* font-size: 13px;
+  line-height: 16px; */
 }
 .Edit textarea:focus {
   outline: none;
