@@ -1,4 +1,4 @@
-# Vue 3 + TypeScript + Vite
+# FastNote
 
 vite + vue3 + typescript + electron + SQLite 的一个笔记软件
 
