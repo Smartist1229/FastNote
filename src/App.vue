@@ -50,7 +50,7 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
   background-color: #7a7a7a67 !important;
 }
 .activeClass {
-  background-color: #fdcf0067;
+  background-color: #fdcf0067 !important;
 }
 
 /* 阿里文字图标 */
