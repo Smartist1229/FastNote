@@ -9,13 +9,18 @@
           v-model="title"
         />
       </div>
+
+      <div class="tools">
+        <div class="textLength">
+          字数：{{ contentLength }}
+        </div>
+      </div>
+
       <div class="Edit">
         <textarea
-          placeholder="文档内容"
+        placeholder="文档内容"
           v-model="content"
-          v-myfocus="true"
-          spellcheck="false"
-        ></textarea>
+          spellcheck="false"></textarea>
       </div>
     </div>
 
@@ -41,6 +46,7 @@ let NoteData = reactive([]);
 let NoteId = ref("");
 let title = ref("");
 let content = ref("");
+let contentLength = ref(0);
 
 // 获取点击的笔记id
 ipcRenderer.on("NodeList-id", (event, response) => {
@@ -82,41 +88,34 @@ watch(title, (newValue) => {
   });
 });
 // 修改内容
-let conentTimer:any; // 定义计时器
 watch(content, (newValue) => {
-  // 清空计时器
-  clearTimeout(conentTimer);
-  // 只要停止输入0.5秒，就保存
-  conentTimer = setTimeout(() => {
-    ipcRenderer.send("update-content", {
+  contentLength.value = newValue?.length || 0;
+  ipcRenderer.send("update-content", {
     id: NoteId.value,
     title: title.value,
     content: newValue,
   });
-  }, 500);
-  
 });
 </script>
 
 <style scoped>
 .editContentBox {
   width: calc(100vw - 380px);
-  height: auto;
+  height: 100%;
   background-color: #ffffff;
-  box-sizing: border-box;
   display: flex;
   flex-direction: column;
 }
-/* 禁止复制 */
 span {
   user-select: none;
 }
+
 /* 标题区 */
 .Title {
   width: 100%;
   height: 49px;
-  border-bottom: 1px solid #c2c2c2;
-  box-sizing: border-box;
+  /* box-sizing: border-box; */
+  /* border-bottom: 1px solid #c2c2c2; */
 }
 .Title input {
   width: 100%;
@@ -132,26 +131,59 @@ span {
   outline: none;
 }
 
-/* 编辑区 */
-.Edit textarea {
-  resize: none;
+/* 工具区 */
+.tools{
   width: 100%;
-  height: calc(100vh - 54px);
+  height: 28px;
+  border-bottom: 1px solid #e2e2e2;
+  border-top: 1px solid #e2e2e2;
+  background-color: #ffffff;
+  font-size: 12.5px;
+  color: #00000070;
+  font-weight: bolder;
+}
+.tools .textLength{
+  height: 100%;
+  width: 99px;
+  line-height: 28px;
+  text-align: center;
+  border-right: 1px solid #e2e2e2;
+}
+
+/* 编辑区 */
+.Edit{
+  width: 100%;;
+  height: calc(100vh - 83px);
+  background-color: rgb(255, 255, 255);
+  padding-right: 2px;
   box-sizing: border-box;
-  border: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.Edit textarea {
+  display: block;
+  width: 100%;
+  height: 100%;
   padding: 10px;
-  /* font-size: 13px;
-  line-height: 16px; */
+  padding-right: 20px;
+  box-sizing: border-box;
+  overflow-y: overlay;
+  overflow-x: hidden;
+  resize: none;
+  border: none;
 }
 .Edit textarea:focus {
   outline: none;
 }
 /* 用于选择类名为 .classList 的元素的滚动条 */
 textarea::-webkit-scrollbar {
+  box-sizing: border-box;
   border-radius: 10px;
   width: 2px;
 }
 textarea:hover::-webkit-scrollbar {
+  box-sizing: border-box;
   width: 4px;
 }
 /* 滚动条滑块 */

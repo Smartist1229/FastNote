@@ -28,8 +28,8 @@
         v-for="item in AllClass"
         :class="item.isActive ? 'item active' : 'item'"
         :key="item.id"
-        @click="changeIsActive(item)"
-        @dblclick="changClass"
+        @click.stop="changeIsActive(item)"
+        @dblclick.stop="changClass"
       >
         <span class="iconfont">&#xec17;</span>
         <span v-if="!item.isEdit">{{ item.className }}</span>
@@ -131,9 +131,9 @@ const addClass = () => {
   });
   // 清空itemList的id
   activeId.value = "";
-  getId("","classList-id");
+  getId("", "classList-id");
   // 清空editContentBox组件的id
-  getId("","NodeList-id")
+  getId("", "NodeList-id");
 };
 
 // 保存类别
@@ -144,7 +144,7 @@ const saveClass = (item: any) => {
     item.className = item.className.trim() || "未命名分组";
     const foundItem = AllClass.value.find((i) => i.id === item.id);
     console.log(foundItem);
-    
+
     if (foundItem) {
       // 判断新增的item.id是不是当前选中的item.id，是就更新不是就新建
       if (foundItem.id === activeId.value) {
@@ -168,22 +168,19 @@ const saveClass = (item: any) => {
     item.isEdit = false;
     // 清空itemList的id
     activeId.value = "";
-    getId("","classList-id");
+    getId("", "classList-id");
     // 清空editContentBox组件的id
-    getId("","NodeList-id")
+    getId("", "NodeList-id");
     // 刷新页面
     getAllClass();
   }
 };
 
-
 // 修改isActive => classitem被选中
 const changeIsActive = (item: any) => {
   allClassActive.value = false;
   noClassActive.value = false;
-  AllClass.value.forEach((element: any) => {
-    element.isActive = false;
-  });
+  clearActive(); // 取消其他项目的选中状态
   item.isActive = true;
   activeId.value = item.id;
   ipcRenderer.send("get-id", {
@@ -191,7 +188,7 @@ const changeIsActive = (item: any) => {
     responseEvent: "classList-id",
   });
   // 清空editContentBox组件的id
-  getId("","NodeList-id")
+  getId("", "NodeList-id");
 };
 
 // 修改class
@@ -207,7 +204,7 @@ const changClass = () => {
 // 删除class
 const deleteClass = () => {
   // console.log(123);
-  
+
   allClassActive.value = true;
   noClassActive.value = false;
   const itemToDelete = AllClass.value.find(
@@ -231,10 +228,10 @@ const deleteClass = () => {
       responseEvent: "sql-result-notes",
     });
     // 删除后将editContentBox组件的id设置为空
-    getId("","NodeList-id")
+    getId("", "NodeList-id");
     // 清空itemList的id
     activeId.value = "";
-    getId("","classList-id");
+    getId("", "classList-id");
     getAllClass();
   }
 };
@@ -244,9 +241,9 @@ const getAllClassNote = () => {
   allClassActive.value = true;
   noClassActive.value = false;
   activeId.value = "";
-  getId("","classList-id");
-  AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
-  getId("","NodeList-id")
+  getId("", "classList-id");
+  clearActive(); // 取消其他项目的选中状态
+  getId("", "NodeList-id");
 };
 
 // 未分组
@@ -257,11 +254,15 @@ const getNoteNoClass = () => {
     id: "noClass",
     responseEvent: "classList-id",
   });
-  AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
+  clearActive(); // 取消其他项目的激活状态
   // 清空editContentBox组件的id
-  getId("","NodeList-id")
+  getId("", "NodeList-id");
 };
 
+// 取消其他项目的选中状态
+const clearActive = () => {
+  AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
+};
 
 </script>
 
@@ -272,6 +273,7 @@ const getNoteNoClass = () => {
   display: flex;
   flex-direction: column;
   border-right: #b1b1b173 1px solid;
+  background-color: #f1f5f9;
 }
 /* 总样式 */
 .Header,
@@ -373,7 +375,7 @@ span {
 }
 .item:hover,
 .tools div:hover {
-  background-color: #7a7a7a33;
+  background-color: #e5e7eb;
 }
 
 .item input {
