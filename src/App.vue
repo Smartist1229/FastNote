@@ -47,7 +47,7 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
 
 /* 选中样式 */
 .active {
-  background-color: #7a7a7a67;
+  background-color: #7a7a7a67 !important;
 }
 .activeClass {
   background-color: #fdcf0067;
