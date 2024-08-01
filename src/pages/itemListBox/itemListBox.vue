@@ -334,7 +334,11 @@ ipcRenderer.on("update-content", (event, response) => {
       params: [response.title, response.content, response.id],
       responseEvent: "ipdateNote",
     });
-    getAllNotes();
+    AllNotes.value.forEach((item: any) => {
+      if (item.id === response.id) {
+        item.title = response.title;
+      }
+    });
   }
 });
 
@@ -413,7 +417,7 @@ span {
 .itemList {
   width: 100%;
   height: calc(100vh - 53px);
-  overflow-y: scroll;
+  overflow-y: overlay;
   overflow-x: hidden;
   padding-right: 5px;
   box-sizing: border-box;

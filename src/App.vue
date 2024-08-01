@@ -52,9 +52,6 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
 .activeClass {
   background-color: #fdcf0067;
 }
-.Drag {
-  background-color: #00adfd67;
-}
 
 /* 阿里文字图标 */
 .iconfont {
@@ -63,5 +60,11 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
   font-style: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* 选中样式 */
+::selection{
+  background-color: rgba(0, 0, 0, 0.26);
+  color: #000000da;
 }
 </style>

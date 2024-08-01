@@ -7,4 +7,3 @@ export const getId = (id:string, responseEvent:string) => {
       responseEvent: responseEvent,
     });
   };
-
