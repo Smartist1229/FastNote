@@ -2,6 +2,9 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 
+require('events').defaultMaxListeners = 20; // 全局设置
+
+
 // let dir = path.resolve(app.getPath('userData'), 'notedbdata.noteData');
 // let dir = path.resolve(process.resourcesPath, 'notedbdata.noteData');
 let dir;
@@ -115,20 +118,17 @@ ipcMain.on('get-id', (event, { id, responseEvent }) => {
 
 });
 
-// 用户修改内容
-ipcMain.on('update-content', (event, { id, title, content }) => {
-  if (id && title) {
-    event.reply('update-content', { success: true, id, title, content });
-  } else {
-    event.reply('update-content', { success: false, error: '参数不能为空' });
-  }
+ipcMain.on('update-title', (event, data) => {
+  const { id, title } = data;
+  // 向所有窗口广播更新标题事件
+  event.sender.send('update-content', { success: true, id, title });
 });
 
-// 用户修改标题
-ipcMain.on('update-title', (event, { id, title }) => {
-  event.reply('update-title', { success: true, id, title });
-})
-
+ipcMain.on('update-content', (event, data) => {
+  const { id, title, content } = data;
+  // 向所有窗口广播更新内容事件
+  event.sender.send('update-content', { success: true, id, title, content });
+});
 // 测试路径
 // ipcMain.on('app-path', (event,type) => {
 //   event.reply('app-path', app.getPath(type));

@@ -5,22 +5,23 @@
         <input
           type="text"
           class="titleInput"
-          placeholder="标题"
+          placeholder="在此编辑标题"
           v-model="title"
+          @blur="nullDefaultTitle"
         />
       </div>
 
       <div class="tools">
-        <div class="textLength">
-          字数：{{ contentLength }}
-        </div>
+        <div class="textLength">字数：{{ contentLength }}</div>
       </div>
 
       <div class="Edit">
         <textarea
-        placeholder="文档内容"
+          placeholder="在此编辑文档内容"
           v-model="content"
-          spellcheck="false"></textarea>
+          spellcheck="false"
+          v-myfocus="true"
+        ></textarea>
       </div>
     </div>
 
@@ -38,11 +39,11 @@ export default {
 </script>
 
 <script lang="ts" setup>
-import { reactive, ref, watch } from "vue";
+import { ref, watch } from "vue";
+import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
-let NoteData = reactive([]);
 let NoteId = ref("");
 let title = ref("");
 let content = ref("");
@@ -52,50 +53,51 @@ let contentLength = ref(0);
 ipcRenderer.on("NodeList-id", (event, response) => {
   if (response.success) {
     NoteId.value = response.id;
+    if (response.id) {
+      const responseEvent = "sql-result-note";
+      executeSql(
+        "execute-sql",
+        `SELECT * FROM notes WHERE id = '${response.id}'`,
+        "findOne",
+        responseEvent
+      );
+      getResponse(responseEvent)
+        .then((note) => {
+          if (note.success) {
+            // console.log("获取笔记成功", note);
 
-    const responseEvent = "sql-get-note-data";
-    ipcRenderer.send("execute-sql", {
-      sql: `SELECT * FROM notes WHERE id = ?`,
-      params: [response.id],
-      type: "findAll",
-      responseEvent,
-    });
-    ipcRenderer.on(responseEvent, (event, response) => {
-      if (response.success) {
-        NoteData = response.result;
-        title.value = NoteData[0].title;
-        content.value = NoteData[0].content;
-      } else {
-        console.error("执行 SQL 失败:", response.error);
-      }
-    });
+            content.value = note.result.content;
+            title.value = note.result.title;
+          }
+        })
+        .catch((error) => {
+          console.error("执行 SQL 失败:", error);
+        });
+    } else {
+      content.value = "";
+      title.value = "";
+    }
   }
 });
 
-// 获取被修改item的title
-ipcRenderer.on("update-title", (event, response) => {
-  if (response.success) {
-    title.value = response.title;
+// 监听标题和内容变化并通知itemListBox更新
+watch([title, content], () => {
+  if (NoteId.value) {
+    ipcRenderer.send("update-content", {
+      id: NoteId.value,
+      title: title.value,
+      content: content.value,
+    });
+    contentLength.value = content.value.length;
   }
 });
 
-// 修改标题
-watch(title, (newValue) => {
-  ipcRenderer.send("update-content", {
-    id: NoteId.value,
-    title: newValue,
-    content: content.value,
-  });
-});
-// 修改内容
-watch(content, (newValue) => {
-  contentLength.value = newValue?.length || 0;
-  ipcRenderer.send("update-content", {
-    id: NoteId.value,
-    title: title.value,
-    content: newValue,
-  });
-});
+// 当标题为空并且失去焦点时，将标题设置为默认值
+function nullDefaultTitle() {
+  if (title.value === "") {
+    title.value = "未命名笔记";
+  }
+}
 </script>
 
 <style scoped>
@@ -114,8 +116,6 @@ span {
 .Title {
   width: 100%;
   height: 49px;
-  /* box-sizing: border-box; */
-  /* border-bottom: 1px solid #c2c2c2; */
 }
 .Title input {
   width: 100%;
@@ -132,17 +132,17 @@ span {
 }
 
 /* 工具区 */
-.tools{
+.tools {
   width: 100%;
   height: 28px;
   border-bottom: 1px solid #e2e2e2;
   border-top: 1px solid #e2e2e2;
   background-color: #ffffff;
-  font-size: 12.5px;
+  font-size: 12px;
   color: #00000070;
   font-weight: bolder;
 }
-.tools .textLength{
+.tools .textLength {
   height: 100%;
   width: 99px;
   line-height: 28px;
@@ -151,8 +151,8 @@ span {
 }
 
 /* 编辑区 */
-.Edit{
-  width: 100%;;
+.Edit {
+  width: 100%;
   height: calc(100vh - 83px);
   background-color: rgb(255, 255, 255);
   padding-right: 2px;

@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "author": "Smartist",
+  "description": "快速编辑、保存、分类管理文字片段",
   "main": "./electron/main.js",
   "scripts": {
     "dev": "vite",
