@@ -73,6 +73,7 @@
 import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
 import { getId } from "../../hooks/useGetId";
+import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
@@ -83,25 +84,23 @@ const allClassActive = ref(true);
 const noClassActive = ref(false);
 
 // 获取新表并刷新页面
-const getAllClass = () => {
-  const responseEvent = "sql-result-class";
-  ipcRenderer.send("execute-sql", {
-    sql: "SELECT * FROM class",
-    type: "findAll",
-    responseEvent,
-  });
-
-  ipcRenderer.on(responseEvent, (event, response) => {
-    if (response.success) {
-      response.result.forEach((element) => {
-        element.isActive = false;
-        element.isEdit = false;
-      });
-      AllClass.value = response.result;
-    } else {
-      console.error("执行 SQL 失败:", response.error);
-    }
-  });
+const getAllClass = async () => {
+  executeSql(
+    "execute-sql",
+    "SELECT * FROM class",
+    "findAll",
+    "sql-result-class"
+  );
+  const response = await getResponse("sql-result-class");
+  if (response.success) {
+    response.result.forEach((element: any) => {
+      element.isActive = false;
+      element.isEdit = false;
+    });
+    AllClass.value = response.result;
+  } else {
+    console.error("执行 SQL 失败:", response.error);
+  }
 };
 
 // 当组件挂载时获取全部的分类数据
@@ -131,48 +130,40 @@ const addClass = () => {
   });
   // 清空itemList的id
   activeId.value = "";
-  getId("", "classList-id");
+  // getId("", "classList-id");  // 清空itemList的id
   // 清空editContentBox组件的id
   getId("", "NodeList-id");
 };
 
 // 保存类别
 const saveClass = (item: any) => {
-  allClassActive.value = true;
+  allClassActive.value = false;
   noClassActive.value = false;
   if (item.isEdit) {
     item.className = item.className.trim() || "未命名分组";
     const foundItem = AllClass.value.find((i) => i.id === item.id);
-    console.log(foundItem);
+    // console.log(foundItem);
 
     if (foundItem) {
+      let sql = foundItem.id === activeId.value ? "UPDATE class SET className = ? WHERE id = ?" : "INSERT INTO class (id, className) VALUES (?, ?)";
+      let type = foundItem.id === activeId.value ? "update" : "insert";
+      let params = foundItem.id === activeId.value ? [item.className, item.id] : [item.id, item.className];
+
       // 判断新增的item.id是不是当前选中的item.id，是就更新不是就新建
-      if (foundItem.id === activeId.value) {
-        // 更新现有分类
-        ipcRenderer.send("execute-sql", {
-          sql: "UPDATE class SET className = ? WHERE id = ?",
-          type: "update",
-          params: [item.className, item.id],
-          responseEvent: "sql-result-class",
-        });
-      } else {
-        // 插入新分类
-        ipcRenderer.send("execute-sql", {
-          sql: "INSERT INTO class (id, className) VALUES (?, ?)",
-          type: "insert",
-          params: [item.id, item.className],
-          responseEvent: "sql-result-class",
-        });
-      }
+      executeSql(
+          "execute-sql",
+          sql,
+          type,
+          "sql-result-class",
+          params
+        );
     }
     item.isEdit = false;
     // 清空itemList的id
-    activeId.value = "";
-    getId("", "classList-id");
+    activeId.value = item.id;
+    getId(item.id, "classList-id");
     // 清空editContentBox组件的id
     getId("", "NodeList-id");
-    // 刷新页面
-    getAllClass();
   }
 };
 
@@ -183,10 +174,7 @@ const changeIsActive = (item: any) => {
   clearActive(); // 取消其他项目的选中状态
   item.isActive = true;
   activeId.value = item.id;
-  ipcRenderer.send("get-id", {
-    id: activeId.value,
-    responseEvent: "classList-id",
-  });
+  getId(activeId.value, "classList-id");
   // 清空editContentBox组件的id
   getId("", "NodeList-id");
 };
@@ -203,36 +191,41 @@ const changClass = () => {
 
 // 删除class
 const deleteClass = () => {
-  // console.log(123);
-
   allClassActive.value = true;
   noClassActive.value = false;
   const itemToDelete = AllClass.value.find(
     (item) => item.id === activeId.value
   );
-  // console.log(itemToDelete);
-
+  console.log(itemToDelete);
+  
   if (itemToDelete) {
-    ipcRenderer.send("execute-sql", {
-      sql: "DELETE FROM class WHERE id = ?",
-      type: "del",
-      params: [activeId.value],
-      responseEvent: "sql-result-class",
-    });
+    executeSql(
+      "execute-sql",
+      "DELETE FROM class WHERE id = ?",
+      "del",
+      "sql-result-class",
+      [activeId.value]
+    );
 
     // 删除成功后将该分组下额所有笔记都删除
-    ipcRenderer.send("execute-sql", {
-      sql: "DELETE FROM notes WHERE classId = ?",
-      type: "del",
-      params: [activeId.value],
-      responseEvent: "sql-result-notes",
-    });
+    executeSql(
+      "execute-sql",
+      "DELETE FROM notes WHERE classId = ?",
+      "del",
+      "sql-result-notes",
+      [activeId.value]
+    );
     // 删除后将editContentBox组件的id设置为空
     getId("", "NodeList-id");
+
+    // 刷新页面
+    AllClass.value = AllClass.value.filter(
+      (item) => item.id !== activeId.value
+    );
+
     // 清空itemList的id
     activeId.value = "";
     getId("", "classList-id");
-    getAllClass();
   }
 };
 
@@ -263,7 +256,6 @@ const getNoteNoClass = () => {
 const clearActive = () => {
   AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
 };
-
 </script>
 
 <style scoped>
