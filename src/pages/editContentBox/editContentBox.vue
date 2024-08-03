@@ -12,7 +12,7 @@
       </div>
 
       <div class="tools">
-        <div class="classify">
+        <div class="classify" title="分类、设置分类">
           <select class="classList" v-model="selectId">
             <option value="noClass" :selected="noClass">未分组</option>
             <option
@@ -25,7 +25,7 @@
             </option>
           </select>
         </div>
-        <div class="textLength">字数：{{ contentLength }}</div>
+        <div class="textLength" title="总字数：包括回车空格">字数：{{ contentLength }}</div>
       </div>
 
       <div class="Edit">
