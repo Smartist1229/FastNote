@@ -145,18 +145,18 @@ const saveClass = (item: any) => {
     // console.log(foundItem);
 
     if (foundItem) {
-      let sql = foundItem.id === activeId.value ? "UPDATE class SET className = ? WHERE id = ?" : "INSERT INTO class (id, className) VALUES (?, ?)";
+      let sql =
+        foundItem.id === activeId.value
+          ? "UPDATE class SET className = ? WHERE id = ?"
+          : "INSERT INTO class (id, className) VALUES (?, ?)";
       let type = foundItem.id === activeId.value ? "update" : "insert";
-      let params = foundItem.id === activeId.value ? [item.className, item.id] : [item.id, item.className];
+      let params =
+        foundItem.id === activeId.value
+          ? [item.className, item.id]
+          : [item.id, item.className];
 
       // 判断新增的item.id是不是当前选中的item.id，是就更新不是就新建
-      executeSql(
-          "execute-sql",
-          sql,
-          type,
-          "sql-result-class",
-          params
-        );
+      executeSql("execute-sql", sql, type, "sql-result-class", params);
     }
     item.isEdit = false;
     // 清空itemList的id
@@ -164,6 +164,8 @@ const saveClass = (item: any) => {
     getId(item.id, "classList-id");
     // 清空editContentBox组件的id
     getId("", "NodeList-id");
+    // 将新的class信息交给edit
+    ipcRenderer.send("classify-new", item.className, item.id, "addClass");
   }
 };
 
@@ -177,6 +179,7 @@ const changeIsActive = (item: any) => {
   getId(activeId.value, "classList-id");
   // 清空editContentBox组件的id
   getId("", "NodeList-id");
+  ipcRenderer.send("classify", "", item.id);
 };
 
 // 修改class
@@ -196,8 +199,8 @@ const deleteClass = () => {
   const itemToDelete = AllClass.value.find(
     (item) => item.id === activeId.value
   );
-  console.log(itemToDelete);
-  
+  // console.log(itemToDelete);
+
   if (itemToDelete) {
     executeSql(
       "execute-sql",
@@ -223,6 +226,8 @@ const deleteClass = () => {
       (item) => item.id !== activeId.value
     );
 
+    ipcRenderer.send("classify-new", "", activeId.value, "deleteClass");
+
     // 清空itemList的id
     activeId.value = "";
     getId("", "classList-id");
@@ -237,6 +242,7 @@ const getAllClassNote = () => {
   getId("", "classList-id");
   clearActive(); // 取消其他项目的选中状态
   getId("", "NodeList-id");
+  ipcRenderer.send("classify", "", "");
 };
 
 // 未分组
@@ -250,7 +256,36 @@ const getNoteNoClass = () => {
   clearActive(); // 取消其他项目的激活状态
   // 清空editContentBox组件的id
   getId("", "NodeList-id");
+  ipcRenderer.send("classify", "", "noClass");
 };
+
+//监视来自editContentBox的classId
+ipcRenderer.on("classify", (event, response) => {
+  // console.log(response);
+  // 清空其他项目的选中
+  clearActive();
+  allClassActive.value = false;
+  noClassActive.value = false;
+
+  // 选中传过来的id对应的class
+  if (response.classId !== "noClass") {
+    if (response.classId === "") {
+      allClassActive.value = true;
+      getId("", "classList-id");
+    } else {
+      AllClass.value.forEach((item) => {
+        if (item.id === response.classId) {
+          item.isActive = true;
+        }
+      });
+      getId(response.classId, "classList-id");
+    }
+  } else {
+    noClassActive.value = true;
+    getId("noClass", "classList-id");
+  }
+  // console.log(noClassActive.value);
+});
 
 // 取消其他项目的选中状态
 const clearActive = () => {

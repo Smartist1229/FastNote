@@ -12,6 +12,19 @@
       </div>
 
       <div class="tools">
+        <div class="classify">
+          <select class="classList" v-model="selectId">
+            <option value="noClass" :selected="noClass">未分组</option>
+            <option
+              v-for="classItem in classList"
+              :value="classItem.id"
+              :key="classItem.id"
+              :selected="classItem.isActive"
+            >
+              {{ classItem.className }}
+            </option>
+          </select>
+        </div>
         <div class="textLength">字数：{{ contentLength }}</div>
       </div>
 
@@ -39,15 +52,61 @@ export default {
 </script>
 
 <script lang="ts" setup>
-import { ref, watch } from "vue";
+import { ref, watch, onMounted } from "vue";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
 let NoteId = ref("");
 let title = ref("");
+
 let content = ref("");
 let contentLength = ref(0);
+
+let classList = ref([]);
+let selectId = ref("");
+let noClass = ref(false);
+
+// 页面挂载时，更新分类列表
+onMounted(() => {
+  getClassList();
+});
+
+// 获取classList
+const getClassList = async () => {
+  executeSql("execute-sql", "SELECT * FROM class", "findAll", "editClassList");
+  const response = await getResponse("sql-result-class");
+  if (response.success) {
+    response.result.forEach((element: any) => {
+      element.isActive = false;
+    });
+    classList.value = response.result;
+  } else {
+    console.error("执行 SQL 失败:", response.error);
+  }
+};
+
+// 获取用户点击的item对应的classId
+ipcRenderer.on("classIdtoEdit", (event, response) => {
+  classList.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
+  noClass.value = false;
+  if (response.success) {
+    if (response.id !== "") {
+      const classId = response.id;
+      classList.value.forEach((element: any) => {
+        if (element.id === classId) {
+          element.isActive = true;
+          selectId.value = classId;
+        } else {
+          element.isActive = false;
+        }
+      });
+    } else {
+      noClass.value = true;
+      selectId.value = "noClass";
+    }
+  }
+});
 
 // 获取点击的笔记id
 ipcRenderer.on("NodeList-id", (event, response) => {
@@ -78,6 +137,39 @@ ipcRenderer.on("NodeList-id", (event, response) => {
       title.value = "";
     }
   }
+});
+
+// 获取新建的class
+ipcRenderer.on('addClass', (event, response) => {
+  const classObj = {
+    id: response.classId,
+    className: response.className,
+    isActive: false
+  };
+
+  // 查找并替换或添加 classObj
+  const index = classList.value.findIndex(item => item.id === classObj.id);
+  if (index !== -1) {
+    // 如果找到了，则替换
+    classList.value[index] = classObj;
+  } else {
+    // 如果没找到，则添加
+    classList.value.push(classObj);
+  }
+});
+
+// 删除一个class
+ipcRenderer.on('deleteClass', (event, response) => {
+  console.log('Received response:', response.classId);
+  
+  classList.value = classList.value.filter((item: any) => item.id !== response.classId);
+  
+});
+
+// 监听selectId的变化
+watch(selectId, (newValue) => {
+  // console.log(newValue);
+  ipcRenderer.send("classify", NoteId.value, newValue);
 });
 
 // 监听标题和内容变化并通知itemListBox更新
@@ -141,6 +233,7 @@ span {
   font-size: 12px;
   color: #00000070;
   font-weight: bolder;
+  display: flex;
 }
 .tools .textLength {
   height: 100%;
@@ -148,6 +241,21 @@ span {
   line-height: 28px;
   text-align: center;
   border-right: 1px solid #e2e2e2;
+}
+.tools .classify {
+  height: 100%;
+  width: 99px;
+  background-color: red;
+  border-right: 1px solid #e2e2e2;
+}
+.classify .classList {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 编辑区 */
