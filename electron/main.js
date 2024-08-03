@@ -2,7 +2,11 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-require('events').defaultMaxListeners = 20; // 全局设置
+const emitter = require('events');
+const myEmitter = new emitter.EventEmitter();
+
+// 增加最大监听器数量
+myEmitter.setMaxListeners(50);
 
 
 // let dir = path.resolve(app.getPath('userData'), 'notedbdata.noteData');
@@ -118,17 +122,31 @@ ipcMain.on('get-id', (event, { id, responseEvent }) => {
 
 });
 
+// 更新标题
 ipcMain.on('update-title', (event, data) => {
   const { id, title } = data;
   // 向所有窗口广播更新标题事件
   event.sender.send('update-content', { success: true, id, title });
 });
 
+// 更新标题和内容
 ipcMain.on('update-content', (event, data) => {
   const { id, title, content } = data;
   // 向所有窗口广播更新内容事件
   event.sender.send('update-content', { success: true, id, title, content });
 });
+
+// 更新分类
+ipcMain.on('classify', (event, noteId, classId) => {
+  event.sender.send("classify",{noteId, classId});
+})
+
+// 传递新建分类的classId与className
+ipcMain.on('classify-new', (event, className, classId, responseEvent) => {
+  // 发送响应给渲染进程
+  event.sender.send(responseEvent, { className, classId });
+});
+
 // 测试路径
 // ipcMain.on('app-path', (event,type) => {
 //   event.reply('app-path', app.getPath(type));

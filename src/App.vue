@@ -17,6 +17,7 @@ import classBox from './pages/classBox/classBox.vue'
 import itemListBox from './pages/itemListBox/itemListBox.vue'
 import editContentBox from './pages/editContentBox/editContentBox.vue'
 
+
 </script>
 
 <style>
