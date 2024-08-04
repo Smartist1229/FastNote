@@ -230,9 +230,6 @@ span {
   border-bottom: 1px solid #e2e2e2;
   border-top: 1px solid #e2e2e2;
   background-color: #ffffff;
-  font-size: 12px;
-  color: #00000070;
-  font-weight: bolder;
   display: flex;
 }
 .tools .textLength {
@@ -241,6 +238,7 @@ span {
   line-height: 28px;
   text-align: center;
   border-right: 1px solid #e2e2e2;
+  font-size: 12px;
 }
 .tools .classify {
   height: 100%;
@@ -256,6 +254,7 @@ span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
 }
 
 /* 编辑区 */

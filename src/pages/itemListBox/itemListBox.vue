@@ -25,8 +25,8 @@
           :class="item.isActive ? 'item active' : 'item'"
           v-for="item in AllNotes"
           :key="item.id"
-          @click="changeIsActive(item)"
-          @dblclick="changeNote"
+          @click.stop="clickHandler(item)"
+          @dblclick.stop="dblClickHandler(item)"
         >
           <div class="Title">
             <span v-if="!item.isEdit">{{ item.title }}</span>
@@ -70,6 +70,8 @@ let AllNotes = ref([]);
 let activeId = ref("");
 let searchContent = ref("");
 let classId = ref("");
+
+let clickTimer: NodeJS.Timeout | null = null;
 
 // 获取点击的分类id
 ipcRenderer.on("classList-id", (event, response) => {
@@ -147,6 +149,26 @@ const changeIsActive = (item: any) => {
   ipcRenderer.send("classify", item.id, item.classId || "noClass");
 };
 
+// 单击处理函数
+const clickHandler = (item: any) => {
+  if (clickTimer) {
+    clearTimeout(clickTimer);
+    clickTimer = null;
+  }
+  clickTimer = setTimeout(() => {
+    changeIsActive(item);
+  }, 100);
+};
+
+// 双击处理函数
+const dblClickHandler = (item: any) => {
+  if (clickTimer) {
+    clearTimeout(clickTimer);
+    clickTimer = null;
+  }
+  changeNote();
+};
+
 // 搜索功能实现
 watch(searchContent, (newValue) => {
   const responseEvent = "sql-result-notes-search";
@@ -169,7 +191,7 @@ watch(searchContent, (newValue) => {
     });
 });
 
-// 新增笔记changeNote
+// 新增笔记
 const addNote = () => {
   const newNote = {
     id: nanoid(),
