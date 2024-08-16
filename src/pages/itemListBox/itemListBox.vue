@@ -324,7 +324,6 @@ const clearActive = () => {
   AllNotes.value.forEach((item) => {
     item.isActive = false;
   });
-  console.log("AllNotes after clearActive:", AllNotes.value);
 };
 </script>
 
