@@ -64,6 +64,7 @@
         @click="deleteClass"
       >
         <span class="iconfont">&#xe626;</span>
+        
       </div>
     </div>
   </div>
@@ -78,6 +79,7 @@ import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 // 初始化数据
 const AllClass = ref([]);
 const activeId = ref("");
+const activeName = ref("");
 // 点击处理css
 const allClassActive = ref(true);
 const noClassActive = ref(false);
@@ -127,8 +129,9 @@ const addClass = () => {
       classList.scrollTop = classList.scrollHeight;
     }
   });
-  // 清空itemList的id
+  // 清空itemList的id和name
   activeId.value = "";
+  activeName.value = "";
   mitter.emit('classList-id',''); // 清空itemList的id
   // 清空editContentBox组件的id
   mitter.emit('NodeList-id','');
@@ -160,6 +163,7 @@ const saveClass = (item: any) => {
     item.isEdit = false;
     // 清空itemList的id
     activeId.value = item.id;
+    activeName.value = item.className;
     mitter.emit('classList-id',item.id);
     // 清空editContentBox组件的id
     mitter.emit('NodeList-id','');
@@ -175,6 +179,7 @@ const changeIsActive = (item: any) => {
   clearActive(); // 取消其他项目的选中状态
   item.isActive = true;
   activeId.value = item.id;
+  activeName.value = item.className;
   mitter.emit('classList-id',activeId.value);
   // 清空editContentBox组件的id
   mitter.emit('NodeList-id','');
@@ -227,8 +232,9 @@ const deleteClass = () => {
     // 删除类别后将删除的id传递给editContentBox组件
     mitter.emit('deleteClass',{className:'',classId:activeId.value})
 
-    // 清空itemList的id
+    // 清空itemList的id与name
     activeId.value = "";
+    activeName.value = "";
     mitter.emit('classList-id','');
   }
 };
@@ -238,6 +244,7 @@ const getAllClassNote = () => {
   allClassActive.value = true;
   noClassActive.value = false;
   activeId.value = "";
+  activeName.value = "";
   mitter.emit('classList-id','');
   clearActive(); // 取消其他项目的选中状态
   mitter.emit('NodeList-id','');
@@ -420,4 +427,5 @@ span {
   font-size: 13px;
   color: #9e9e9e;
 }
+
 </style>

@@ -25,7 +25,10 @@
             </option>
           </select>
         </div>
-        <div class="textLength" title="总字数：包括回车空格">字数：{{ contentLength }}</div>
+        <div class="textLength" :title="`总字数：${contentLength}&#10;去除回车后字数：${contentLengthNoEnter}`">字数：{{ contentLengthNoEnter }}</div>
+        <div class="copyContent" title="复制内容" @click="copyContent">
+          <span class="iconfont">&#xec7a;</span>
+        </div>
       </div>
 
       <div class="Edit">
@@ -55,7 +58,8 @@ export default {
 import { ref, watch, onMounted } from "vue";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import mitter from "../../utils/mitter";
-const { ipcRenderer } = window.electron;
+import { toast } from 'vue3-toastify';
+import 'vue3-toastify/dist/index.css';
 
 // 初始化数据
 let NoteId = ref("");
@@ -63,6 +67,7 @@ let title = ref("");
 
 let content = ref("");
 let contentLength = ref(0);
+let contentLengthNoEnter = ref(0);
 
 let classList = ref([]);
 let selectId = ref("");
@@ -169,6 +174,7 @@ watch([title, content], () => {
   if (NoteId.value) {
     mitter.emit('update-content',{id:NoteId.value, title:title.value, content:content.value})
     contentLength.value = content.value.length;
+    contentLengthNoEnter.value = content.value.replace(/\n/g,'').length; 
   }
 });
 
@@ -178,9 +184,31 @@ function nullDefaultTitle() {
     title.value = "未命名笔记";
   }
 }
+
+// 复制按钮点击事件
+const copyContent = async () => {
+  try {
+    await navigator.clipboard.writeText(content.value);
+    toast.success("复制成功",{
+      autoClose: 1000, // 自动关闭时间
+      closeButton: true, // 开启关闭按钮
+      pauseOnHover: false, // 鼠标悬停时暂停计时器
+      pauseOnFocusLoss: false, // 焦点丢失时暂停计时器
+      closeOnClick: true, // 点击关闭按钮时关闭提示框
+    });
+  } catch (error) {
+    toast.error(`复制失败:${error}`,{
+      autoClose: 1000, // 自动关闭时间
+      closeButton: true, // 开启关闭按钮
+      pauseOnHover: false, // 鼠标悬停时暂停计时器
+      pauseOnFocusLoss: false, // 焦点丢失时暂停计时器
+      closeOnClick: true, // 点击关闭按钮时关闭提示框
+    });
+  }
+}
 </script>
 
-<style scoped>
+<style scoped>  
 .editContentBox {
   width: calc(100vw - 380px);
   height: 100%;
@@ -243,6 +271,17 @@ span {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+.copyContent{
+  height: 100%;
+  width: 28px;
+  text-align: center;
+  line-height: 28px;
+  border-right: 1px solid #e2e2e2;
+  cursor: pointer;
+}
+.copyContent span{
+  font-size: 16px;
 }
 
 /* 编辑区 */
