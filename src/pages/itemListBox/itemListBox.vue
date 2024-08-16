@@ -63,7 +63,6 @@ import { nanoid } from "nanoid";
 import moment from "moment";
 import mitter from "../../utils/mitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
-const { ipcRenderer } = window.electron;
 
 // 初始化数据
 let AllNotes = ref([]);
@@ -163,6 +162,7 @@ watch(searchContent, (newValue) => {
 
 // 新增笔记
 const addNote = () => {
+  clearActive(); // 取消其他项目的激活状态
   const newNote = {
     id: nanoid(),
     title: "",
@@ -171,8 +171,7 @@ const addNote = () => {
     classId: classId.value && classId.value != "noClass" ? classId.value : "",
     isActive: true,
     isEdit: true,
-  };
-  AllNotes.value.forEach((item) => (item.isActive = false)); // 取消其他项目激活状态
+  };  
   AllNotes.value.push(newNote);
 
   // 滚动到最底部
@@ -186,6 +185,7 @@ const addNote = () => {
 
 // 保存笔记
 const saveNote = (item: any) => {
+  clearActive();
   if (item.isEdit) {
     item.title = item.title.trim() || "未命名笔记";
     const foundItem = AllNotes.value.find((i) => i.id === item.id);
@@ -321,7 +321,10 @@ mitter.on("classList-id", (id: any) => {
 
 // 取消其他note的选中状态
 const clearActive = () => {
-  AllNotes.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
+  AllNotes.value.forEach((item) => {
+    item.isActive = false;
+  });
+  console.log("AllNotes after clearActive:", AllNotes.value);
 };
 </script>
 
