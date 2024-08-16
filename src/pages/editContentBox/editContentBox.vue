@@ -54,6 +54,7 @@ export default {
 <script lang="ts" setup>
 import { ref, watch, onMounted } from "vue";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
+import mitter from "../../utils/mitter";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
@@ -87,12 +88,11 @@ const getClassList = async () => {
 };
 
 // 获取用户点击的item对应的classId
-ipcRenderer.on("classIdtoEdit", (event, response) => {
+mitter.on('classIdtoEdit',(id:any) => {
   classList.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
   noClass.value = false;
-  if (response.success) {
-    if (response.id !== "") {
-      const classId = response.id;
+    if (id !== "") {
+      const classId = id;
       classList.value.forEach((element: any) => {
         if (element.id === classId) {
           element.isActive = true;
@@ -105,18 +105,16 @@ ipcRenderer.on("classIdtoEdit", (event, response) => {
       noClass.value = true;
       selectId.value = "noClass";
     }
-  }
-});
+})
 
 // 获取点击的笔记id
-ipcRenderer.on("NodeList-id", (event, response) => {
-  if (response.success) {
-    NoteId.value = response.id;
-    if (response.id) {
+mitter.on('NodeList-id',(id:any)=> {
+  NoteId.value = id;
+    if (id) {
       const responseEvent = "sql-result-note";
       executeSql(
         "execute-sql",
-        `SELECT * FROM notes WHERE id = '${response.id}'`,
+        `SELECT * FROM notes WHERE id = '${id}'`,
         "findOne",
         responseEvent
       );
@@ -136,17 +134,15 @@ ipcRenderer.on("NodeList-id", (event, response) => {
       content.value = "";
       title.value = "";
     }
-  }
-});
+})
 
 // 获取新建的class
-ipcRenderer.on('addClass', (event, response) => {
+mitter.on('addClass',(value:any) => {
   const classObj = {
-    id: response.classId,
-    className: response.className,
+    id: value.classId,
+    className: value.className,
     isActive: false
   };
-
   // 查找并替换或添加 classObj
   const index = classList.value.findIndex(item => item.id === classObj.id);
   if (index !== -1) {
@@ -156,30 +152,22 @@ ipcRenderer.on('addClass', (event, response) => {
     // 如果没找到，则添加
     classList.value.push(classObj);
   }
-});
+})
 
 // 删除一个class
-ipcRenderer.on('deleteClass', (event, response) => {
-  console.log('Received response:', response.classId);
-  
-  classList.value = classList.value.filter((item: any) => item.id !== response.classId);
-  
-});
+mitter.on('deleteClass',(value:any) => {
+  classList.value = classList.value.filter((item: any) => item.id !== value.classId);
+})
 
 // 监听selectId的变化
 watch(selectId, (newValue) => {
-  // console.log(newValue);
-  ipcRenderer.send("classify", NoteId.value, newValue);
+  mitter.emit("classify", {noteId:NoteId.value, classId:newValue});
 });
 
 // 监听标题和内容变化并通知itemListBox更新
 watch([title, content], () => {
   if (NoteId.value) {
-    ipcRenderer.send("update-content", {
-      id: NoteId.value,
-      title: title.value,
-      content: content.value,
-    });
+    mitter.emit('update-content',{id:NoteId.value, title:title.value, content:content.value})
     contentLength.value = content.value.length;
   }
 });
