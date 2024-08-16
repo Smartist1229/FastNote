@@ -74,7 +74,6 @@ import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
 import mitter from "../../utils/mitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
-const { ipcRenderer } = window.electron;
 
 // 初始化数据
 const AllClass = ref([]);
@@ -249,10 +248,7 @@ const getAllClassNote = () => {
 const getNoteNoClass = () => {
   allClassActive.value = false;
   noClassActive.value = true;
-  ipcRenderer.send("get-id", {
-    id: "noClass",
-    responseEvent: "classList-id",
-  });
+  mitter.emit('classList-id','noClass')
   clearActive(); // 取消其他项目的激活状态
   // 清空editContentBox组件的id
   mitter.emit('NodeList-id','');
