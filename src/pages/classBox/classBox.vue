@@ -72,7 +72,7 @@
 <script lang="ts" setup>
 import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
-import { getId } from "../../hooks/useGetId";
+import mitter from "../../utils/mitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 const { ipcRenderer } = window.electron;
 
@@ -130,9 +130,9 @@ const addClass = () => {
   });
   // 清空itemList的id
   activeId.value = "";
-  // getId("", "classList-id");  // 清空itemList的id
+  mitter.emit('classList-id',''); // 清空itemList的id
   // 清空editContentBox组件的id
-  getId("", "NodeList-id");
+  mitter.emit('NodeList-id','');
 };
 
 // 保存类别
@@ -161,11 +161,11 @@ const saveClass = (item: any) => {
     item.isEdit = false;
     // 清空itemList的id
     activeId.value = item.id;
-    getId(item.id, "classList-id");
+    mitter.emit('classList-id',item.id);
     // 清空editContentBox组件的id
-    getId("", "NodeList-id");
+    mitter.emit('NodeList-id','');
     // 将新的class信息交给edit
-    ipcRenderer.send("classify-new", item.className, item.id, "addClass");
+    mitter.emit('addClass',{className:item.className,classId:item.id})
   }
 };
 
@@ -176,10 +176,10 @@ const changeIsActive = (item: any) => {
   clearActive(); // 取消其他项目的选中状态
   item.isActive = true;
   activeId.value = item.id;
-  getId(activeId.value, "classList-id");
+  mitter.emit('classList-id',activeId.value);
   // 清空editContentBox组件的id
-  getId("", "NodeList-id");
-  ipcRenderer.send("classify", "", item.id);
+  mitter.emit('NodeList-id','');
+  mitter.emit("classify", {noteId:"", classId:item.id});
 };
 
 // 修改class
@@ -199,7 +199,6 @@ const deleteClass = () => {
   const itemToDelete = AllClass.value.find(
     (item) => item.id === activeId.value
   );
-  // console.log(itemToDelete);
 
   if (itemToDelete) {
     executeSql(
@@ -219,18 +218,19 @@ const deleteClass = () => {
       [activeId.value]
     );
     // 删除后将editContentBox组件的id设置为空
-    getId("", "NodeList-id");
+    mitter.emit('NodeList-id','');
 
     // 刷新页面
     AllClass.value = AllClass.value.filter(
       (item) => item.id !== activeId.value
     );
 
-    ipcRenderer.send("classify-new", "", activeId.value, "deleteClass");
+    // 删除类别后将删除的id传递给editContentBox组件
+    mitter.emit('deleteClass',{className:'',classId:activeId.value})
 
     // 清空itemList的id
     activeId.value = "";
-    getId("", "classList-id");
+    mitter.emit('classList-id','');
   }
 };
 
@@ -239,10 +239,10 @@ const getAllClassNote = () => {
   allClassActive.value = true;
   noClassActive.value = false;
   activeId.value = "";
-  getId("", "classList-id");
+  mitter.emit('classList-id','');
   clearActive(); // 取消其他项目的选中状态
-  getId("", "NodeList-id");
-  ipcRenderer.send("classify", "", "");
+  mitter.emit('NodeList-id','');
+  mitter.emit("classify", {noteId:"", classId:""});
 };
 
 // 未分组
@@ -255,37 +255,36 @@ const getNoteNoClass = () => {
   });
   clearActive(); // 取消其他项目的激活状态
   // 清空editContentBox组件的id
-  getId("", "NodeList-id");
-  ipcRenderer.send("classify", "", "noClass");
+  mitter.emit('NodeList-id','');
+  mitter.emit("classify", {noteId:"", classId:"noClass"});
 };
 
 //监视来自editContentBox的classId
-ipcRenderer.on("classify", (event, response) => {
-  // console.log(response);
+mitter.on('classify',(value:any) => {
+  
   // 清空其他项目的选中
   clearActive();
   allClassActive.value = false;
   noClassActive.value = false;
 
   // 选中传过来的id对应的class
-  if (response.classId !== "noClass") {
-    if (response.classId === "") {
+  if (value.classId !== "noClass") {
+    if (value.classId === "") {
       allClassActive.value = true;
-      getId("", "classList-id");
+      mitter.emit('classList-id','');
     } else {
       AllClass.value.forEach((item) => {
-        if (item.id === response.classId) {
+        if (item.id === value.classId) {
           item.isActive = true;
         }
       });
-      getId(response.classId, "classList-id");
+      mitter.emit('classList-id',value.classId);
     }
   } else {
     noClassActive.value = true;
-    getId("noClass", "classList-id");
+    mitter.emit('classList-id','noClass');
   }
-  // console.log(noClassActive.value);
-});
+})
 
 // 取消其他项目的选中状态
 const clearActive = () => {

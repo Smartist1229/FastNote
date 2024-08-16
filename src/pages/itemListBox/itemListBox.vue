@@ -61,48 +61,17 @@ export default {
 import { onMounted, ref, watch, nextTick, onBeforeUpdate } from "vue";
 import { nanoid } from "nanoid";
 import moment from "moment";
-import { getId } from "../../hooks/useGetId";
+import mitter from "../../utils/mitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 const { ipcRenderer } = window.electron;
 
 // 初始化数据
 let AllNotes = ref([]);
-let activeId = ref("");
-let searchContent = ref("");
-let classId = ref("");
+let activeId = ref<string>("");
+let searchContent = ref<string>("");
+let classId = ref<string>("");
 
 let clickTimer: NodeJS.Timeout | null = null;
-
-// 获取点击的分类id
-ipcRenderer.on("classList-id", (event, response) => {
-  clearActive();
-  if (response.success) {
-    classId.value = response.id || "";
-    let query = response.id
-      ? `SELECT * FROM notes WHERE classId = '${response.id}'`
-      : "SELECT * FROM notes";
-
-    if (response.id === "noClass") {
-      classId.value = "noClass";
-      query = "SELECT * FROM notes WHERE classId = ''";
-    }
-    // 发送请求获取数据
-    executeSql("execute-sql", query, "findAll", "classActive");
-    // 给每一项添加两个属性
-    getResponse("classActive")
-      .then((noteList) => {
-        noteList.result.forEach((element) => {
-          element.isActive = false;
-          element.isEdit = false;
-        });
-        AllNotes.value = noteList.result;
-      })
-      .catch((error) => {
-        console.error("执行 SQL 失败:", error);
-      });
-    searchContent.value = "";
-  }
-});
 
 // 获取全部笔记
 const getAllNotes = async () => {
@@ -129,11 +98,9 @@ onMounted(() => {
 // 数据更新前
 onBeforeUpdate(() => {
   const targetNote = AllNotes.value.find((item) => item.id === activeId.value);
-
   if (targetNote) {
     targetNote.isActive = true;
   }
-  
 });
 
 // 组件选中
@@ -143,10 +110,13 @@ const changeIsActive = (item: any) => {
   item.isActive = true;
   activeId.value = item.id;
   // 传递笔记id
-  getId(item.id, "NodeList-id");
+  mitter.emit("NodeList-id", item.id);
   // 传递分类id
-  getId(item.classId, "classIdtoEdit");
-  ipcRenderer.send("classify", item.id, item.classId || "noClass");
+  mitter.emit("classIdtoEdit", item.classId);
+  mitter.emit("classify", {
+    noteId: item.id,
+    classId: item.classId || "noClass",
+  });
 };
 
 // 单击处理函数
@@ -212,8 +182,6 @@ const addNote = () => {
       classList.scrollTop = classList.scrollHeight;
     }
   });
-  // 暂时的解决方案，还没想好怎么写(添加后将editContentBox组件的id设置为空)
-  getId("", "NodeList-id");
 };
 
 // 保存笔记
@@ -248,8 +216,8 @@ const saveNote = (item: any) => {
   activeId.value = item.id;
   searchContent.value = "";
   // 将新增的item的id传送给editContentBox组件
-  getId(item.id, "NodeList-id");
-  getId(item.classId, "classIdtoEdit");
+  mitter.emit("NodeList-id", item.id);
+  mitter.emit("classIdtoEdit", item.classId);
 };
 
 // 修改笔记
@@ -275,7 +243,7 @@ const delNote = () => {
       [activeId.value]
     );
     // 删除后将editContentBox组件的id设置为空
-    getId("", "NodeList-id");
+    mitter.emit("NodeList-id", "");
   }
   // 刷新页面
   AllNotes.value = AllNotes.value.filter((item) => item.id !== activeId.value);
@@ -284,45 +252,79 @@ const delNote = () => {
 };
 
 // 当标题或内容被editContentBox组件修改时
-ipcRenderer.on("update-content", (event, response) => {
-  if (response.success) {
-    executeSql(
-      "execute-sql",
-      "UPDATE notes SET title = ?, content = ? WHERE id = ?",
-      "update",
-      "ipdateNote",
-      [response.title.trim() || "未命名笔记", response.content, response.id]
-    );
-    AllNotes.value.forEach((item: any) => {
-      if (item.id === response.id) {
-        item.title = response.title.trim() || "未命名笔记";
-        item.content = response.content; // 更新 content
-      }
-    });
-  }
+mitter.on("update-content", (value: any) => {
+  executeSql(
+    "execute-sql",
+    "UPDATE notes SET title = ?, content = ? WHERE id = ?",
+    "update",
+    "ipdateNote",
+    [value.title.trim() || "未命名笔记", value.content, value.id]
+  );
+  AllNotes.value.forEach((item: any) => {
+    if (item.id === value.id) {
+      item.title = value.title.trim() || "未命名笔记";
+      item.content = value.content; // 更新 content
+    }
+  });
 });
 
 //监视来自editContentBox的noteId
-ipcRenderer.on("classify", (event, response) => {
+mitter.on("classify", (value: any) => {
+
   clearActive(); // 取消全部选中
+  activeId.value = value.noteId;
   // 如果calssId是noClass
-  let classId = response.classId === "noClass" ? "" : response.classId;
+  let classId = value.classId === "noClass" ? "" : value.classId;
   AllNotes.value.forEach((item) => {
-    if (item.id === response.noteId) {
-      activeId.value = response;
+    if (item.id === value.noteId) {
       executeSql(
         "execute-sql",
         "UPDATE notes SET classId = ? WHERE id = ?",
         "update",
         "sql-result-notes",
-        [classId, response.noteId]
+        [classId, value.noteId]
       );
     }
   });
-  activeId.value = response.noteId;
+  // activeId.value = value.noteId;
 });
 
-// 取消其他项目的选中状态
+// 获取点击的分类id
+let changeNoteListTimer:any;
+mitter.on("classList-id", (id: any) => {
+  clearTimeout(changeNoteListTimer);
+  changeNoteListTimer = setTimeout(() => {
+    
+    // 取消去他item的选中
+    clearActive();
+    // 设置sql语句
+    classId.value = id || "";
+    let sql = id
+      ? `SELECT * FROM notes WHERE classId = '${id}'`
+      : "SELECT * FROM notes";
+    if (id === "noClass") {
+      classId.value = "noClass";
+      sql = "SELECT * FROM notes WHERE classId = ''";
+    }
+    // 发送请求获取数据
+    executeSql("execute-sql", sql, "findAll", "classActive");
+    // 给每一项添加两个属性
+    getResponse("classActive")
+      .then((noteList) => {
+        noteList.result.forEach((element) => {
+          element.isActive = false;
+          element.isEdit = false;
+        });
+        AllNotes.value = noteList.result;
+      })
+      .catch((error) => {
+        console.error("执行 SQL 失败:", error);
+      });
+    searchContent.value = "";
+  });
+});
+
+// 取消其他note的选中状态
 const clearActive = () => {
   AllNotes.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
 };

@@ -115,38 +115,6 @@ ipcMain.on('execute-sql', (event, { sql, type, params = [], responseEvent }) => 
   }
 });
 
-
-// 获取用户点击的id
-ipcMain.on('get-id', (event, { id, responseEvent }) => {
-  event.reply(responseEvent, { success: true, id });
-
-});
-
-// 更新标题
-ipcMain.on('update-title', (event, data) => {
-  const { id, title } = data;
-  // 向所有窗口广播更新标题事件
-  event.sender.send('update-content', { success: true, id, title });
-});
-
-// 更新标题和内容
-ipcMain.on('update-content', (event, data) => {
-  const { id, title, content } = data;
-  // 向所有窗口广播更新内容事件
-  event.sender.send('update-content', { success: true, id, title, content });
-});
-
-// 更新分类
-ipcMain.on('classify', (event, noteId, classId) => {
-  event.sender.send("classify",{noteId, classId});
-})
-
-// 传递新建分类的classId与className
-ipcMain.on('classify-new', (event, className, classId, responseEvent) => {
-  // 发送响应给渲染进程
-  event.sender.send(responseEvent, { className, classId });
-});
-
 // 测试路径
 // ipcMain.on('app-path', (event,type) => {
 //   event.reply('app-path', app.getPath(type));
