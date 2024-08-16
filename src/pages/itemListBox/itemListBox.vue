@@ -203,12 +203,7 @@ const saveNote = (item: any) => {
       executeSql("execute-sql", sql, type, "sql-result-notes", params);
 
       if (type === "update") {
-        // 更新editContentBox显示的title
-        ipcRenderer.send("update-content", {
-          id: item.id,
-          title: item.title,
-          content: item.content,
-        });
+        mitter.emit('update-content',{id: item.id,title: item.title,content: item.content})
       }
     }
   }
