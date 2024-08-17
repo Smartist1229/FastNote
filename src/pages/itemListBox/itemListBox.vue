@@ -25,8 +25,10 @@
           :class="item.isActive ? 'item active' : 'item'"
           v-for="item in AllNotes"
           :key="item.id"
+          draggable="true"
           @click.stop="clickHandler(item)"
-          @dblclick.stop="dblClickHandler(item)"
+          @dblclick.stop="dblClickHandler"
+          @dragover="onDragOver($event, item)"
         >
           <div class="Title">
             <span v-if="!item.isEdit">{{ item.title }}</span>
@@ -63,9 +65,10 @@ import { nanoid } from "nanoid";
 import moment from "moment";
 import mitter from "../../utils/mitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
+import {noteInter} from '../../interface/NoteInter'
 
 // 初始化数据
-let AllNotes = ref([]);
+let AllNotes = ref<noteInter[]>([]);
 let activeId = ref<string>("");
 let searchContent = ref<string>("");
 let classId = ref<string>("");
@@ -79,7 +82,7 @@ const getAllNotes = async () => {
 
   const response = await getResponse(responseEvent);
   if (response.success) {
-    response.result.forEach((element) => {
+    response.result.forEach((element:noteInter) => {
       element.isActive = false;
       element.isEdit = false;
     });
@@ -103,7 +106,7 @@ onBeforeUpdate(() => {
 });
 
 // 组件选中
-const changeIsActive = (item: any) => {
+const changeIsActive = (item: noteInter) => {
   // 取消选中
   clearActive();
   item.isActive = true;
@@ -119,7 +122,7 @@ const changeIsActive = (item: any) => {
 };
 
 // 单击处理函数
-const clickHandler = (item: any) => {
+const clickHandler = (item: noteInter) => {
   if (clickTimer) {
     clearTimeout(clickTimer);
     clickTimer = null;
@@ -130,7 +133,7 @@ const clickHandler = (item: any) => {
 };
 
 // 双击处理函数
-const dblClickHandler = (item: any) => {
+const dblClickHandler = () => {
   if (clickTimer) {
     clearTimeout(clickTimer);
     clickTimer = null;
@@ -150,7 +153,7 @@ watch(searchContent, (newValue) => {
 
   getResponse(responseEvent)
     .then((noteList) => {
-      noteList.result.forEach((element) => {
+      noteList.result.forEach((element:noteInter) => {
         element.isActive = false;
       });
       AllNotes.value = noteList.result;
@@ -171,7 +174,7 @@ const addNote = () => {
     classId: classId.value && classId.value != "noClass" ? classId.value : "",
     isActive: true,
     isEdit: true,
-  };  
+  };
   AllNotes.value.push(newNote);
 
   // 滚动到最底部
@@ -184,7 +187,7 @@ const addNote = () => {
 };
 
 // 保存笔记
-const saveNote = (item: any) => {
+const saveNote = (item: noteInter) => {
   clearActive();
   if (item.isEdit) {
     item.title = item.title.trim() || "未命名笔记";
@@ -203,7 +206,11 @@ const saveNote = (item: any) => {
       executeSql("execute-sql", sql, type, "sql-result-notes", params);
 
       if (type === "update") {
-        mitter.emit('update-content',{id: item.id,title: item.title,content: item.content})
+        mitter.emit("update-content", {
+          id: item.id,
+          title: item.title,
+          content: item.content,
+        });
       }
     }
   }
@@ -247,7 +254,7 @@ const delNote = () => {
 };
 
 // 当标题或内容被editContentBox组件修改时
-mitter.on("update-content", (value: any) => {
+mitter.on("update-content", (value:any) => {
   executeSql(
     "execute-sql",
     "UPDATE notes SET title = ?, content = ? WHERE id = ?",
@@ -255,7 +262,7 @@ mitter.on("update-content", (value: any) => {
     "ipdateNote",
     [value.title.trim() || "未命名笔记", value.content, value.id]
   );
-  AllNotes.value.forEach((item: any) => {
+  AllNotes.value.forEach((item: noteInter) => {
     if (item.id === value.id) {
       item.title = value.title.trim() || "未命名笔记";
       item.content = value.content; // 更新 content
@@ -265,12 +272,11 @@ mitter.on("update-content", (value: any) => {
 
 //监视来自editContentBox的noteId
 mitter.on("classify", (value: any) => {
-
   clearActive(); // 取消全部选中
   activeId.value = value.noteId;
   // 如果calssId是noClass
   let classId = value.classId === "noClass" ? "" : value.classId;
-  AllNotes.value.forEach((item) => {
+  AllNotes.value.forEach((item: noteInter) => {
     if (item.id === value.noteId) {
       executeSql(
         "execute-sql",
@@ -285,15 +291,14 @@ mitter.on("classify", (value: any) => {
 });
 
 // 获取点击的分类id
-let changeNoteListTimer:any;
-mitter.on("classList-id", (id: any) => {
+let changeNoteListTimer: NodeJS.Timeout;
+mitter.on("classList-id", (id) => {
   clearTimeout(changeNoteListTimer);
   changeNoteListTimer = setTimeout(() => {
-    
     // 取消去他item的选中
     clearActive();
     // 设置sql语句
-    classId.value = id || "";
+    classId.value = typeof id === 'string' ? id : String(id) || "";
     let sql = id
       ? `SELECT * FROM notes WHERE classId = '${id}'`
       : "SELECT * FROM notes";
@@ -306,7 +311,7 @@ mitter.on("classList-id", (id: any) => {
     // 给每一项添加两个属性
     getResponse("classActive")
       .then((noteList) => {
-        noteList.result.forEach((element) => {
+        noteList.result.forEach((element: noteInter) => {
           element.isActive = false;
           element.isEdit = false;
         });
@@ -324,6 +329,11 @@ const clearActive = () => {
   AllNotes.value.forEach((item) => {
     item.isActive = false;
   });
+};
+
+// 元素拖动
+const onDragOver = (event: DragEvent, item: noteInter) => {
+  mitter.emit("dragNoteId", item);
 };
 </script>
 

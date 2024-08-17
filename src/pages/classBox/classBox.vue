@@ -30,6 +30,9 @@
         :key="item.id"
         @click.stop="changeIsActive(item)"
         @dblclick.stop="changClass"
+        @dragover="onDragOver"
+        @dragleave="onDragLeave"
+        @drop="onDrop($event, item)"
       >
         <span class="iconfont">&#xec17;</span>
         <span v-if="!item.isEdit">{{ item.className }}</span>
@@ -64,7 +67,6 @@
         @click="deleteClass"
       >
         <span class="iconfont">&#xe626;</span>
-        
       </div>
     </div>
   </div>
@@ -75,14 +77,17 @@ import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
 import mitter from "../../utils/mitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
+import { classInter } from "../../interface/classInter";
 
 // 初始化数据
-const AllClass = ref([]);
-const activeId = ref("");
-const activeName = ref("");
+const AllClass = ref<classInter[]>([]);
+const activeId = ref<string>("");
+const activeName = ref<string>("");
 // 点击处理css
-const allClassActive = ref(true);
-const noClassActive = ref(false);
+const allClassActive = ref<boolean>(true);
+const noClassActive = ref<boolean>(false);
+// 被拖动的noteId
+const dragNoteId = ref<string>("");
 
 // 获取新表并刷新页面
 const getAllClass = async () => {
@@ -94,7 +99,7 @@ const getAllClass = async () => {
   );
   const response = await getResponse("sql-result-class");
   if (response.success) {
-    response.result.forEach((element: any) => {
+    response.result.forEach((element: classInter) => {
       element.isActive = false;
       element.isEdit = false;
     });
@@ -119,7 +124,7 @@ const addClass = () => {
     isEdit: true,
     isActive: true,
   };
-  AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
+  clearActive(); // 取消其他项目的激活状态
   AllClass.value.push(newClass);
 
   // 滚动到最底部
@@ -132,13 +137,13 @@ const addClass = () => {
   // 清空itemList的id和name
   activeId.value = "";
   activeName.value = "";
-  mitter.emit('classList-id',''); // 清空itemList的id
+  mitter.emit("classList-id", ""); // 清空itemList的id
   // 清空editContentBox组件的id
-  mitter.emit('NodeList-id','');
+  mitter.emit("NodeList-id", "");
 };
 
 // 保存类别
-const saveClass = (item: any) => {
+const saveClass = (item: classInter) => {
   allClassActive.value = false;
   noClassActive.value = false;
   if (item.isEdit) {
@@ -164,31 +169,31 @@ const saveClass = (item: any) => {
     // 清空itemList的id
     activeId.value = item.id;
     activeName.value = item.className;
-    mitter.emit('classList-id',item.id);
+    mitter.emit("classList-id", item.id);
     // 清空editContentBox组件的id
-    mitter.emit('NodeList-id','');
+    mitter.emit("NodeList-id", "");
     // 将新的class信息交给edit
-    mitter.emit('addClass',{className:item.className,classId:item.id})
+    mitter.emit("addClass", { className: item.className, classId: item.id });
   }
 };
 
 // 修改isActive => classitem被选中
-const changeIsActive = (item: any) => {
+const changeIsActive = (item: classInter) => {
   allClassActive.value = false;
   noClassActive.value = false;
   clearActive(); // 取消其他项目的选中状态
   item.isActive = true;
   activeId.value = item.id;
   activeName.value = item.className;
-  mitter.emit('classList-id',activeId.value);
+  mitter.emit("classList-id", activeId.value);
   // 清空editContentBox组件的id
-  mitter.emit('NodeList-id','');
-  mitter.emit("classify", {noteId:"", classId:item.id});
+  mitter.emit("NodeList-id", "");
+  mitter.emit("classify", { noteId: "", classId: item.id });
 };
 
 // 修改class
 const changClass = () => {
-  AllClass.value.forEach((item: any) => {
+  AllClass.value.forEach((item: classInter) => {
     if (item.id === activeId.value) {
       item.isEdit = true;
       changeIsActive(item);
@@ -222,7 +227,7 @@ const deleteClass = () => {
       [activeId.value]
     );
     // 删除后将editContentBox组件的id设置为空
-    mitter.emit('NodeList-id','');
+    mitter.emit("NodeList-id", "");
 
     // 刷新页面
     AllClass.value = AllClass.value.filter(
@@ -230,12 +235,12 @@ const deleteClass = () => {
     );
 
     // 删除类别后将删除的id传递给editContentBox组件
-    mitter.emit('deleteClass',{className:'',classId:activeId.value})
+    mitter.emit("deleteClass", { className: "", classId: activeId.value });
 
     // 清空itemList的id与name
     activeId.value = "";
     activeName.value = "";
-    mitter.emit('classList-id','');
+    mitter.emit("classList-id", "");
   }
 };
 
@@ -245,26 +250,25 @@ const getAllClassNote = () => {
   noClassActive.value = false;
   activeId.value = "";
   activeName.value = "";
-  mitter.emit('classList-id','');
+  mitter.emit("classList-id", "");
   clearActive(); // 取消其他项目的选中状态
-  mitter.emit('NodeList-id','');
-  mitter.emit("classify", {noteId:"", classId:""});
+  mitter.emit("NodeList-id", "");
+  mitter.emit("classify", { noteId: "", classId: "" });
 };
 
 // 未分组
 const getNoteNoClass = () => {
   allClassActive.value = false;
   noClassActive.value = true;
-  mitter.emit('classList-id','noClass')
+  mitter.emit("classList-id", "noClass");
   clearActive(); // 取消其他项目的激活状态
   // 清空editContentBox组件的id
-  mitter.emit('NodeList-id','');
-  mitter.emit("classify", {noteId:"", classId:"noClass"});
+  mitter.emit("NodeList-id", "");
+  mitter.emit("classify", { noteId: "", classId: "noClass" });
 };
 
 //监视来自editContentBox的classId
-mitter.on('classify',(value:any) => {
-  
+mitter.on("classify", (value: any) => {
   // 清空其他项目的选中
   clearActive();
   allClassActive.value = false;
@@ -274,24 +278,70 @@ mitter.on('classify',(value:any) => {
   if (value.classId !== "noClass") {
     if (value.classId === "") {
       allClassActive.value = true;
-      mitter.emit('classList-id','');
+      mitter.emit("classList-id", "");
     } else {
       AllClass.value.forEach((item) => {
         if (item.id === value.classId) {
           item.isActive = true;
         }
       });
-      mitter.emit('classList-id',value.classId);
+      mitter.emit("classList-id", value.classId);
     }
   } else {
     noClassActive.value = true;
-    mitter.emit('classList-id','noClass');
+    mitter.emit("classList-id", "noClass");
   }
-})
+});
 
 // 取消其他项目的选中状态
 const clearActive = () => {
   AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
+};
+
+// item移入事件
+const onDragOver = (event: DragEvent) => {
+  event.preventDefault(); // 取消默认事件
+  event!.dataTransfer!.dropEffect = "move";
+  const el = event.currentTarget as HTMLElement;
+  el.classList.add("draging");
+};
+
+// item移出事件
+const onDragLeave = (event: DragEvent) => {
+  const el = event.currentTarget as HTMLElement;
+  el.classList.remove("draging");
+};
+
+// 获取拖动的Note的Id
+mitter.on("dragNoteId", (Note: any) => {
+  dragNoteId.value = Note.id;
+});
+
+// item移入后松开鼠标（放下元素）
+const onDrop = (event: DragEvent, item: any) => {
+  const el = event.currentTarget as HTMLElement;
+  el.classList.remove("draging");
+  console.log(item.id);
+  // 修改笔记的分组数据
+  executeSql(
+    "execute-sql",
+    "UPDATE notes SET classId = ? WHERE id = ?",
+    "update",
+    "ipdateNote",
+    [item.id, dragNoteId.value]
+  );
+  // 修改完成后取消选中
+  clearActive();
+  allClassActive.value = false;
+  noClassActive.value = false;
+  // 选中修改分组后的class
+  AllClass.value.forEach((classInfo) => {
+    if (classInfo.id === item.id) {
+      classInfo.isActive = true;
+      activeId.value = classInfo.id;
+    }
+  });
+  mitter.emit("classList-id", activeId.value);
 };
 </script>
 
@@ -427,5 +477,4 @@ span {
   font-size: 13px;
   color: #9e9e9e;
 }
-
 </style>
