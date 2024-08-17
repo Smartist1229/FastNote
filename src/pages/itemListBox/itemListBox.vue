@@ -28,7 +28,7 @@
           draggable="true"
           @click.stop="clickHandler(item)"
           @dblclick.stop="dblClickHandler"
-          @dragover="onDragOver($event, item)"
+          @dragstart="onDragOver(item)"
         >
           <div class="Title">
             <span v-if="!item.isEdit">{{ item.title }}</span>
@@ -332,7 +332,7 @@ const clearActive = () => {
 };
 
 // 元素拖动
-const onDragOver = (_: DragEvent, item: noteInter) => {
+const onDragOver = (item: noteInter) => {  
   emitter.emit("dragNoteId", item);
 };
 </script>
