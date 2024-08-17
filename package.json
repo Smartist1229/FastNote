@@ -25,7 +25,6 @@
     "@vitejs/plugin-vue": "^5.0.5",
     "electron": "^12.2.1",
     "electron-builder": "^24.13.3",
-    "electron-rebuild": "^3.2.9",
     "typescript": "^5.2.2",
     "vite": "^5.3.4",
     "vite-plugin-electron": "^0.28.7"
