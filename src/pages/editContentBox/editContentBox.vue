@@ -25,7 +25,12 @@
             </option>
           </select>
         </div>
-        <div class="textLength" :title="`总字数：${contentLength}&#10;去除回车后字数：${contentLengthNoEnter}`">字数：{{ contentLengthNoEnter }}</div>
+        <div
+          class="textLength"
+          :title="`总字数：${contentLength}&#10;去除回车后字数：${contentLengthNoEnter}`"
+        >
+          字数：{{ contentLengthNoEnter }}
+        </div>
         <div class="copyContent" title="复制内容" @click="copyContent">
           <span class="iconfont">&#xec7a;</span>
         </div>
@@ -58,8 +63,8 @@ export default {
 import { ref, watch, onMounted } from "vue";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import emitter from "../../utils/emitter";
-import { toast } from 'vue3-toastify';
-import 'vue3-toastify/dist/index.css';
+import { toast } from "vue3-toastify";
+import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
 
 // 初始化数据
@@ -73,6 +78,19 @@ let contentLengthNoEnter = ref<number>(0);
 let classList = ref<classInter[]>([]);
 let selectId = ref<string>("");
 let noClass = ref<boolean>(false);
+
+// toast设置
+let toastOption = {
+  autoClose: 1000, // 自动关闭时间
+  closeButton: true, // 开启关闭按钮
+  pauseOnHover: false, // 鼠标悬停时暂停计时器
+  pauseOnFocusLoss: false, // 焦点丢失时暂停计时器
+  closeOnClick: true, // 点击关闭按钮时关闭提示框
+  hideProgressBar: true, // 隐藏进度条
+  toastStyle: {
+    // 自定义css
+  },
+};
 
 // 页面挂载时，更新分类列表
 onMounted(() => {
@@ -94,63 +112,63 @@ const getClassList = async () => {
 };
 
 // 获取用户点击的item对应的classId
-emitter.on('classIdtoEdit',(id:any) => {
+emitter.on("classIdtoEdit", (id: any) => {
   classList.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
   noClass.value = false;
-    if (id !== "") {
-      const classId = id;
-      classList.value.forEach((element: any) => {
-        if (element.id === classId) {
-          element.isActive = true;
-          selectId.value = classId;
-        } else {
-          element.isActive = false;
-        }
-      });
-    } else {
-      noClass.value = true;
-      selectId.value = "noClass";
-    }
-})
+  if (id !== "") {
+    const classId = id;
+    classList.value.forEach((element: any) => {
+      if (element.id === classId) {
+        element.isActive = true;
+        selectId.value = classId;
+      } else {
+        element.isActive = false;
+      }
+    });
+  } else {
+    noClass.value = true;
+    selectId.value = "noClass";
+  }
+});
 
 // 获取点击的笔记id
-emitter.on('NodeList-id',(id:any)=> {
+emitter.on("NodeList-id", (id: any) => {
   NoteId.value = id;
-    if (id) {
-      const responseEvent = "sql-result-note";
-      executeSql(
-        "execute-sql",
-        `SELECT * FROM notes WHERE id = '${id}'`,
-        "findOne",
-        responseEvent
-      );
-      getResponse(responseEvent)
-        .then((note) => {
-          if (note.success) {
-            // console.log("获取笔记成功", note);
+  if (id) {
+    const responseEvent = "sql-result-note";
+    executeSql(
+      "execute-sql",
+      `SELECT * FROM notes WHERE id = '${id}'`,
+      "findOne",
+      responseEvent
+    );
+    getResponse(responseEvent)
+      .then((note) => {
+        if (note.success) {
+          // console.log("获取笔记成功", note);
 
-            content.value = note.result.content;
-            title.value = note.result.title;
-          }
-        })
-        .catch((error) => {
-          console.error("执行 SQL 失败:", error);
-        });
-    } else {
-      content.value = "";
-      title.value = "";
-    }
-})
+          content.value = note.result.content;
+          title.value = note.result.title;
+        }
+      })
+      .catch((error) => {
+        console.error("执行 SQL 失败:", error);
+      });
+  } else {
+    content.value = "";
+    title.value = "";
+  }
+});
 
 // 获取新建的class
-emitter.on('addClass',(value:any) => {
+emitter.on("addClass", (value: any) => {
   const classObj = {
     id: value.classId,
     className: value.className,
-    isActive: false
+    isActive: false,
   };
   // 查找并替换或添加 classObj
-  const index = classList.value.findIndex(item => item.id === classObj.id);
+  const index = classList.value.findIndex((item) => item.id === classObj.id);
   if (index !== -1) {
     // 如果找到了，则替换
     classList.value[index] = classObj;
@@ -158,24 +176,30 @@ emitter.on('addClass',(value:any) => {
     // 如果没找到，则添加
     classList.value.push(classObj);
   }
-})
+});
 
 // 删除一个class
-emitter.on('deleteClass',(value:any) => {
-  classList.value = classList.value.filter((item: any) => item.id !== value.classId);
-})
+emitter.on("deleteClass", (value: any) => {
+  classList.value = classList.value.filter(
+    (item: any) => item.id !== value.classId
+  );
+});
 
 // 监听selectId的变化
 watch(selectId, (newValue) => {
-  emitter.emit("classify", {noteId:NoteId.value, classId:newValue});
+  emitter.emit("classify", { noteId: NoteId.value, classId: newValue });
 });
 
 // 监听标题和内容变化并通知itemListBox更新
 watch([title, content], () => {
   if (NoteId.value) {
-    emitter.emit('update-content',{id:NoteId.value, title:title.value, content:content.value})
+    emitter.emit("update-content", {
+      id: NoteId.value,
+      title: title.value,
+      content: content.value,
+    });
     contentLength.value = content.value.length;
-    contentLengthNoEnter.value = content.value.replace(/\n/g,'').length; 
+    contentLengthNoEnter.value = content.value.replace(/\n/g, "").length;
   }
 });
 
@@ -189,27 +213,19 @@ function nullDefaultTitle() {
 // 复制按钮点击事件
 const copyContent = async () => {
   try {
-    await navigator.clipboard.writeText(content.value);
-    toast.success("复制成功",{
-      autoClose: 1000, // 自动关闭时间
-      closeButton: true, // 开启关闭按钮
-      pauseOnHover: false, // 鼠标悬停时暂停计时器
-      pauseOnFocusLoss: false, // 焦点丢失时暂停计时器
-      closeOnClick: true, // 点击关闭按钮时关闭提示框
-    });
+    if (content.value) {
+      await navigator.clipboard.writeText(content.value);
+      toast.success("内容为空", toastOption);
+    } else {
+      toast.info("复制成功", toastOption);
+    }
   } catch (error) {
-    toast.error(`复制失败:${error}`,{
-      autoClose: 1000, // 自动关闭时间
-      closeButton: true, // 开启关闭按钮
-      pauseOnHover: false, // 鼠标悬停时暂停计时器
-      pauseOnFocusLoss: false, // 焦点丢失时暂停计时器
-      closeOnClick: true, // 点击关闭按钮时关闭提示框
-    });
+    toast.error(`复制失败:${error}`, toastOption);
   }
-}
+};
 </script>
 
-<style scoped>  
+<style scoped>
 .editContentBox {
   width: calc(100vw - 380px);
   height: 100%;
@@ -273,7 +289,7 @@ span {
   white-space: nowrap;
   font-size: 12px;
 }
-.copyContent{
+.copyContent {
   height: 100%;
   width: 28px;
   text-align: center;
@@ -281,7 +297,7 @@ span {
   border-right: 1px solid #e2e2e2;
   cursor: pointer;
 }
-.copyContent span{
+.copyContent span {
   font-size: 16px;
 }
 
