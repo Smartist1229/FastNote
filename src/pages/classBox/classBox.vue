@@ -321,8 +321,9 @@ emitter.on("dragNoteId", (Note: any) => {
 const onDrop = (event: DragEvent, item: any) => {
   const el = event.currentTarget as HTMLElement;
   el.classList.remove("draging");
-  console.log(item.id);
   // 修改笔记的分组数据
+  // console.log(dragNoteId.value);
+  
   executeSql(
     "execute-sql",
     "UPDATE notes SET classId = ? WHERE id = ?",
