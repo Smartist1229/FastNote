@@ -332,7 +332,7 @@ const clearActive = () => {
 };
 
 // 元素拖动
-const onDragOver = (event: DragEvent, item: noteInter) => {
+const onDragOver = (_: DragEvent, item: noteInter) => {
   emitter.emit("dragNoteId", item);
 };
 </script>
