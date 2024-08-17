@@ -60,18 +60,19 @@ import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import mitter from "../../utils/mitter";
 import { toast } from 'vue3-toastify';
 import 'vue3-toastify/dist/index.css';
+import { classInter } from "../../interface/classInter";
 
 // 初始化数据
-let NoteId = ref("");
-let title = ref("");
+let NoteId = ref<string>("");
+let title = ref<string>("");
+let content = ref<string>("");
 
-let content = ref("");
-let contentLength = ref(0);
-let contentLengthNoEnter = ref(0);
+let contentLength = ref<number>(0);
+let contentLengthNoEnter = ref<number>(0);
 
-let classList = ref([]);
-let selectId = ref("");
-let noClass = ref(false);
+let classList = ref<classInter[]>([]);
+let selectId = ref<string>("");
+let noClass = ref<boolean>(false);
 
 // 页面挂载时，更新分类列表
 onMounted(() => {
