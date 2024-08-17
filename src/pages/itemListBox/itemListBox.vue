@@ -63,7 +63,7 @@ export default {
 import { onMounted, ref, watch, nextTick, onBeforeUpdate } from "vue";
 import { nanoid } from "nanoid";
 import moment from "moment";
-import mitter from "../../utils/mitter";
+import emitter from "../../utils/emitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import {noteInter} from '../../interface/NoteInter'
 
@@ -112,10 +112,10 @@ const changeIsActive = (item: noteInter) => {
   item.isActive = true;
   activeId.value = item.id;
   // 传递笔记id
-  mitter.emit("NodeList-id", item.id);
+  emitter.emit("NodeList-id", item.id);
   // 传递分类id
-  mitter.emit("classIdtoEdit", item.classId);
-  mitter.emit("classify", {
+  emitter.emit("classIdtoEdit", item.classId);
+  emitter.emit("classify", {
     noteId: item.id,
     classId: item.classId || "noClass",
   });
@@ -206,7 +206,7 @@ const saveNote = (item: noteInter) => {
       executeSql("execute-sql", sql, type, "sql-result-notes", params);
 
       if (type === "update") {
-        mitter.emit("update-content", {
+        emitter.emit("update-content", {
           id: item.id,
           title: item.title,
           content: item.content,
@@ -218,8 +218,8 @@ const saveNote = (item: noteInter) => {
   activeId.value = item.id;
   searchContent.value = "";
   // 将新增的item的id传送给editContentBox组件
-  mitter.emit("NodeList-id", item.id);
-  mitter.emit("classIdtoEdit", item.classId);
+  emitter.emit("NodeList-id", item.id);
+  emitter.emit("classIdtoEdit", item.classId);
 };
 
 // 修改笔记
@@ -245,7 +245,7 @@ const delNote = () => {
       [activeId.value]
     );
     // 删除后将editContentBox组件的id设置为空
-    mitter.emit("NodeList-id", "");
+    emitter.emit("NodeList-id", "");
   }
   // 刷新页面
   AllNotes.value = AllNotes.value.filter((item) => item.id !== activeId.value);
@@ -254,7 +254,7 @@ const delNote = () => {
 };
 
 // 当标题或内容被editContentBox组件修改时
-mitter.on("update-content", (value:any) => {
+emitter.on("update-content", (value:any) => {
   executeSql(
     "execute-sql",
     "UPDATE notes SET title = ?, content = ? WHERE id = ?",
@@ -271,7 +271,7 @@ mitter.on("update-content", (value:any) => {
 });
 
 //监视来自editContentBox的noteId
-mitter.on("classify", (value: any) => {
+emitter.on("classify", (value: any) => {
   clearActive(); // 取消全部选中
   activeId.value = value.noteId;
   // 如果calssId是noClass
@@ -292,7 +292,7 @@ mitter.on("classify", (value: any) => {
 
 // 获取点击的分类id
 let changeNoteListTimer: NodeJS.Timeout;
-mitter.on("classList-id", (id) => {
+emitter.on("classList-id", (id) => {
   clearTimeout(changeNoteListTimer);
   changeNoteListTimer = setTimeout(() => {
     // 取消去他item的选中
@@ -333,7 +333,7 @@ const clearActive = () => {
 
 // 元素拖动
 const onDragOver = (event: DragEvent, item: noteInter) => {
-  mitter.emit("dragNoteId", item);
+  emitter.emit("dragNoteId", item);
 };
 </script>
 

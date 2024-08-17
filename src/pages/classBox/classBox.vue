@@ -75,7 +75,7 @@
 <script lang="ts" setup>
 import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
-import mitter from "../../utils/mitter";
+import emitter from "../../utils/emitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import { classInter } from "../../interface/classInter";
 
@@ -137,9 +137,9 @@ const addClass = () => {
   // 清空itemList的id和name
   activeId.value = "";
   activeName.value = "";
-  mitter.emit("classList-id", ""); // 清空itemList的id
+  emitter.emit("classList-id", ""); // 清空itemList的id
   // 清空editContentBox组件的id
-  mitter.emit("NodeList-id", "");
+  emitter.emit("NodeList-id", "");
 };
 
 // 保存类别
@@ -169,11 +169,11 @@ const saveClass = (item: classInter) => {
     // 清空itemList的id
     activeId.value = item.id;
     activeName.value = item.className;
-    mitter.emit("classList-id", item.id);
+    emitter.emit("classList-id", item.id);
     // 清空editContentBox组件的id
-    mitter.emit("NodeList-id", "");
+    emitter.emit("NodeList-id", "");
     // 将新的class信息交给edit
-    mitter.emit("addClass", { className: item.className, classId: item.id });
+    emitter.emit("addClass", { className: item.className, classId: item.id });
   }
 };
 
@@ -185,10 +185,10 @@ const changeIsActive = (item: classInter) => {
   item.isActive = true;
   activeId.value = item.id;
   activeName.value = item.className;
-  mitter.emit("classList-id", activeId.value);
+  emitter.emit("classList-id", activeId.value);
   // 清空editContentBox组件的id
-  mitter.emit("NodeList-id", "");
-  mitter.emit("classify", { noteId: "", classId: item.id });
+  emitter.emit("NodeList-id", "");
+  emitter.emit("classify", { noteId: "", classId: item.id });
 };
 
 // 修改class
@@ -227,7 +227,7 @@ const deleteClass = () => {
       [activeId.value]
     );
     // 删除后将editContentBox组件的id设置为空
-    mitter.emit("NodeList-id", "");
+    emitter.emit("NodeList-id", "");
 
     // 刷新页面
     AllClass.value = AllClass.value.filter(
@@ -235,12 +235,12 @@ const deleteClass = () => {
     );
 
     // 删除类别后将删除的id传递给editContentBox组件
-    mitter.emit("deleteClass", { className: "", classId: activeId.value });
+    emitter.emit("deleteClass", { className: "", classId: activeId.value });
 
     // 清空itemList的id与name
     activeId.value = "";
     activeName.value = "";
-    mitter.emit("classList-id", "");
+    emitter.emit("classList-id", "");
   }
 };
 
@@ -250,25 +250,25 @@ const getAllClassNote = () => {
   noClassActive.value = false;
   activeId.value = "";
   activeName.value = "";
-  mitter.emit("classList-id", "");
+  emitter.emit("classList-id", "");
   clearActive(); // 取消其他项目的选中状态
-  mitter.emit("NodeList-id", "");
-  mitter.emit("classify", { noteId: "", classId: "" });
+  emitter.emit("NodeList-id", "");
+  emitter.emit("classify", { noteId: "", classId: "" });
 };
 
 // 未分组
 const getNoteNoClass = () => {
   allClassActive.value = false;
   noClassActive.value = true;
-  mitter.emit("classList-id", "noClass");
+  emitter.emit("classList-id", "noClass");
   clearActive(); // 取消其他项目的激活状态
   // 清空editContentBox组件的id
-  mitter.emit("NodeList-id", "");
-  mitter.emit("classify", { noteId: "", classId: "noClass" });
+  emitter.emit("NodeList-id", "");
+  emitter.emit("classify", { noteId: "", classId: "noClass" });
 };
 
 //监视来自editContentBox的classId
-mitter.on("classify", (value: any) => {
+emitter.on("classify", (value: any) => {
   // 清空其他项目的选中
   clearActive();
   allClassActive.value = false;
@@ -278,18 +278,18 @@ mitter.on("classify", (value: any) => {
   if (value.classId !== "noClass") {
     if (value.classId === "") {
       allClassActive.value = true;
-      mitter.emit("classList-id", "");
+      emitter.emit("classList-id", "");
     } else {
       AllClass.value.forEach((item) => {
         if (item.id === value.classId) {
           item.isActive = true;
         }
       });
-      mitter.emit("classList-id", value.classId);
+      emitter.emit("classList-id", value.classId);
     }
   } else {
     noClassActive.value = true;
-    mitter.emit("classList-id", "noClass");
+    emitter.emit("classList-id", "noClass");
   }
 });
 
@@ -313,7 +313,7 @@ const onDragLeave = (event: DragEvent) => {
 };
 
 // 获取拖动的Note的Id
-mitter.on("dragNoteId", (Note: any) => {
+emitter.on("dragNoteId", (Note: any) => {
   dragNoteId.value = Note.id;
 });
 
@@ -341,7 +341,7 @@ const onDrop = (event: DragEvent, item: any) => {
       activeId.value = classInfo.id;
     }
   });
-  mitter.emit("classList-id", activeId.value);
+  emitter.emit("classList-id", activeId.value);
 };
 </script>
 

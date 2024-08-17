@@ -57,7 +57,7 @@ export default {
 <script lang="ts" setup>
 import { ref, watch, onMounted } from "vue";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
-import mitter from "../../utils/mitter";
+import emitter from "../../utils/emitter";
 import { toast } from 'vue3-toastify';
 import 'vue3-toastify/dist/index.css';
 import { classInter } from "../../interface/classInter";
@@ -94,7 +94,7 @@ const getClassList = async () => {
 };
 
 // 获取用户点击的item对应的classId
-mitter.on('classIdtoEdit',(id:any) => {
+emitter.on('classIdtoEdit',(id:any) => {
   classList.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
   noClass.value = false;
     if (id !== "") {
@@ -114,7 +114,7 @@ mitter.on('classIdtoEdit',(id:any) => {
 })
 
 // 获取点击的笔记id
-mitter.on('NodeList-id',(id:any)=> {
+emitter.on('NodeList-id',(id:any)=> {
   NoteId.value = id;
     if (id) {
       const responseEvent = "sql-result-note";
@@ -143,7 +143,7 @@ mitter.on('NodeList-id',(id:any)=> {
 })
 
 // 获取新建的class
-mitter.on('addClass',(value:any) => {
+emitter.on('addClass',(value:any) => {
   const classObj = {
     id: value.classId,
     className: value.className,
@@ -161,19 +161,19 @@ mitter.on('addClass',(value:any) => {
 })
 
 // 删除一个class
-mitter.on('deleteClass',(value:any) => {
+emitter.on('deleteClass',(value:any) => {
   classList.value = classList.value.filter((item: any) => item.id !== value.classId);
 })
 
 // 监听selectId的变化
 watch(selectId, (newValue) => {
-  mitter.emit("classify", {noteId:NoteId.value, classId:newValue});
+  emitter.emit("classify", {noteId:NoteId.value, classId:newValue});
 });
 
 // 监听标题和内容变化并通知itemListBox更新
 watch([title, content], () => {
   if (NoteId.value) {
-    mitter.emit('update-content',{id:NoteId.value, title:title.value, content:content.value})
+    emitter.emit('update-content',{id:NoteId.value, title:title.value, content:content.value})
     contentLength.value = content.value.length;
     contentLengthNoEnter.value = content.value.replace(/\n/g,'').length; 
   }
