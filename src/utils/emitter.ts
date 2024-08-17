@@ -2,7 +2,7 @@
 import mitt from 'mitt'
 
 // 调用mitt得到emitter，emitter能：绑定事件、触发事件
-const mitter = mitt()
+const emitter = mitt()
 
 /* // 绑定事件
 emitter.on('test1',()=>{
@@ -26,4 +26,4 @@ setTimeout(() => {
 
 
 // 暴露emitter
-export default mitter
+export default emitter
