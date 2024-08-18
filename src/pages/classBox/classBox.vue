@@ -21,7 +21,7 @@
       </div>
     </div>
     <!-- 列表详细分类 -->
-    <span>所有分组</span>
+    <span>自定义分组</span>
     <div class="classList">
       <div
         v-if="AllClass.length > 0"

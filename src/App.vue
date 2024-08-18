@@ -72,6 +72,6 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
 /* 移入时选中的样式 */
 .draging {
   cursor: move;
-  background-color: #00d7fd67 !important;
+  background-color: #00cafd3f !important;
 }
 </style>
