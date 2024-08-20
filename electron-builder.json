@@ -7,6 +7,23 @@
   },
   "afterPack": "./build/hooks/afterPack.js",
   "files": ["dist/**/*", "package.json", "electron/**/*"],
+  "mac": {
+    "target": [
+      "dmg",
+      "pkg"
+    ],
+    "icon": "build/icon.icns",
+    "category": "public.app-category.productivity"
+  },
+  "linux": {
+    "target": [
+      "AppImage",
+      "deb",
+      "rpm"
+    ],
+    "icon": "build/icon.png",
+    "category": "Utility"
+  },
   "win": {
     "target": [
       {
