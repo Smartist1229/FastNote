@@ -413,6 +413,7 @@ span {
   overflow-x: hidden;
   padding-right: 5px;
   box-sizing: border-box;
+  margin-left: 3px;
 }
 /* 用于选择类名为 .classList 的元素的滚动条 */
 .itemList::-webkit-scrollbar {
