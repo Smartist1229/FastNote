@@ -408,7 +408,7 @@ span {
 }
 .itemList {
   width: 100%;
-  height: calc(100vh - 53px);
+  height: calc(100vh - 54px);
   overflow-y: overlay;
   overflow-x: hidden;
   padding-right: 5px;
@@ -431,7 +431,7 @@ span {
 /* 分类项目样式 */
 .item {
   height: 25px;
-  font-size: 11px;
+  font-size: 12px;
   display: flex;
   align-items: center;
   margin-top: 3px;
@@ -457,14 +457,14 @@ span {
   width: 90%;
   background: rgba(0, 0, 0, 0);
   border: none;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: bolder;
 }
 .item .Title input:focus {
   outline: none;
 }
 .item > span {
-  font-size: 10px;
+  font-size: 11px;
   margin-left: 5px;
 }
 .item,

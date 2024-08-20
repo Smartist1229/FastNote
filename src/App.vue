@@ -27,9 +27,14 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
     url("@/assets/font/aliIcon/iconfont.woff?t=1722092595666") format("woff"),
     url("@/assets/font/aliIcon/iconfont.ttf?t=1722092595666") format("truetype");
 }
+@font-face {
+  font-family: "pingfang";
+  src: url("@/assets/font/macFont/pingfang.ttf")
+}
 * {
   margin: 0;
   padding: 0;
+  font-family: "pingfang";
 }
 /* 主容器 */
 .main-window {
