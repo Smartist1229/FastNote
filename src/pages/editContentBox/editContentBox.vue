@@ -271,7 +271,7 @@ span {
   line-height: 28px;
   text-align: center;
   border-right: 1px solid #e2e2e2;
-  font-size: 12px;
+  font-size: 13px;
 }
 .tools .classify {
   height: 100%;
@@ -287,7 +287,7 @@ span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
 }
 .copyContent {
   height: 100%;
@@ -323,6 +323,7 @@ span {
   overflow-x: hidden;
   resize: none;
   border: none;
+  font-size: 15px;
 }
 .Edit textarea:focus {
   outline: none;
