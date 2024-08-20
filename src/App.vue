@@ -23,20 +23,13 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
 <style>
 @font-face {
   font-family: "iconfont";
-  src: url("@/assets/font/ali/iconfont.woff2?t=1722092595666") format("woff2"),
-    url("@/assets/font/ali/iconfont.woff?t=1722092595666") format("woff"),
-    url("@/assets/font/ali/iconfont.ttf?t=1722092595666") format("truetype");
-}
-@font-face {
-  font-family: "Monaco";
-  src: url("@/assets/font/monaco.ttf") format("truetype");
-  font-weight: normal;
-  font-style: normal;
+  src: url("@/assets/font/aliIcon/iconfont.woff2?t=1722092595666") format("woff2"),
+    url("@/assets/font/aliIcon/iconfont.woff?t=1722092595666") format("woff"),
+    url("@/assets/font/aliIcon/iconfont.ttf?t=1722092595666") format("truetype");
 }
 * {
   margin: 0;
   padding: 0;
-  font-family: Monaco, "微软雅黑";
 }
 /* 主容器 */
 .main-window {
