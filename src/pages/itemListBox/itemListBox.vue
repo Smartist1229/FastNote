@@ -119,8 +119,6 @@ const changeIsActive = (item: noteInter) => {
     noteId: item.id,
     classId: item.classId || "noClass",
   });
-  // 结束内容读取的定时器
-  // emitter.emit("closeInterval", false);
 };
 
 // 单击处理函数

@@ -79,9 +79,6 @@ let classList = ref<classInter[]>([]);
 let selectId = ref<string>("");
 let noClass = ref<boolean>(false);
 
-// 分段渲染
-// let RendertextLength = ref<number>(1000); // 每次渲染的字数
-// let RenderTime = ref<number>(0.01); // 渲染的时间间隔，单位为毫秒
 
 // toast设置
 let toastOption = {
@@ -156,20 +153,6 @@ emitter.on("NodeList-id", (id: any) => {
           
           content.value = note.result.content;
 
-          // 分段渲染
-          // let index = 0; // 渲染的位置
-          // intervalId = setInterval(() => {
-          //   if(index < note.result.content.length){  // 如果索引大于内容的长度，则渲染完成
-          //     content.value += note.result.content.slice(index, index + RendertextLength.value); // 切割内容，将切割后片段渲染到页面
-          //     index += RendertextLength.value;  // 更新渲染的位置
-          //     console.log(1);
-              
-          //   }else{
-          //     clearInterval(intervalId);   // 渲染完成后结束定时器
-          //   }
-          // }, RenderTime.value)
-
-
           title.value = note.result.title;
         }
       })
@@ -182,13 +165,6 @@ emitter.on("NodeList-id", (id: any) => {
   }
 });
 
-// 结束内容读取的定时器，内容清空
-// emitter.on("closeInterval",(value) => {
-//   if(!value){
-//     clearInterval(intervalId);   // 切换分组后结束定时器
-//   }
-//   content.value = "";
-// })
 
 // 获取新建的class
 emitter.on("addClass", (value: any) => {
