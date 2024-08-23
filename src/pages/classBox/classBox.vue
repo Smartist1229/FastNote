@@ -189,8 +189,6 @@ const changeIsActive = (item: classInter) => {
   // 清空editContentBox组件的id
   emitter.emit("NodeList-id", "");
   emitter.emit("classify", { noteId: "", classId: item.id });
-  // 结束内容读取的定时器
-  // emitter.emit("closeInterval", false);
 };
 
 // 修改class
@@ -256,8 +254,6 @@ const getAllClassNote = () => {
   clearActive(); // 取消其他项目的选中状态
   emitter.emit("NodeList-id", "");
   emitter.emit("classify", { noteId: "", classId: "" });
-  // 结束内容读取的定时器
-  // emitter.emit("closeInterval", false);
 };
 
 // 未分组
@@ -269,8 +265,6 @@ const getNoteNoClass = () => {
   // 清空editContentBox组件的id
   emitter.emit("NodeList-id", "");
   emitter.emit("classify", { noteId: "", classId: "noClass" });
-  // 结束内容读取的定时器
-  // emitter.emit("closeInterval", false);
 };
 
 //监视来自editContentBox的classId
@@ -285,8 +279,6 @@ emitter.on("classify", (value: any) => {
     if (value.classId === "") {
       allClassActive.value = true;
       emitter.emit("classList-id", "");
-      // 结束内容读取的定时器
-      // emitter.emit("closeInterval", false);
     } else {
       AllClass.value.forEach((item) => {
         if (item.id === value.classId) {
@@ -294,14 +286,10 @@ emitter.on("classify", (value: any) => {
         }
       });
       emitter.emit("classList-id", value.classId);
-      // 结束内容读取的定时器
-      // emitter.emit("closeInterval", false);
     }
   } else {
     noClassActive.value = true;
     emitter.emit("classList-id", "noClass");
-    // 结束内容读取的定时器
-    // emitter.emit("closeInterval", false);
   }
 });
 
