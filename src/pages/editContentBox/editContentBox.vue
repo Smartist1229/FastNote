@@ -1,6 +1,6 @@
 <template>
   <div class="editContentBox">
-    <div v-if="NoteId">
+    <div v-if="content">
       <div class="Title">
         <input
           type="text"
@@ -38,10 +38,12 @@
 
       <div class="Edit">
         <textarea
+          class="contentEdit"
           placeholder="在此编辑文档内容"
           v-model="content"
           spellcheck="false"
           v-myfocus="true"
+          ref="contentEditElectron"
         ></textarea>
       </div>
     </div>
@@ -60,7 +62,7 @@ export default {
 </script>
 
 <script lang="ts" setup>
-import { ref, watch, onMounted } from "vue";
+import { ref, watch, onMounted, nextTick } from "vue";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import emitter from "../../utils/emitter";
 import { toast } from "vue3-toastify";
@@ -68,20 +70,21 @@ import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
 
 // 初始化数据
-let NoteId = ref<string>("");
-let title = ref<string>("");
-let content = ref<string>("");
-
-let contentLength = ref<number>(0);
-let contentLengthNoEnter = ref<number>(0);
-
-let classList = ref<classInter[]>([]);
-let selectId = ref<string>("");
-let noClass = ref<boolean>(false);
-
+const NoteId = ref<string>("");
+const title = ref<string>("");
+const content = ref<string>("");
+// 文本长度数据
+const contentLength = ref<number>(0);
+const contentLengthNoEnter = ref<number>(0);
+// 分类选择数据
+const classList = ref<classInter[]>([]);
+const selectId = ref<string>("");
+const noClass = ref<boolean>(false);
+// 选择textarea
+const contentEditElectron = ref<HTMLTextAreaElement>();
 
 // toast设置
-let toastOption = {
+const toastOption = {
   autoClose: 1000, // 自动关闭时间
   closeButton: true, // 开启关闭按钮
   pauseOnHover: false, // 鼠标悬停时暂停计时器
@@ -148,11 +151,17 @@ emitter.on("NodeList-id", (id: any) => {
       .then((note) => {
         if (note.success) {
           // console.log("获取笔记成功", note);
-          console.log(note.result.content.length);
-          
           content.value = note.result.content;
-
           title.value = note.result.title;
+
+          // 滚动到最底部
+          nextTick(() => {
+            if (contentEditElectron.value) {
+              contentEditElectron.value.scrollTop = 0;  // 设置滚动条位置
+              contentEditElectron.value.setSelectionRange(0, 0);  // 设置光标位置
+              contentEditElectron.value.focus(); // 重新聚焦
+            }
+          });
         }
       })
       .catch((error) => {
@@ -163,7 +172,6 @@ emitter.on("NodeList-id", (id: any) => {
     title.value = "";
   }
 });
-
 
 // 获取新建的class
 emitter.on("addClass", (value: any) => {
