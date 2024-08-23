@@ -119,6 +119,8 @@ const changeIsActive = (item: noteInter) => {
     noteId: item.id,
     classId: item.classId || "noClass",
   });
+  // 结束内容读取的定时器
+  // emitter.emit("closeInterval", false);
 };
 
 // 单击处理函数
@@ -265,7 +267,7 @@ emitter.on("update-content", (value:any) => {
   AllNotes.value.forEach((item: noteInter) => {
     if (item.id === value.id) {
       item.title = value.title.trim() || "未命名笔记";
-      item.content = value.content; // 更新 content
+      // item.content = value.content; // 更新 content
     }
   });
 });
@@ -458,7 +460,7 @@ span {
   width: 90%;
   background: rgba(0, 0, 0, 0);
   border: none;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: bolder;
 }
 .item .Title input:focus {
