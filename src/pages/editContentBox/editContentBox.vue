@@ -1,6 +1,6 @@
 <template>
   <div class="editContentBox">
-    <div v-if="content">
+    <div v-if="title">
       <div class="Title">
         <input
           type="text"
