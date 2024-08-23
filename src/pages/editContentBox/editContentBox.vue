@@ -133,7 +133,6 @@ emitter.on("classIdtoEdit", (id: any) => {
 });
 
 // 获取点击的笔记id
-// let intervalId: NodeJS.Timeout | undefined; // 定时器id
 emitter.on("NodeList-id", (id: any) => {
   // clearInterval(intervalId);   // 点击一个新的笔记结束定时器
   NoteId.value = id;
