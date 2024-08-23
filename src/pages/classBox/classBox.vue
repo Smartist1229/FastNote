@@ -22,7 +22,7 @@
     </div>
     <!-- 列表详细分类 -->
     <span>自定义分组</span>
-    <div class="classList">
+    <div class="classList" ref="classListElectron">
       <div
         v-if="AllClass.length > 0"
         v-for="item in AllClass"
@@ -88,6 +88,8 @@ const allClassActive = ref<boolean>(true);
 const noClassActive = ref<boolean>(false);
 // 被拖动的noteId
 const dragNoteId = ref<string>("");
+// 全部分类的列表
+const classListElectron = ref<HTMLDivElement>();
 
 // 获取新表并刷新页面
 const getAllClass = async () => {
@@ -129,9 +131,8 @@ const addClass = () => {
 
   // 滚动到最底部
   nextTick(() => {
-    const classList = document.querySelector(".classList");
-    if (classList) {
-      classList.scrollTop = classList.scrollHeight;
+    if (classListElectron.value) {
+      classListElectron.value.scrollTop = classListElectron.value.scrollHeight;
     }
   });
   // 清空itemList的id和name

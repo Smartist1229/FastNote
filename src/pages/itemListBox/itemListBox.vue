@@ -19,7 +19,7 @@
     <div class="List">
       <!-- 列表详细分类 -->
       <span>所有笔记</span>
-      <div class="itemList">
+      <div class="itemList" ref="noteListElectron">
         <div
           v-if="AllNotes.length > 0"
           :class="item.isActive ? 'item active' : 'item'"
@@ -68,12 +68,12 @@ import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import {noteInter} from '../../interface/NoteInter'
 
 // 初始化数据
-let AllNotes = ref<noteInter[]>([]);
-let activeId = ref<string>("");
-let searchContent = ref<string>("");
-let classId = ref<string>("");
-
-let clickTimer: NodeJS.Timeout | null = null;
+const AllNotes = ref<noteInter[]>([]);
+const activeId = ref<string>("");
+const searchContent = ref<string>("");
+const classId = ref<string>("");
+// 获取全部笔记的列表
+const noteListElectron = ref<HTMLElement>();
 
 // 获取全部笔记
 const getAllNotes = async () => {
@@ -122,6 +122,7 @@ const changeIsActive = (item: noteInter) => {
 };
 
 // 单击处理函数
+let clickTimer: NodeJS.Timeout | null = null;
 const clickHandler = (item: noteInter) => {
   if (clickTimer) {
     clearTimeout(clickTimer);
@@ -179,9 +180,8 @@ const addNote = () => {
 
   // 滚动到最底部
   nextTick(() => {
-    const classList = document.querySelector(".classList");
-    if (classList) {
-      classList.scrollTop = classList.scrollHeight;
+    if (noteListElectron.value) {
+      noteListElectron.value.scrollTop = noteListElectron.value.scrollHeight;
     }
   });
 };
