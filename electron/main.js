@@ -8,12 +8,8 @@ const myEmitter = new emitter.EventEmitter();
 // 增加最大监听器数量
 myEmitter.setMaxListeners(50);
 
-
-// let dir = path.resolve(app.getPath('userData'), 'notedbdata.noteData');
-// let dir = path.resolve(process.resourcesPath, 'notedbdata.noteData');
+// 创建数据库文件：判断是否是开发模式，根据开发模式选择数据库路径
 let dir;
-
-// 判断是否是开发模式，根据开发模式选择数据库路径
 if (process.env.VITE_DEV_SERVER_URL) {
   dir = path.resolve(app.getPath('userData'), 'notedbdata.noteData');
 } else {
