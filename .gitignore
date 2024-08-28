@@ -15,6 +15,7 @@ release
 .vscode
 dist-electron
 README.md
+package-lock.json
 
 # Editor directories and files
 .vscode/*
