@@ -1,7 +1,7 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "author": "Smartist",
   "description": "快速编辑、保存、分类管理文字片段",
   "main": "./electron/main.js",
@@ -19,12 +19,12 @@
     "better-sqlite3": "^11.2.1",
     "mitt": "^3.0.1",
     "moment": "^2.30.1",
+    "monaco-editor": "^0.51.0",
     "nanoid": "^5.0.7",
     "vue": "^3.4.31",
     "vue3-toastify": "^0.2.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/vue": "^2.0.0",
     "@vitejs/plugin-vue": "^5.0.5",
     "electron": "^32.0.1",

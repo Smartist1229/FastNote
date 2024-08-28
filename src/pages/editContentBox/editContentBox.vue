@@ -37,14 +37,7 @@
       </div>
 
       <div class="Edit">
-        <textarea
-          class="contentEdit"
-          placeholder="在此编辑文档内容"
-          v-model="content"
-          spellcheck="false"
-          v-myfocus="true"
-          ref="contentEditElectron"
-        ></textarea>
+        <MonacoEditor></MonacoEditor>
       </div>
     </div>
 
@@ -69,6 +62,8 @@ import { toast } from "vue3-toastify";
 import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
 
+import MonacoEditor from "../MonacoEditor/MonacoEditor.vue";
+
 // 初始化数据
 const NoteId = ref<string>("");
 const title = ref<string>("");
@@ -80,8 +75,6 @@ const contentLengthNoEnter = ref<number>(0);
 const classList = ref<classInter[]>([]);
 const selectId = ref<string>("");
 const noClass = ref<boolean>(false);
-// 选择textarea
-const contentEditElectron = ref<HTMLTextAreaElement>();
 
 // toast设置
 const toastOption = {
@@ -151,24 +144,20 @@ emitter.on("NodeList-id", (id: any) => {
       .then((note) => {
         if (note.success) {
           // console.log("获取笔记成功", note);
-          content.value = note.result.content;
           title.value = note.result.title;
-
-          // 滚动到最底部
+          content.value = note.result.content;
+          // 将内容传递给MonacoEditor组件
           nextTick(() => {
-            if (contentEditElectron.value) {
-              contentEditElectron.value.scrollTop = 0;  // 设置滚动条位置
-              contentEditElectron.value.setSelectionRange(0, 0);  // 设置光标位置
-              contentEditElectron.value.focus(); // 重新聚焦
-            }
-          });
+            emitter.emit("noteContent", note.result.content);
+          })
         }
       })
       .catch((error) => {
         console.error("执行 SQL 失败:", error);
       });
   } else {
-    content.value = "";
+    // 将内容传递给MonacoEditor组件
+    emitter.emit("noteContent", "");
     title.value = "";
   }
 });
@@ -203,7 +192,12 @@ watch(selectId, (newValue) => {
   emitter.emit("classify", { noteId: NoteId.value, classId: newValue });
 });
 
-// 监听标题和内容变化并通知itemListBox更新
+// 获取新的contet
+emitter.on("contentChange", (value) => {
+  content.value = value as string;
+});
+
+// 监听内容变化并通知itemListBox更新
 watch([title, content], () => {
   if (NoteId.value) {
     emitter.emit("update-content", {
@@ -324,37 +318,6 @@ span {
   display: flex;
   justify-content: center;
   align-items: center;
-}
-.Edit textarea {
-  display: block;
-  width: 100%;
-  height: 100%;
-  padding: 10px;
-  padding-right: 20px;
-  box-sizing: border-box;
-  overflow-y: overlay;
-  overflow-x: hidden;
-  resize: none;
-  border: none;
-  font-size: 14px;
-}
-.Edit textarea:focus {
-  outline: none;
-}
-/* 用于选择类名为 .classList 的元素的滚动条 */
-textarea::-webkit-scrollbar {
-  box-sizing: border-box;
-  border-radius: 10px;
-  width: 2px;
-}
-textarea:hover::-webkit-scrollbar {
-  box-sizing: border-box;
-  width: 4px;
-}
-/* 滚动条滑块 */
-textarea::-webkit-scrollbar-thumb {
-  border-radius: 10px;
-  background-color: rgba(112, 112, 112, 0.322);
 }
 
 /* 没有文章 */
