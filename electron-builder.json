@@ -17,11 +17,7 @@
     "category": "public.app-category.productivity"
   },
   "linux": {
-    "target": [
-      "AppImage",
-      "deb",
-      "rpm"
-    ],
+    "target": ["AppImage", "deb", "rpm"],
     "icon": "build/icon.png",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "category": "Utility"
