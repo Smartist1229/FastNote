@@ -39,15 +39,16 @@ onMounted(() => {
     quickSuggestions: false, // 快速提示功能
     acceptSuggestionOnEnter: "off", // 回车键自动完成功能
     accessibilitySupport: "on", // 辅助功能(优化阅读)
-    autoClosingBrackets: 'always', // 自动关闭括号
-    autoClosingDelete: 'always', // 删除时自动关闭括号
-    autoClosingOvertype: 'never', // 覆盖模式下自动关闭括号
-    autoClosingQuotes: 'always', // 自动关闭引号
+    autoClosingBrackets: "always", // 自动关闭括号
+    autoClosingDelete: "always", // 删除时自动关闭括号
+    autoClosingOvertype: "never", // 覆盖模式下自动关闭括号
+    autoClosingQuotes: "always", // 自动关闭引号
     codeLens: false, // 代码提示功能
     columnSelection: false, // 多列选择功能
     cursorSmoothCaretAnimation: "on", // 光标平滑移动动画
     links: true, // 跳转链接功能
     stickyScroll: { enabled: false }, // 粘性滚动功能
+    mouseWheelZoom: true, // 鼠标滚轮缩放功能
   });
 
   // 监听编辑器内容变化事件
@@ -62,6 +63,7 @@ onMounted(() => {
       editorInstance.setValue(content);
     }
   });
+
 });
 
 onBeforeUnmount(() => {
@@ -69,6 +71,7 @@ onBeforeUnmount(() => {
     editorInstance.dispose();
   }
 });
+
 </script>
 
 <style scoped>
