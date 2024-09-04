@@ -44,6 +44,7 @@ let mainWindow;
 
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
 
+// 创建主进程
 const createWindow = () => {
   mainWindow = new BrowserWindow({
     icon: path.join(__dirname, '../resource/Icon/shortcut256.ico'),
@@ -109,6 +110,11 @@ ipcMain.on('execute-sql', (event, { sql, type, params = [], responseEvent }) => 
   } catch (error) {
     event.reply(responseEvent, { success: false, error: error.message });
   }
+});
+
+// 刷新页面
+ipcMain.on('refresh', (event) => {
+  mainWindow.reload();
 });
 
 // 测试路径

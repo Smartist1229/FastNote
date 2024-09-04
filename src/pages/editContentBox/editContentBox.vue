@@ -1,6 +1,6 @@
 <template>
   <div class="editContentBox">
-    <div v-if="title">
+    <div v-show="title">
       <div class="Title">
         <input
           type="text"
@@ -41,7 +41,7 @@
       </div>
     </div>
 
-    <div v-else class="noId">
+    <div v-show="!title" class="noId">
       <span class="iconfont">&#xe615;</span>
       <span>您还没有选择笔记</span>
     </div>

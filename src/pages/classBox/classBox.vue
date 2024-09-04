@@ -24,7 +24,7 @@
     <span>自定义分组</span>
     <div class="classList" ref="classListElectron">
       <div
-        v-if="AllClass.length > 0"
+        v-show="AllClass.length > 0"
         v-for="item in AllClass"
         :class="item.isActive ? 'item active' : 'item'"
         :key="item.id"
@@ -48,7 +48,7 @@
         />
       </div>
 
-      <div class="noList" v-else>
+      <div class="noList" v-show="AllClass.length <= 0">
         <span>暂无分类</span>
       </div>
     </div>
@@ -68,6 +68,9 @@
       >
         <span class="iconfont">&#xe626;</span>
       </div>
+      <div class="reload" title="刷新页面（全部重新加载）" @click="reloadPage">
+        <span class="iconfont">&#xec08;</span>
+      </div>
     </div>
   </div>
 </template>
@@ -78,6 +81,7 @@ import { nanoid } from "nanoid";
 import emitter from "../../utils/emitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import { classInter } from "../../interface/classInter";
+import { refresh } from "../../hooks/useRefresh";
 
 // 初始化数据
 const AllClass = ref<classInter[]>([]);
@@ -298,6 +302,11 @@ emitter.on("classify", (value: any) => {
 const clearActive = () => {
   AllClass.value.forEach((item) => (item.isActive = false)); // 取消其他项目的激活状态
 };
+
+// 重载页面
+const reloadPage = () => {
+  refresh();
+}
 
 // item移入事件
 const onDragOver = (event: DragEvent) => {
