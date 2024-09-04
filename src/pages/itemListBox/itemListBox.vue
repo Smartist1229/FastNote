@@ -21,7 +21,7 @@
       <span>所有笔记</span>
       <div class="itemList" ref="noteListElectron">
         <div
-          v-if="AllNotes.length > 0"
+          v-show="AllNotes.length > 0"
           :class="item.isActive ? 'item active' : 'item'"
           v-for="item in AllNotes"
           :key="item.id"
@@ -45,7 +45,7 @@
           <span>{{ item.date }}</span>
         </div>
 
-        <div class="noList" v-else>
+        <div class="noList" v-show="AllNotes.length <= 0">
           <span>暂无笔记</span>
         </div>
       </div>
