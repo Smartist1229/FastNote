@@ -75,6 +75,12 @@
   </div>
 </template>
 
+<script lang="ts">
+export default {
+  name: "classBox",
+};
+</script>
+
 <script lang="ts" setup>
 import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
