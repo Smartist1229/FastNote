@@ -63,9 +63,13 @@ export default {
 import { onMounted, ref, watch, nextTick, onBeforeUpdate } from "vue";
 import { nanoid } from "nanoid";
 import moment from "moment";
+import { toast } from "vue3-toastify";
 import emitter from "../../utils/emitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import {noteInter} from '../../interface/NoteInter'
+
+// toast设置
+import toastOption from "../../config/toastOption";
 
 // 初始化数据
 const AllNotes = ref<noteInter[]>([]);
@@ -88,7 +92,8 @@ const getAllNotes = async () => {
     });
     AllNotes.value = response.result;
   } else {
-    console.error("执行 SQL 失败:", response.error);
+    // console.error("执行 SQL 失败:", response.error);
+    toast.error(response.error, toastOption);
   }
 };
 
@@ -160,7 +165,8 @@ watch(searchContent, (newValue) => {
       AllNotes.value = noteList.result;
     })
     .catch((error) => {
-      console.error("执行 SQL 失败:", error);
+      // console.error("执行 SQL 失败:", error);
+      toast.error(error, toastOption);
     });
 });
 
@@ -318,7 +324,8 @@ emitter.on("classList-id", (id) => {
         AllNotes.value = noteList.result;
       })
       .catch((error) => {
-        console.error("执行 SQL 失败:", error);
+        // console.error("执行 SQL 失败:", error);
+        toast.error(error, toastOption);
       });
     searchContent.value = "";
   });

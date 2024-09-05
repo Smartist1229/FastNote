@@ -4,6 +4,11 @@ import electron from 'vite-plugin-electron';
 import path from 'path';
 
 export default defineConfig({
+  define: {
+    // 关闭Options Api
+    '__VUE_OPTIONS_API__': false,
+    '__VUE_PROD_DEVTOOLS__': process.env.NODE_ENV !== 'production'
+  },
   plugins: [
     vue(),
     electron({
