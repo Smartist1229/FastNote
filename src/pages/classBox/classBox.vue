@@ -84,10 +84,14 @@ export default {
 <script lang="ts" setup>
 import { ref, onMounted, nextTick } from "vue";
 import { nanoid } from "nanoid";
+import { toast } from "vue3-toastify";
 import emitter from "../../utils/emitter";
 import { executeSql, getResponse } from "../../hooks/useExecuteSql";
 import { classInter } from "../../interface/classInter";
 import { refresh } from "../../hooks/useRefresh";
+
+// toast设置
+import toastOption from "../../config/toastOption";
 
 // 初始化数据
 const AllClass = ref<classInter[]>([]);
@@ -117,7 +121,8 @@ const getAllClass = async () => {
     });
     AllClass.value = response.result;
   } else {
-    console.error("执行 SQL 失败:", response.error);
+    // console.error("执行 SQL 失败:", response.error);
+    toast.error(response.error, toastOption);
   }
 };
 
@@ -312,7 +317,7 @@ const clearActive = () => {
 // 重载页面
 const reloadPage = () => {
   refresh();
-}
+};
 
 // item移入事件
 const onDragOver = (event: DragEvent) => {

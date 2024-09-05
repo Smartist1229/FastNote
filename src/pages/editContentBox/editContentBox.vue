@@ -64,6 +64,9 @@ import { classInter } from "../../interface/classInter";
 
 import MonacoEditor from "../MonacoEditor/MonacoEditor.vue";
 
+// toast设置
+import toastOption from "../../config/toastOption";
+
 // 初始化数据
 const NoteId = ref<string>("");
 const title = ref<string>("");
@@ -76,18 +79,7 @@ const classList = ref<classInter[]>([]);
 const selectId = ref<string>("");
 const noClass = ref<boolean>(false);
 
-// toast设置
-const toastOption = {
-  autoClose: 1000, // 自动关闭时间
-  closeButton: true, // 开启关闭按钮
-  pauseOnHover: false, // 鼠标悬停时暂停计时器
-  pauseOnFocusLoss: false, // 焦点丢失时暂停计时器
-  closeOnClick: true, // 点击关闭按钮时关闭提示框
-  hideProgressBar: true, // 隐藏进度条
-  toastStyle: {
-    // 自定义css
-  },
-};
+
 
 // 页面挂载时，更新分类列表
 onMounted(() => {
@@ -104,7 +96,8 @@ const getClassList = async () => {
     });
     classList.value = response.result;
   } else {
-    console.error("执行 SQL 失败:", response.error);
+    // console.error("执行 SQL 失败:", response.error);
+    toast.error(response.error, toastOption);
   }
 };
 
@@ -153,7 +146,8 @@ emitter.on("NodeList-id", (id: any) => {
         }
       })
       .catch((error) => {
-        console.error("执行 SQL 失败:", error);
+        // console.error("执行 SQL 失败:", error);
+        toast.error(error, toastOption);
       });
   } else {
     // 将内容传递给MonacoEditor组件
