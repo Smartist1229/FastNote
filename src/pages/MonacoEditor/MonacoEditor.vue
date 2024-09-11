@@ -49,6 +49,14 @@ onMounted(() => {
     links: true, // 跳转链接功能
     stickyScroll: { enabled: false }, // 粘性滚动功能
     mouseWheelZoom: true, // 鼠标滚轮缩放功能
+    unicodeHighlight:{
+      allowedCharacters: {}, // 允许的字符列表
+      allowedLocales: {}, // 允许的语言列表
+      ambiguousCharacters: false, // 非基本 ASCII 符号高亮
+      includeComments: false, // 注释高亮
+      invisibleCharacters: false, // 不可见字符高亮
+      nonBasicASCII: false, // 非基本 ASCII 字符高亮
+    }
   });
 
   // 监听编辑器内容变化事件
