@@ -34,6 +34,9 @@
         <div class="copyContent" title="复制内容" @click="copyContent">
           <span class="iconfont">&#xec7a;</span>
         </div>
+        <div class="exportContent" title="导出为txt" @click="exportContent">
+          <span class="iconfont">&#xe61c;</span>
+        </div>
       </div>
 
       <div class="Edit">
@@ -61,6 +64,7 @@ import emitter from "../../utils/emitter";
 import { toast } from "vue3-toastify";
 import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
+import { saveAs } from 'file-saver'
 
 import MonacoEditor from "../MonacoEditor/MonacoEditor.vue";
 
@@ -224,6 +228,12 @@ const copyContent = async () => {
     toast.error(`复制失败:${error}`, toastOption);
   }
 };
+
+// 导出为txt
+const exportContent = () => {
+  let strData = new Blob([content.value], { type: "text/plain;charset=utf-8" });
+  saveAs(strData, `${title.value}.txt`);
+}
 </script>
 
 <style scoped>
@@ -300,6 +310,18 @@ span {
 }
 .copyContent span {
   font-size: 16px;
+}
+
+.exportContent{
+  height: 100%;
+  width: 28px;
+  text-align: center;
+  line-height: 28px;
+  border-right: 1px solid #e2e2e2;
+  cursor: pointer;
+}
+.exportContent span {
+  font-size: 18px;
 }
 
 /* 编辑区 */
