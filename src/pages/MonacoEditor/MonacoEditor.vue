@@ -56,7 +56,11 @@ onMounted(() => {
       includeComments: false, // 注释高亮
       invisibleCharacters: false, // 不可见字符高亮
       nonBasicASCII: false, // 非基本 ASCII 字符高亮
-    }
+    },
+    selectionHighlight: true, // 选中高亮
+    renderLineHighlight: "all", // 显示选中行高亮
+    renderLineHighlightOnlyWhenFocus: false, // 仅在编辑器获取焦点时才显示选中行高亮
+    suggestLineHeight: 0, // 提示行高度
   });
 
   // 监听编辑器内容变化事件
