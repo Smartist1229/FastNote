@@ -48,6 +48,7 @@ process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
 const createWindow = () => {
   mainWindow = new BrowserWindow({
     icon: path.join(__dirname, '../resource/Icon/shortcut256.ico'),
+    show: false, // 先取消显示
     width: 1000,
     height: 700,
     minWidth: 800,
@@ -68,6 +69,19 @@ const createWindow = () => {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  // 当页面渲染完成后再加载页面（防止页面白屏）
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.show();
+  });
+
+  // 监听 new-window 事件，阻止新窗口的打开
+  mainWindow.webContents.on('new-window', (event, url) => {
+    event.preventDefault();
+    // 如果需要的话，可以在这里处理url，例如在当前窗口加载该url
+    // mainWindow.loadURL(url);
+    shell.openExternal(url);
+  });
 };
 
 // 渲染进程消息处理
@@ -112,9 +126,9 @@ ipcMain.on('execute-sql', (event, { sql, type, params = [], responseEvent }) => 
   }
 });
 
-// 刷新页面
+// 刷新页面(忽略缓存)
 ipcMain.on('refresh', (event) => {
-  mainWindow.reload();
+  mainWindow.reload({ ignoreCache: true });
 });
 
 // 测试路径
