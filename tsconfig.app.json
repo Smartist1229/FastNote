@@ -23,5 +23,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "src/data/sql/index.mts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "src/data/sql/index.mts", "src/types/global.d.ts", "electron/**/*"]
 }
