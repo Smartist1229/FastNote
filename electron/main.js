@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 
@@ -56,8 +56,8 @@ const createWindow = () => {
     webPreferences: {
       contextIsolation: true,
       enableRemoteModule: false,
-      nodeIntegration: false,
-      preload: path.join(__dirname, './preload.ts') // 使用 preload.js
+      nodeIntegration: true,
+      preload: path.join(__dirname, './preload.js')
     },
     resizable: true,
   });
@@ -83,6 +83,7 @@ const createWindow = () => {
     shell.openExternal(url);
   });
 };
+
 
 // 渲染进程消息处理
 app.whenReady().then(() => {
@@ -130,6 +131,39 @@ ipcMain.on('execute-sql', (event, { sql, type, params = [], responseEvent }) => 
 ipcMain.on('refresh', (event) => {
   mainWindow.reload({ ignoreCache: true });
 });
+
+// 保存文件
+ipcMain.handle('dialog:saveFile', async (event, title) => {
+  const result = await dialog.showSaveDialog({
+    title: '保存文件',
+    buttonLabel: '保存',
+    filters: [
+      { name: 'Plain Text', extensions: ['txt'] },
+      { name: 'JavaScript', extensions: ['js'] },
+      { name: 'TypeScript', extensions: ['ts'] },
+      { name: 'Python', extensions: ['py'] },
+      { name: 'Java', extensions: ['java'] },
+      {name: 'C', extensions: ['c'] },
+      { name: 'C++', extensions: ['cpp', 'h'] },
+      { name: 'C#', extensions: ['cs'] },
+      { name: 'Ruby', extensions: ['rb'] },
+      { name: 'PHP', extensions: ['php'] },
+      { name: 'HTML', extensions: ['html', 'htm'] },
+      { name: 'CSS', extensions: ['css'] },
+      { name: 'Markdown', extensions: ['md'] },
+      { name: 'JSON', extensions: ['json'] },
+      { name: 'XML', extensions: ['xml'] },
+      { name: 'YAML', extensions: ['yaml', 'yml'] },
+      { name: 'LaTeX', extensions: ['tex'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    defaultPath: `${title}.txt`
+  });
+  return result;
+});
+
+console.log(dialog);
+
 
 // 测试路径
 // ipcMain.on('app-path', (event,type) => {

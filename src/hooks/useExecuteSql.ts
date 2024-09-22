@@ -11,7 +11,7 @@ function executeSql(eventName: string, sql: string, type: string, responseEvent:
 
 function getResponse(responseEvent: string): Promise<any> {
   return new Promise((resolve, reject) => {
-    const handler = (event:Event, response: any) => {
+    const handler = (_:Event, response: any) => {
       ipcRenderer.removeListener(responseEvent, handler);
       if (response.success) {
         resolve(response);
