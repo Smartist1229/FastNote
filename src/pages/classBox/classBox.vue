@@ -33,6 +33,7 @@
         @dragover="onDragOver"
         @dragleave="onDragLeave"
         @drop="onDrop($event, item)"
+        :title="item.className"
       >
         <span class="iconfont">&#xec17;</span>
         <span v-if="!item.isEdit">{{ item.className }}</span>
