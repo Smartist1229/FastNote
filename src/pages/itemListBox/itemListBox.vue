@@ -25,10 +25,11 @@
           :class="item.isActive ? 'item active' : 'item'"
           v-for="item in AllNotes"
           :key="item.id"
-          draggable="true"
-          @click.stop="clickHandler(item)"
+          :draggable="!item.isEdit && isOpreate"
+          @click.stop="isOpreate ? clickHandler(item) : null"
           @dblclick.stop="dblClickHandler"
-          @dragstart="onDragOver(item)"
+          @dragstart="onDragStart(item)"
+          :title="item.title"
         >
           <div class="Title">
             <span v-if="!item.isEdit">{{ item.title }}</span>
@@ -78,6 +79,8 @@ const searchContent = ref<string>("");
 const classId = ref<string>("");
 // 获取全部笔记的列表
 const noteListElectron = ref<HTMLElement>();
+// 是否可以进行操作
+const isOpreate = ref<boolean>(true);
 
 // 获取全部笔记
 const getAllNotes = async () => {
@@ -135,7 +138,7 @@ const clickHandler = (item: noteInter) => {
   }
   clickTimer = setTimeout(() => {
     changeIsActive(item);
-  }, 100);
+  }, 150);
 };
 
 // 双击处理函数
@@ -144,7 +147,7 @@ const dblClickHandler = () => {
     clearTimeout(clickTimer);
     clickTimer = null;
   }
-  changeNote();
+  changeNote(); 
 };
 
 // 搜索功能实现
@@ -173,6 +176,7 @@ watch(searchContent, (newValue) => {
 // 新增笔记
 const addNote = () => {
   clearActive(); // 取消其他项目的激活状态
+  isOpreate.value = false;
   const newNote = {
     id: nanoid(),
     title: "",
@@ -221,6 +225,7 @@ const saveNote = (item: noteInter) => {
     }
   }
   item.isEdit = false;
+  isOpreate.value = true;
   activeId.value = item.id;
   searchContent.value = "";
   // 将新增的item的id传送给editContentBox组件
@@ -233,6 +238,7 @@ const changeNote = () => {
   AllNotes.value.forEach((item) => {
     if (item.id === activeId.value) {
       item.isEdit = true;
+      isOpreate.value = false;
     }
   });
 };
@@ -322,6 +328,7 @@ emitter.on("classList-id", (id) => {
           element.isEdit = false;
         });
         AllNotes.value = noteList.result;
+        isOpreate.value = true;
       })
       .catch((error) => {
         // console.error("执行 SQL 失败:", error);
@@ -339,7 +346,7 @@ const clearActive = () => {
 };
 
 // 元素拖动
-const onDragOver = (item: noteInter) => {  
+const onDragStart = (item: noteInter) => {  
   emitter.emit("dragNoteId", item);
 };
 </script>

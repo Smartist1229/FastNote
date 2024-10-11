@@ -34,7 +34,7 @@
         <div class="copyContent" title="复制内容" @click="copyContent">
           <span class="iconfont">&#xec7a;</span>
         </div>
-        <div class="exportContent" title="将内容导出为..." @click="exportContent">
+        <div class="exportContent" title="将内容导出" @click="exportContent">
           <span class="iconfont">&#xe61c;</span>
         </div>
       </div>
@@ -282,6 +282,9 @@ span {
   border-top: 1px solid #e2e2e2;
   background-color: #ffffff;
   display: flex;
+}
+.tools div:hover{
+  background-color: #e5e7eb;
 }
 .tools .textLength {
   height: 100%;
