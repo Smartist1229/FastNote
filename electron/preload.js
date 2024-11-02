@@ -1,7 +1,8 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, shell } = require('electron');
 const fs = require('fs');
 
 contextBridge.exposeInMainWorld('electron', {
+  openExternal: (url) => shell.openExternal(url),
   ipcRenderer: {
     send: (channel, ...args) => ipcRenderer.send(channel, ...args),
     on: (channel, func) => ipcRenderer.on(channel, (event, ...args) => func(event, ...args)),
@@ -23,7 +24,7 @@ contextBridge.exposeInMainWorld('electron', {
     } catch (error) {
       return { success: false, error: error.message };
     }
-  }
+  },
   
 });
 

@@ -2,6 +2,7 @@
 declare global {
   interface Window {
     electron: {
+      openExternal: (url: string) => Promise<void>;
       ipcRenderer: {
         send: (channel: string, ...args: any[]) => void;
         on: (channel: string, callback: (...args: any[]) => void) => void;
