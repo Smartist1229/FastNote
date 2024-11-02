@@ -1,7 +1,7 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "author": "Smartist",
   "description": "快速编辑、保存、分类管理文字片段",
   "main": "./electron/main.js",
@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.2.1",
+    "md-editor-v3": "^4.21.2",
     "mitt": "^3.0.1",
     "moment": "^2.30.1",
     "monaco-editor": "^0.51.0",
