@@ -76,6 +76,13 @@ onMounted(() => {
     }
   });
 
+  // 监听 content 的变化
+  emitter.on('newContent', (newValue) => {
+    if (editorInstance) {
+      editorInstance.setValue(newValue);
+    }
+  });
+
 });
 
 onBeforeUnmount(() => {
@@ -83,6 +90,8 @@ onBeforeUnmount(() => {
     editorInstance.dispose();
   }
 });
+
+
 
 </script>
 

@@ -37,14 +37,27 @@
         <div class="exportContent" title="将内容导出" @click="exportContent">
           <span class="iconfont">&#xe61c;</span>
         </div>
-        <div class="switchEditor" title="切换编辑器，目前支持：&#10;MonacoEditor、MdEditor" @click="focusEditor">
+        <div
+          class="switchEditor"
+          title="切换编辑器，目前支持：&#10;MonacoEditor、MdEditor"
+          @click="focusEditor"
+        >
           <span class="iconfont">&#xe61f;</span>
         </div>
       </div>
 
       <div class="Edit">
-        <MonacoEditor v-show="editorType"></MonacoEditor>
-        <MdEditor v-show="!editorType" v-model="content" theme="light" style="height: 100%;" :toolbarsExclude="MdEditorNotShowTools" footers="" previewTheme="github" preview="false" />
+        <MonacoEditor v-if="editorType"></MonacoEditor>
+        <MdEditor
+          v-if="!editorType"
+          v-model="content"
+          theme="light"
+          style="height: 100%"
+          :toolbarsExclude="MdEditorNotShowTools"
+          footers=""
+          previewTheme="github"
+          preview="false"
+        />
       </div>
     </div>
 
@@ -68,8 +81,8 @@ import emitter from "../../utils/emitter";
 import { toast } from "vue3-toastify";
 import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
-import { MdEditor } from 'md-editor-v3';
-import 'md-editor-v3/lib/style.css';
+import { MdEditor } from "md-editor-v3";
+import "md-editor-v3/lib/style.css";
 import MonacoEditor from "../MonacoEditor/MonacoEditor.vue";
 
 // toast设置
@@ -91,9 +104,7 @@ const noClass = ref<boolean>(false);
 // 编辑器切换
 const editorType = ref<boolean>(true);
 // MdEditor工具栏不显示的工具
-const MdEditorNotShowTools = ref<string[]>(["save","github"])
-
-
+const MdEditorNotShowTools = ref<string[]>(["save", "github"]);
 
 // 页面挂载时，更新分类列表
 onMounted(() => {
@@ -156,7 +167,7 @@ emitter.on("NodeList-id", (id: any) => {
           // 将内容传递给MonacoEditor组件
           nextTick(() => {
             emitter.emit("noteContent", note.result.content);
-          })
+          });
         }
       })
       .catch((error) => {
@@ -241,21 +252,28 @@ const copyContent = async () => {
 
 // 导出为txt
 const exportContent = () => {
-  saveFile(title.value, content.value).then(result => {
+  saveFile(title.value, content.value).then((result) => {
     if (result.success) {
       toast.success(`导出成功，文件路径为：${result.filePath}`, toastOption);
     } else {
       // toast.error(`导出失败：${result.error}`, toastOption);
       console.log(result.error);
-      
     }
   });
-}
+};
 
 // 切换编辑器
 const focusEditor = () => {
   editorType.value = !editorType.value;
-}
+  nextTick(() => {
+    emitter.emit("newContent", content.value);
+  });
+};
+
+// MdEditor编辑内容
+// watch(content,() => {
+//   emitter.emit("newContent", content.value);
+// })
 </script>
 
 <style scoped>
@@ -298,7 +316,7 @@ span {
   background-color: #ffffff;
   display: flex;
 }
-.tools div:hover{
+.tools div:hover {
   background-color: #e5e7eb;
 }
 .tools .textLength {
@@ -325,7 +343,9 @@ span {
   white-space: nowrap;
   font-size: 12px;
 }
-.copyContent,.exportContent,.switchEditor {
+.copyContent,
+.exportContent,
+.switchEditor {
   height: 100%;
   width: 28px;
   text-align: center;
@@ -336,7 +356,7 @@ span {
 .copyContent span {
   font-size: 16px;
 }
-.switchEditor span{
+.switchEditor span {
   font-size: 12px;
 }
 
