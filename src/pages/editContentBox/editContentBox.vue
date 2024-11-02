@@ -54,9 +54,9 @@
           theme="light"
           style="height: 100%"
           :toolbarsExclude="MdEditorNotShowTools"
-          footers=""
+          :footers="MdEditorFooters"
           previewTheme="github"
-          preview="false"
+          :preview="false"
         />
       </div>
     </div>
@@ -83,6 +83,7 @@ import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
 import { MdEditor } from "md-editor-v3";
 import "md-editor-v3/lib/style.css";
+import {ToolbarTips, Footers} from "../../interface/MdEditor"
 import MonacoEditor from "../MonacoEditor/MonacoEditor.vue";
 
 // toast设置
@@ -103,8 +104,9 @@ const selectId = ref<string>("");
 const noClass = ref<boolean>(false);
 // 编辑器切换
 const editorType = ref<boolean>(true);
-// MdEditor工具栏不显示的工具
-const MdEditorNotShowTools = ref<string[]>(["save", "github"]);
+// MdEditor工具栏不显示的工具 和 页脚
+const MdEditorNotShowTools = ref<ToolbarTips[]>(["save", "github"]);
+const MdEditorFooters = ref<Footers[]>([]);
 
 // 页面挂载时，更新分类列表
 onMounted(() => {
