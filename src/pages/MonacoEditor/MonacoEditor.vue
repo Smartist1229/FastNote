@@ -49,7 +49,7 @@ onMounted(() => {
     links: true, // 跳转链接功能
     stickyScroll: { enabled: false }, // 粘性滚动功能
     mouseWheelZoom: true, // 鼠标滚轮缩放功能
-    unicodeHighlight:{
+    unicodeHighlight: {
       allowedCharacters: {}, // 允许的字符列表
       allowedLocales: {}, // 允许的语言列表
       ambiguousCharacters: false, // 非基本 ASCII 符号高亮
@@ -77,7 +77,7 @@ onMounted(() => {
   });
 
   // 监听 content 的变化
-  emitter.on('newContent', (newValue) => {
+  emitter.on("newContent", (newValue) => {
     if (editorInstance) {
       editorInstance.setValue(newValue);
     }
@@ -90,8 +90,6 @@ onBeforeUnmount(() => {
     editorInstance.dispose();
   }
 });
-
-
 
 </script>
 
