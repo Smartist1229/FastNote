@@ -37,10 +37,14 @@
         <div class="exportContent" title="将内容导出" @click="exportContent">
           <span class="iconfont">&#xe61c;</span>
         </div>
+        <div class="switchEditor" title="切换编辑器，目前支持：&#10;MonacoEditor、MdEditor" @click="focusEditor">
+          <span class="iconfont">&#xe61f;</span>
+        </div>
       </div>
 
       <div class="Edit">
-        <MonacoEditor></MonacoEditor>
+        <MonacoEditor v-show="editorType"></MonacoEditor>
+        <MdEditor v-show="!editorType" v-model="content" theme="light" style="height: 100%;" :toolbarsExclude="MdEditorNotShowTools" footers="" previewTheme="github" preview="false" />
       </div>
     </div>
 
@@ -64,6 +68,8 @@ import emitter from "../../utils/emitter";
 import { toast } from "vue3-toastify";
 import "vue3-toastify/dist/index.css";
 import { classInter } from "../../interface/classInter";
+import { MdEditor } from 'md-editor-v3';
+import 'md-editor-v3/lib/style.css';
 import MonacoEditor from "../MonacoEditor/MonacoEditor.vue";
 
 // toast设置
@@ -82,6 +88,10 @@ const contentLengthNoEnter = ref<number>(0);
 const classList = ref<classInter[]>([]);
 const selectId = ref<string>("");
 const noClass = ref<boolean>(false);
+// 编辑器切换
+const editorType = ref<boolean>(true);
+// MdEditor工具栏不显示的工具
+const MdEditorNotShowTools = ref<string[]>(["save","github"])
 
 
 
@@ -241,6 +251,11 @@ const exportContent = () => {
     }
   });
 }
+
+// 切换编辑器
+const focusEditor = () => {
+  editorType.value = !editorType.value;
+}
 </script>
 
 <style scoped>
@@ -310,7 +325,7 @@ span {
   white-space: nowrap;
   font-size: 12px;
 }
-.copyContent {
+.copyContent,.exportContent,.switchEditor {
   height: 100%;
   width: 28px;
   text-align: center;
@@ -321,15 +336,10 @@ span {
 .copyContent span {
   font-size: 16px;
 }
-
-.exportContent{
-  height: 100%;
-  width: 28px;
-  text-align: center;
-  line-height: 28px;
-  border-right: 1px solid #e2e2e2;
-  cursor: pointer;
+.switchEditor span{
+  font-size: 12px;
 }
+
 .exportContent span {
   font-size: 18px;
 }
