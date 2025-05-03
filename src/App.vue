@@ -31,6 +31,9 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
   margin: 0;
   padding: 0;
   font-family: inherit;
+  /* 禁止页面滚动 */
+  overflow: hidden;
+
 }
 /* 主容器 */
 .main-window {
