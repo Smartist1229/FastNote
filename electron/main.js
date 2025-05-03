@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 
@@ -35,7 +35,8 @@ db.exec(`
     title TEXT DEFAULT '未命名笔记',
     date TEXT NOT NULL,
     content TEXT,
-    classId TEXT
+    classId TEXT,
+    FOREIGN KEY (classId) REFERENCES class(id) ON DELETE SET NULL ON UPDATE CASCADE
   );
 `);
 
@@ -46,11 +47,23 @@ process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
 
 // 创建主进程
 const createWindow = () => {
+  // 获取鼠标所在的屏幕
+  const cursorPoint = screen.getCursorScreenPoint();
+  const displayNearestCursor = screen.getDisplayNearestPoint(cursorPoint);
+
+  // 计算窗口在目标屏幕上的位置
+  const windowWidth = 1000;
+  const windowHeight = 700;
+  const x = Math.floor(displayNearestCursor.bounds.x + (displayNearestCursor.bounds.width - windowWidth) / 2);
+  const y = Math.floor(displayNearestCursor.bounds.y + (displayNearestCursor.bounds.height - windowHeight) / 2);
+
   mainWindow = new BrowserWindow({
     icon: path.join(__dirname, '../resource/Icon/shortcut256.ico'),
     show: false, // 先取消显示
-    width: 1000,
-    height: 700,
+    width: windowWidth,
+    height: windowHeight,
+    x: x,
+    y: y,
     minWidth: 800,
     minHeight: 300,
     webPreferences: {
@@ -143,7 +156,7 @@ ipcMain.handle('dialog:saveFile', async (event, title) => {
       { name: 'TypeScript', extensions: ['ts'] },
       { name: 'Python', extensions: ['py'] },
       { name: 'Java', extensions: ['java'] },
-      {name: 'C', extensions: ['c'] },
+      { name: 'C', extensions: ['c'] },
       { name: 'C++', extensions: ['cpp', 'h'] },
       { name: 'C#', extensions: ['cs'] },
       { name: 'Ruby', extensions: ['rb'] },
@@ -155,6 +168,21 @@ ipcMain.handle('dialog:saveFile', async (event, title) => {
       { name: 'XML', extensions: ['xml'] },
       { name: 'YAML', extensions: ['yaml', 'yml'] },
       { name: 'LaTeX', extensions: ['tex'] },
+      { name: 'Configuration', extensions: ['conf', 'cfg', 'ini'] },
+      { name: 'Shell Script', extensions: ['sh', 'bash'] },
+      { name: 'PowerShell', extensions: ['ps1'] },
+      { name: 'Batch', extensions: ['bat', 'cmd'] },
+      { name: 'SQL', extensions: ['sql'] },
+      { name: 'Rust', extensions: ['rs'] },
+      { name: 'Go', extensions: ['go'] },
+      { name: 'Swift', extensions: ['swift'] },
+      { name: 'Kotlin', extensions: ['kt'] },
+      { name: 'R', extensions: ['r'] },
+      { name: 'Scala', extensions: ['scala'] },
+      { name: 'Visual Basic', extensions: ['vb'] },
+      { name: 'Perl', extensions: ['pl'] },
+      { name: 'Lua', extensions: ['lua'] },
+      { name: 'Dockerfile', extensions: ['dockerfile'] },
       { name: 'All Files', extensions: ['*'] },
     ],
     defaultPath: `${title}.txt`

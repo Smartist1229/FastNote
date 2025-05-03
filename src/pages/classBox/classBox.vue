@@ -98,6 +98,7 @@ import toastOption from "../../config/toastOption";
 const AllClass = ref<classInter[]>([]);
 const activeId = ref<string>("");
 const activeName = ref<string>("");
+
 // 点击处理css
 const allClassActive = ref<boolean>(true);
 const noClassActive = ref<boolean>(false);

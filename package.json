@@ -22,6 +22,7 @@
     "moment": "^2.30.1",
     "monaco-editor": "^0.51.0",
     "nanoid": "^5.0.7",
+    "pinia": "^3.0.1",
     "vue": "^3.4.31",
     "vue3-toastify": "^0.2.2"
   },
