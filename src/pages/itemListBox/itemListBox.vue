@@ -422,7 +422,7 @@ span {
 }
 .itemList {
   width: 100%;
-  height: calc(100vh - 54px);
+  height: calc(100vh - 62px);
   overflow-y: overlay;
   overflow-x: hidden;
   padding-right: 5px;
