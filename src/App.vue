@@ -31,9 +31,6 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
   margin: 0;
   padding: 0;
   font-family: inherit;
-  /* 禁止页面滚动 */
-  overflow: hidden;
-
 }
 /* 主容器 */
 .main-window {
@@ -41,6 +38,8 @@ import editContentBox from './pages/editContentBox/editContentBox.vue'
   width: 100vw;
   display: flex;
   background-color: #dbd9d956;
+  /* 隐藏全局滚动条 */
+  /* overflow: hidden; */
 }
 
 /* 选中样式 */
