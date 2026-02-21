@@ -13,69 +13,10 @@ body {
 }
 
 /* 强制保留列表样式，覆盖 Tailwind preflight */
-ol, ol li,
-ul, ul li {
-  list-style-type: initial !important;
-  padding-left: initial !important;
-  margin-left: initial !important;
-  display: list-item !important;
+/* 修复react-markdown-editor-lite列表序号问题 */
+ul{
+  list-style: disc;
 }
-
-ol {
-  list-style-type: decimal !important;
-  padding-left: 2em !important;
-}
-
-ul {
-  list-style-type: disc !important;
-  padding-left: 2em !important;
-}
-
-/* Markdown 编辑器预览区域样式 */
-.rmd-preview ol {
-  list-style-type: decimal;
-  padding-left: 2em;
-}
-
-.rmd-preview ul {
-  list-style-type: disc;
-  padding-left: 2em;
-}
-
-.rmd-preview li {
-  margin-top: 0.25em;
-  margin-bottom: 0.25em;
-}
-
-.rmd-preview ol ul,
-.rmd-preview ul ol,
-.rmd-preview ul ul,
-.rmd-preview ol ol {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-
-/* 禁止选中/复制 UI 文字 */
-* {
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
-  user-select: none;
-}
-
-/* 允许文本编辑区域选中 */
-.rmd-editor,
-.rmd-editor *,
-.rmd-view-md,
-.rmd-view-md *,
-.rmd-view-html,
-.rmd-view-html *,
-input,
-textarea,
-[contenteditable="true"],
-[contenteditable="true"] * {
-  -webkit-user-select: text;
-  -moz-user-select: text;
-  -ms-user-select: text;
-  user-select: text;
+ol{
+  list-style: decimal;
 }
