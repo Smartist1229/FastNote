@@ -1,18 +1,7 @@
-# FastNote
+# Tauri + React + Typescript
 
-vite + vue3 + typescript + electron + SQLite 的一个笔记软件
+This template should help get you started developing with Tauri, React and Typescript in Vite.
 
-## Project setup
-```
-npm install
-```
+## Recommended IDE Setup
 
-### Compiles and hot-reloads for development
-```
-npm run dev
-```
-
-### Compiles and minifies for production
-```
-npm run build
-```
+- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
