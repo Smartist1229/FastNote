@@ -1,41 +1,37 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "0.0.9",
-  "author": "Smartist",
-  "description": "快速编辑、保存、分类管理文字片段",
-  "main": "./electron/main.js",
+  "version": "0.1.0",
+  "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && electron-builder --win --ia32",
+    "build": "tsc && vite build",
     "preview": "vite preview",
-    "electron:serve": "vite --host",
-    "electron:build": "vite build && electron-builder --win --ia32",
-    "build:win": "vite build && electron-builder --win --config=./electron-builder.json",
-    "build:mac": "vite build && electron-builder --mac --config=./electron-builder.json",
-    "build:linux": "vite build && electron-builder --linux --config=./electron-builder.json"
+    "tauri": "tauri"
   },
   "dependencies": {
-    "better-sqlite3": "^11.2.1",
-    "md-editor-v3": "^4.21.2",
-    "mitt": "^3.0.1",
-    "moment": "^2.30.1",
-    "monaco-editor": "^0.51.0",
-    "nanoid": "^5.0.7",
-    "pinia": "^3.0.1",
-    "vue": "^3.4.31",
-    "vue3-toastify": "^0.2.2"
+    "@monaco-editor/react": "^4.7.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-fs": "^2.4.5",
+    "@tauri-apps/plugin-opener": "^2",
+    "date-fns": "^4.1.0",
+    "markdown-it": "^14.1.1",
+    "monaco-editor": "^0.55.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown-editor-lite": "^1.4.2"
   },
   "devDependencies": {
-    "@types/electron": "^1.6.10",
-    "@types/file-saver": "^2.0.7",
-    "@types/vue": "^2.0.0",
-    "@vitejs/plugin-vue": "^5.0.5",
-    "electron": "^32.0.1",
-    "electron-builder": "^24.13.3",
-    "electron-rebuild": "^3.2.9",
-    "typescript": "^5.6.2",
-    "vite": "^5.3.4",
-    "vite-plugin-electron": "^0.28.7"
+    "@tauri-apps/cli": "^2",
+    "@types/markdown-it": "^14.1.2",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "autoprefixer": "^10.4.24",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4"
   }
 }
