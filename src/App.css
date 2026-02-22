@@ -13,10 +13,15 @@ body {
 }
 
 /* 强制保留列表样式，覆盖 Tailwind preflight */
-/* 修复react-markdown-editor-lite列表序号问题 */
-ul{
-  list-style: disc;
+/* 修复md-edit-rt列表序号问题 */
+ol li {
+  list-style-type: decimal !important;
 }
-ol{
-  list-style: decimal;
+ul li {
+  list-style-type: disc !important;
+}
+
+/* 禁止用户选中UI文本 */
+* {
+  user-select: none;
 }

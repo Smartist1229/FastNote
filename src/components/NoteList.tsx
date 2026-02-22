@@ -59,6 +59,11 @@ export const NoteList: React.FC<NoteListProps> = ({ notes, onSelectNote, selecte
               key={note.id}
               ref={selectedNoteId === note.id ? selectedNoteRef : null}
               onClick={() => onSelectNote(note)}
+              // 拖拽实现分组
+              draggable={true}
+              onDragStart={(e) => {
+                e.dataTransfer.setData('id', note.id.toString());
+              }}
               className={`p-2.5 rounded-md cursor-pointer transition-all duration-150 shadow-sm hover:shadow border ${
                 selectedNoteId === note.id
                   ? 'bg-gray-800 text-white border-gray-800'

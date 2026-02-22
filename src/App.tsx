@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import { Note, Category } from './types';
 import * as api from './api';
@@ -29,6 +29,7 @@ function AppContent() {
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const { showToast } = useToast();
+  const selectedNoteRef = useRef<Note | null>(selectedNote);
 
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
@@ -39,6 +40,11 @@ function AppContent() {
     document.addEventListener('contextmenu', handleContextMenu);
     return () => document.removeEventListener('contextmenu', handleContextMenu);
   }, []);
+
+  // 当selectedNote变化时，更新selectedNoteRef
+  useEffect(() => {
+    selectedNoteRef.current = selectedNote;
+  }, [selectedNote]);
 
   const filteredNotes = notes.filter((note) => {
     const matchesSearch = !searchQuery.trim() || 
@@ -56,6 +62,16 @@ function AppContent() {
       ]);
       setCategories(cats);
       setNotes(notesList);
+      
+      // 如果有选中的笔记，更新选中的笔记信息
+      const currentSelectedNote = selectedNoteRef.current;
+      if (currentSelectedNote) {
+        const updatedNote = notesList.find(note => note.id === currentSelectedNote.id);
+        if (updatedNote) {
+          // 创建一个新的对象，确保NoteEditor组件的useEffect钩子能检测到变化
+          setSelectedNote({ ...updatedNote });
+        }
+      }
     } catch (error) {
       console.error('Failed to load data:', error);
     }
@@ -186,14 +202,16 @@ function AppContent() {
               categories={categories}
               notes={notes}
               selectedCategoryId={selectedCategoryId}
+              selectedNoteId={selectedNote?.id || null}
               onSelectCategory={(id) => {
                 setSelectedCategoryId(id);
-                setSelectedNote(null);
+                // 保持当前选中的笔记
                 setMobileSidebarOpen(false);
               }}
               onCreateCategory={handleCreateCategory}
               onEditCategory={handleEditCategory}
               onDeleteCategory={handleDeleteCategory}
+              onNotesUpdated={loadData}
             />
           </div>
         </div>

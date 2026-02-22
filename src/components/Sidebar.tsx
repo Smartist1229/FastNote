@@ -1,26 +1,74 @@
 import { useState } from 'react';
 import { Category, Note } from '../types';
+import * as api from '../api';
+import { useToast } from './Toast';
 
 interface SidebarProps {
   categories: Category[];
   notes: Note[];
   selectedCategoryId: number | null;
+  selectedNoteId: number | null;
   onSelectCategory: (id: number | null) => void;
   onCreateCategory: () => void;
   onEditCategory: (category: Category) => void;
   onDeleteCategory: (category: Category) => void;
+  onNotesUpdated: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   categories,
   notes,
   selectedCategoryId,
+  selectedNoteId,
   onSelectCategory,
   onCreateCategory,
   onEditCategory,
   onDeleteCategory,
+  onNotesUpdated,
 }) => {
   const [hoveredCategoryId, setHoveredCategoryId] = useState<number | null>(null);
+  const { showToast } = useToast();
+
+  // 实现拖拽分组代码
+  const createDragHandle = (categoryId: number) => {
+    return {
+      onDragOver: (e: React.DragEvent<HTMLButtonElement>) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const el = e.currentTarget as HTMLElement;
+        el.classList.add('bg-gray-300');
+
+      },
+      onDragLeave: (e: React.DragEvent<HTMLButtonElement>) => {
+        const el = e.currentTarget as HTMLElement;
+        el.classList.remove('bg-gray-300');
+      },
+      onDrop: async (e: React.DragEvent<HTMLButtonElement>) => {
+        const el = e.currentTarget as HTMLElement;
+        el.classList.remove('bg-gray-300');
+        const noteIdStr = e.dataTransfer.getData('id') || '';
+        const noteId = parseInt(noteIdStr);
+        
+        if (!isNaN(noteId)) {
+          const note = notes.find(n => n.id === noteId);
+          if (note) {
+            try {
+              await api.updateNote(note.id, note.title, note.content, categoryId);
+              showToast('笔记分类更新成功', 'success');
+              // 先更新数据，再切换分类
+              await onNotesUpdated();
+              // 如果是当前选中的笔记，切换到新分类
+              if (noteId === selectedNoteId) {
+                onSelectCategory(categoryId);
+              }
+            } catch (error) {
+              showToast('更新笔记分类失败', 'error');
+            }
+          }
+        }
+      },
+    };
+  };
 
   return (
     <div className="h-full bg-gray-100 border-r border-gray-200 flex flex-col overflow-hidden">
@@ -90,6 +138,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         ? 'bg-gray-800 text-white'
                         : 'hover:bg-gray-200 text-gray-700'
                     }`}
+                    {...createDragHandle(category.id)}
                   >
                     <span className="text-sm flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0">{category.name}</span>
                     <span className="text-xs opacity-70 flex-shrink-0 mr-12">{category.note_count}</span>

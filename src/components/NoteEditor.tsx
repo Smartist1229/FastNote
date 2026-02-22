@@ -1,25 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Editor, loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
-import MdEditor from 'react-markdown-editor-lite';
-import MarkdownIt from 'markdown-it';
-import 'react-markdown-editor-lite/lib/index.css';
+import { MdEditor } from 'md-editor-rt';
+import 'md-editor-rt/lib/style.css';
 import { Note, Category } from '../types';
 import { monacoEditorConfig } from '../config/monacoEditor';
-import { mdEditorConfig } from '../config/mdEditor';
+import { markdownEditorConfig } from '../config/markdownEditor';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useToast } from './Toast';
 
 loader.config({ monaco });
-
-const mdParser = new MarkdownIt({
-  html: true, // 启用 HTML 标签解析
-  linkify: true, // 自动链接
-  typographer: true, // 启用一些语言替换和引号美化
-  breaks: true, // 回车换行
-});
 
 type EditorType = 'monaco' | 'markdown';
 
@@ -105,23 +97,21 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   useEffect(() => {
-    if (note && note.id !== lastNoteIdRef.current) {
+    if (note) {
+      // 只要note变化就更新所有状态，包括分类
       setTitle(note.title);
       setContent(note.content);
       setCategoryId(note.category_id);
       latestTitleRef.current = note.title;
       latestContentRef.current = note.content;
       latestCategoryIdRef.current = note.category_id;
-      lastNoteIdRef.current = note.id;
-      setEditorKey(prev => prev + 1);
       
-      if (note.title === '新笔记' && titleInputRef.current) {
-        setTimeout(() => {
-          titleInputRef.current?.focus();
-          titleInputRef.current?.select();
-        }, 100);
+      // 只有当note.id变化时才更新lastNoteIdRef和editorKey
+      if (note.id !== lastNoteIdRef.current) {
+        lastNoteIdRef.current = note.id;
+        setEditorKey(prev => prev + 1);
       }
-    } else if (!note) {
+    } else {
       setTitle('');
       setContent('');
       setCategoryId(null);
@@ -269,17 +259,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
       <div className="flex-1 min-h-0 overflow-hidden">
         {editorType === 'monaco' ? (
-          <Editor
-            key={editorKey}
-            height="100%"
-            defaultLanguage="markdown"
-            value={content}
-            onChange={handleContentChange}
-            options={monacoEditorConfig as any}
-          />
+          <div className="editor-container h-full">
+            <Editor
+              key={editorKey}
+              height="100%"
+              defaultLanguage="markdown"
+              value={content}
+              onChange={handleContentChange}
+              options={monacoEditorConfig as any}
+            />
+          </div>
         ) : (
           <div 
-            className="h-full"
+            className="editor-container h-full"
             onClick={async (e) => {
               const target = e.target as HTMLElement;
               const link = target.closest('a');
@@ -295,20 +287,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           >
             <MdEditor
               value={content}
-              onChange={({ text }) => {
-                const newContent = text || '';
+              {...markdownEditorConfig}
+              onChange={(value) => {
+                const newContent = value || '';
                 setContent(newContent);
                 latestContentRef.current = newContent;
                 if (!isComposing) {
                   saveNow();
                 }
               }}
-              renderHTML={(text) => {
-                const html = mdParser.render(text);
-                return html;
-              }}
               style={{ height: '100%' }}
-              config={mdEditorConfig as any}
             />
           </div>
         )}

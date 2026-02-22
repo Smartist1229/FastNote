@@ -1,13 +1,14 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -15,16 +16,21 @@
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
     "@tauri-apps/plugin-opener": "^2",
+    "cropperjs": "^1.6.2",
     "date-fns": "^4.1.0",
-    "markdown-it": "^14.1.1",
+    "echarts": "^6.0.0",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.28",
+    "md-editor-rt": "^6.3.1",
+    "mermaid": "^11.12.3",
     "monaco-editor": "^0.55.1",
+    "prettier": "^3.8.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-markdown-editor-lite": "^1.4.2"
+    "screenfull": "^6.0.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-    "@types/markdown-it": "^14.1.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
