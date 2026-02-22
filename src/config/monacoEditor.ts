@@ -178,7 +178,7 @@ export const monacoEditorConfig = {
   // ==================== Unicode 高亮 ====================
   
   unicodeHighlight: {
-    ambiguousCharacters: true, // 是否高亮有歧义的 Unicode 字符
+    ambiguousCharacters: false, // 是否高亮有歧义的 Unicode 字符
     invisibleCharacters: true, // 是否高亮不可见字符
     // excludeNonASCIIFromAmbiguous: false, // 是否从歧义字符中排除非 ASCII 字符
   },
