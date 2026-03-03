@@ -41,7 +41,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const titleInputRef = useRef<HTMLInputElement>(null);
   const { showToast } = useToast();
 
-  const handleExport = async () => {
+  const handleExport = useCallback(async () => {
     if (!note) return;
 
     try {
@@ -94,7 +94,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       console.error('导出失败:', error);
       showToast('导出失败，请重试', 'error');
     }
-  };
+  }, [note, title, content, showToast]);
 
   useEffect(() => {
     if (note) {
@@ -121,6 +121,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       lastNoteIdRef.current = null;
     }
   }, [note]);
+
+  // 添加 Ctrl+S 快捷键触发导出
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleExport();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleExport]);
 
   const saveNow = useCallback(() => {
     if (isComposing || !note) return;
