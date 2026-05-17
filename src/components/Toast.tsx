@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, ReactNode } from "react";
 
-type ToastType = 'success' | 'error' | 'info';
+type ToastType = "success" | "error" | "info";
 
 interface Toast {
   id: number;
@@ -15,101 +15,84 @@ interface ToastContextType {
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
-export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+export const ToastProvider: React.FC<{ children: ReactNode }> = ({
+  children,
+}) => {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const removeToast = useCallback((id: number) => {
-    setToasts(prev => prev.map(t => t.id === id ? { ...t, isVisible: false } : t));
+    setToasts((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, isVisible: false } : t))
+    );
     setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
+      setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 300);
   }, []);
 
-  const showToast = useCallback((message: string, type: ToastType = 'info') => {
-    const id = Date.now();
-    setToasts(prev => [...prev, { id, message, type, isVisible: true }]);
-    setTimeout(() => {
-      removeToast(id);
-    }, 3000);
-  }, [removeToast]);
+  const showToast = useCallback(
+    (message: string, type: ToastType = "info") => {
+      const id = Date.now() + Math.random();
+      setToasts((prev) => [...prev, { id, message, type, isVisible: true }]);
+      setTimeout(() => {
+        removeToast(id);
+      }, 3000);
+    },
+    [removeToast]
+  );
 
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-3">
-        {toasts.map(toast => (
-          <div
-            key={toast.id}
-            onClick={() => removeToast(toast.id)}
-            className={`
-              px-5 py-4 rounded-2xl shadow-xl cursor-pointer select-none
-              backdrop-blur-xl border
-              transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]
-              ${toast.type === 'success' 
-                ? 'bg-gradient-to-r from-emerald-500/80 to-green-500/80 text-white border-emerald-400/28' 
-                : ''}
-              ${toast.type === 'error' 
-                ? 'bg-gradient-to-r from-rose-500/80 to-red-500/80 text-white border-rose-400/28' 
-                : ''}
-              ${toast.type === 'info' 
-                ? 'bg-gradient-to-r from-slate-800/80 to-slate-700/80 text-white border-slate-600/28' 
-                : ''}
-            `}
-            style={{
-              animation: toast.isVisible 
-                ? 'slideIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards' 
-                : 'slideOut 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
-            }}
-          >
-            <div className="flex items-center gap-3">
-              <div className={`
-                w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
-                ${toast.type === 'success' ? 'bg-white/20' : ''}
-                ${toast.type === 'error' ? 'bg-white/20' : ''}
-                ${toast.type === 'info' ? 'bg-white/20' : ''}
-              `}>
-                {toast.type === 'success' && (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                )}
-                {toast.type === 'error' && (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                )}
-                {toast.type === 'info' && (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                )}
-              </div>
+      <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+        {toasts.map((toast) => {
+          const accentMap = {
+            success: "border-emerald-500 bg-emerald-50 text-emerald-800",
+            error: "border-red-500 bg-red-50 text-red-800",
+            info: "border-blue-500 bg-blue-50 text-blue-800",
+          };
+          const iconMap = {
+            success: (
+              <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+            ),
+            error: (
+              <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            ),
+            info: (
+              <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ),
+          };
+          return (
+            <div
+              key={toast.id}
+              className={`pointer-events-auto flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg shadow-lg border-l-4 ${
+                accentMap[toast.type]
+              } ${
+                toast.isVisible ? "animate-slideIn" : "animate-slideOut"
+              }`}
+            >
+              <div className="flex-shrink-0">{iconMap[toast.type]}</div>
               <span className="text-sm font-medium">{toast.message}</span>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <style>{`
         @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateX(120px) scale(0.9);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0) scale(1);
-          }
+          from { opacity: 0; transform: translateX(100%) scale(0.95); }
+          to { opacity: 1; transform: translateX(0) scale(1); }
         }
         @keyframes slideOut {
-          from {
-            opacity: 1;
-            transform: translateX(0) scale(1);
-          }
-          to {
-            opacity: 0;
-            transform: translateX(120px) scale(0.9);
-          }
+          from { opacity: 1; transform: translateX(0) scale(1); }
+          to { opacity: 0; transform: translateX(100%) scale(0.95); }
         }
+        .animate-slideIn { animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
+        .animate-slideOut { animation: slideOut 0.2s ease-in forwards; }
       `}</style>
     </ToastContext.Provider>
   );
@@ -118,7 +101,7 @@ export const ToastProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 export const useToast = () => {
   const context = useContext(ToastContext);
   if (!context) {
-    throw new Error('useToast must be used within a ToastProvider');
+    throw new Error("useToast must be used within a ToastProvider");
   }
   return context;
 };

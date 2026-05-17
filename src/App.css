@@ -21,7 +21,18 @@ ul li {
   list-style-type: disc !important;
 }
 
-/* 禁止用户选中UI文本 */
-* {
+/* 禁止用户误选中控件文本，但保留编辑/复制能力 */
+button,
+select,
+.select-none {
   user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+.monaco-editor,
+.md-editor,
+.cm-editor {
+  user-select: text;
 }

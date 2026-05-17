@@ -12,6 +12,7 @@ interface SidebarProps {
   onCreateCategory: () => void;
   onEditCategory: (category: Category) => void;
   onDeleteCategory: (category: Category) => void;
+  allNotesCount: number;
   onNotesUpdated: () => void;
 }
 
@@ -24,6 +25,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCreateCategory,
   onEditCategory,
   onDeleteCategory,
+  allNotesCount,
   onNotesUpdated,
 }) => {
   const [hoveredCategoryId, setHoveredCategoryId] = useState<number | null>(null);
@@ -87,7 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <span className="text-sm">全部笔记</span>
           <span className="text-xs opacity-70">
-            {notes.length}
+            {allNotesCount}
           </span>
         </button>
       </div>

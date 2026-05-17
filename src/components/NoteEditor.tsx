@@ -1,192 +1,261 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Editor, loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
-import { MdEditor } from 'md-editor-rt';
-import 'md-editor-rt/lib/style.css';
-import { Note, Category } from '../types';
-import { monacoEditorConfig } from '../config/monacoEditor';
-import { markdownEditorConfig } from '../config/markdownEditor';
-import { save } from '@tauri-apps/plugin-dialog';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { openUrl } from '@tauri-apps/plugin-opener';
-import { useToast } from './Toast';
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Editor, loader } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
+import { config, MdEditor } from "md-editor-rt";
+import "md-editor-rt/lib/style.css";
+import "katex/dist/katex.min.css";
+import "cropperjs/dist/cropper.css";
+import "highlight.js/styles/atom-one-dark.css";
+import { Note } from "../types";
+import { monacoEditorConfig } from "../config/monacoEditor";
+import { markdownEditorConfig } from "../config/markdownEditor";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useToast } from "./Toast";
 
 loader.config({ monaco });
 
-type EditorType = 'monaco' | 'markdown';
+type EditorType = "monaco" | "markdown";
+let markdownExtensionsPromise: Promise<void> | null = null;
+
+const ensureMarkdownExtensions = () => {
+  if (!markdownExtensionsPromise) {
+    markdownExtensionsPromise = Promise.all([
+      import("screenfull"),
+      import("katex"),
+      import("cropperjs"),
+      import("mermaid"),
+      import("highlight.js"),
+      import("prettier"),
+      import("prettier/plugins/markdown"),
+      import("echarts"),
+    ]).then(
+      ([
+        screenfull,
+        katex,
+        cropper,
+        mermaid,
+        highlight,
+        prettier,
+        parserMarkdown,
+        echarts,
+      ]) => {
+        config({
+          editorExtensions: {
+            prettier: {
+              prettierInstance: prettier,
+              parserMarkdownInstance: parserMarkdown,
+            },
+            highlight: {
+              instance: highlight.default,
+            },
+            screenfull: {
+              instance: screenfull.default,
+            },
+            katex: {
+              instance: katex.default,
+            },
+            cropper: {
+              instance: cropper.default,
+            },
+            mermaid: {
+              instance: mermaid.default,
+            },
+            echarts: {
+              instance: echarts,
+            },
+          },
+        });
+      }
+    );
+  }
+  return markdownExtensionsPromise;
+};
 
 interface NoteEditorProps {
   note: Note | null;
-  categories: Category[];
-  onSave: (title: string, content: string, categoryId: number | null) => void;
+  onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
   onDelete: () => void;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
-  categories,
   onSave,
   onDelete,
 }) => {
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [editorType, setEditorType] = useState<EditorType>('monaco');
-  const [isComposing, setIsComposing] = useState(false);
-  const [editorKey, setEditorKey] = useState(0);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [editorType, setEditorType] = useState<EditorType>("monaco");
+  const [isMarkdownLoading, setIsMarkdownLoading] = useState(false);
+  const isComposingRef = useRef(false);
+  const [editorKey] = useState(0);
   const lastNoteIdRef = useRef<number | null>(null);
-  const latestTitleRef = useRef('');
-  const latestContentRef = useRef('');
+  const latestTitleRef = useRef("");
+  const latestContentRef = useRef("");
   const latestCategoryIdRef = useRef<number | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const isSavingRef = useRef(false);
+  const hasPendingSaveRef = useRef(false);
+  const hasUnsavedChangesRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+  const currentNoteIdRef = useRef<number | null>(null);
   const { showToast } = useToast();
 
   const handleExport = useCallback(async () => {
     if (!note) return;
 
     try {
-      const defaultFileName = title || '笔记';
-      
-      const selectedPath = await save({
-        defaultPath: `${defaultFileName}.txt`,
-        filters: [
-          { name: 'Plain Text', extensions: ['txt'] },
-          { name: 'JavaScript', extensions: ['js'] },
-          { name: 'TypeScript', extensions: ['ts'] },
-          { name: 'Python', extensions: ['py'] },
-          { name: 'Java', extensions: ['java'] },
-          { name: 'C', extensions: ['c'] },
-          { name: 'C++', extensions: ['cpp', 'h'] },
-          { name: 'C#', extensions: ['cs'] },
-          { name: 'Ruby', extensions: ['rb'] },
-          { name: 'PHP', extensions: ['php'] },
-          { name: 'HTML', extensions: ['html', 'htm'] },
-          { name: 'CSS', extensions: ['css'] },
-          { name: 'Markdown', extensions: ['md'] },
-          { name: 'JSON', extensions: ['json'] },
-          { name: 'XML', extensions: ['xml'] },
-          { name: 'YAML', extensions: ['yaml', 'yml'] },
-          { name: 'LaTeX', extensions: ['tex'] },
-          { name: 'Configuration', extensions: ['conf', 'cfg', 'ini'] },
-          { name: 'Shell Script', extensions: ['sh', 'bash'] },
-          { name: 'PowerShell', extensions: ['ps1'] },
-          { name: 'Batch', extensions: ['bat', 'cmd'] },
-          { name: 'SQL', extensions: ['sql'] },
-          { name: 'Rust', extensions: ['rs'] },
-          { name: 'Go', extensions: ['go'] },
-          { name: 'Swift', extensions: ['swift'] },
-          { name: 'Kotlin', extensions: ['kt'] },
-          { name: 'R', extensions: ['r'] },
-          { name: 'Scala', extensions: ['scala'] },
-          { name: 'Visual Basic', extensions: ['vb'] },
-          { name: 'Perl', extensions: ['pl'] },
-          { name: 'Lua', extensions: ['lua'] },
-          { name: 'Dockerfile', extensions: ['dockerfile'] },
-          { name: 'All Files', extensions: ['*'] },
-        ],
+      const defaultFileName = title || "无标题笔记";
+      const filePath = await save({
+        defaultPath: defaultFileName,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
       });
+      if (filePath) {
+        let exportContent = content;
 
-      if (selectedPath) {
-        await writeTextFile(selectedPath, content);
-        showToast('保存成功！', 'success');
+        // 生成前置元数据
+        const metadata = ["---"];
+        if (title) metadata.push(`title: "${title}"`);
+        if (note.created_at)
+          metadata.push(`created: ${note.created_at.split("T")[0]}`);
+        metadata.push("---\n");
+
+        exportContent = metadata.join("\n") + exportContent;
+
+        await writeTextFile(filePath, exportContent);
+        showToast("导出成功！", "success");
       }
     } catch (error) {
-      console.error('导出失败:', error);
-      showToast('导出失败，请重试', 'error');
+      console.error("导出失败:", error);
+      showToast("导出失败，请重试", "error");
     }
   }, [note, title, content, showToast]);
 
+  const handleCopyContent = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      showToast("内容已复制到剪贴板", "success");
+    } catch (err) {
+      console.error("复制失败:", err);
+      showToast("复制失败", "error");
+    }
+  }, [content, showToast]);
+
+  // 切换笔记时重置状态
   useEffect(() => {
     if (note) {
-      // 只要note变化就更新所有状态，包括分类
-      setTitle(note.title);
-      setContent(note.content);
-      setCategoryId(note.category_id);
-      latestTitleRef.current = note.title;
-      latestContentRef.current = note.content;
-      latestCategoryIdRef.current = note.category_id;
-      
-      // 只有当note.id变化时才更新lastNoteIdRef和editorKey
-      if (note.id !== lastNoteIdRef.current) {
-        lastNoteIdRef.current = note.id;
-        setEditorKey(prev => prev + 1);
+      if (lastNoteIdRef.current !== note.id) {
+        currentNoteIdRef.current = note.id;
+        setTitle(note.title);
+        setContent(note.content);
+        
+        latestTitleRef.current = note.title;
+        latestContentRef.current = note.content;
+        latestCategoryIdRef.current = note.category_id;
+        hasUnsavedChangesRef.current = false;
+        hasPendingSaveRef.current = false;
+        if (saveTimerRef.current !== null) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
       }
+      lastNoteIdRef.current = note.id;
     } else {
-      setTitle('');
-      setContent('');
-      setCategoryId(null);
-      latestTitleRef.current = '';
-      latestContentRef.current = '';
+      currentNoteIdRef.current = null;
+      setTitle("");
+      setContent("");
+      
+      latestTitleRef.current = "";
+      latestContentRef.current = "";
       latestCategoryIdRef.current = null;
       lastNoteIdRef.current = null;
     }
   }, [note]);
 
-  // 添加 Ctrl+S 快捷键触发导出
+  // Ctrl+S 快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         handleExport();
       }
     };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleExport]);
 
-  const saveNow = useCallback(() => {
-    if (isComposing || !note) return;
-    onSave(
-      latestTitleRef.current,
-      latestContentRef.current,
-      latestCategoryIdRef.current
-    );
-  }, [isComposing, note, onSave]);
+  const saveNow = useCallback(async () => {
+    const savingNoteId = currentNoteIdRef.current;
+    if (!savingNoteId || !hasUnsavedChangesRef.current) return;
+
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (isComposingRef.current) {
+      hasPendingSaveRef.current = true;
+      return;
+    }
+    if (isSavingRef.current) {
+      hasPendingSaveRef.current = true;
+      return;
+    }
+
+    isSavingRef.current = true;
+    try {
+      do {
+        hasPendingSaveRef.current = false;
+        await onSave(
+          savingNoteId,
+          latestTitleRef.current,
+          latestContentRef.current,
+          latestCategoryIdRef.current
+        );
+        if (!hasPendingSaveRef.current) {
+          hasUnsavedChangesRef.current = false;
+        }
+      } while (hasPendingSaveRef.current && currentNoteIdRef.current === savingNoteId);
+    } finally {
+      isSavingRef.current = false;
+    }
+    if (hasPendingSaveRef.current && currentNoteIdRef.current !== savingNoteId) {
+      void saveNow();
+    }
+  }, [onSave]);
+
+  const scheduleSave = useCallback(() => {
+    hasUnsavedChangesRef.current = true;
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      void saveNow();
+    }, 500);
+  }, [saveNow]);
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTitle = e.target.value;
     setTitle(newTitle);
     latestTitleRef.current = newTitle;
-    if (!isComposing) {
-      saveNow();
-    }
+    if (!isComposingRef.current) scheduleSave();
   };
 
   const handleContentChange = (value: string | undefined) => {
-    const newContent = value || '';
+    const newContent = value || "";
     setContent(newContent);
     latestContentRef.current = newContent;
-    if (!isComposing) {
-      saveNow();
-    }
+    if (!isComposingRef.current) scheduleSave();
   };
 
-  const handleCategoryChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value;
-    const newCategoryId = value ? parseInt(value) : null;
-    setCategoryId(newCategoryId);
-    latestCategoryIdRef.current = newCategoryId;
-    saveNow();
-  };
 
   const handleCompositionStart = () => {
-    setIsComposing(true);
+    isComposingRef.current = true;
   };
-
   const handleCompositionEnd = () => {
-    setIsComposing(false);
-    saveNow();
-  };
-
-  const handleCopyContent = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
-      showToast('内容已复制到剪贴板', 'success');
-    } catch (err) {
-      console.error('复制失败:', err);
-      showToast('复制失败', 'error');
-    }
+    isComposingRef.current = false;
+    scheduleSave();
   };
 
   if (!note) {
@@ -220,19 +289,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={categoryId?.toString() || ''}
-            onChange={handleCategoryChange}
-            className="w-40 px-3 py-1.5 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent shadow-sm text-sm"
-          >
-            <option value="">无分类</option>
-            {categories.map((cat) => (
-              <option key={cat.id} value={cat.id.toString()}>
-                {cat.name}
-              </option>
-            ))}
-          </select>
-
           <div className="flex items-center gap-1 bg-gray-100 rounded px-2 py-1">
             <span className="text-xs text-gray-600">字数:</span>
             <span className="text-xs font-semibold text-gray-800">{content.length}</span>
@@ -259,9 +315,29 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
 
           <button
-            onClick={() => setEditorType(editorType === 'monaco' ? 'markdown' : 'monaco')}
+            onClick={async () => {
+              if (editorType === "monaco") {
+                setIsMarkdownLoading(true);
+                try {
+                  await ensureMarkdownExtensions();
+                  setEditorType("markdown");
+                } catch (error) {
+                  console.error("Failed to load markdown editor extensions:", error);
+                  showToast("Markdown编辑器加载失败", "error");
+                } finally {
+                  setIsMarkdownLoading(false);
+                }
+              } else {
+                setEditorType("monaco");
+              }
+            }}
+            disabled={isMarkdownLoading}
             className="p-1.5 hover:bg-gray-100 rounded transition-colors"
-            title={`切换到${editorType === 'monaco' ? 'MdEditor' : 'MonacoEditor'}`}
+            title={
+              isMarkdownLoading
+                ? "正在加载Markdown编辑器"
+                : `切换到${editorType === "monaco" ? "MdEditor" : "MonacoEditor"}`
+            }
           >
             <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
@@ -271,7 +347,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        {editorType === 'monaco' ? (
+        {editorType === "monaco" ? (
           <div className="editor-container h-full">
             <Editor
               key={editorKey}
@@ -283,17 +359,17 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             />
           </div>
         ) : (
-          <div 
+          <div
             className="editor-container h-full"
             onClick={async (e) => {
               const target = e.target as HTMLElement;
-              const link = target.closest('a');
+              const link = target.closest("a");
               if (link && link.href) {
                 e.preventDefault();
                 try {
                   await openUrl(link.href);
                 } catch (error) {
-                  console.error('Failed to open link:', error);
+                  console.error("Failed to open link:", error);
                 }
               }
             }}
@@ -302,14 +378,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               value={content}
               {...markdownEditorConfig}
               onChange={(value) => {
-                const newContent = value || '';
+                const newContent = value || "";
                 setContent(newContent);
                 latestContentRef.current = newContent;
-                if (!isComposing) {
-                  saveNow();
-                }
+                if (!isComposingRef.current) scheduleSave();
               }}
-              style={{ height: '100%' }}
+              style={{ height: "100%" }}
             />
           </div>
         )}
