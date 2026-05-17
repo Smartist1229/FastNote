@@ -64,9 +64,9 @@ export const NoteList: React.FC<NoteListProps> = ({ notes, onSelectNote, selecte
               onDragStart={(e) => {
                 e.dataTransfer.setData('id', note.id.toString());
               }}
-              className={`p-2.5 rounded-md cursor-pointer transition-all duration-150 shadow-sm hover:shadow border ${
+              className={`note-card p-2.5 rounded-lg cursor-pointer transition-all duration-200 shadow-sm border ${
                 selectedNoteId === note.id
-                  ? 'bg-gray-800 text-white border-gray-800'
+                  ? 'note-card-selected'
                   : 'bg-white hover:bg-gray-50 border-gray-200'
               }`}
             >

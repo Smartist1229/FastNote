@@ -2,37 +2,153 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ========== CSS 变量 ========== */
+:root {
+  --color-bg: #f8f9fa;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-border-light: #f0f0f0;
+  --color-text: #1f2937;
+  --color-text-secondary: #6b7280;
+  --color-text-muted: #9ca3af;
+  --color-accent: #374151;
+  --color-accent-hover: #1f2937;
+  --color-danger: #ef4444;
+  --color-danger-bg: #fef2f2;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.2s ease;
+}
+
+/* ========== 基础样式 ========== */
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--color-bg);
+  color: var(--color-text);
+  overflow: hidden;
 }
 
-/* 强制保留列表样式，覆盖 Tailwind preflight */
-/* 修复md-edit-rt列表序号问题 */
-ol li {
-  list-style-type: decimal !important;
+/* ========== 自定义滚动条 ========== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
-ul li {
-  list-style-type: disc !important;
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
 }
 
-/* 禁止用户误选中控件文本，但保留编辑/复制能力 */
-button,
-select,
-.select-none {
-  user-select: none;
+/* ========== 选中颜色 ========== */
+::selection {
+  background: #dbeafe;
+  color: #1e40af;
 }
 
-input,
-textarea,
-[contenteditable="true"],
-.monaco-editor,
-.md-editor,
-.cm-editor {
-  user-select: text;
+/* ========== 列表样式 ========== */
+ol li { list-style-type: decimal !important; }
+ul li { list-style-type: disc !important; }
+
+/* ========== 用户选择 ========== */
+button, select, .select-none { user-select: none; }
+input, textarea, [contenteditable="true"],
+.monaco-editor, .md-editor, .cm-editor { user-select: text; }
+
+/* ========== 焦点环 ========== */
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none;
+  ring: 2px solid #6b7280;
+  ring-offset: 1px;
+}
+
+/* ========== 全局过滚容器 ========== */
+.overflow-y-auto,
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+  contain: content;
+}
+
+/* ========== 动画 ========== */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-fadeIn { animation: fadeIn var(--transition-base) both; }
+.animate-slideUp { animation: slideUp 0.2s ease both; }
+.animate-scaleIn { animation: scaleIn 0.2s ease both; }
+.animate-pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+
+/* ========== 笔记卡片 ========== */
+.note-card {
+  contain: layout style;
+  will-change: transform;
+}
+.note-card-selected {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+/* ========== 编辑器容器 ========== */
+.editor-container { position: relative; }
+.fixed.inset-0.z-50 { animation: fadeIn 0.15s ease; }
+
+/* ========== Modal 动画 ========== */
+.modal-overlay {
+  animation: fadeIn 0.15s ease both;
+}
+.modal-content {
+  animation: scaleIn 0.2s ease both;
+}
+
+/* ========== 分类列表项交互 ========== */
+.category-item {
+  transition: background var(--transition-fast), color var(--transition-fast);
+  contain: layout style;
+}
+.category-item:hover .category-actions {
+  opacity: 1;
+}
+.category-actions {
+  transition: opacity var(--transition-fast);
 }
