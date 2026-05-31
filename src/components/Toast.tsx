@@ -6,102 +6,64 @@ interface Toast {
   id: number;
   message: string;
   type: ToastType;
-  isVisible: boolean;
 }
 
 interface ToastContextType {
   showToast: (message: string, type?: ToastType) => void;
 }
 
-const ToastContext = createContext<ToastContextType | undefined>(undefined);
+const ToastContext = createContext<ToastContextType>({ showToast: () => {} });
 
-export const ToastProvider: React.FC<{ children: ReactNode }> = ({
-  children,
-}) => {
+export const useToast = () => useContext(ToastContext);
+
+export const ToastProvider = ({ children }: { children: ReactNode }) => {
   const [toasts, setToasts] = useState<Toast[]>([]);
-
-  const removeToast = useCallback((id: number) => {
-    setToasts((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, isVisible: false } : t))
-    );
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 300);
-  }, []);
-
-  const showToast = useCallback(
-    (message: string, type: ToastType = "info") => {
-      const id = Date.now() + Math.random();
-      setToasts((prev) => [...prev, { id, message, type, isVisible: true }]);
+  const showToast = useCallback((message: string, type: ToastType = "info") => {
+    setToasts((prev) => {
+      const id = Date.now();
       setTimeout(() => {
-        removeToast(id);
+        setToasts((p) => p.filter((t) => t.id !== id));
       }, 3000);
-    },
-    [removeToast]
-  );
+      return [...prev, { id, message, type }];
+    });
+  }, []);
 
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
-        {toasts.map((toast) => {
-          const accentMap = {
-            success: "border-emerald-500 bg-emerald-50 text-emerald-800",
-            error: "border-red-500 bg-red-50 text-red-800",
-            info: "border-blue-500 bg-blue-50 text-blue-800",
-          };
-          const iconMap = {
-            success: (
-              <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-              </svg>
-            ),
-            error: (
-              <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            ),
-            info: (
-              <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            ),
-          };
-          return (
-            <div
-              key={toast.id}
-              className={`pointer-events-auto flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg shadow-lg border-l-4 ${
-                accentMap[toast.type]
-              } ${
-                toast.isVisible ? "animate-slideIn" : "animate-slideOut"
-              }`}
-            >
-              <div className="flex-shrink-0">{iconMap[toast.type]}</div>
-              <span className="text-sm font-medium">{toast.message}</span>
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col items-center gap-2 pointer-events-none">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`animate-slideUp pointer-events-auto px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium backdrop-blur-sm border ${
+              toast.type === "success"
+                ? "bg-emerald-50/90 text-emerald-700 border-emerald-200/60"
+                : toast.type === "error"
+                ? "bg-red-50/90 text-red-600 border-red-200/60"
+                : "bg-white/90 text-slate-700 border-slate-200/60"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {toast.type === "success" && (
+                <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+              {toast.type === "error" && (
+                <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+              {toast.type === "info" && (
+                <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              {toast.message}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
-      <style>{`
-        @keyframes slideIn {
-          from { opacity: 0; transform: translateX(100%) scale(0.95); }
-          to { opacity: 1; transform: translateX(0) scale(1); }
-        }
-        @keyframes slideOut {
-          from { opacity: 1; transform: translateX(0) scale(1); }
-          to { opacity: 0; transform: translateX(100%) scale(0.95); }
-        }
-        .animate-slideIn { animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
-        .animate-slideOut { animation: slideOut 0.2s ease-in forwards; }
-      `}</style>
     </ToastContext.Provider>
   );
-};
-
-export const useToast = () => {
-  const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error("useToast must be used within a ToastProvider");
-  }
-  return context;
 };

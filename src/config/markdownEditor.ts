@@ -1,4 +1,4 @@
-import { ToolbarNames, Themes } from 'md-editor-rt';
+import type { ToolbarNames, Themes } from 'md-editor-rt';
 
 export const markdownEditorConfig = {
   toolbarsExclude: ['github','save'] as ToolbarNames[],
@@ -7,4 +7,4 @@ export const markdownEditorConfig = {
   codeTheme: 'atom',
   showCodeRowNumber: true,
   preview: false,
-}
+};

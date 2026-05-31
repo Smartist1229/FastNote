@@ -4,25 +4,35 @@
 
 /* ========== CSS 变量 ========== */
 :root {
-  --color-bg: #f8f9fa;
+  --color-bg: #f8fafc;
   --color-surface: #ffffff;
-  --color-border: #e5e7eb;
-  --color-border-light: #f0f0f0;
-  --color-text: #1f2937;
-  --color-text-secondary: #6b7280;
-  --color-text-muted: #9ca3af;
-  --color-accent: #374151;
-  --color-accent-hover: #1f2937;
+  --color-surface-hover: #f8fafc;
+  --color-border: #e2e8f0;
+  --color-border-light: #f1f5f9;
+  --color-text: #0f172a;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+  --color-accent: #6366f1;
+  --color-accent-light: #eef2ff;
+  --color-accent-hover: #4f46e5;
   --color-danger: #ef4444;
-  --color-danger-bg: #fef2f2;
+  --color-danger-light: #fef2f2;
+  --color-success: #10b981;
+  --color-success-light: #ecfdf5;
+  --color-warning: #f59e0b;
+  --color-warning-light: #fffbeb;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --radius-xl: 16px;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
-  --transition-fast: 0.15s ease;
-  --transition-base: 0.2s ease;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.03);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.04);
+  --shadow-lg: 0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06);
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* ========== 基础样式 ========== */
@@ -33,37 +43,36 @@
 body {
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-    sans-serif;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Segoe UI", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background: var(--color-bg);
   color: var(--color-text);
   overflow: hidden;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 /* ========== 自定义滚动条 ========== */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 3px;
+  background: #cbd5e1;
+  border-radius: 10px;
   transition: background var(--transition-fast);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
+  background: #94a3b8;
 }
 
 /* ========== 选中颜色 ========== */
 ::selection {
-  background: #dbeafe;
-  color: #1e40af;
+  background: #c7d2fe;
+  color: #312e81;
 }
 
 /* ========== 列表样式 ========== */
@@ -80,15 +89,13 @@ input:focus-visible,
 select:focus-visible,
 button:focus-visible {
   outline: none;
-  ring: 2px solid #6b7280;
-  ring-offset: 1px;
+  box-shadow: 0 0 0 2px var(--color-accent-light), 0 0 0 4px var(--color-accent);
 }
 
-/* ========== 全局过滚容器 ========== */
+/* ========== 全局滚动容器 ========== */
 .overflow-y-auto,
 .overflow-x-auto {
   -webkit-overflow-scrolling: touch;
-  contain: content;
 }
 
 /* ========== 动画 ========== */
@@ -104,7 +111,7 @@ button:focus-visible {
   from { opacity: 0; transform: translateX(16px); }
   to { opacity: 1; transform: translateX(0); }
 }
-@keyframes pulse-dot {
+@keyframes pulseDot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
@@ -112,21 +119,34 @@ button:focus-visible {
   from { opacity: 0; transform: scale(0.95) translateY(-4px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
 
 .animate-fadeIn { animation: fadeIn var(--transition-base) both; }
-.animate-slideUp { animation: slideUp 0.2s ease both; }
-.animate-scaleIn { animation: scaleIn 0.2s ease both; }
-.animate-pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+.animate-slideUp { animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-scaleIn { animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-pulse-dot { animation: pulseDot 1.5s ease-in-out infinite; }
 
 /* ========== 笔记卡片 ========== */
 .note-card {
-  contain: layout style;
   will-change: transform;
+  transition: all var(--transition-smooth);
+}
+.note-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
 }
 .note-card-selected {
-  background: var(--color-accent);
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
   color: white;
-  border-color: var(--color-accent);
+  border-color: transparent;
+  box-shadow: 0 4px 16px -2px rgb(99 102 241 / 0.35);
+}
+.note-card-selected:hover {
+  transform: none;
+  box-shadow: 0 4px 16px -2px rgb(99 102 241 / 0.35);
 }
 
 /* ========== 编辑器容器 ========== */
@@ -135,20 +155,148 @@ button:focus-visible {
 
 /* ========== Modal 动画 ========== */
 .modal-overlay {
-  animation: fadeIn 0.15s ease both;
+  animation: fadeIn 0.2s ease both;
 }
 .modal-content {
-  animation: scaleIn 0.2s ease both;
+  animation: scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* ========== 分类列表项交互 ========== */
 .category-item {
-  transition: background var(--transition-fast), color var(--transition-fast);
-  contain: layout style;
+  transition: all var(--transition-fast);
 }
 .category-item:hover .category-actions {
   opacity: 1;
 }
 .category-actions {
   transition: opacity var(--transition-fast);
+}
+
+/* ========== 输入框通用样式 ========== */
+.input-modern {
+  background: var(--color-surface);
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-fast);
+}
+.input-modern:hover {
+  border-color: #cbd5e1;
+}
+.input-modern:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-light);
+  outline: none;
+}
+
+/* ========== 按钮通用样式 ========== */
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-lg);
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  box-shadow: 0 1px 3px rgb(99 102 241 / 0.3);
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  box-shadow: 0 4px 12px rgb(99 102 241 / 0.35);
+  transform: translateY(-1px);
+}
+.btn-primary:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgb(99 102 241 / 0.3);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: none;
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-fast);
+}
+.btn-ghost:hover {
+  background: #f1f5f9;
+  color: var(--color-text);
+}
+
+/* ========== 分隔线 ========== */
+.divider {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* ========== 侧边栏背景 ========== */
+.sidebar-bg {
+  background: linear-gradient(180deg, #fafbff 0%, #f8fafc 100%);
+}
+
+/* ========== 标题输入框 ========== */
+.title-input {
+  background: transparent;
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-fast);
+}
+.title-input:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+.title-input:focus {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 3px var(--color-accent-light);
+  outline: none;
+}
+
+/* ========== 工具栏按钮 ========== */
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  transition: all var(--transition-fast);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.toolbar-btn:hover {
+  background: #f1f5f9;
+  color: var(--color-text-secondary);
+}
+.toolbar-btn:active {
+  background: #e2e8f0;
+}
+
+/* ========== 徽章 ========== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* ========== 统计卡片玻璃效果 ========== */
+.glass-card {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+}
+
+/* ========== 右键菜单 ========== */
+.shadow-elevated {
+  box-shadow: 0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06);
 }
