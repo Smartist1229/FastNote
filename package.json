@@ -12,10 +12,10 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2.6.0",
-    "@tauri-apps/plugin-fs": "^2.4.5",
-    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/api": "~2.11.0",
+    "@tauri-apps/plugin-dialog": "~2.7.1",
+    "@tauri-apps/plugin-fs": "~2.5.1",
+    "@tauri-apps/plugin-opener": "~2.5.4",
     "cropperjs": "^1.6.2",
     "date-fns": "^4.1.0",
     "echarts": "^6.0.0",
@@ -30,9 +30,9 @@
     "screenfull": "^6.0.2"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
+    "@tauri-apps/cli": "~2.11.2",
+    "@types/react": "19.2.15",
+    "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^4.6.0",
     "autoprefixer": "^10.4.24",
     "postcss": "^8.5.6",
@@ -46,6 +46,6 @@
     "dompurify": "^3.4.0",
     "uuid": "^11.1.1",
     "postcss": "^8.5.10",
-    "picomatch": ">=4.0.4" 
+    "picomatch": ">=4.0.4"
   }
 }
