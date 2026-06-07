@@ -45,3 +45,4 @@ src-tauri/gen/schemas/
 pnpm-lock.yaml
 .codegraph
 .vscode
+.kunsdd
