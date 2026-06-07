@@ -97,12 +97,14 @@ interface NoteEditorProps {
   note: Note | null;
   onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
   onDelete: () => void;
+  onCursorOffsetChange?: (offset: number) => void;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
   onSave,
   onDelete,
+  onCursorOffsetChange,
 }) => {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -122,6 +124,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const saveTimerRef = useRef<number | null>(null);
   const currentNoteIdRef = useRef<number | null>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const monacoEditorRef = useRef<any>(null);
+  const cursorDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const { showToast } = useToast();
 
@@ -191,6 +195,26 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       lastNoteIdRef.current = null;
     }
   }, [note]);
+
+  useEffect(() => {
+    if (!note || lastNoteIdRef.current !== note.id || hasUnsavedChangesRef.current) return;
+    if (note.title !== latestTitleRef.current) {
+      setTitle(note.title);
+      latestTitleRef.current = note.title;
+    }
+    if (note.content !== latestContentRef.current) {
+      setContent(note.content);
+      latestContentRef.current = note.content;
+      onCursorOffsetChange?.(note.content.length);
+    }
+  }, [note?.title, note?.content, note?.id, onCursorOffsetChange]);
+
+  useEffect(() => {
+    return () => {
+      cursorDisposableRef.current?.dispose();
+      cursorDisposableRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -436,6 +460,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               defaultLanguage="markdown"
               value={content}
               onChange={handleContentChange}
+              onMount={(editor) => {
+                monacoEditorRef.current = editor;
+                cursorDisposableRef.current?.dispose();
+                const updateCursorOffset = () => {
+                  const model = editor.getModel();
+                  const position = editor.getPosition();
+                  if (!model || !position) return;
+                  onCursorOffsetChange?.(model.getOffsetAt(position));
+                };
+                updateCursorOffset();
+                cursorDisposableRef.current = editor.onDidChangeCursorPosition(updateCursorOffset);
+              }}
               options={monacoEditorConfig as any}
             />
           </div>
