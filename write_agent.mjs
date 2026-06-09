@@ -1,0 +1,1 @@
+[cache hygiene: omitted completed write.content argument, 20.9KB, approx 5410 token(s), 779 line(s); see following tool result] preview="import * as fs from 'fs'; const p = 'src/components/AIChatPanel.tsx'; const lines = []; lines.push('import { useEffect, useMemo, useRef, useState, useCallback } from \"react\";'); lines.push(''}import * as api from \"../api\";'); // etc"

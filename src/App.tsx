@@ -43,6 +43,7 @@ function AppContent() {
   const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
   const { showToast } = useToast();
   const selectedNoteRef = useRef<Note | null>(selectedNote);
+  const notesRef = useRef<Note[]>(notes);
 
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
@@ -69,6 +70,8 @@ function AppContent() {
         const updatedNote = notesList.find((note) => note.id === currentSelectedNote.id);
         if (updatedNote) {
           setSelectedNote({ ...updatedNote });
+        } else {
+          setSelectedNote(null);
         }
       }
     } catch (error) {
@@ -76,8 +79,29 @@ function AppContent() {
     }
   }, [selectedCategoryId, sortBy, sortOrder]);
 
+  useEffect(() => {
+    const handler = () => loadData();
+    window.addEventListener("fastnote-data-changed", handler);
+    return () => window.removeEventListener("fastnote-data-changed", handler);
+  }, [loadData]);
+
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => { selectedNoteRef.current = selectedNote; }, [selectedNote]);
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+
+  // AI selectNote 工具：切换当前打开的笔记
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { noteId } = (e as CustomEvent).detail;
+      const note = notesRef.current.find((n) => n.id === noteId);
+      if (note) {
+        setSelectedNote(note);
+        setIsNewNote(false);
+      }
+    };
+    window.addEventListener("fastnote-select-note", handler);
+    return () => window.removeEventListener("fastnote-select-note", handler);
+  }, []);
 
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -87,6 +111,7 @@ function AppContent() {
       setNotes((prev) => [...prev, note]);
       setSelectedNote(note);
       setIsNewNote(true);
+      window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
     } catch (error) {
       console.error("Failed to create note:", error);
     }
@@ -289,8 +314,10 @@ function AppContent() {
       if (selectedCategoryId === deletingCategory.id) { setSelectedCategoryId(null); }
       await loadData();
       setShowDeleteCategoryModal(false);
+      showToast("删除成功", "success");
     } catch (error) {
       console.error("Failed to delete category:", error);
+      showToast("删除失败: " + error, "error");
     }
   };
 
@@ -601,6 +628,7 @@ function AppContent() {
         selectedProviderId={providerModalSelectedId}
         onProvidersChange={(list) => {
           setProviderModalProviders(list);
+          window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
         }}
         onSelectedProviderChange={setProviderModalSelectedId}
       />

@@ -9,6 +9,18 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useToast } from "./Toast";
 
+import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
+
+self.MonacoEnvironment = {
+  getWorker(_, label) {
+    if (label === "typescript" || label === "javascript") return new tsWorker();
+    if (label === "json") return new jsonWorker();
+    return new editorWorker();
+  },
+};
+
 loader.config({ monaco });
 
 type EditorType = "monaco" | "markdown";

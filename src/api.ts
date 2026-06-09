@@ -100,13 +100,21 @@ export const sendAiChatStream = async (
     onChunk(event.payload.content);
   });
 
-  const resultPromise = new Promise<string>((resolve, reject) => {
-    once<{ content: string }>('ai-chat-done', (event) => {
-      resolve(event.payload.content);
-    });
-    once<{ error: string }>('ai-chat-error', (event) => {
-      reject(new Error(event.payload.error));
-    });
+  // 先把 resolve/reject 提升到外部，然后 await once 确保注册完成后再 invoke
+  let resolve: (value: string) => void;
+  let reject: (reason: unknown) => void;
+  const resultPromise = new Promise<string>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  // 必须 await once 注册，否则生产环境下 Rust 端的 ai-chat-done 事件
+  // 可能在监听器注册完成前到达，导致 Promise 永远不 resolve
+  const unlistenDone = await once<{ content: string }>('ai-chat-done', (event) => {
+    resolve(event.payload.content);
+  });
+  const unlistenError = await once<{ error: string }>('ai-chat-error', (event) => {
+    reject(new Error(event.payload.error));
   });
 
   try {
@@ -115,6 +123,8 @@ export const sendAiChatStream = async (
     return result;
   } finally {
     unlistenChunk();
+    unlistenDone();
+    unlistenError();
   }
 };
 

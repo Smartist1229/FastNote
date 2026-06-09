@@ -127,12 +127,14 @@ export const AiProviderModal: React.FC<AiProviderModalProps> = ({
         const updated = [saved, ...providers];
         onProvidersChange(updated);
         onSelectedProviderChange(saved.id);
+        closeForm();
         showToast("AI 配置已保存", "success");
       } else {
         await api.updateAiProvider(draftProvider);
         saved = draftProvider;
         const updated = providers.map((p) => (p.id === draftProvider.id ? draftProvider : p));
         onProvidersChange(updated);
+        closeForm();
         showToast("AI 配置已更新", "success");
       }
 
@@ -211,6 +213,8 @@ export const AiProviderModal: React.FC<AiProviderModalProps> = ({
   const handleSelectProvider = (id: number) => {
     onSelectedProviderChange(id);
     setShowForm(false);
+    // 通知 AIChatPanel 更新当前选中的服务商并加载模型
+    window.dispatchEvent(new CustomEvent('fastnote-provider-selected', { detail: { providerId: id } }));
   };
 
   const activeProvider = providers.find((p) => p.id === selectedProviderId);

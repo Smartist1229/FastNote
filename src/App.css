@@ -76,8 +76,12 @@ body {
 }
 
 /* ========== 列表样式 ========== */
-ol li { list-style-type: decimal !important; }
-ul li { list-style-type: disc !important; }
+ol li:not(.task-list-item) { list-style-type: decimal !important; }
+ul li:not(.task-list-item) { list-style-type: disc !important; }
+/* md-editor-rt 的任务列表项不应显示项目符号 */
+li.task-list-item { list-style: none !important; list-style-type: none !important; }
+/* 让复选框和文字垂直对齐 */
+li.task-list-item input[type="checkbox"] { vertical-align: middle; margin-right: 4px; }
 
 /* ========== 用户选择 ========== */
 button, select, .select-none { user-select: none; }

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 interface ModalProps {
   isOpen: boolean;
@@ -24,10 +24,18 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }
     };
   }, [isOpen, onClose]);
 
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const mouseDownOnOverlay = useRef(false);
+
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div
+      className="modal-overlay fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      ref={overlayRef}
+      onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === overlayRef.current; }}
+      onMouseUp={() => { if (mouseDownOnOverlay.current) { mouseDownOnOverlay.current = false; onClose(); } }}
+    >
       <div className="modal-content bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h3 className="text-base font-semibold text-slate-800">{title}</h3>

@@ -281,9 +281,10 @@ fn delete_category(id: i64, delete_notes: bool, state: State<AppState>) -> Resul
     let conn = state.conn.lock().unwrap();
     
     if delete_notes {
+        let now = Local::now().to_rfc3339();
         conn.execute(
-            "DELETE FROM notes WHERE category_id = ?1",
-            params![id],
+            "UPDATE notes SET is_deleted = 1, deleted_at = ?1, category_id = NULL WHERE category_id = ?2",
+            params![now, id],
         ).map_err(|e| e.to_string())?;
     } else {
         conn.execute(
