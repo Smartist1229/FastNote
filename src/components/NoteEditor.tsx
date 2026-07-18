@@ -147,7 +147,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       const defaultFileName = title || "无标题笔记";
       const filePath = await save({
         defaultPath: defaultFileName,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
+        filters: [
+          { name: "Markdown", extensions: ["md", "mdx"] },
+          { name: "Plain Text", extensions: ["txt", "text"] },
+          { name: "JSON", extensions: ["json", "jsonc"] },
+          { name: "HTML", extensions: ["html", "htm", "xhtml"] },
+          { name: "Source Code", extensions: ["js", "ts", "jsx", "tsx", "py", "java", "c", "cpp", "h", "css", "scss", "less"] },
+          { name: "Config File", extensions: ["ini", "yaml", "yml", "toml", "env"] },
+          { name: "Table Text", extensions: ["csv", "tsv"] },
+          { name: "XML", extensions: ["xml", "svg"] },
+          { name: "Log File", extensions: ["log"] },
+          { name: "All Files", extensions: ["*"] }
+        ],
       });
       if (filePath) {
         let exportContent = content;
