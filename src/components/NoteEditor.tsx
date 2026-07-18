@@ -148,8 +148,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       const filePath = await save({
         defaultPath: defaultFileName,
         filters: [
-          { name: "Markdown", extensions: ["md", "mdx"] },
           { name: "Plain Text", extensions: ["txt", "text"] },
+          { name: "Markdown", extensions: ["md", "mdx"] },
           { name: "JSON", extensions: ["json", "jsonc"] },
           { name: "HTML", extensions: ["html", "htm", "xhtml"] },
           { name: "Source Code", extensions: ["js", "ts", "jsx", "tsx", "py", "java", "c", "cpp", "h", "css", "scss", "less"] },
