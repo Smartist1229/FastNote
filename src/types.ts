@@ -25,7 +25,10 @@ export interface AiProvider {
   api_base_url: string;
   api_key: string;
   api_path: string | null;
+  /** 当前对话使用的模型 */
   enabled_model: string | null;
+  /** 设置中勾选的可用模型列表 */
+  enabled_models?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +36,8 @@ export interface AiProvider {
 export interface AiChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
+  /** 模型原生思维链（如 DeepSeek 的 reasoning_content），回传给后端以保持上下文 */
+  reasoning?: string;
 }
 
 export interface AiChatSession {

@@ -35,6 +35,13 @@ module.exports = {
         'elevated': '0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06)',
         'glow': '0 0 20px -4px rgb(99 102 241 / 0.15)',
       },
+      transitionTimingFunction: {
+        // iOS 风格"快起慢收"：末段几乎无加速度
+        soft: 'cubic-bezier(0.32, 0.72, 0, 1)',
+        fluid: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        // 带轻微过冲的弹簧，用于图标旋转等小元素
+        spring: 'cubic-bezier(0.34, 1.35, 0.5, 1)',
+      },
       borderRadius: {
         'xl': '0.875rem',
         '2xl': '1rem',

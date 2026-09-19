@@ -8,6 +8,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useToast } from "./Toast";
+import { AiSparkleIcon } from "./icons";
 
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
@@ -110,6 +111,9 @@ interface NoteEditorProps {
   onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
   onDelete: () => void;
   onCursorOffsetChange?: (offset: number) => void;
+  /** 打开/关闭 AI 对话面板 */
+  onToggleAiPanel?: () => void;
+  isAiPanelOpen?: boolean;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
@@ -117,12 +121,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onSave,
   onDelete,
   onCursorOffsetChange,
+  onToggleAiPanel,
+  isAiPanelOpen = false,
 }) => {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [editorType, setEditorType] = useState<EditorType>("monaco");
   const [isMarkdownLoading, setIsMarkdownLoading] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const isComposingRef = useRef(false);
   const [editorKey] = useState(0);
   const lastNoteIdRef = useRef<number | null>(null);
@@ -185,10 +190,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       showToast("复制失败", "error");
     }
   }, [content, showToast]);
-
-  const toggleFullscreen = useCallback(() => {
-    setIsFullscreen((prev) => !prev);
-  }, []);
 
   useEffect(() => {
     if (note) {
@@ -342,7 +343,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }
 
   return (
-    <div className={`h-full flex flex-col ${isFullscreen ? "fixed inset-0 z-50 bg-white" : ""}`}>
+    <div className="h-full flex flex-col">
       {/* 标题栏 */}
       <div className="px-4 py-3 border-b border-slate-100 flex-shrink-0">
         <div className="flex items-center gap-2">
@@ -390,20 +391,20 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
           <div className="divider" />
 
-          {/* 全屏 */}
-          <button
-            onClick={toggleFullscreen}
-            className="toolbar-btn"
-            title={isFullscreen ? "退出全屏" : "全屏编辑"}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              {isFullscreen ? (
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              ) : (
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+          {/* AI 对话 */}
+          {onToggleAiPanel && (
+            <button
+              onClick={onToggleAiPanel}
+              className={`toolbar-btn relative ${isAiPanelOpen ? "!bg-primary-50 !text-primary-500" : ""}`}
+              title={isAiPanelOpen ? "关闭 AI 对话" : "打开 AI 对话"}
+              aria-pressed={isAiPanelOpen}
+            >
+              <AiSparkleIcon className="w-3.5 h-3.5" />
+              {isAiPanelOpen && (
+                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary-500" />
               )}
-            </svg>
-          </button>
+            </button>
+          )}
 
           <div className="divider" />
 

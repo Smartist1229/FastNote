@@ -1,4 +1,5 @@
 import { Note } from "../types";
+import { AiSparkleIcon } from "./icons";
 
 interface WelcomeDashboardProps {
   totalNotes: number;
@@ -8,6 +9,9 @@ interface WelcomeDashboardProps {
   onCreateNote: () => void;
   onOpenTrash: () => void;
   onSelectNote: (note: Note) => void;
+  /** 未打开笔记时也能进入 AI 对话 */
+  onToggleAiPanel?: () => void;
+  isAiPanelOpen?: boolean;
 }
 
 export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
@@ -18,6 +22,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   onCreateNote,
   onOpenTrash,
   onSelectNote,
+  onToggleAiPanel,
+  isAiPanelOpen = false,
 }) => {
   const formatDate = (s: string) => {
     try {
@@ -113,6 +119,21 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
             </svg>
             回收站
           </button>
+          {onToggleAiPanel && (
+            <button
+              onClick={onToggleAiPanel}
+              className={`px-5 py-2.5 text-sm font-medium flex items-center gap-2 rounded-xl border transition-all ${
+                isAiPanelOpen
+                  ? 'border-primary-200 bg-primary-50 text-primary-600'
+                  : 'border-slate-200 text-slate-600 hover:border-primary-300 hover:text-primary-600 hover:bg-primary-50/50'
+              }`}
+              title={isAiPanelOpen ? '关闭 AI 对话' : '打开 AI 对话'}
+              aria-pressed={isAiPanelOpen}
+            >
+              <AiSparkleIcon className="w-4 h-4" />
+              AI 助手
+            </button>
+          )}
         </div>
       </div>
 

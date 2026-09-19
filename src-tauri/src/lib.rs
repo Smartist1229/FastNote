@@ -34,7 +34,11 @@ pub struct AiProvider {
     pub api_base_url: String,
     pub api_key: String,
     pub api_path: Option<String>,
+    /// 当前对话使用的模型（聊天面板下拉的当前值）
     pub enabled_model: Option<String>,
+    /// 设置里勾选的可用模型列表（JSON 数组，存 TEXT）
+    #[serde(default)]
+    pub enabled_models: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -43,6 +47,9 @@ pub struct AiProvider {
 pub struct AiChatMessage {
     pub role: String,
     pub content: String,
+    /// 模型原生思维链（如 DeepSeek reasoning_content），随消息一起回传以保持上下文
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -66,6 +73,44 @@ pub struct AiChatDbMessage {
 
 struct AppState {
     conn: Mutex<Connection>,
+}
+
+/// 判断某张表是否已有指定列（用于幂等迁移）
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let sql = format!("PRAGMA table_info({})", table);
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(stmt) => stmt,
+        Err(_) => return false,
+    };
+    let rows = match stmt.query_map([], |row| row.get::<_, String>(1)) {
+        Ok(rows) => rows,
+        Err(_) => return false,
+    };
+    for name in rows.flatten() {
+        if name == column {
+            return true;
+        }
+    }
+    false
+}
+
+/// 解析数据库中的模型列表（JSON 数组 TEXT）
+fn parse_models_json(raw: Option<String>) -> Vec<String> {
+    let text = raw.unwrap_or_default();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    serde_json::from_str::<Vec<String>>(trimmed)
+        .map(|models| {
+            let mut seen = std::collections::HashSet::new();
+            models
+                .into_iter()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty() && seen.insert(m.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn init_database(conn: &Connection) -> rusqlite::Result<()> {
@@ -132,10 +177,48 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    // ---- 迁移：多选模型列表 ----
+    // 老库只有 enabled_model（单选），这里补上 enabled_models（JSON 数组）并把旧值回填进去
+    if !has_column(conn, "ai_providers", "enabled_models") {
+        conn.execute("ALTER TABLE ai_providers ADD COLUMN enabled_models TEXT", [])?;
+    }
+    let legacy: Vec<(i64, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, enabled_model FROM ai_providers
+             WHERE (enabled_models IS NULL OR TRIM(enabled_models) = '')
+               AND enabled_model IS NOT NULL AND TRIM(enabled_model) <> ''",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.flatten().collect()
+    };
+    for (id, model) in legacy {
+        if let Some(model) = model {
+            let json = serde_json::to_string(&vec![model]).unwrap_or_else(|_| "[]".to_string());
+            conn.execute(
+                "UPDATE ai_providers SET enabled_models = ?1 WHERE id = ?2",
+                params![json, id],
+            )?;
+        }
+    }
+
     Ok(())
 }
 
 fn map_row_to_ai_provider(row: &rusqlite::Row) -> Result<AiProvider, rusqlite::Error> {
+    let enabled_model: Option<String> = row.get(6)?;
+    // 按"列名"取多选列表：不依赖列位置，SELECT 里没有这列时也不会报
+    // "Invalid column index"（这正是"库里有数据但界面读不到"的原因）。
+    let raw_models: Option<String> = match row.as_ref().column_index("enabled_models") {
+        Ok(idx) => row.get(idx)?,
+        Err(_) => None,
+    };
+    let mut enabled_models = parse_models_json(raw_models);
+    // 兼容：旧数据没有列表时，把单选模型当作列表唯一项
+    if enabled_models.is_empty() {
+        if let Some(single) = enabled_model.clone().filter(|m| !m.trim().is_empty()) {
+            enabled_models.push(single);
+        }
+    }
     Ok(AiProvider {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -143,7 +226,8 @@ fn map_row_to_ai_provider(row: &rusqlite::Row) -> Result<AiProvider, rusqlite::E
         api_base_url: row.get(3)?,
         api_key: row.get(4)?,
         api_path: row.get(5)?,
-        enabled_model: row.get(6)?,
+        enabled_model,
+        enabled_models,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
     })
@@ -208,11 +292,60 @@ fn extract_text(value: &Value, paths: &[&[&str]]) -> Option<String> {
 }
 
 fn selected_model(provider: &AiProvider) -> Result<String, String> {
+    // 优先用当前选中的模型；为空（例如刚勾选完还没在对话里选）时回退到列表第一项
     provider
         .enabled_model
         .clone()
         .filter(|model| !model.trim().is_empty())
-        .ok_or_else(|| "请先选择启用模型".to_string())
+        .or_else(|| provider.enabled_models.first().cloned())
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| "请先在设置中勾选可用模型".to_string())
+}
+
+/// 强制深度思考的系统提示词（始终生效，独立于前端提示词）
+const DEEP_THINKING_PROMPT: &str = r#"## 深度思考要求（最高优先级，不可跳过）
+在给出任何回答或调用任何工具之前，你必须在 <thinking> 与 </thinking> 之间完成一次完整、深入的推理。这不是可选项。
+
+思考时必须覆盖：
+1. 用户真正想要的结果是什么（识别隐含意图、指代的笔记或分组）。
+2. 现有信息是否足够？缺少哪些信息？
+3. 是否需要调用工具？如果需要，应该调用哪个工具、按什么顺序调用、参数从哪里来。
+4. 涉及删除、覆盖、重命名等破坏性操作时，先确认目标对象是否真的是用户所指的那一个。
+5. 执行结果是否符合预期，是否需要下一步操作。
+
+硬性规则：
+- 每次回复都必须包含 <thinking>...</thinking>，且内容必须是真实的推理过程（建议 80 字以上），不能是空标签、不能只写一句话敷衍。
+- 只思考而不输出 <tool_calls> 不会触发任何工具，思考与调用必须同时输出。
+- 严禁在 <thinking> 之外输出工具调用；严禁编造笔记 ID、分组 ID 或执行结果。
+- 工具结果返回后，必须再次进入 <thinking> 分析结果，再决定继续调用工具还是给出最终答复。"#;
+
+/// 判断该模型是否可能拒绝 OpenAI 的 reasoning_effort 参数（DeepSeek 推理模型自带思考）
+fn is_deepseek_reasoner(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("deepseek-reasoner") || m.contains("deepseek-r1")
+}
+
+/// 判断模型是否支持 OpenAI 的 reasoning_effort 参数
+fn supports_reasoning_effort(model: &str) -> bool {
+    if is_deepseek_reasoner(model) {
+        return false;
+    }
+    let m = model.to_lowercase();
+    m.starts_with("o1")
+        || m.starts_with("o3")
+        || m.starts_with("o4")
+        || m.contains("gpt-5")
+        || m.contains("thinking")
+        || m.contains("reason")
+}
+
+/// 判断 Claude 模型是否支持扩展思考（extended thinking）
+fn supports_extended_thinking(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("3-7")
+        || m.contains("sonnet-4")
+        || m.contains("opus-4")
+        || m.contains("thinking")
 }
 
 #[tauri::command]
@@ -491,16 +624,39 @@ fn create_ai_provider(
     api_base_url: String,
     api_key: String,
     api_path: Option<String>,
+    // 新建时可以一并提交已勾选的模型，避免"先保存才能选模型"导致的选择丢失
+    enabled_models: Option<Vec<String>>,
     state: State<AppState>,
 ) -> Result<AiProvider, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     let clean_api_path = api_path.filter(|path| !path.trim().is_empty());
 
+    let mut seen = std::collections::HashSet::new();
+    let clean_models: Vec<String> = enabled_models
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty() && seen.insert(m.clone()))
+        .collect();
+    let models_json = serde_json::to_string(&clean_models).unwrap_or_else(|_| "[]".to_string());
+    // 当前使用模型默认取列表第一项，保证保存后就能直接对话
+    let enabled_model = clean_models.first().cloned();
+
     conn.execute(
-        "INSERT INTO ai_providers (name, provider_type, api_base_url, api_key, api_path, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![name, provider_type, api_base_url, api_key, clean_api_path, now, now],
+        "INSERT INTO ai_providers (name, provider_type, api_base_url, api_key, api_path, enabled_model, enabled_models, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            name,
+            provider_type,
+            api_base_url,
+            api_key,
+            clean_api_path,
+            enabled_model,
+            models_json,
+            now,
+            now
+        ],
     ).map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();
@@ -512,7 +668,8 @@ fn create_ai_provider(
         api_base_url,
         api_key,
         api_path: clean_api_path,
-        enabled_model: None,
+        enabled_model,
+        enabled_models: clean_models,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -522,7 +679,8 @@ fn create_ai_provider(
 fn get_ai_providers(state: State<AppState>) -> Result<Vec<AiProvider>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn.prepare(
-        "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model, created_at, updated_at
+        "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
+                created_at, updated_at, enabled_models
          FROM ai_providers
          ORDER BY updated_at DESC",
     ).map_err(|e| e.to_string())?;
@@ -541,11 +699,21 @@ fn update_ai_provider(provider: AiProvider, state: State<AppState>) -> Result<()
     let now = Local::now().to_rfc3339();
     let clean_api_path = provider.api_path.filter(|path| !path.trim().is_empty());
     let clean_enabled_model = provider.enabled_model.filter(|model| !model.trim().is_empty());
+    // 去重并清理空白项后序列化为 JSON 数组
+    let mut seen = std::collections::HashSet::new();
+    let clean_models: Vec<String> = provider
+        .enabled_models
+        .iter()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty() && seen.insert(m.clone()))
+        .collect();
+    let models_json = serde_json::to_string(&clean_models).unwrap_or_else(|_| "[]".to_string());
 
     conn.execute(
         "UPDATE ai_providers
-         SET name = ?1, provider_type = ?2, api_base_url = ?3, api_key = ?4, api_path = ?5, enabled_model = ?6, updated_at = ?7
-         WHERE id = ?8",
+         SET name = ?1, provider_type = ?2, api_base_url = ?3, api_key = ?4, api_path = ?5,
+             enabled_model = ?6, updated_at = ?7, enabled_models = ?8
+         WHERE id = ?9",
         params![
             provider.name,
             provider.provider_type,
@@ -554,6 +722,7 @@ fn update_ai_provider(provider: AiProvider, state: State<AppState>) -> Result<()
             clean_api_path,
             clean_enabled_model,
             now,
+            models_json,
             provider.id
         ],
     ).map_err(|e| e.to_string())?;
@@ -572,7 +741,8 @@ fn delete_ai_provider(id: i64, state: State<AppState>) -> Result<(), String> {
 fn get_ai_provider(id: i64, state: &State<AppState>) -> Result<AiProvider, String> {
     let conn = state.conn.lock().unwrap();
     conn.query_row(
-        "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model, created_at, updated_at
+        "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
+                created_at, updated_at, enabled_models
          FROM ai_providers WHERE id = ?1",
         params![id],
         map_row_to_ai_provider,
@@ -664,10 +834,11 @@ async fn send_ai_chat(
     let provider = get_ai_provider(provider_id, &state)?;
     let model = selected_model(&provider)?;
     let client = reqwest::Client::new();
-    let system_prompt = format!(
+    let base_prompt = format!(
         "你是 FastNote 内置的笔记助手。当前笔记标题：{}。\n你可以帮助用户润色、续写、总结、改写或生成可插入笔记的内容。需要修改笔记时，直接给出可使用的正文，不要编造不存在的信息。\n当前笔记内容：\n{}",
         note_title, note_content
     );
+    let system_prompt = format!("{}\n\n{}", DEEP_THINKING_PROMPT, base_prompt);
 
     let response = match provider.provider_type.as_str() {
         "openai" => {
@@ -760,53 +931,95 @@ async fn send_ai_chat(
     text.ok_or_else(|| "没有从 AI 响应中解析到文本内容".to_string())
 }
 
-fn parse_sse_chunk(chunk: &str) -> Option<String> {
-    for line in chunk.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            if data.trim() == "[DONE]" {
-                return None;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(data) {
-                // OpenAI format
-                if let Some(choices) = value.get("choices").and_then(|c| c.as_array()) {
-                    if let Some(delta) = choices.first().and_then(|c| c.get("delta")) {
-                        if let Some(text) = delta.get("content") {
-                            let t = text.as_str().unwrap_or_default().to_string();
-                            if !t.is_empty() {
-                                return Some(t);
+/// Google Gemini：将思考配置合并进 generationConfig
+fn google_thinking_config(include_thoughts: bool) -> Value {
+    json!({
+        "thinkingConfig": {
+            "includeThoughts": include_thoughts,
+            "thinkingBudget": 8192
+        }
+    })
+}
+
+/// 统一的 SSE 解析：返回 (正文, 推理内容)
+/// 兼容 OpenAI(delta.content / delta.reasoning_content / delta.reasoning)、
+/// Google(parts[].text / parts[].thought)、Claude(content_block_delta) 三种格式。
+fn parse_sse_event(event: &str) -> (Option<String>, Option<String>) {
+    let mut text: Option<String> = None;
+    let mut reasoning: Option<String> = None;
+    for line in event.lines() {
+        let data = match line.strip_prefix("data: ") {
+            Some(data) => data,
+            None => continue,
+        };
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(data) {
+            // ---------- OpenAI 兼容格式 ----------
+            if let Some(choices) = value.get("choices").and_then(|c| c.as_array()) {
+                if let Some(delta) = choices.first().and_then(|c| c.get("delta")) {
+                    // DeepSeek 等推理模型的思维链
+                    for key in ["reasoning_content", "reasoning"] {
+                        if let Some(r) = delta.get(key).and_then(|v| v.as_str()) {
+                            if !r.is_empty() {
+                                let slot = reasoning.get_or_insert_with(String::new);
+                                slot.push_str(r);
                             }
                         }
                     }
-                }
-                // Google format
-                if let Some(candidates) = value.get("candidates").and_then(|c| c.as_array()) {
-                    if let Some(part) = candidates
-                        .first()
-                        .and_then(|c| c.get("content"))
-                        .and_then(|c| c.get("parts"))
-                        .and_then(|p| p.as_array())
-                        .and_then(|p| p.first())
-                        .and_then(|p| p.get("text"))
-                    {
-                        let t = part.as_str().unwrap_or_default().to_string();
-                        if !t.is_empty() {
-                            return Some(t);
+                    if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
+                        if !c.is_empty() {
+                            let slot = text.get_or_insert_with(String::new);
+                            slot.push_str(c);
                         }
                     }
                 }
-                // Claude format (delta text)
-                if let Some(delta) = value.get("delta") {
-                    if let Some(text) = delta.get("text") {
-                        let t = text.as_str().unwrap_or_default().to_string();
-                        if !t.is_empty() {
-                            return Some(t);
+            }
+            // ---------- Google Gemini 格式 ----------
+            if let Some(parts) = value
+                .get("candidates")
+                .and_then(|c| c.as_array())
+                .and_then(|c| c.first())
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.as_array())
+            {
+                for part in parts {
+                    let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                    if let Some(part_text) = part.get("text").and_then(|t| t.as_str()) {
+                        if part_text.is_empty() {
+                            continue;
                         }
+                        if is_thought {
+                            let slot = reasoning.get_or_insert_with(String::new);
+                            slot.push_str(part_text);
+                        } else {
+                            let slot = text.get_or_insert_with(String::new);
+                            slot.push_str(part_text);
+                        }
+                    }
+                }
+            }
+            // ---------- Claude 格式 ----------
+            if let Some(delta) = value.get("delta") {
+                // 扩展思考：content_block_delta + thinking_delta
+                if let Some(t) = delta.get("thinking").and_then(|v| v.as_str()) {
+                    if !t.is_empty() {
+                        let slot = reasoning.get_or_insert_with(String::new);
+                        slot.push_str(t);
+                    }
+                }
+                if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
+                    if !t.is_empty() {
+                        let slot = text.get_or_insert_with(String::new);
+                        slot.push_str(t);
                     }
                 }
             }
         }
     }
-    None
+    (text, reasoning)
 }
 
 #[tauri::command]
@@ -816,32 +1029,60 @@ async fn send_ai_chat_stream(
     messages: Vec<AiChatMessage>,
     note_title: String,
     note_content: String,
+    min_thinking_len: Option<usize>,
+    current_note_id: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let provider = get_ai_provider(provider_id, &state)?;
     let model = selected_model(&provider)?;
     let client = reqwest::Client::new();
-    let system_prompt = format!(
-        "你是 FastNote 内置的笔记助手。当前笔记标题：{}。\n你可以帮助用户润色、续写、总结、改写或生成可插入笔记的内容。需要修改笔记时，直接给出可使用的正文，不要编造不存在的信息。\n当前笔记内容：\n{}",
-        note_title, note_content
+    // 单独给出当前笔记 ID：同名笔记无法靠标题区分，只有 ID 唯一
+    let note_id_line = match current_note_id {
+        Some(id) if id > 0 => format!(
+            "- 当前打开笔记 ID：{}（用户说\"这篇笔记/当前笔记/它\"时指的就是这个 ID）",
+            id
+        ),
+        _ => "- 当前没有打开任何笔记（用户指代\"这篇笔记\"时，应先请他指明是哪一篇）".to_string(),
+    };
+    let base_prompt = format!(
+        "你是 FastNote 内置的笔记助手。\n\n## 当前上下文\n{}\n- 当前笔记标题：{}\n\n你可以帮助用户润色、续写、总结、改写或生成可插入笔记的内容。需要修改笔记时，直接给出可使用的正文，不要编造不存在的信息。\n\n当前笔记内容：\n{}",
+        note_id_line, note_title, note_content
     );
+    // 深度思考提示词始终注入，保证模型看到它的优先级高于其它提示词
+    let system_prompt = format!("{}\n\n{}", DEEP_THINKING_PROMPT, base_prompt);
+    // 要求模型先思考再回答；min_thinking_len 由前端传入（默认 80 字）
+    let min_thinking = min_thinking_len.unwrap_or(80);
+    let thinking_reminder = if min_thinking > 0 {
+        format!(
+            "\n\n## 本次回复的强制检查\n- 你的 <thinking> 内容不得少于 {} 个字符，且必须包含对用户意图与下一步操作的分析。\n- 若思考后确认需要工具，必须同时输出 <tool_calls>，否则视为无效回复。",
+            min_thinking
+        )
+    } else {
+        String::new()
+    };
 
     let response = match provider.provider_type.as_str() {
         "openai" => {
             let url = join_url(&provider.api_base_url, &openai_chat_path(&provider));
-            let mut api_messages = vec![json!({ "role": "system", "content": system_prompt })];
+            let mut api_messages = vec![json!({ "role": "system", "content": format!("{}{}", system_prompt, thinking_reminder) })];
             api_messages.extend(messages.iter().map(|message| {
                 json!({ "role": message.role, "content": message.content })
             }));
+            // 强制开启深度思考：推理模型走 reasoning_effort，其余模型依靠提示词约束
+            let mut body = json!({
+                "model": model.clone(),
+                "messages": api_messages,
+                "stream": true
+            });
+            if supports_reasoning_effort(&model) {
+                body["reasoning_effort"] = json!("high");
+            } else {
+                body["temperature"] = json!(0.7);
+            }
             client
                 .post(url)
                 .bearer_auth(provider.api_key.trim())
-                .json(&json!({
-                    "model": model,
-                    "messages": api_messages,
-                    "temperature": 0.7,
-                    "stream": true
-                }))
+                .json(&body)
                 .send()
                 .await
         }
@@ -866,9 +1107,10 @@ async fn send_ai_chat_stream(
                 .query(&[("key", provider.api_key.trim())])
                 .json(&json!({
                     "systemInstruction": {
-                        "parts": [{ "text": system_prompt }]
+                        "parts": [{ "text": format!("{}{}", system_prompt, thinking_reminder) }]
                     },
-                    "contents": contents
+                    "contents": contents,
+                    "generationConfig": google_thinking_config(true)
                 }))
                 .send()
                 .await
@@ -885,17 +1127,23 @@ async fn send_ai_chat_stream(
                     })
                 })
                 .collect::<Vec<_>>();
+            let mut body = json!({
+                "model": model.clone(),
+                "max_tokens": 8192,
+                "system": format!("{}{}", system_prompt, thinking_reminder),
+                "messages": api_messages,
+                "stream": true
+            });
+            if supports_extended_thinking(&model) {
+                body["thinking"] = json!({ "type": "enabled", "budget_tokens": 4096 });
+                // 扩展思考要求 temperature 必须为 1
+                body["temperature"] = json!(1);
+            }
             client
                 .post(url)
                 .header("x-api-key", provider.api_key.trim())
                 .header("anthropic-version", "2023-06-01")
-                .json(&json!({
-                    "model": model,
-                    "max_tokens": 2048,
-                    "system": system_prompt,
-                    "messages": api_messages,
-                    "stream": true
-                }))
+                .json(&body)
                 .send()
                 .await
         }
@@ -910,6 +1158,7 @@ async fn send_ai_chat_stream(
     }
 
     let mut full_text = String::new();
+    let mut full_reasoning = String::new();
     let mut buffer = String::new();
     let mut stream = response.bytes_stream();
 
@@ -921,9 +1170,25 @@ async fn send_ai_chat_stream(
             while let Some(pos) = buffer.find("\n\n") {
                 let event = buffer[..pos].to_string();
                 buffer = buffer[pos + 2..].to_string();
-                if let Some(content) = parse_sse_chunk(&event) {
-                    full_text.push_str(&content);
-                    let _ = app_handle.emit("ai-chat-chunk", json!({"content": &full_text}));
+                let (delta_text, delta_reasoning) = parse_sse_event(&event);
+                let mut changed = false;
+                if let Some(t) = delta_text {
+                    full_text.push_str(&t);
+                    changed = true;
+                }
+                if let Some(r) = delta_reasoning {
+                    full_reasoning.push_str(&r);
+                    changed = true;
+                }
+                if changed {
+                    let _ = app_handle.emit(
+                        "ai-chat-chunk",
+                        json!({
+                            "content": derive_stream_payload(&full_reasoning, &full_text),
+                            "reasoning": &full_reasoning,
+                            "text": &full_text
+                        }),
+                    );
                 }
             }
         }
@@ -931,18 +1196,37 @@ async fn send_ai_chat_stream(
 
     // Process any remaining buffer
     if !buffer.trim().is_empty() {
-        if let Some(content) = parse_sse_chunk(&buffer) {
-            full_text.push_str(&content);
+        let (delta_text, delta_reasoning) = parse_sse_event(&buffer);
+        if let Some(t) = delta_text {
+            full_text.push_str(&t);
+        }
+        if let Some(r) = delta_reasoning {
+            full_reasoning.push_str(&r);
         }
     }
 
-    if full_text.is_empty() {
+    if full_text.is_empty() && full_reasoning.is_empty() {
         let _ = app_handle.emit("ai-chat-error", json!({"error": "没有从 AI 响应中解析到文本内容"}));
         return Err("没有从 AI 响应中解析到文本内容".to_string());
     }
 
-    let _ = app_handle.emit("ai-chat-done", json!({"content": &full_text}));
+    let final_content = derive_stream_payload(&full_reasoning, &full_text);
+    let _ = app_handle.emit(
+        "ai-chat-done",
+        json!({ "content": &final_content, "reasoning": &full_reasoning, "text": &full_text }),
+    );
     Ok(())
+}
+
+/// 组装流式负载：把模型原生思维链包装成 <thinking> 标签，兼容前端的解析逻辑
+fn derive_stream_payload(reasoning: &str, text: &str) -> String {
+    if reasoning.trim().is_empty() {
+        return text.to_string();
+    }
+    if text.is_empty() {
+        return format!("<thinking>{}</thinking>", reasoning);
+    }
+    format!("<thinking>{}</thinking>\n{}", reasoning, text)
 }
 
 #[tauri::command]
@@ -1097,7 +1381,7 @@ pub fn run() {
             };
             
             let db_path = data_dir.join("fastnote.db");
-            
+
             let conn = Connection::open(db_path).expect("failed to open database");
             init_database(&conn).expect("failed to initialize database");
             
