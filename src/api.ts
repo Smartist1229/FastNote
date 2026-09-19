@@ -60,8 +60,16 @@ export const createAiProvider = async (
   apiBaseUrl: string,
   apiKey: string,
   apiPath: string | null,
+  enabledModels: string[] = [],
 ): Promise<AiProvider> => {
-  return await invoke('create_ai_provider', { name, providerType, apiBaseUrl, apiKey, apiPath });
+  return await invoke('create_ai_provider', {
+    name,
+    providerType,
+    apiBaseUrl,
+    apiKey,
+    apiPath,
+    enabledModels,
+  });
 };
 
 export const getAiProviders = async (): Promise<AiProvider[]> => {
@@ -94,10 +102,12 @@ export const sendAiChatStream = async (
   messages: AiChatMessage[],
   noteTitle: string,
   noteContent: string,
-  onChunk: (fullText: string) => void,
+  onChunk: (fullText: string, reasoning: string) => void,
+  minThinkingLen = 120,
+  currentNoteId: number | null = null,
 ): Promise<string> => {
-  const unlistenChunk = await listen<{ content: string }>('ai-chat-chunk', (event) => {
-    onChunk(event.payload.content);
+  const unlistenChunk = await listen<{ content: string; reasoning?: string; text?: string }>('ai-chat-chunk', (event) => {
+    onChunk(event.payload.content, event.payload.reasoning || "");
   });
 
   // 先把 resolve/reject 提升到外部，然后 await once 确保注册完成后再 invoke
@@ -110,7 +120,7 @@ export const sendAiChatStream = async (
 
   // 必须 await once 注册，否则生产环境下 Rust 端的 ai-chat-done 事件
   // 可能在监听器注册完成前到达，导致 Promise 永远不 resolve
-  const unlistenDone = await once<{ content: string }>('ai-chat-done', (event) => {
+  const unlistenDone = await once<{ content: string; reasoning?: string }>('ai-chat-done', (event) => {
     resolve(event.payload.content);
   });
   const unlistenError = await once<{ error: string }>('ai-chat-error', (event) => {
@@ -118,7 +128,14 @@ export const sendAiChatStream = async (
   });
 
   try {
-    await invoke('send_ai_chat_stream', { providerId, messages, noteTitle, noteContent });
+    await invoke('send_ai_chat_stream', {
+      providerId,
+      messages,
+      noteTitle,
+      noteContent,
+      minThinkingLen,
+      currentNoteId,
+    });
     const result = await resultPromise;
     return result;
   } finally {

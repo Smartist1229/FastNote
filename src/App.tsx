@@ -1,9 +1,8 @@
-import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
 import "./App.css";
 import { Note, Category, AiProvider } from "./types";
 import * as api from "./api";
 import { Sidebar } from "./components/Sidebar";
-import { NoteList } from "./components/NoteList";
 import { Modal } from "./components/Modal";
 import { ToastProvider, useToast } from "./components/Toast";
 import { WelcomeDashboard } from "./components/WelcomeDashboard";
@@ -26,7 +25,14 @@ function AppContent() {
   const [sortOrder, setSortOrder] = useState<string>("asc");
   const [allNotesCount, setAllNotesCount] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isNewNote, setIsNewNote] = useState<boolean>(false);
+  /** 抽屉展开状态：'all' | 分组ID | 'uncategorized' | null（全部收起） */
+  const [expandedDrawer, setExpandedDrawer] = useState<number | 'all' | 'uncategorized' | null>(null);
+  /** AI 打开笔记时用于聚焦高亮的笔记 ID（变化即触发一次动画） */
+  const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
+  /** 分组侧边栏是否折叠（腾出宽度给编辑器/AI 面板） */
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  /** 折叠后鼠标贴近左边缘时浮现唤出把手 */
+  const [isRevealHandleVisible, setIsRevealHandleVisible] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [categoryName, setCategoryName] = useState("");
@@ -44,6 +50,38 @@ function AppContent() {
   const { showToast } = useToast();
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
+  const focusTimerRef = useRef<number | null>(null);
+
+  /** 打开笔记：记录当前分组，并让侧边栏展开/聚焦到这条笔记 */
+  const openNote = useCallback((note: Note) => {
+    setSelectedNote(note);
+    setSelectedCategoryId(note.category_id);
+    setExpandedDrawer(note.category_id === null ? 'uncategorized' : note.category_id);
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    // 先清零再在下一帧赋值，保证重复打开同一条笔记时高亮动画仍会重放
+    setFocusNoteId(null);
+    focusTimerRef.current = window.setTimeout(() => {
+      setFocusNoteId(note.id);
+      focusTimerRef.current = window.setTimeout(() => {
+        setFocusNoteId(null);
+        focusTimerRef.current = null;
+      }, 2600);
+    }, 40);
+  }, []);
+
+  /** 展开/收起 AI 对话面板 */
+  const toggleAiPanel = useCallback(() => setAiPanelOpen((open) => !open), []);
+
+  /** 展开/收起分组抽屉（点击同一分组可收起） */
+  const toggleDrawer = useCallback((key: number | 'all' | 'uncategorized') => {
+    setExpandedDrawer((current) => {
+      const next = current === key ? null : key;
+      // 'all' 是聚合视图，新建笔记时按"未分类"处理
+      if (typeof next === 'number') setSelectedCategoryId(next);
+      else if (next === 'uncategorized' || next === 'all') setSelectedCategoryId(null);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
@@ -57,17 +95,18 @@ function AppContent() {
 
   const loadData = useCallback(async () => {
     try {
-      const [cats, notesList, allNotes] = await Promise.all([
+      // 抽屉视图下所有分组的笔记都从 notes 派生，因此必须始终持有全量笔记，
+      // 不能按 selectedCategoryId 过滤，否则打开某个分组会让其它分组瞬间变空。
+      const [cats, allNotes] = await Promise.all([
         api.getCategories(),
-        api.getNotes(selectedCategoryId, sortBy, sortOrder),
         api.getNotes(null, sortBy, sortOrder),
       ]);
       setCategories(cats);
-      setNotes(notesList);
+      setNotes(allNotes);
       setAllNotesCount(allNotes.length);
       const currentSelectedNote = selectedNoteRef.current;
       if (currentSelectedNote) {
-        const updatedNote = notesList.find((note) => note.id === currentSelectedNote.id);
+        const updatedNote = allNotes.find((note) => note.id === currentSelectedNote.id);
         if (updatedNote) {
           setSelectedNote({ ...updatedNote });
         } else {
@@ -77,7 +116,7 @@ function AppContent() {
     } catch (error) {
       console.error("Failed to load data:", error);
     }
-  }, [selectedCategoryId, sortBy, sortOrder]);
+  }, [sortBy, sortOrder]);
 
   useEffect(() => {
     const handler = () => loadData();
@@ -89,28 +128,33 @@ function AppContent() {
   useEffect(() => { selectedNoteRef.current = selectedNote; }, [selectedNote]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
 
-  // AI selectNote 工具：切换当前打开的笔记
+  // AI selectNote 工具：切换当前打开的笔记，并展开对应分组、聚焦高亮
   useEffect(() => {
     const handler = (e: Event) => {
       const { noteId } = (e as CustomEvent).detail;
       const note = notesRef.current.find((n) => n.id === noteId);
-      if (note) {
-        setSelectedNote(note);
-        setIsNewNote(false);
-      }
+      if (note) openNote(note);
     };
     window.addEventListener("fastnote-select-note", handler);
     return () => window.removeEventListener("fastnote-select-note", handler);
+  }, [openNote]);
+
+  useEffect(() => {
+    return () => {
+      if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    };
   }, []);
 
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  const handleCreateNote = async () => {
+  const handleCreateNote = async (categoryId?: number | null) => {
+    const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
     try {
-      const note = await api.createNote("无标题", "", selectedCategoryId);
+      const note = await api.createNote("无标题", "", targetCategory);
       setNotes((prev) => [...prev, note]);
       setSelectedNote(note);
-      setIsNewNote(true);
+      setSelectedCategoryId(targetCategory);
+      setExpandedDrawer(targetCategory === null ? 'uncategorized' : targetCategory);
       window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
     } catch (error) {
       console.error("Failed to create note:", error);
@@ -321,185 +365,149 @@ function AppContent() {
     }
   };
 
-  const filteredNotes = useMemo(
-    () =>
-      notes.filter((note) => {
-        if (!searchQuery.trim()) return true;
-        const query = searchQuery.toLowerCase().trim();
-        return note.title.toLowerCase().includes(query) || note.content.toLowerCase().includes(query);
-      }),
-    [notes, searchQuery]
-  );
-
   return (
     <div className="h-screen flex flex-col bg-slate-50">
-      <div className="flex flex-1 overflow-hidden">
-        {/* 侧边栏 - 固定比例宽度 */}
-        <div className="w-[220px] min-w-[180px] max-w-[280px] flex-shrink-0 h-full border-r border-slate-200/80">
+      <div className="relative flex flex-1 overflow-hidden">
+        {/* 侧边栏：分组 + 笔记抽屉式融合（可折叠） */}
+        <div className={`sidebar-shell ${isSidebarCollapsed ? 'is-collapsed' : ''}`}>
           <Sidebar
             categories={categories}
             notes={notes}
             allNotesCount={allNotesCount}
             selectedCategoryId={selectedCategoryId}
             selectedNoteId={selectedNote?.id || null}
-            onSelectCategory={(id) => { setSelectedCategoryId(id); }}
+            expandedDrawer={expandedDrawer}
+            focusNoteId={focusNoteId}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            sortBy={sortBy}
+            onSortByChange={setSortBy}
+            sortOrder={sortOrder}
+            onToggleSortOrder={() => setSortOrder((order) => (order === "asc" ? "desc" : "asc"))}
+            onSelectNote={openNote}
+            onToggleDrawer={toggleDrawer}
+            onToggleCollapse={() => setIsSidebarCollapsed(true)}
+            isCollapsed={isSidebarCollapsed}
+            onToggleAiPanel={toggleAiPanel}
+            isAiPanelOpen={aiPanelOpen}
             onCreateCategory={handleCreateCategory}
             onEditCategory={handleEditCategory}
             onDeleteCategory={handleDeleteCategory}
+            onCreateNote={handleCreateNote}
+            onMoveToCategory={async (note, categoryId) => {
+              try {
+                await api.updateNote(note.id, note.title, note.content, categoryId);
+                await loadData();
+                setSelectedCategoryId(categoryId);
+                showToast("移动成功", "success");
+              } catch {
+                showToast("移动失败", "error");
+              }
+            }}
+            onDeleteNote={async (note) => {
+              const confirmed = await confirm("确定要将这条笔记移入回收站吗？", "删除笔记");
+              if (!confirmed) return;
+              try {
+                await api.moveToTrash(note.id);
+                await loadData();
+                if (selectedNote?.id === note.id) setSelectedNote(null);
+                showToast("删除成功！", "success");
+              } catch {
+                showToast("删除失败", "error");
+              }
+            }}
+            onOpenTrash={handleOpenTrash}
             onNotesUpdated={loadData}
           />
         </div>
 
-        {/* 主内容区 */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-          <div className="flex flex-1 overflow-hidden min-w-0">
-            {/* 笔记列表列 - 固定比例宽度 */}
-            <div className="w-[280px] min-w-[200px] max-w-[400px] border-r border-slate-200/80 bg-white/80 backdrop-blur-sm flex flex-col flex-shrink-0">
-              {/* 工具栏 */}
-              <div className="p-3 border-b border-slate-100 flex flex-col gap-2.5 flex-shrink-0">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <label className="text-[11px] text-slate-400 font-medium">排序</label>
-                    <select
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value)}
-                      className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-400 transition-all"
-                    >
-                      <option value="updated_at">更新时间</option>
-                      <option value="created_at">创建时间</option>
-                      <option value="title">标题</option>
-                    </select>
-                    <button
-                      onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
-                      className="toolbar-btn !w-7 !h-7"
-                      title={sortOrder === "asc" ? "切换为降序" : "切换为升序"}
-                    >
-                      <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${sortOrder === "desc" ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                      </svg>
-                    </button>
-                  </div>
-                  <button
-                    onClick={handleCreateNote}
-                    className="btn-primary px-2.5 py-1.5 text-xs flex items-center gap-1.5"
-                    title="创建笔记"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-                    </svg>
-                    新建
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                    </svg>
-                    <input
-                      type="text"
-                      placeholder="搜索笔记..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 text-xs input-modern"
-                    />
-                  </div>
-                  <button onClick={handleOpenTrash} className="toolbar-btn !w-8 !h-8" title="回收站">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => setAiPanelOpen((open) => !open)}
-                    className={`toolbar-btn !w-8 !h-8 ${aiPanelOpen ? "!bg-primary-50 !text-primary-500" : ""}`}
-                    title="AI 对话"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 3.104a.75.75 0 011.5 0l.4 2.395a3.75 3.75 0 003.102 3.102l2.395.4a.75.75 0 010 1.5l-2.395.4a3.75 3.75 0 00-3.102 3.102l-.4 2.395a.75.75 0 01-1.5 0l-.4-2.395A3.75 3.75 0 006.248 10.9l-2.395-.4a.75.75 0 010-1.5l2.395-.4A3.75 3.75 0 009.35 5.5l.4-2.395z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 15l.25 1.5a2.25 2.25 0 001.85 1.85L21.6 18.6l-1.5.25a2.25 2.25 0 00-1.85 1.85L18 22.2l-.25-1.5a2.25 2.25 0 00-1.85-1.85l-1.5-.25 1.5-.25a2.25 2.25 0 001.85-1.85L18 15z" />
-                    </svg>
-                  </button>
-                  <button onClick={() => window.location.reload()} className="toolbar-btn !w-8 !h-8" title="刷新">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              <NoteList
-                notes={filteredNotes}
-                categories={categories}
-                onSelectNote={(note) => { setSelectedNote(note); setIsNewNote(false); }}
-                selectedNoteId={selectedNote?.id || null}
-                sortOrder={sortOrder}
-                isNewNote={isNewNote}
-                onDeleteNote={async (note) => {
-                  const confirmed = await confirm("确定要将这条笔记移入回收站吗？", "删除笔记");
-                  if (!confirmed) return;
-                  try {
-                    await api.moveToTrash(note.id);
-                    await loadData();
-                    if (selectedNote?.id === note.id) setSelectedNote(null);
-                    showToast("删除成功！", "success");
-                  } catch { showToast("删除失败", "error"); }
-                }}
-                onMoveToCategory={async (note, categoryId) => {
-                  try {
-                    await api.updateNote(note.id, note.title, note.content, categoryId);
-                    await loadData();
-                    showToast("移动成功", "success");
-                  } catch { showToast("移动失败", "error"); }
-                }}
-                onCreateNote={handleCreateNote}
-              />
-            </div>
+        {/* 侧边栏折叠后的唤出把手：鼠标移到左边缘时浮现 */}
+        {isSidebarCollapsed && (
+          <>
+            <div
+              className="sidebar-reveal-zone"
+              aria-hidden="true"
+              onMouseEnter={() => setIsRevealHandleVisible(true)}
+              onMouseLeave={() => setIsRevealHandleVisible(false)}
+            />
+            <button
+              className={`sidebar-reveal ${isRevealHandleVisible ? 'is-visible' : ''}`}
+              onMouseEnter={() => setIsRevealHandleVisible(true)}
+              onMouseLeave={() => setIsRevealHandleVisible(false)}
+              onFocus={() => setIsRevealHandleVisible(true)}
+              onBlur={() => setIsRevealHandleVisible(false)}
+              onClick={() => {
+                setIsSidebarCollapsed(false);
+                setIsRevealHandleVisible(false);
+              }}
+              title="显示分组侧边栏"
+              aria-label="显示分组侧边栏"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span className="sidebar-reveal-label">分组</span>
+            </button>
+          </>
+        )}
 
-            {/* 编辑器列 */}
-            <div className="flex-1 bg-white min-w-0">
+        {/* 主内容区：编辑器 + AI 面板（AI 面板作为 flex 兄弟节点，永远挤压而不遮挡） */}
+        <div className="relative flex-1 flex overflow-hidden min-w-0">
+          <div className="relative flex-1 bg-white min-w-0 overflow-hidden">
+            <Suspense
+              fallback={
+                <div className="h-full flex flex-col items-center justify-center gap-3">
+                  <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                  <p className="text-sm text-slate-400">正在加载编辑器...</p>
+                </div>
+              }
+            >
+              {/* 编辑器与欢迎页互斥渲染：无笔记时欢迎页可用，AI 面板依然在右侧可用 */}
               {selectedNote ? (
-                <Suspense
-                  fallback={
-                    <div className="h-full flex flex-col items-center justify-center gap-3">
-                      <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
-                      <p className="text-sm text-slate-400">正在加载编辑器...</p>
-                    </div>
-                  }
-                >
+                <div className="editor-layer">
                   <NoteEditor
                     note={selectedNote}
                     onSave={handleSaveNote}
                     onDelete={handleDeleteNote}
                     onCursorOffsetChange={setEditorCursorOffset}
+                    onToggleAiPanel={toggleAiPanel}
+                    isAiPanelOpen={aiPanelOpen}
                   />
-                </Suspense>
+                </div>
               ) : (
                 <WelcomeDashboard
                   totalNotes={notes.length}
                   categoryCount={categories.length}
                   trashCount={trashNotes.length}
                   recentNotes={[...notes].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())}
-                  onCreateNote={handleCreateNote}
+                  onCreateNote={() => handleCreateNote()}
                   onOpenTrash={handleOpenTrash}
-                  onSelectNote={(note) => { setSelectedNote(note); setIsNewNote(false); }}
+                  onSelectNote={openNote}
+                  onToggleAiPanel={toggleAiPanel}
+                  isAiPanelOpen={aiPanelOpen}
                 />
               )}
-            </div>
-            <AIChatPanel
-              isOpen={aiPanelOpen}
-              noteTitle={selectedNote?.title || ""}
-              noteContent={selectedNote?.content || ""}
-              onInsertText={handleAiInsertText}
-              onReplaceContent={handleAiReplaceContent}
-              onOpenProviderSettings={() => {
-                setShowProviderModal(true);
-                api.getAiProviders().then((list) => {
-                  setProviderModalProviders(list);
-                  if (list.length > 0 && !providerModalSelectedId) {
-                    setProviderModalSelectedId(list[0].id);
-                  }
-                });
-              }}
-            />
+            </Suspense>
           </div>
+
+          <AIChatPanel
+            isOpen={aiPanelOpen}
+            onClose={() => setAiPanelOpen(false)}
+            noteTitle={selectedNote?.title || ""}
+            noteContent={selectedNote?.content || ""}
+            currentNoteId={selectedNote?.id ?? null}
+            onInsertText={handleAiInsertText}
+            onReplaceContent={handleAiReplaceContent}
+            onOpenProviderSettings={() => {
+              setShowProviderModal(true);
+              api.getAiProviders().then((list) => {
+                setProviderModalProviders(list);
+                if (list.length > 0 && !providerModalSelectedId) {
+                  setProviderModalSelectedId(list[0].id);
+                }
+              });
+            }}
+          />
         </div>
       </div>
 

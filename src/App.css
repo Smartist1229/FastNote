@@ -30,9 +30,58 @@
   --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.04);
   --shadow-lg: 0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06);
-  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ========== 运动系统 ========== */
+  /* 缓动曲线：iOS 风格的"快起慢收"，末段几乎无加速度，观感更顺滑 */
+  --ease-out-soft: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.35, 0.5, 1);
+  --ease-in-out-soft: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 时长阶梯 */
+  --duration-instant: 100ms;
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 280ms;
+
+  /* 结构级动画时长：需要更大的位移，因此更长、更慢 */
+  --duration-panel: 320ms;
+  --duration-drawer: 340ms;
+  --duration-sidebar: 420ms;
+
+  /* 交互反馈（按钮/卡片等小元素） */
+  --transition-fast: var(--duration-fast) var(--ease-out-soft);
+  --transition-base: var(--duration-base) var(--ease-out-soft);
+  --transition-smooth: var(--duration-slow) var(--ease-out-fluid);
+
+  /* 结构级过渡 */
+  --transition-drawer: grid-template-rows var(--duration-drawer) var(--ease-out-soft),
+    opacity var(--duration-slow) var(--ease-out-soft);
+  --transition-sidebar: width var(--duration-sidebar) var(--ease-out-soft),
+    min-width var(--duration-sidebar) var(--ease-out-soft),
+    max-width var(--duration-sidebar) var(--ease-out-soft),
+    opacity var(--duration-base) var(--ease-out-soft);
+  --transition-panel: width var(--duration-panel) var(--ease-out-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 1ms;
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+    --duration-slow: 1ms;
+    --duration-panel: 1ms;
+    --duration-drawer: 1ms;
+    --duration-sidebar: 1ms;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-delay: 0ms !important;
+  }
 }
 
 /* ========== 基础样式 ========== */
@@ -129,18 +178,22 @@ button:focus-visible {
 }
 
 .animate-fadeIn { animation: fadeIn var(--transition-base) both; }
-.animate-slideUp { animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.animate-scaleIn { animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-slideUp { animation: slideUp var(--duration-sidebar) var(--ease-out-soft) both; }
+.animate-scaleIn { animation: scaleIn var(--duration-base) var(--ease-out-soft) both; }
 .animate-pulse-dot { animation: pulseDot 1.5s ease-in-out infinite; }
 
 /* ========== 笔记卡片 ========== */
 .note-card {
   will-change: transform;
-  transition: all var(--transition-smooth);
+  transition: transform var(--transition-base), box-shadow var(--transition-base),
+    background-color var(--transition-base), border-color var(--transition-base);
 }
 .note-card:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
+}
+.note-card:active {
+  transform: translateY(0) scale(0.985);
 }
 .note-card-selected {
   background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
@@ -153,21 +206,237 @@ button:focus-visible {
   box-shadow: 0 4px 16px -2px rgb(99 102 241 / 0.35);
 }
 
+/* ========== 抽屉式分组（分组与笔记融合） ========== */
+/* 使用 grid-template-rows 0fr -> 1fr 实现高度自适应的展开/收起动画。
+   收起时让透明度先降完，避免文字在高度压缩过程中被"挤压变形"显得脏。 */
+.drawer-notes-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: var(--transition-drawer);
+  transition-delay: 0ms, 40ms;
+}
+.drawer-notes-grid.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition-delay: 0ms, 0ms;
+}
+.drawer-notes-grid > * {
+  min-height: 0;
+}
+
+.drawer-item {
+  border-radius: 12px;
+  transition: background-color var(--transition-fast);
+}
+
+/* AI 打开笔记时的聚焦高亮 */
+.note-focus-ring {
+  animation: noteFocusPulse 2.4s ease-out 1;
+  border-color: #a5b4fc !important;
+}
+@keyframes noteFocusPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(99 102 241 / 0.55);
+    background-color: #eef2ff;
+  }
+  30% {
+    box-shadow: 0 0 0 5px rgb(99 102 241 / 0.18);
+    background-color: #eef2ff;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(99 102 241 / 0);
+    background-color: transparent;
+  }
+}
+
+/* 侧边栏抽屉滚动条 */
+.drawer-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #e2e8f0 transparent;
+}
+.drawer-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.drawer-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.drawer-scroll::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 3px;
+}
+.drawer-scroll::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* ========== 侧边栏折叠 / 唤出把手 ========== */
+.sidebar-shell {
+  width: 272px;
+  min-width: 272px;
+  max-width: 272px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow: hidden;
+  /* 只过渡宽度：内层内容保持固定宽度，折叠时不会重新排版，因此非常顺滑 */
+  transition: var(--transition-sidebar);
+  will-change: width;
+}
+.sidebar-shell.is-collapsed {
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+/* 固定内层宽度，避免折叠过程中文字逐帧回流 */
+.sidebar-shell > * {
+  width: 272px;
+  min-width: 272px;
+}
+
+/* 折叠后停留在左边缘的把手：平时隐藏，鼠标移到左边缘才浮现 */
+/* 左边缘感应区：透明，悬停即触发把手浮现 */
+.sidebar-reveal-zone {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  z-index: 95;
+}
+.sidebar-reveal {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 96;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 22px;
+  padding: 12px 0;
+  border: 1px solid var(--color-border);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+  background: #ffffff;
+  color: var(--color-text-muted);
+  box-shadow: 2px 0 10px -2px rgb(15 23 42 / 0.16);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transform: translate(-6px, -50%);
+  transition: opacity var(--duration-base) var(--ease-out-soft),
+    transform var(--duration-base) var(--ease-out-soft),
+    background-color var(--duration-fast) var(--ease-out-soft),
+    color var(--duration-fast) var(--ease-out-soft),
+    width var(--duration-base) var(--ease-out-soft);
+}
+/* 由 React 状态或键盘聚焦触发显示 */
+.sidebar-reveal.is-visible,
+.sidebar-reveal:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(0, -50%);
+}
+.sidebar-reveal.is-visible:hover {
+  background: var(--color-accent);
+  color: #ffffff;
+  width: 26px;
+}
+.sidebar-reveal-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 2px;
+  line-height: 1;
+}
+
+/* ========== 侧边栏头部按钮 ========== */
+.sidebar-header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.sidebar-header-btn:hover {
+  background: #ffffff;
+  color: var(--color-accent);
+  box-shadow: var(--shadow-xs);
+}
+.sidebar-header-btn:active {
+  transform: scale(0.92);
+}
+.sidebar-header-btn.is-active {
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+.sidebar-header-btn svg {
+  transition: transform var(--transition-smooth);
+}
+.sidebar-header-btn.is-collapsed svg {
+  transform: rotate(180deg);
+}
+
+/* ========== AI 面板 ========== */
+.ai-panel {
+  animation: panelIn var(--duration-panel) var(--ease-out-soft) both;
+  /* 拖拽调宽时由 JS 直接改宽度，过渡会让手感发粘，因此只在非拖拽时生效 */
+  transition: var(--transition-panel);
+}
+.ai-panel.is-resizing {
+  transition: none;
+}
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ========== 通用交互过渡 ========== */
+/* 让 hover/active 类反馈统一走同一套缓动，避免各处快慢不一 */
+.toolbar-btn,
+.btn-primary,
+.btn-ghost {
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast), box-shadow var(--transition-fast),
+    transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+/* 小元素按压反馈：统一用轻微缩放代替生硬跳变 */
+.toolbar-btn:active,
+.btn-ghost:active {
+  transform: scale(0.94);
+}
+
 /* ========== 编辑器容器 ========== */
 .editor-container { position: relative; }
-.fixed.inset-0.z-50 { animation: fadeIn 0.15s ease; }
+/* 编辑器层：包住 NoteEditor，使其撑满内容区 */
+.editor-layer { height: 100%; }
 
 /* ========== Modal 动画 ========== */
 .modal-overlay {
-  animation: fadeIn 0.2s ease both;
+  animation: fadeIn var(--duration-base) var(--ease-out-soft) both;
 }
 .modal-content {
-  animation: scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: scaleIn var(--duration-slow) var(--ease-out-soft) both;
 }
 
 /* ========== 分类列表项交互 ========== */
 .category-item {
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 .category-item:hover .category-actions {
   opacity: 1;
@@ -181,7 +450,7 @@ button:focus-visible {
   background: var(--color-surface);
   border: 1.5px solid var(--color-border);
   border-radius: var(--radius-lg);
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 .input-modern:hover {
   border-color: #cbd5e1;
@@ -199,7 +468,7 @@ button:focus-visible {
   border: none;
   border-radius: var(--radius-lg);
   font-weight: 500;
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
   box-shadow: 0 1px 3px rgb(99 102 241 / 0.3);
 }
 .btn-primary:hover {
@@ -217,7 +486,7 @@ button:focus-visible {
   color: var(--color-text-secondary);
   border: none;
   border-radius: var(--radius-lg);
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 .btn-ghost:hover {
   background: #f1f5f9;
@@ -243,7 +512,7 @@ button:focus-visible {
   background: transparent;
   border: 1.5px solid transparent;
   border-radius: var(--radius-lg);
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 .title-input:hover {
   border-color: var(--color-border);
@@ -265,7 +534,7 @@ button:focus-visible {
   height: 32px;
   border-radius: var(--radius-md);
   color: var(--color-text-muted);
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
   border: none;
   background: transparent;
   cursor: pointer;
@@ -426,7 +695,7 @@ button:focus-visible {
   }
 }
 .message-enter {
-  animation: messageIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: messageIn var(--duration-slow) var(--ease-out-soft) both;
 }
 
 /* 底部操作栏 */
@@ -446,7 +715,7 @@ button:focus-visible {
   height: 28px;
   border-radius: 7px;
   color: #94a3b8;
-  transition: all 0.15s ease;
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
   border: none;
   background: transparent;
   cursor: pointer;
@@ -480,7 +749,7 @@ button:focus-visible {
   color: #64748b;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color var(--transition-base), color var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base), opacity var(--transition-base);
 }
 .nav-floating-btn:hover:not(:disabled) {
   background: #eef2ff;
@@ -508,7 +777,7 @@ button:focus-visible {
   color: #94a3b8;
   background: #f8fafc;
   border: 1px solid #f1f5f9;
-  transition: all 0.15s ease;
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
   cursor: pointer;
 }
 .msg-action-btn:hover {
