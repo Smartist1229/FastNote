@@ -137,6 +137,37 @@ button, select, .select-none { user-select: none; }
 input, textarea, [contenteditable="true"],
 .monaco-editor, .md-editor, .cm-editor { user-select: text; }
 
+/*
+ * 拖动滚动条时不得选中正文。
+ *
+ * 上面 .monaco-editor / .md-editor 的 user-select: text 会覆盖滚动条默认的
+ * user-select: none，导致拖滚动条时"既选中文字又滚动"。注意 md-editor-rt
+ * 用的是自绘滚动条（custom-scrollbar），不是原生滚动条，因此必须针对它
+ * 的真实结构单独声明 —— ::-webkit-scrollbar 那套在这里是无效的。
+ *
+ * md-editor-rt 的实现：在 .md-editor-custom-scrollbar__thumb 上挂 mousedown
+ * 开始拖动，但从不调用 preventDefault。
+ */
+.md-editor-custom-scrollbar__track,
+.md-editor-custom-scrollbar__thumb {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Monaco 自绘滚动条同样需要抢回选择性 */
+.monaco-scrollable-element > .scrollbar,
+.monaco-scrollable-element > .scrollbar > .slider {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 兜底：拖动过程中（JS 给 body 加 is-dragging-scrollbar）禁止选中 */
+body.is-dragging-scrollbar,
+body.is-dragging-scrollbar * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 /* ========== 焦点环 ========== */
 input:focus-visible,
 select:focus-visible,
@@ -254,6 +285,8 @@ button:focus-visible {
 .drawer-scroll {
   scrollbar-width: thin;
   scrollbar-color: #e2e8f0 transparent;
+  /* 常驻滚动条槽位：滚动条出现/消失时内容宽度不再变化，展开分组不会"挤压" */
+  scrollbar-gutter: stable;
 }
 .drawer-scroll::-webkit-scrollbar {
   width: 5px;
