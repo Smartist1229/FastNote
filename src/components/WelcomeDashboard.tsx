@@ -59,7 +59,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   };
 
   return (
-    <div className="h-full flex flex-col overflow-y-auto">
+    <div className="h-full flex flex-col">
       {/* 顶部渐变区域 */}
       <div className="relative bg-gradient-to-br from-primary-50 via-white to-indigo-50 px-8 pt-12 pb-8 flex-shrink-0">
         {/* 装饰元素 */}
