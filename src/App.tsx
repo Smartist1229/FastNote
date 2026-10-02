@@ -104,6 +104,10 @@ function AppContent() {
       setCategories(cats);
       setNotes(allNotes);
       setAllNotesCount(allNotes.length);
+      // 分组可能被"别处"删掉（例如 AI 调用了 deleteCategory 工具，走不到删除分组弹窗里
+      // 那句重置逻辑）。这里统一校验一次，避免 selectedCategoryId 悬空，
+      // 否则之后"新建笔记"会带着一个已不存在的分组 ID。
+      setSelectedCategoryId((prev) => (prev !== null && !cats.some((c) => c.id === prev) ? null : prev));
       const currentSelectedNote = selectedNoteRef.current;
       if (currentSelectedNote) {
         const updatedNote = allNotes.find((note) => note.id === currentSelectedNote.id);

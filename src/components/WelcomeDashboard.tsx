@@ -139,8 +139,10 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
 
       {/* 最近笔记 */}
       {recentNotes.length > 0 && (
-        <div className="px-8 pb-8 flex-1 min-h-0">
-          <div className="animate-slideUp" style={{ animationDelay: "0.15s" }}>
+        <div className="px-8 flex-1 min-h-0">
+          {/* 底部留白必须加在内容上：加在 flex 子项上时，一旦列表比子项高就会溢出子项，
+              内边距便不再位于最后一张卡片之后，列表看起来就"贴底"了 */}
+          <div className="animate-slideUp pb-10" style={{ animationDelay: "0.15s" }}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">最近更新</h3>
               <span className="text-[11px] text-slate-300">{Math.min(recentNotes.length, 5)} 篇</span>

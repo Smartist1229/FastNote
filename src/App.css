@@ -208,14 +208,15 @@ button:focus-visible {
   to { background-position: -200% 0; }
 }
 
-.animate-fadeIn { animation: fadeIn var(--transition-base) both; }
-.animate-slideUp { animation: slideUp var(--duration-sidebar) var(--ease-out-soft) both; }
-.animate-scaleIn { animation: scaleIn var(--duration-base) var(--ease-out-soft) both; }
+/* 动画结束态与静态样式一致，因此不需要 forwards/both 保留填充——
+   保留填充会让元素长期停在合成层上，文字失去次像素抗锯齿而发虚 */
+.animate-fadeIn { animation: fadeIn var(--transition-base) backwards; }
+.animate-slideUp { animation: slideUp var(--duration-sidebar) var(--ease-out-soft) backwards; }
+.animate-scaleIn { animation: scaleIn var(--duration-base) var(--ease-out-soft) backwards; }
 .animate-pulse-dot { animation: pulseDot 1.5s ease-in-out infinite; }
 
 /* ========== 笔记卡片 ========== */
 .note-card {
-  will-change: transform;
   transition: transform var(--transition-base), box-shadow var(--transition-base),
     background-color var(--transition-base), border-color var(--transition-base);
 }
@@ -420,7 +421,12 @@ button:focus-visible {
 
 /* ========== AI 面板 ========== */
 .ai-panel {
-  animation: panelIn var(--duration-panel) var(--ease-out-soft) both;
+  /*
+   * 用 backwards 而不是 both：both 会永久保留 translateX(0) 这个最终关键帧，
+   * 面板因此始终是一个合成层，Chromium 在合成层上会关闭 LCD 次像素抗锯齿，
+   * 面板里的所有文字都会发虚。backwards 只在动画开始前保持初始态，结束后立刻释放。
+   */
+  animation: panelIn var(--duration-panel) var(--ease-out-soft) backwards;
   /* 拖拽调宽时由 JS 直接改宽度，过渡会让手感发粘，因此只在非拖拽时生效 */
   transition: var(--transition-panel);
 }
@@ -460,11 +466,12 @@ button:focus-visible {
 .editor-layer { height: 100%; }
 
 /* ========== Modal 动画 ========== */
+/* 同样用 backwards：保留最终帧会让弹层长期处于合成层，里面的文字发虚 */
 .modal-overlay {
-  animation: fadeIn var(--duration-base) var(--ease-out-soft) both;
+  animation: fadeIn var(--duration-base) var(--ease-out-soft) backwards;
 }
 .modal-content {
-  animation: scaleIn var(--duration-slow) var(--ease-out-soft) both;
+  animation: scaleIn var(--duration-slow) var(--ease-out-soft) backwards;
 }
 
 /* ========== 分类列表项交互 ========== */
@@ -681,23 +688,29 @@ button:focus-visible {
   border-radius: 999px;
   background: #cbd5e1;
   transform-origin: center;
+  /*
+   * 只动 transform，不动 width。
+   * 之前用 width 做"圆点变胶囊"，每一帧都要触发重排，点和 tooltip 一起抖，
+   * 这就是锚点动画卡顿的根源。这里改成 scaleX，交给合成器，稳定 60fps。
+   */
+  transform: scaleX(1) scaleY(1);
   transition:
-    width 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
     background-color 0.2s ease,
-    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
     box-shadow 0.22s ease;
 }
 .chat-anchor-dot:hover .chat-anchor-pin {
   background: #818cf8;
-  transform: scale(1.45);
+  transform: scaleX(1.45) scaleY(1.45);
 }
 .chat-anchor-dot.is-active .chat-anchor-pin {
-  width: 15px;
+  /* 6px × 2.6 ≈ 原来的 15px 胶囊 */
+  transform: scaleX(2.6);
   background: linear-gradient(90deg, #818cf8, #4f46e5);
   box-shadow: 0 0 0 3px rgb(99 102 241 / 0.14);
 }
 .chat-anchor-dot.is-active:hover .chat-anchor-pin {
-  transform: scale(1.06);
+  transform: scaleX(2.6) scaleY(1.15);
 }
 
 /*
@@ -887,7 +900,7 @@ button:focus-visible {
   }
 }
 .message-enter {
-  animation: messageIn var(--duration-slow) var(--ease-out-soft) both;
+  animation: messageIn var(--duration-slow) var(--ease-out-soft) backwards;
 }
 
 /* 底部操作栏 */
@@ -978,12 +991,12 @@ button:focus-visible {
   border-color: #c7d2fe;
 }
 
-/* ========== MdPreview 字号覆盖 ========== */
+/* ========== MdPreview 字号覆盖（对齐编程 Agent 的正文观感） ========== */
 .ai-markdown .md-editor-preview,
 .ai-markdown .md-editor-preview p,
 .ai-markdown .md-editor-preview li,
 .ai-markdown .md-editor-preview td,
 .ai-markdown .md-editor-preview th {
-  font-size: 12px !important;
-  line-height: 1.65 !important;
+  font-size: 13px !important;
+  line-height: 1.75 !important;
 }

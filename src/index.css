@@ -151,8 +151,9 @@
 
   .note-card {
     position: relative;
+    /* 不再用 will-change: transform：每张卡片都提升成合成层会让卡片文字失去
+       次像素抗锯齿、整体发虚；hover 的 1px 位移不需要常驻层。 */
     transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
-    will-change: transform;
   }
 
   .note-card:hover {
@@ -187,11 +188,11 @@
   }
 
   .modal-overlay {
-    animation: fadeIn 180ms ease both;
+    animation: fadeIn 180ms ease backwards;
   }
 
   .modal-content {
-    animation: modalPop 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: modalPop 240ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
   }
 
   .editor-container {
@@ -328,8 +329,9 @@
 }
 
 @layer utilities {
-  .animate-slideUp { animation: slideUp 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-  .animate-scaleIn { animation: scaleIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+  /* 同 App.css：用 backwards，保留最终帧会让元素长期停在合成层上，文字发虚 */
+  .animate-slideUp { animation: slideUp 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+  .animate-scaleIn { animation: scaleIn 180ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
 }
 
 @keyframes fadeIn {

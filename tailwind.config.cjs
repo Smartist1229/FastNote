@@ -48,10 +48,12 @@ module.exports = {
         '3xl': '1.25rem',
       },
       animation: {
-        'fade-in': 'fadeIn 0.3s ease both',
-        'slide-up': 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) both',
-        'slide-in-right': 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) both',
-        'scale-in': 'scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both',
+        // fill-mode 用 backwards 而不是 both：动画结束态就等于元素的静态样式，
+        // 不需要保留填充；保留会让元素长期停在合成层上，文字失去次像素抗锯齿而发虚。
+        'fade-in': 'fadeIn 0.3s ease backwards',
+        'slide-up': 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards',
+        'slide-in-right': 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards',
+        'scale-in': 'scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) backwards',
         'pulse-dot': 'pulseDot 1.5s ease-in-out infinite',
         'shimmer': 'shimmer 2s linear infinite',
       },
