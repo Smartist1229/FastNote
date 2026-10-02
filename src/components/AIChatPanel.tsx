@@ -19,6 +19,14 @@ interface AIChatPanelProps {
 }
 
 const MIN_PANEL_WIDTH = 350; const MAX_PANEL_WIDTH = 640; const DEFAULT_PANEL_WIDTH = 400;
+/** 距底部小于该像素即视为"贴底"，此时才自动跟随最新回复 */
+const STICK_BOTTOM_THRESHOLD = 48;
+/** 阅读线：容器顶部往下这么多像素以内的最后一条用户消息，就是"当前所在的历史段落" */
+const ANCHOR_READING_LINE = 40;
+/** 点击锚点后目标消息距容器顶部的留白 */
+const ANCHOR_JUMP_OFFSET = 8;
+/** 单条锚点提示最多显示的字数 */
+const ANCHOR_PREVIEW_LEN = 80;
 
 const TOOL_DEFS = [
   { name: "searchNotes", desc: "搜索笔记标题", args: {"query":"搜索关键词"}, needsConfirm: false },
@@ -108,7 +116,50 @@ const isThinkingDeepEnough = (thinking: string, minLen: number): boolean =>
   thinking.replace(/\s/g, "").length >= minLen;
 
 interface ToolCall { name: string; args: Record<string, unknown>; }
-interface ParsedResponse { thinking: string; toolCalls: ToolCall[]; reply: string; }
+interface ParsedResponse {
+  /** 纯推理内容：只用于"思考是否足够深入"的校验，不掺工具调用原文 */
+  thinking: string;
+  /** 思考区展示内容：推理 + 工具调用原文（工具调用只允许出现在这里） */
+  thinkingDisplay: string;
+  toolCalls: ToolCall[];
+  reply: string;
+  /** 生成被截断（<thinking>/<tool_calls> 只有开标签）或工具调用 JSON 非法 */
+  truncated: boolean;
+}
+
+/** 标签只有开标签、没有闭标签 → 模型输出被截断 */
+const hasUnclosedTag = (text: string, tag: string): boolean => {
+  const open = text.lastIndexOf(`<${tag}>`);
+  return open !== -1 && text.indexOf(`</${tag}>`, open) === -1;
+};
+
+/**
+ * 剥离 <thinking>/<tool_calls> 块——包含未闭合的尾部片段。
+ * 模型被长度限制截断时，半截的 <tool_calls>[{"name":... 绝不能被当成正文渲染出来。
+ */
+const stripTaggedBlocks = (text: string): string =>
+  text
+    .replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
+    .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "")
+    .replace(/<thinking>[\s\S]*/g, "")
+    .replace(/<tool_calls>[\s\S]*/g, "");
+
+/** 思考区展示文本：推理 + 工具调用原文，用分隔线隔开 */
+const composeThinkingDisplay = (thinking: string, toolText: string): string => {
+  const reasoning = thinking.trim();
+  const tools = toolText.trim();
+  if (!tools) return reasoning;
+  return reasoning ? `${reasoning}\n\n---\n${tools}` : tools;
+};
+
+/** 正文兜底：任何情况下都不能把 <thinking>/<tool_calls> 原文当正文显示 */
+const finalReplyText = (p: ParsedResponse): string => {
+  if (p.reply) return p.reply;
+  if (p.truncated) return "（回复在输出过程中被截断，未执行任何操作。请重试，或把内容拆成更小的步骤。）";
+  if (p.toolCalls.length > 0) return "（已发起工具调用，没有正文。）";
+  if (p.thinkingDisplay) return p.thinkingDisplay;
+  return "（模型没有返回内容，请重试）";
+};
 
 /** Generate a human-readable summary of a tool call for the confirm dialog */
 const summarizeToolCall = (c: ToolCall): string => {
@@ -151,16 +202,36 @@ const parseResponse = (text: string, reasoning?: string): ParsedResponse => {
   if (!thinking && nativeReasoning) {
     thinking = nativeReasoning;
   }
+  if (!thinking) {
+    // 思考写到一半被截断：保留可见部分，仍只放在思考区
+    thinking = text.match(/<thinking>([\s\S]*)/)?.[1]?.trim() || "";
+  }
   const tcMatch = text.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
   let toolCalls: ToolCall[] = [];
+  // 工具调用原文：闭合块优先；没有闭合标签时取尾部不完整片段（截断）
+  const toolText = tcMatch
+    ? tcMatch[1].trim()
+    : text.match(/<tool_calls>([\s\S]*)/)?.[1]?.trim() || "";
   if (tcMatch) {
     let raw = tcMatch[1].trim();
     // 移除 markdown 代码块包裹（```json ... ``` 或 ``` ... ```）
     raw = raw.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
     try { const arr = JSON.parse(raw); if (Array.isArray(arr)) toolCalls = arr; } catch {}
   }
-  const reply = text.replace(/<thinking>[\s\S]*?<\/thinking>/g, "").replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "").trim();
-  return { thinking, toolCalls, reply };
+  // 截断，或写了 <tool_calls> 却没能解析出任何调用：都不该被当成最终正文
+  const truncated =
+    hasUnclosedTag(text, "tool_calls") ||
+    hasUnclosedTag(text, "thinking") ||
+    (toolText.length > 0 && toolCalls.length === 0);
+  // 正文里彻底剥离标签内容（含未闭合片段）
+  const reply = stripTaggedBlocks(text).trim();
+  return {
+    thinking,
+    thinkingDisplay: composeThinkingDisplay(thinking, toolText),
+    toolCalls,
+    reply,
+    truncated,
+  };
 };
 
 /** Parse streaming text to extract thinking (supports partial tags) and visible reply */
@@ -177,20 +248,11 @@ const parseStreamContent = (text: string, reasoning?: string): { thinking: strin
   const thinking = fullThinking || partialThinking || (reasoning || "").trim();
   const tcContent = fullTc || partialTc;
 
-  // If there's tool_calls content, fold it into thinking
-  const combinedThinking = tcContent
-    ? (thinking ? `${thinking}\n\n---\n${tcContent}` : tcContent)
-    : thinking;
-
-  // Reply = text with thinking and tool_calls tags stripped
-  const reply = text
-    .replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
-    .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "")
-    .replace(/<thinking>[\s\S]*/g, "")  // partial thinking
-    .replace(/<tool_calls>[\s\S]*/g, "")  // partial tool_calls
-    .trim();
-
-  return { thinking: combinedThinking, reply };
+  // 工具调用原文一律并入思考区（含流式未闭合的半截 JSON），正文只保留真正的回复文本
+  return {
+    thinking: composeThinkingDisplay(thinking, tcContent),
+    reply: stripTaggedBlocks(text).trim(),
+  };
 };
 
 /**
@@ -329,6 +391,19 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [confirmMode, setConfirmMode] = useState(true);
   const { showToast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 是否贴底跟随最新回复：滚轮上滑查看历史时置 false，回到底部自动恢复 */
+  const stickToBottomRef = useRef(true);
+  /** 供界面使用的贴底状态（控制"回到最新"按钮） */
+  const [atBottom, setAtBottom] = useState(true);
+  /** 当前视口所处的历史锚点（第几条用户消息） */
+  const [activeAnchor, setActiveAnchor] = useState(0);
+  /** 锚点悬浮气泡：内容取用户消息，位置贴着被悬停的那个点 */
+  const [anchorTip, setAnchorTip] = useState<{ index: number; top: number; visible: boolean }>({ index: 0, top: 0, visible: false });
+  /** 消息视口外层容器：用于把气泡定位在点的同一高度 */
+  const messagesAreaRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  /** 刚点击过的锚点：平滑滚动过程中锁定高亮，等用户自己滚轮滚动时再交还给视口 */
+  const jumpTargetRef = useRef<number | null>(null);
   const dragRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const titleGenRef = useRef(false);
@@ -351,7 +426,13 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   // 同步"当前打开笔记的 ID"，供 updateCurrentNote 等工具使用
   useEffect(() => { currentNoteIdRef.current = currentNoteId ?? null; }, [currentNoteId]);
 
-  useEffect(() => { if (!isOpen) return; loadProviders(); loadSessions(); }, [isOpen]);
+  useEffect(() => {
+    // 面板收起时 DOM 被销毁，悬浮气泡的状态要一并复位，避免重新展开时残留显示
+    if (!isOpen) { hideAnchorTip(); return; }
+    resetToLatest();
+    loadProviders();
+    loadSessions();
+  }, [isOpen]);
   // 窗口变窄时收缩面板宽度，避免挤压编辑器到不可用
   useEffect(() => {
     if (!isOpen) return;
@@ -380,14 +461,113 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     window.addEventListener('fastnote-provider-selected', handler);
     return () => window.removeEventListener('fastnote-provider-selected', handler);
   }, []);
-  // Only auto-scroll when user is already near the bottom (within 60px threshold)
-  // 始终滚动到最新消息
-  useEffect(() => {
+  /** 重置为"跟随最新回复"状态（切换/新建会话、发送新消息、重新打开面板时调用） */
+  const resetToLatest = useCallback(() => {
+    stickToBottomRef.current = true;
+    jumpTargetRef.current = null;
+    setAtBottom(true);
+    // 不在这里重置 activeAnchor：随后的 syncScrollState 会按新视口算出正确的锚点，
+    // 否则发送消息时会看到高亮先跳回第一个点、再跳回最后一个点。
+  }, []);
+
+  /** 同步滚动状态：是否贴底 + 当前视口由哪条用户消息"领读"（驱动锚点高亮） */
+  const syncScrollState = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // 使用 requestAnimationFrame 确保在 DOM 更新完成后滚动
-    requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
-  }, [messages, streamingContent]);
+    const atBottomNow = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_BOTTOM_THRESHOLD;
+    stickToBottomRef.current = atBottomNow;
+    setAtBottom(atBottomNow);
+    // 刚点过锚点：保持该点高亮，避免"点了 A 却因目标到底部而高亮 B"
+    if (jumpTargetRef.current !== null) return;
+    const anchors = el.querySelectorAll<HTMLElement>('[data-chat-anchor]');
+    if (anchors.length === 0) { setActiveAnchor(0); return; }
+    // 贴底 = 正在看最新回复：此刻最新那条提问往往还在阅读线下方（回复刚开头 / 只有"思考中"），
+    // 若仍按阅读线取"线以上的最后一个"，高亮就会停留在上一轮，所以这里直接锁定最后一次提问。
+    if (atBottomNow) { setActiveAnchor(anchors.length - 1); return; }
+    const line = el.getBoundingClientRect().top + ANCHOR_READING_LINE;
+    let active = 0;
+    anchors.forEach((node, index) => {
+      if (node.getBoundingClientRect().top <= line) active = index;
+    });
+    setActiveAnchor(active);
+  }, []);
+
+  /** 用户自己滚动（滚轮/触屏）即解除"点击锁定"，高亮重新跟手 */
+  const releaseJumpTarget = useCallback(() => { jumpTargetRef.current = null; }, []);
+
+  /**
+   * 悬停锚点：气泡渲染在导轨之外（导轨要滚动就必然 clip 掉左侧元素），
+   * 这里按被悬停圆点的位置算出气泡的纵向坐标，并夹在视口内避免被面板裁掉。
+   */
+  const showAnchorTip = useCallback((index: number, el: HTMLElement) => {
+    const area = messagesAreaRef.current;
+    if (!area) return;
+    const areaRect = area.getBoundingClientRect();
+    const dotRect = el.getBoundingClientRect();
+    const raw = dotRect.top + dotRect.height / 2 - areaRect.top;
+    const top = Math.max(30, Math.min(areaRect.height - 30, raw));
+    setAnchorTip({ index, top, visible: true });
+  }, []);
+
+  const hideAnchorTip = useCallback(() => {
+    setAnchorTip(prev => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
+
+  /** 滚动事件用 rAF 节流，避免流式输出时每帧多次 setState */
+  const handleChatScroll = useCallback(() => {
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      syncScrollState();
+    });
+  }, [syncScrollState]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
+  /**
+   * 仅"贴底"时才自动跟随最新内容：
+   * - AI 流式回复（一个字一个字地增长）时，无论增长多少行，视口始终停在最底部；
+   * - 用户一旦用滚轮上滑查看历史，就不再被拽回底部，滚动在哪就停在哪；
+   * - 用户重新滚回最底部后，自动恢复跟随。
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+      syncScrollState();
+    });
+    return () => cancelAnimationFrame(frame);
+    // isOpen：面板收起时 DOM 被销毁，重新展开后需要重新贴到底部
+  }, [messages, streamingContent, isOpen, syncScrollState]);
+
+  /** 点击右侧锚点：平滑滚动到对应的用户消息处 */
+  const jumpToAnchor = useCallback((index: number) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const node = el.querySelectorAll<HTMLElement>('[data-chat-anchor]')[index];
+    if (!node) return;
+    // 主动回看历史：先解除贴底，否则流式回复会在下一帧把视口拽回底部
+    stickToBottomRef.current = false;
+    jumpTargetRef.current = index;
+    setAtBottom(false);
+    setActiveAnchor(index);
+    const top = el.scrollTop + node.getBoundingClientRect().top - el.getBoundingClientRect().top - ANCHOR_JUMP_OFFSET;
+    el.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }, []);
+
+  /** 回到最新回复并恢复自动跟随 */
+  const jumpToLatest = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = true;
+    jumpTargetRef.current = null;
+    setAtBottom(true);
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, []);
+
   useEffect(() => { if (sessions.length > 0 && !activeSessionId) { setActiveSessionId(sessions[0].id); loadSessionMessages(sessions[0].id); } }, [sessions]);
   useEffect(() => { isSendingRef.current = isSending; }, [isSending]);
   // 下拉候选 = 设置里勾选的模型（不再每次拉取全部模型）
@@ -413,10 +593,28 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     }
   };
   const loadSessions = async () => { try { setSessions(await api.getChatSessions()); } catch {} };
-  const loadSessionMessages = async (sid: number) => { try { const m = await api.getChatMessages(sid); setMessages(m.map(x => { const p = parseResponse(x.content); return { role: x.role as "user"|"assistant", content: p.reply || x.content, thinking: p.thinking }; })); } catch {} };
+  /**
+   * 加载历史消息：只对 assistant 消息做标签解析。
+   * 用户消息原样展示——他可能自己粘贴了含 <tool_calls> 字样的文本，不能被剥离；
+   * assistant 消息也绝不回退到原始文本，否则截断的半截工具调用会再次被显示出来。
+   */
+  const loadSessionMessages = async (sid: number) => {
+    try {
+      const m = await api.getChatMessages(sid);
+      resetToLatest();
+      setMessages(m.map(x => {
+        const p = x.role === "assistant" ? parseResponse(x.content) : null;
+        return {
+          role: x.role as "user" | "assistant",
+          content: p ? finalReplyText(p) : x.content,
+          thinking: p?.thinkingDisplay,
+        };
+      }));
+    } catch {}
+  };
   const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
   const switchSession = async (sid: number) => { if (sid === activeSessionId) return; setActiveSessionId(sid); setStreamingContent(''); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
-  const handleNewSession = async () => { const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setStreamingContent(""); titleGenRef.current = false; };
+  const handleNewSession = async () => { const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setStreamingContent(""); resetToLatest(); titleGenRef.current = false; };
   const handleDeleteSession = async () => { if (!activeSessionId) return; try { await api.deleteChatSession(activeSessionId); setSessions(p => p.filter(x => x.id !== activeSessionId)); const r = sessions.filter(x => x.id !== activeSessionId); if (r.length > 0) { setActiveSessionId(r[0].id); titleGenRef.current = false; await loadSessionMessages(r[0].id); } else { setActiveSessionId(0); setMessages([]); } } catch { showToast('删除失败', 'error'); } };
   const genTitle = async (sid: number, up: string, ar: string) => { if (titleGenRef.current || !activeProvider) return; titleGenRef.current = true; try { const session = sessions.find(s => s.id === sid); if (!session || session.title !== "新对话") { titleGenRef.current = false; return; } const t = await api.sendAiChat(activeProvider.id, [{ role: "system", content: `I will give you some dialogue content in the <content> block.\nYou need to summarize the conversation between user and assistant into a short title.\n1. The title language should be consistent with the user's primary language\n2. Do not use punctuation or other special symbols\n3. Reply directly with the title\n4. The title should not exceed 10 characters\n5. Do not include any JSON, tags, or technical details\n\n<content>\nUser: ${up}\nAssistant: ${ar.replace(/<[^>]+>/g, "")}\n</content>` }, { role: "user", content: "Generate title" }], "", ""); const ct = t.replace(/["「」『』<>]/g, "").trim().slice(0, 10) || "新对话"; await api.updateChatSessionTitle(sid, ct); await loadSessions(); } catch { titleGenRef.current = false; } };
   const handleRenameSession = async (sid: number) => { const title = editTitle.trim(); if (!title) return; try { await api.updateChatSessionTitle(sid, title); setEditingSessionId(null); setEditTitle(''); await loadSessions(); } catch { showToast('重命名失败', 'error'); } };
@@ -448,7 +646,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           currentNoteId ?? null,
         );
         if (abortRef.current) return;
-        const { thinking, toolCalls, reply } = parseResponse(full, nativeReasoning);
+        const parsed = parseResponse(full, nativeReasoning);
+        // thinking 为纯推理（用于校验深度），thinkingDisplay 才是思考区展示文本（含工具调用原文）
+        const { thinking, thinkingDisplay, toolCalls, truncated } = parsed;
 
         // ---------- 纠错 1：思考过浅，强制重新深度思考 ----------
         if (!correctionUsed && !isThinkingDeepEnough(thinking, MIN_THINKING_LEN)) {
@@ -487,28 +687,50 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           continue;
         }
 
+        // ---------- 工具调用被截断 / JSON 非法：先给一次纠正机会 ----------
+        // 模型被输出长度限制截断时，半截的 <tool_calls> 既不能当正文，也不能当"已完成"。
+        if (truncated && toolCalls.length === 0 && !correctionUsed && !abortRef.current) {
+          correctionUsed = true;
+          setIsSending(false);
+          setStreamingContent('');
+          roundMsgs = [
+            ...roundMsgs,
+            { role: 'assistant', content: full },
+            {
+              role: 'system',
+              content:
+                '你上一条回复中的 <tool_calls> 没有闭合、或不是合法的 JSON 数组（很可能因为内容太长被截断），本次回复无效，没有任何工具被执行。' +
+                '请重新输出：<tool_calls> 必须是完整闭合的纯 JSON 数组，且不要用 ```json 代码块包裹；' +
+                '如果正文内容太长，请精简，或拆成几步分次完成。',
+            },
+          ];
+          continue;
+        }
+
         // ---------- 无工具调用：这是最终回复 ----------
         if (toolCalls.length === 0) {
           setIsSending(false);
           setStreamingContent('');
-          const finalReply = reply || thinking || '（模型没有返回内容，请重试）';
+          // 正文已剥离全部标签（含未闭合片段），工具调用只会出现在思考区
+          const finalReply = finalReplyText(parsed);
           setMessages(m => {
             const idx = placeholderRef.current ? m.findIndex(x => x === placeholderRef.current) : -1;
             placeholderRef.current = null;
-            if (idx >= 0) return [...m.slice(0, idx), { role: 'assistant', content: finalReply, thinking }];
+            if (idx >= 0) return [...m.slice(0, idx), { role: 'assistant', content: finalReply, thinking: thinkingDisplay }];
             // 没有占位时，尝试替换 roundMsgs 中的最后一条
             const lastMsg = roundMsgs[roundMsgs.length - 1];
             const idx2 = m.findIndex(x => x === lastMsg);
-            if (idx2 >= 0) return [...m.slice(0, idx2 + 1), { role: 'assistant', content: finalReply, thinking }];
-            return [...m, { role: 'assistant', content: finalReply, thinking }];
+            if (idx2 >= 0) return [...m.slice(0, idx2 + 1), { role: 'assistant', content: finalReply, thinking: thinkingDisplay }];
+            return [...m, { role: 'assistant', content: finalReply, thinking: thinkingDisplay }];
           });
           try { await api.saveChatMessage(sid, 'assistant', full); } catch {}
-          if (!titleGenRef.current) genTitle(sid, prompt, reply || full);
+          // 生成标题只喂清洗后的正文，避免把截断的工具调用 JSON 塞给标题模型
+          if (!titleGenRef.current) genTitle(sid, prompt, finalReply);
           return;
         }
 
         // ---------- 有工具调用：先展示思考，再执行工具 ----------
-        const placeholderMsg = { role: 'assistant' as const, content: '', thinking } as any;
+        const placeholderMsg = { role: 'assistant' as const, content: '', thinking: thinkingDisplay } as any;
         placeholderRef.current = placeholderMsg;
         setMessages(m => [...m, placeholderMsg]);
         if (!titleGenRef.current) genTitle(sid, prompt, full);
@@ -561,6 +783,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     setMessages(m => [...m, userMsg]);
     setInput("");
     setStreamingContent("");
+    // 用户刚发出消息，理应看到最新回复：恢复贴底跟随
+    resetToLatest();
+    // 立刻把高亮切到这条新提问（其锚点序号 = 之前已有的用户消息数），不必等下一帧滚动同步
+    setActiveAnchor(messages.filter(m => m.role === 'user').length);
     setIsSending(true);
     const sid = await ensureSession();
     try { await api.saveChatMessage(sid, "user", prompt); } catch {} 
@@ -602,6 +828,22 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       })()
     : messages;
 
+  /** 右侧历史锚点：每条用户消息对应一个点（顺序与 DOM 中 [data-chat-anchor] 一致） */
+  const userAnchors = allMsgs.reduce<{ index: number; preview: string }[]>((acc, msg, index) => {
+    if (msg.role === 'user') {
+      const plain = (msg.content || '').replace(/\s+/g, ' ').trim();
+      acc.push({
+        index,
+        preview: plain
+          ? (plain.length > ANCHOR_PREVIEW_LEN ? `${plain.slice(0, ANCHOR_PREVIEW_LEN)}…` : plain)
+          : '（空消息）',
+      });
+    }
+    return acc;
+  }, []);
+  /** 切换会话后旧索引可能越界，渲染前夹一下，保证总有一个点处于高亮态 */
+  const activeDotIndex = Math.min(activeAnchor, Math.max(0, userAnchors.length - 1));
+
   return (<>
     <aside
       className="ai-panel relative flex-shrink-0 border-l border-slate-200/80 bg-white flex flex-col h-full"
@@ -630,7 +872,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           读取 AI 服务商失败：{providersError}
         </div>
       )}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 chat-scrollbar">
+      {/* 消息视口：右侧锚点导轨与"回到最新"按钮都相对这一层定位，因此不会跟着内容滚动 */}
+      <div ref={messagesAreaRef} className="relative flex-1 min-h-0 flex flex-col">
+      <div
+        ref={scrollRef}
+        onScroll={handleChatScroll}
+        onWheel={releaseJumpTarget}
+        onTouchStart={releaseJumpTarget}
+        className="flex-1 min-h-0 overflow-y-auto pl-3 py-3 pr-6 space-y-3 chat-scrollbar [overflow-anchor:none]"
+      >
         {!activeProvider ? (
           <div className="empty-state"><div className="empty-state-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div><p className="empty-state-title">暂无配置</p><p className="empty-state-desc">请先配置 AI 服务商</p><button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs">立即配置</button></div>
         ) : allMsgs.length === 0 ? (
@@ -638,7 +888,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         ) : (allMsgs.map((msg, i) => {
           const msgThinking = (msg as any).thinking;
           if (msg.role === 'user') {
-            return (<div key={i} className="flex items-end gap-2.5 animate-fade-in flex-row-reverse will-change-transform" style={{ animationDelay: (Math.min(i, 5) * 15) + "ms" }}>
+            return (<div key={i} data-chat-anchor="true" className="flex items-end gap-2.5 animate-fade-in flex-row-reverse will-change-transform" style={{ animationDelay: (Math.min(i, 5) * 15) + "ms" }}>
               <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center flex-shrink-0 shadow-sm mt-1 ring-2 ring-primary-100"><svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>
               <div className="rounded-2xl rounded-br-md px-3.5 py-2 text-xs leading-relaxed whitespace-pre-wrap bg-gradient-to-br from-primary-500 to-primary-600 text-white shadow-sm max-w-[85%]">{msg.content}</div>
             </div>);
@@ -656,7 +906,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                   <span className="text-slate-300">·</span>
                   <span className="text-slate-300">{expandedThinking[i] ? "收起" : "展开"}</span>
                 </button>
-                {expandedThinking[i] && (<div className="mt-1 px-3 py-2 bg-slate-50 rounded-lg text-xs text-slate-500 leading-relaxed whitespace-pre-wrap border border-slate-100">{msgThinking}</div>)}
+                {expandedThinking[i] && (<div className="thinking-body chat-scrollbar mt-1 px-3 py-2 bg-slate-50 rounded-lg text-xs text-slate-500 leading-relaxed whitespace-pre-wrap border border-slate-100">{msgThinking}</div>)}
               </div>
             ) : null}
             <div className="text-xs leading-relaxed text-slate-700 ai-markdown px-0.5">
@@ -672,10 +922,61 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         }))}
         {isSending && !streamingContent && (<div className="flex justify-start"><div className="text-xs text-slate-400 px-3 py-2 bg-slate-50 rounded-xl inline-flex items-center gap-2"><span className="thinking-dots"><span/><span/><span/></span>思考中</div></div>)}
       </div>
+
+      {/* 右侧垂直居中的历史锚点：一眼看出发过几次提问，点一下跳到那次提问 */}
+      {userAnchors.length >= 2 && (
+        <>
+          <nav className="chat-anchor-rail" aria-label="对话历史" onScroll={hideAnchorTip}>
+            <div className="chat-anchor-rail-inner">
+              {userAnchors.map((anchor, i) => (
+                <button
+                  key={anchor.index}
+                  type="button"
+                  className={"chat-anchor-dot" + (activeDotIndex === i ? " is-active" : "")}
+                  onClick={() => jumpToAnchor(i)}
+                  onMouseEnter={(e) => showAnchorTip(i, e.currentTarget)}
+                  onMouseLeave={hideAnchorTip}
+                  onFocus={(e) => showAnchorTip(i, e.currentTarget)}
+                  onBlur={hideAnchorTip}
+                  aria-label={`跳到第 ${i + 1} 条提问：${anchor.preview}`}
+                  aria-current={activeDotIndex === i ? "true" : undefined}
+                >
+                  <span className="chat-anchor-pin" />
+                </button>
+              ))}
+            </div>
+          </nav>
+          {/* 悬浮气泡：放在导轨外面，否则会被导轨的滚动容器裁掉 */}
+          <div
+            className={"chat-anchor-tip-floating" + (anchorTip.visible ? " is-visible" : "")}
+            style={{ top: anchorTip.top }}
+            aria-hidden="true"
+          >
+            {userAnchors[Math.min(anchorTip.index, userAnchors.length - 1)]?.preview}
+          </div>
+        </>
+      )}
+
+      {/* 滚轮上滑查看历史时出现：一键回到最新回复并恢复自动跟随 */}
+      {!atBottom && allMsgs.length > 0 && (
+        <button
+          type="button"
+          className="chat-jump-latest absolute right-8 bottom-3 z-20"
+          onClick={jumpToLatest}
+          title="回到最新回复"
+          aria-label="回到最新回复"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+          </svg>
+        </button>
+      )}
+      </div>
+
       <div className="border-t border-slate-200/60 bg-white px-4 py-2.5 space-y-2 flex-shrink-0">
         <div className="relative">
           <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && e.ctrlKey) { const t = inputRef.current; if (t) { const s = t.selectionStart; setInput(input.slice(0, s) + "\n" + input.slice(t.selectionEnd)); } return; } if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); isSendingRef.current ? handleStop() : handleSend(); } }} placeholder="" rows={2} className="w-full resize-none px-3 py-2 text-xs input-modern bg-slate-50/50 focus:bg-white transition-colors" style={{ minHeight: "56px", maxHeight: "100px" }}/>
-          {messages.length > 0 && (<button onClick={() => { setMessages([]); setStreamingContent(""); }} className="absolute top-1 right-1 p-1 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors z-10" title="清空对话"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>)}
+          {messages.length > 0 && (<button onClick={() => { setMessages([]); setStreamingContent(""); resetToLatest(); }} className="absolute top-1 right-1 p-1 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors z-10" title="清空对话"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>)}
         </div>
         <div className="flex items-center gap-1.5 justify-end flex-nowrap">
           <div className="flex-shrink-1 min-w-0">

@@ -3,7 +3,7 @@ import { Category, Note } from '../types';
 import * as api from '../api';
 import { useToast } from './Toast';
 import { ContextMenu, ContextMenuItem, useContextMenu } from './ContextMenu';
-import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer } from './CategoryDrawer';
+import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem } from './CategoryDrawer';
 import { AiSparkleIcon } from './icons';
 
 /** 虚拟分组 ID：用于承载 category_id 指向已删除分组的笔记 */
@@ -81,7 +81,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const isSearching = searchQuery.trim().length > 0;
   const query = searchQuery.trim().toLowerCase();
 
-  /** 搜索时自动展开所有分组以便预览命中结果 */
+  /** 搜索命中判断；搜索模式下结果扁平化展示，不再按分组归类 */
   const matches = (note: Note) =>
     !query ||
     note.title.toLowerCase().includes(query) ||
@@ -338,10 +338,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* 分组标题 + 排序 */}
       <div className="flex items-center justify-between px-3.5 py-1.5 flex-shrink-0">
         <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-          分组
+          {isSearching ? '搜索结果' : '分组'}
           {isSearching && (
             <span className="ml-1.5 normal-case tracking-normal text-primary-500 font-medium">
-              {totalMatches} 条匹配
+              {totalMatches} 条
             </span>
           )}
         </h2>
@@ -382,22 +382,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* 抽屉列表 */}
+      {/* 搜索模式：忽略分组，扁平展示全部命中笔记；否则展示分组抽屉列表 */}
       <div
         className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-3 min-h-0 drawer-scroll"
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes('text/plain')) e.preventDefault();
         }}
       >
+        {isSearching ? (
+          sortedAllNotes.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 px-4">
+              <div className="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
+                <svg className="w-5 h-5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <p className="text-xs text-slate-400">无匹配笔记</p>
+              <p className="text-[10px] text-slate-300 mt-1">换个关键词试试</p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {sortedAllNotes.map((note) => (
+                <DrawerNoteItem
+                  key={note.id}
+                  note={note}
+                  isSelected={selectedNoteId === note.id}
+                  isFocused={focusNoteId === note.id}
+                  onSelectNote={onSelectNote}
+                  onDeleteNote={onDeleteNote}
+                  onContextMenu={(e, target) => {
+                    noteContextMenuRef.current = target;
+                    handleContextMenu(e);
+                  }}
+                />
+              ))}
+            </div>
+          )
+        ) : (
         <div className="space-y-0.5">
           {/* 全部笔记 */}
           <CategoryDrawer
             category={null}
             notes={sortedAllNotes}
             isExpanded={expandedDrawer === 'all'}
-            isForcedOpen={isSearching}
             isAllNotes={true}
-            isSearching={isSearching}
             selectedNoteId={selectedNoteId}
             focusNoteId={focusNoteId}
             onToggle={() => onToggleDrawer('all')}
@@ -415,8 +443,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <UncategorizedDrawer
             notes={uncategorizedNotes}
             isExpanded={expandedDrawer === 'uncategorized'}
-            isForcedOpen={isSearching}
-            isSearching={isSearching}
             selectedNoteId={selectedNoteId}
             focusNoteId={focusNoteId}
             onToggle={() => onToggleDrawer('uncategorized')}
@@ -432,7 +458,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <ChildNotesDrawer
               notes={categorized.get(ORPHAN_GROUP_ID) || []}
               isExpanded={expandedDrawer === ORPHAN_GROUP_ID}
-              isForcedOpen={isSearching}
               selectedNoteId={selectedNoteId}
               focusNoteId={focusNoteId}
               onToggle={() => onToggleDrawer(ORPHAN_GROUP_ID)}
@@ -484,9 +509,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   category={category}
                   notes={ownNotes}
                   isExpanded={expandedDrawer === category.id}
-                  isForcedOpen={isSearching}
                   isAllNotes={false}
-                  isSearching={isSearching}
                   selectedNoteId={selectedNoteId}
                   focusNoteId={focusNoteId}
                   onToggle={() => onToggleDrawer(category.id)}
@@ -506,6 +529,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
         </div>
+        )}
       </div>
 
       {/* 底部统计 */}

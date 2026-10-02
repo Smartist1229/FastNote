@@ -625,6 +625,165 @@ button:focus-visible {
   background: #cbd5e1;
 }
 
+/* ========== AI 对话历史锚点（右侧垂直居中的"目录"） ========== */
+.chat-anchor-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 4px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 点很多时导轨内部可滚动，但绝不显示滚动条（width/height 双清零，兼容各内核） */
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* 只有圆点接收鼠标事件：导轨空白处仍能把滚轮交给聊天区 */
+  pointer-events: none;
+}
+.chat-anchor-rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.chat-anchor-rail-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  /* 放得下时垂直居中；放不下时从顶部排列并可滚动 */
+  margin: auto 0;
+  pointer-events: none;
+}
+
+.chat-anchor-dot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  pointer-events: auto;
+}
+
+.chat-anchor-pin {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transform-origin: center;
+  transition:
+    width 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.2s ease,
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.22s ease;
+}
+.chat-anchor-dot:hover .chat-anchor-pin {
+  background: #818cf8;
+  transform: scale(1.45);
+}
+.chat-anchor-dot.is-active .chat-anchor-pin {
+  width: 15px;
+  background: linear-gradient(90deg, #818cf8, #4f46e5);
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.14);
+}
+.chat-anchor-dot.is-active:hover .chat-anchor-pin {
+  transform: scale(1.06);
+}
+
+/*
+ * 悬浮气泡：必须渲染在导轨之外。
+ * 导轨为了能滚动而设置了 overflow-y: auto，横向的 visible 会被算成 auto，
+ * 放在里面的气泡会被直接裁掉（这就是"鼠标移入什么都不显示"的原因）。
+ */
+.chat-anchor-tip-floating {
+  position: absolute;
+  right: 26px;
+  z-index: 21;
+  width: max-content;
+  max-width: 220px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgb(30 41 59 / 0.95);
+  color: #f8fafc;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  box-shadow: 0 8px 20px -8px rgb(15 23 42 / 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(8px, -50%) scale(0.96);
+  transform-origin: right center;
+  transition:
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-anchor-tip-floating.is-visible {
+  opacity: 1;
+  transform: translate(0, -50%) scale(1);
+}
+
+/* 深度思考正文：限高 + 内部滚动，保证"展开/收起"按钮始终留在视野内 */
+.thinking-body {
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 一键回到最新回复 */
+.chat-jump-latest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: #6366f1;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 14px -4px rgb(15 23 42 / 0.18);
+  transition:
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
+  animation: chatJumpLatestIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-jump-latest:hover {
+  color: #4f46e5;
+  border-color: #c7d2fe;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px -6px rgb(79 70 229 / 0.35);
+}
+.chat-jump-latest:active {
+  transform: translateY(0) scale(0.94);
+}
+@keyframes chatJumpLatestIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 /* AI 消息头像 */
 .ai-avatar {
   width: 28px;

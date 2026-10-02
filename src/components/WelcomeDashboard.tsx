@@ -59,9 +59,9 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   };
 
   return (
-    <div className="h-full flex flex-col">
-      {/* 顶部渐变区域 */}
-      <div className="relative bg-gradient-to-br from-primary-50 via-white to-indigo-50 px-8 pt-12 pb-8 flex-shrink-0">
+    <div className="h-full w-full min-w-0 flex flex-col overflow-y-auto overflow-x-hidden">
+      {/* 顶部渐变区域（overflow-hidden 裁掉装饰光斑，避免撑出横向滚动） */}
+      <div className="relative overflow-hidden bg-gradient-to-br from-primary-50 via-white to-indigo-50 px-8 pt-12 pb-8 flex-shrink-0">
         {/* 装饰元素 */}
         <div className="absolute top-0 right-0 w-64 h-64 bg-primary-100/30 rounded-full blur-3xl -translate-y-1/2 translate-x-1/4" />
         <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-100/20 rounded-full blur-3xl translate-y-1/3 -translate-x-1/4" />
@@ -100,7 +100,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
 
       {/* 快捷操作 */}
       <div className="px-8 py-6 flex-shrink-0">
-        <div className="flex items-center gap-3 animate-slideUp" style={{ animationDelay: "0.1s" }}>
+        <div className="flex flex-wrap items-center gap-3 animate-slideUp" style={{ animationDelay: "0.1s" }}>
           <button
             onClick={onCreateNote}
             className="btn-primary px-5 py-2.5 text-sm font-medium flex items-center gap-2"

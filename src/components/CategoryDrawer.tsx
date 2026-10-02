@@ -5,10 +5,7 @@ interface CategoryDrawerProps {
   category: Category | null;
   notes: Note[];
   isExpanded: boolean;
-  /** 搜索时强制展开（但用户点击仍可收起） */
-  isForcedOpen?: boolean;
   isAllNotes: boolean;
-  isSearching: boolean;
   selectedNoteId: number | null;
   focusNoteId: number | null;
   onToggle: () => void;
@@ -56,8 +53,8 @@ export const getNotePreview = (content: string) => {
   return plain || '暂无内容';
 };
 
-/** 笔记卡片：抽屉内的单条笔记 */
-const DrawerNoteItem: React.FC<{
+/** 笔记卡片：抽屉内的单条笔记（搜索模式下也复用它渲染扁平结果列表） */
+export const DrawerNoteItem: React.FC<{
   note: Note;
   isSelected: boolean;
   isFocused: boolean;
@@ -149,9 +146,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   category,
   notes,
   isExpanded,
-  isForcedOpen = false,
   isAllNotes,
-  isSearching,
   selectedNoteId,
   focusNoteId,
   onToggle,
@@ -163,8 +158,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
 }) => {
   const noteListId = `drawer-notes-${category ? category.id : 'all'}`;
   const headerRef = useRef<HTMLButtonElement>(null);
-  // 搜索时强制展开；用户点击仍可单独收起
-  const open = isExpanded || isForcedOpen;
+  const open = isExpanded;
 
   const headerBase =
     'relative w-full text-left px-2.5 py-2 rounded-xl transition-all duration-200 flex items-center gap-2 group/drawer border';
@@ -264,9 +258,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         <div className="overflow-hidden">
           <div className="pt-1 pb-1.5 pl-2 pr-0.5 ml-3.5 border-l border-slate-200/70">
             {notes.length === 0 ? (
-              <p className="text-[11px] text-slate-300 py-2 pl-2">
-                {isSearching ? '无匹配笔记' : '暂无笔记'}
-              </p>
+              <p className="text-[11px] text-slate-300 py-2 pl-2">暂无笔记</p>
             ) : (
               <div className="space-y-1 pl-1.5">
                 {notes.map((note) => (
@@ -293,8 +285,6 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
 export const UncategorizedDrawer: React.FC<{
   notes: Note[];
   isExpanded: boolean;
-  isForcedOpen?: boolean;
-  isSearching: boolean;
   selectedNoteId: number | null;
   focusNoteId: number | null;
   onToggle: () => void;
@@ -304,8 +294,6 @@ export const UncategorizedDrawer: React.FC<{
 }> = ({
   notes,
   isExpanded,
-  isForcedOpen = false,
-  isSearching,
   selectedNoteId,
   focusNoteId,
   onToggle,
@@ -314,7 +302,7 @@ export const UncategorizedDrawer: React.FC<{
   onNoteContextMenu,
 }) => {
   const noteListId = 'drawer-notes-uncategorized';
-  const open = isExpanded || isForcedOpen;
+  const open = isExpanded;
   return (
     <div className="drawer-item">
       {/* 不做 disabled：与普通分组行为一致，空时也能展开看到"暂无笔记" */}
@@ -362,9 +350,7 @@ export const UncategorizedDrawer: React.FC<{
         <div className="overflow-hidden">
           <div className="pt-1 pb-1.5 pl-2 pr-0.5 ml-3.5 border-l border-slate-200/70">
             {notes.length === 0 ? (
-              <p className="text-[11px] text-slate-300 py-2 pl-2">
-                {isSearching ? '无匹配笔记' : '暂无笔记'}
-              </p>
+              <p className="text-[11px] text-slate-300 py-2 pl-2">暂无笔记</p>
             ) : (
               <div className="space-y-1 pl-1.5">
                 {notes.map((note) => (
@@ -391,7 +377,6 @@ export const UncategorizedDrawer: React.FC<{
 export const ChildNotesDrawer: React.FC<{
   notes: Note[];
   isExpanded: boolean;
-  isForcedOpen?: boolean;
   selectedNoteId: number | null;
   focusNoteId: number | null;
   onToggle: () => void;
@@ -401,7 +386,6 @@ export const ChildNotesDrawer: React.FC<{
 }> = ({
   notes,
   isExpanded,
-  isForcedOpen = false,
   selectedNoteId,
   focusNoteId,
   onToggle,
@@ -410,7 +394,7 @@ export const ChildNotesDrawer: React.FC<{
   onNoteContextMenu,
 }) => {
   const noteListId = 'drawer-notes-children';
-  const open = isExpanded || isForcedOpen;
+  const open = isExpanded;
   return (
     <div className="drawer-item mt-0.5">
       <button
