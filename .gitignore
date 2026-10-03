@@ -11,11 +11,6 @@ node_modules
 dist
 dist-ssr
 *.local
-release
-.vscode
-dist-electron
-README.md
-package-lock.json
 
 # Editor directories and files
 .vscode/*
@@ -27,4 +22,33 @@ package-lock.json
 *.njsproj
 *.sln
 *.sw?
-out/
+
+# Custom files not to commit
+data/
+src-tauri/target/
+src-tauri/gen/schemas/
+*.db
+*.sqlite
+*.sqlite3
+*.exe
+*.pdb
+*.dll
+*.lib
+*.exp
+*.rlib
+*.rmeta
+*.d
+*.dylib
+*.so
+*.a
+
+pnpm-lock.yaml
+.codegraph
+.vscode
+.vscode/
+.kunsdd
+.kunsdd/
+.reasonix
+.reasonix/
+.codepilot-uploads
+.codepilot-uploads/

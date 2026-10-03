@@ -1,2 +1,0 @@
-export type ToolbarTips = 'bold' | 'underline' | 'italic' | 'strikeThrough' | 'title' | 'sub' | 'sup' | 'quote' | 'unorderedList' | 'orderedList' | 'task' | 'codeRow' | 'code' | 'link' | 'image' | 'table' | 'mermaid' | 'katex' | 'revoke' | 'next' | 'save' | 'prettier' | 'pageFullscreen' | 'fullscreen' | 'preview' | 'previewOnly' | 'htmlPreview' | 'catalog' | 'github' | '-' | '=';
-export type Footers = '=' | 'markdownTotal' | 'scrollSwitch' | number; 

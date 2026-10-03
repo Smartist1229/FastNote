@@ -1,0 +1,983 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ========== CSS 变量 ========== */
+:root {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f8fafc;
+  --color-border: #e2e8f0;
+  --color-border-light: #f1f5f9;
+  --color-text: #0f172a;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+  --color-accent: #6366f1;
+  --color-accent-light: #eef2ff;
+  --color-accent-hover: #4f46e5;
+  --color-danger: #ef4444;
+  --color-danger-light: #fef2f2;
+  --color-success: #10b981;
+  --color-success-light: #ecfdf5;
+  --color-warning: #f59e0b;
+  --color-warning-light: #fffbeb;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.03);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.04);
+  --shadow-lg: 0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06);
+
+  /* ========== 运动系统 ========== */
+  /* 缓动曲线：iOS 风格的"快起慢收"，末段几乎无加速度，观感更顺滑 */
+  --ease-out-soft: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.35, 0.5, 1);
+  --ease-in-out-soft: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 时长阶梯 */
+  --duration-instant: 100ms;
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 280ms;
+
+  /* 结构级动画时长：需要更大的位移，因此更长、更慢 */
+  --duration-panel: 320ms;
+  --duration-drawer: 340ms;
+  --duration-sidebar: 420ms;
+
+  /* 交互反馈（按钮/卡片等小元素） */
+  --transition-fast: var(--duration-fast) var(--ease-out-soft);
+  --transition-base: var(--duration-base) var(--ease-out-soft);
+  --transition-smooth: var(--duration-slow) var(--ease-out-fluid);
+
+  /* 结构级过渡 */
+  --transition-drawer: grid-template-rows var(--duration-drawer) var(--ease-out-soft),
+    opacity var(--duration-slow) var(--ease-out-soft);
+  --transition-sidebar: width var(--duration-sidebar) var(--ease-out-soft),
+    min-width var(--duration-sidebar) var(--ease-out-soft),
+    max-width var(--duration-sidebar) var(--ease-out-soft),
+    opacity var(--duration-base) var(--ease-out-soft);
+  --transition-panel: width var(--duration-panel) var(--ease-out-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 1ms;
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+    --duration-slow: 1ms;
+    --duration-panel: 1ms;
+    --duration-drawer: 1ms;
+    --duration-sidebar: 1ms;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-delay: 0ms !important;
+  }
+}
+
+/* ========== 基础样式 ========== */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Segoe UI", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-bg);
+  color: var(--color-text);
+  overflow: hidden;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+/* ========== 自定义滚动条 ========== */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+  transition: background var(--transition-fast);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ========== 选中颜色 ========== */
+::selection {
+  background: #c7d2fe;
+  color: #312e81;
+}
+
+/* ========== 列表样式 ========== */
+ol li:not(.task-list-item) { list-style-type: decimal !important; }
+ul li:not(.task-list-item) { list-style-type: disc !important; }
+/* md-editor-rt 的任务列表项不应显示项目符号 */
+li.task-list-item { list-style: none !important; list-style-type: none !important; }
+/* 让复选框和文字垂直对齐 */
+li.task-list-item input[type="checkbox"] { vertical-align: middle; margin-right: 4px; }
+
+/* ========== 用户选择 ========== */
+button, select, .select-none { user-select: none; }
+input, textarea, [contenteditable="true"],
+.monaco-editor, .md-editor, .cm-editor { user-select: text; }
+
+/*
+ * 拖动滚动条时不得选中正文。
+ *
+ * 上面 .monaco-editor / .md-editor 的 user-select: text 会覆盖滚动条默认的
+ * user-select: none，导致拖滚动条时"既选中文字又滚动"。注意 md-editor-rt
+ * 用的是自绘滚动条（custom-scrollbar），不是原生滚动条，因此必须针对它
+ * 的真实结构单独声明 —— ::-webkit-scrollbar 那套在这里是无效的。
+ *
+ * md-editor-rt 的实现：在 .md-editor-custom-scrollbar__thumb 上挂 mousedown
+ * 开始拖动，但从不调用 preventDefault。
+ */
+.md-editor-custom-scrollbar__track,
+.md-editor-custom-scrollbar__thumb {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Monaco 自绘滚动条同样需要抢回选择性 */
+.monaco-scrollable-element > .scrollbar,
+.monaco-scrollable-element > .scrollbar > .slider {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 兜底：拖动过程中（JS 给 body 加 is-dragging-scrollbar）禁止选中 */
+body.is-dragging-scrollbar,
+body.is-dragging-scrollbar * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* ========== 焦点环 ========== */
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-accent-light), 0 0 0 4px var(--color-accent);
+}
+
+/* ========== 全局滚动容器 ========== */
+.overflow-y-auto,
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ========== 动画 ========== */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* 动画结束态与静态样式一致，因此不需要 forwards/both 保留填充——
+   保留填充会让元素长期停在合成层上，文字失去次像素抗锯齿而发虚 */
+.animate-fadeIn { animation: fadeIn var(--transition-base) backwards; }
+.animate-slideUp { animation: slideUp var(--duration-sidebar) var(--ease-out-soft) backwards; }
+.animate-scaleIn { animation: scaleIn var(--duration-base) var(--ease-out-soft) backwards; }
+.animate-pulse-dot { animation: pulseDot 1.5s ease-in-out infinite; }
+
+/* ========== 笔记卡片 ========== */
+.note-card {
+  transition: transform var(--transition-base), box-shadow var(--transition-base),
+    background-color var(--transition-base), border-color var(--transition-base);
+}
+.note-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+.note-card:active {
+  transform: translateY(0) scale(0.985);
+}
+.note-card-selected {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 4px 16px -2px rgb(99 102 241 / 0.35);
+}
+.note-card-selected:hover {
+  transform: none;
+  box-shadow: 0 4px 16px -2px rgb(99 102 241 / 0.35);
+}
+
+/* ========== 抽屉式分组（分组与笔记融合） ========== */
+/* 使用 grid-template-rows 0fr -> 1fr 实现高度自适应的展开/收起动画。
+   收起时让透明度先降完，避免文字在高度压缩过程中被"挤压变形"显得脏。 */
+.drawer-notes-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: var(--transition-drawer);
+  transition-delay: 0ms, 40ms;
+}
+.drawer-notes-grid.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition-delay: 0ms, 0ms;
+}
+.drawer-notes-grid > * {
+  min-height: 0;
+}
+
+.drawer-item {
+  border-radius: 12px;
+  transition: background-color var(--transition-fast);
+}
+
+/* AI 打开笔记时的聚焦高亮 */
+.note-focus-ring {
+  animation: noteFocusPulse 2.4s ease-out 1;
+  border-color: #a5b4fc !important;
+}
+@keyframes noteFocusPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(99 102 241 / 0.55);
+    background-color: #eef2ff;
+  }
+  30% {
+    box-shadow: 0 0 0 5px rgb(99 102 241 / 0.18);
+    background-color: #eef2ff;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(99 102 241 / 0);
+    background-color: transparent;
+  }
+}
+
+/* 侧边栏抽屉滚动条 */
+.drawer-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #e2e8f0 transparent;
+  /* 常驻滚动条槽位：滚动条出现/消失时内容宽度不再变化，展开分组不会"挤压" */
+  scrollbar-gutter: stable;
+}
+.drawer-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.drawer-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.drawer-scroll::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 3px;
+}
+.drawer-scroll::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* ========== 侧边栏折叠 / 唤出把手 ========== */
+.sidebar-shell {
+  width: 272px;
+  min-width: 272px;
+  max-width: 272px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow: hidden;
+  /* 只过渡宽度：内层内容保持固定宽度，折叠时不会重新排版，因此非常顺滑 */
+  transition: var(--transition-sidebar);
+  will-change: width;
+}
+.sidebar-shell.is-collapsed {
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+/* 固定内层宽度，避免折叠过程中文字逐帧回流 */
+.sidebar-shell > * {
+  width: 272px;
+  min-width: 272px;
+}
+
+/* 折叠后停留在左边缘的把手：平时隐藏，鼠标移到左边缘才浮现 */
+/* 左边缘感应区：透明，悬停即触发把手浮现 */
+.sidebar-reveal-zone {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  z-index: 95;
+}
+.sidebar-reveal {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 96;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 22px;
+  padding: 12px 0;
+  border: 1px solid var(--color-border);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+  background: #ffffff;
+  color: var(--color-text-muted);
+  box-shadow: 2px 0 10px -2px rgb(15 23 42 / 0.16);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transform: translate(-6px, -50%);
+  transition: opacity var(--duration-base) var(--ease-out-soft),
+    transform var(--duration-base) var(--ease-out-soft),
+    background-color var(--duration-fast) var(--ease-out-soft),
+    color var(--duration-fast) var(--ease-out-soft),
+    width var(--duration-base) var(--ease-out-soft);
+}
+/* 由 React 状态或键盘聚焦触发显示 */
+.sidebar-reveal.is-visible,
+.sidebar-reveal:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(0, -50%);
+}
+.sidebar-reveal.is-visible:hover {
+  background: var(--color-accent);
+  color: #ffffff;
+  width: 26px;
+}
+.sidebar-reveal-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 2px;
+  line-height: 1;
+}
+
+/* ========== 侧边栏头部按钮 ========== */
+.sidebar-header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.sidebar-header-btn:hover {
+  background: #ffffff;
+  color: var(--color-accent);
+  box-shadow: var(--shadow-xs);
+}
+.sidebar-header-btn:active {
+  transform: scale(0.92);
+}
+.sidebar-header-btn.is-active {
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+.sidebar-header-btn svg {
+  transition: transform var(--transition-smooth);
+}
+.sidebar-header-btn.is-collapsed svg {
+  transform: rotate(180deg);
+}
+
+/* ========== AI 面板 ========== */
+.ai-panel {
+  /*
+   * 用 backwards 而不是 both：both 会永久保留 translateX(0) 这个最终关键帧，
+   * 面板因此始终是一个合成层，Chromium 在合成层上会关闭 LCD 次像素抗锯齿，
+   * 面板里的所有文字都会发虚。backwards 只在动画开始前保持初始态，结束后立刻释放。
+   */
+  animation: panelIn var(--duration-panel) var(--ease-out-soft) backwards;
+  /* 拖拽调宽时由 JS 直接改宽度，过渡会让手感发粘，因此只在非拖拽时生效 */
+  transition: var(--transition-panel);
+}
+.ai-panel.is-resizing {
+  transition: none;
+}
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ========== 通用交互过渡 ========== */
+/* 让 hover/active 类反馈统一走同一套缓动，避免各处快慢不一 */
+.toolbar-btn,
+.btn-primary,
+.btn-ghost {
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast), box-shadow var(--transition-fast),
+    transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+/* 小元素按压反馈：统一用轻微缩放代替生硬跳变 */
+.toolbar-btn:active,
+.btn-ghost:active {
+  transform: scale(0.94);
+}
+
+/* ========== 编辑器容器 ========== */
+.editor-container { position: relative; }
+/* 编辑器层：包住 NoteEditor，使其撑满内容区 */
+.editor-layer { height: 100%; }
+
+/* ========== Modal 动画 ========== */
+/* 同样用 backwards：保留最终帧会让弹层长期处于合成层，里面的文字发虚 */
+.modal-overlay {
+  animation: fadeIn var(--duration-base) var(--ease-out-soft) backwards;
+}
+.modal-content {
+  animation: scaleIn var(--duration-slow) var(--ease-out-soft) backwards;
+}
+
+/* ========== 分类列表项交互 ========== */
+.category-item {
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+}
+.category-item:hover .category-actions {
+  opacity: 1;
+}
+.category-actions {
+  transition: opacity var(--transition-fast);
+}
+
+/* ========== 输入框通用样式 ========== */
+.input-modern {
+  background: var(--color-surface);
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+}
+.input-modern:hover {
+  border-color: #cbd5e1;
+}
+.input-modern:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-light);
+  outline: none;
+}
+
+/* ========== 按钮通用样式 ========== */
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-lg);
+  font-weight: 500;
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+  box-shadow: 0 1px 3px rgb(99 102 241 / 0.3);
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  box-shadow: 0 4px 12px rgb(99 102 241 / 0.35);
+  transform: translateY(-1px);
+}
+.btn-primary:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgb(99 102 241 / 0.3);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: none;
+  border-radius: var(--radius-lg);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+}
+.btn-ghost:hover {
+  background: #f1f5f9;
+  color: var(--color-text);
+}
+
+/* ========== 分隔线 ========== */
+.divider {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* ========== 侧边栏背景 ========== */
+.sidebar-bg {
+  background: linear-gradient(180deg, #fafbff 0%, #f8fafc 100%);
+}
+
+/* ========== 标题输入框 ========== */
+.title-input {
+  background: transparent;
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-lg);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+}
+.title-input:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+.title-input:focus {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 3px var(--color-accent-light);
+  outline: none;
+}
+
+/* ========== 工具栏按钮 ========== */
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.toolbar-btn:hover {
+  background: #f1f5f9;
+  color: var(--color-text-secondary);
+}
+.toolbar-btn:active {
+  background: #e2e8f0;
+}
+
+/* ========== 徽章 ========== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* ========== 统计卡片玻璃效果 ========== */
+.glass-card {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+}
+
+/* ========== 右键菜单 ========== */
+.shadow-elevated {
+  box-shadow: 0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06);
+}
+
+/* ========== AI 聊天面板样式 ========== */
+
+/* 聊天面板滚动条 */
+.chat-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+.chat-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* ========== AI 对话历史锚点（右侧垂直居中的"目录"，横线样式） ========== */
+.chat-anchor-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 5px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-end;
+  /* 条数由 JS 按可用高度采样，永远不会溢出，所以这里不需要滚动条 */
+  overflow: hidden;
+  padding: 10px 0;
+  /* 只有横线本身接收鼠标事件：空白处仍把滚轮交给聊天区 */
+  pointer-events: none;
+}
+.chat-anchor-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+/* 每条的点击热区（横线很细，热区给足高度才好点）。
+   宽度 24px：正好容纳"选中 + 波浪"放大后的最长横线，绝不越界压到正文 */
+.chat-anchor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  pointer-events: auto;
+}
+
+/* 横线本体：只动 transform（scaleX/scaleY），不动 width，避免每帧重排 */
+.chat-anchor-line {
+  display: block;
+  width: 11px;
+  height: 2px;
+  border-radius: 999px;
+  background: #dbe2ec;
+  transform-origin: right center;
+  transition:
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.18s ease,
+    box-shadow 0.22s ease,
+    opacity 0.18s ease;
+}
+.chat-anchor-bar:hover .chat-anchor-line {
+  background: #8b93f8;
+}
+/* 当前正在查看的那条：更长、更亮，带一点光晕 */
+.chat-anchor-bar.is-active .chat-anchor-line {
+  background: linear-gradient(90deg, #8b93f8, #4f46e5);
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
+}
+
+/*
+ * 悬浮气泡：必须渲染在导轨之外。
+ * 导轨为了能滚动而设置了 overflow-y: auto，横向的 visible 会被算成 auto，
+ * 放在里面的气泡会被直接裁掉（这就是"鼠标移入什么都不显示"的原因）。
+ */
+.chat-anchor-tip-floating {
+  position: absolute;
+  right: 32px;
+  z-index: 21;
+  width: max-content;
+  max-width: 220px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgb(30 41 59 / 0.95);
+  color: #f8fafc;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  box-shadow: 0 8px 20px -8px rgb(15 23 42 / 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(8px, -50%) scale(0.96);
+  transform-origin: right center;
+  transition:
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-anchor-tip-floating.is-visible {
+  opacity: 1;
+  transform: translate(0, -50%) scale(1);
+}
+
+/* 深度思考正文：限高 + 内部滚动，保证"展开/收起"按钮始终留在视野内 */
+.thinking-body {
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 一键回到最新回复 */
+.chat-jump-latest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: #6366f1;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 14px -4px rgb(15 23 42 / 0.18);
+  transition:
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
+  animation: chatJumpLatestIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-jump-latest:hover {
+  color: #4f46e5;
+  border-color: #c7d2fe;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px -6px rgb(79 70 229 / 0.35);
+}
+.chat-jump-latest:active {
+  transform: translateY(0) scale(0.94);
+}
+@keyframes chatJumpLatestIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* AI 消息头像 */
+.ai-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #6366f1, #818cf8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+}
+
+/* 用户消息气泡 */
+.user-bubble {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: white;
+  border-radius: 18px 18px 4px 18px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
+}
+
+/* AI 消息气泡 */
+.ai-bubble {
+  background: #ffffff;
+  border: 1px solid #f1f5f9;
+  border-radius: 18px 18px 18px 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+/* 思考中动画容器 */
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.thinking-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: thinkingBounce 1.4s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes thinkingBounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 空状态容器 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+.empty-state-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #eef2ff, #e0e7ff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6366f1;
+}
+.empty-state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.empty-state-desc {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+/* 消息入场动画 */
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.message-enter {
+  animation: messageIn var(--duration-slow) var(--ease-out-soft) backwards;
+}
+
+/* 底部操作栏 */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  background: #f8fafc;
+  border-radius: 10px;
+}
+.chat-toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: #94a3b8;
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.chat-toolbar-btn:hover {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+/* 悬浮导航按钮容器 */
+.nav-floating {
+  position: absolute;
+  right: -14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nav-floating-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #64748b;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  transition: background-color var(--transition-base), color var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base), opacity var(--transition-base);
+}
+.nav-floating-btn:hover:not(:disabled) {
+  background: #eef2ff;
+  color: #6366f1;
+  border-color: #c7d2fe;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
+  transform: scale(1.05);
+}
+.nav-floating-btn:disabled {
+  background: #f8fafc;
+  color: #cbd5e1;
+  border-color: #f1f5f9;
+  cursor: not-allowed;
+}
+
+/* 消息操作按钮 */
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #94a3b8;
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+  cursor: pointer;
+}
+.msg-action-btn:hover {
+  background: #eef2ff;
+  color: #6366f1;
+  border-color: #c7d2fe;
+}
+
+/* ========== MdPreview 字号覆盖（对齐编程 Agent 的正文观感） ========== */
+.ai-markdown .md-editor-preview,
+.ai-markdown .md-editor-preview p,
+.ai-markdown .md-editor-preview li,
+.ai-markdown .md-editor-preview td,
+.ai-markdown .md-editor-preview th {
+  font-size: 13px !important;
+  line-height: 1.75 !important;
+}

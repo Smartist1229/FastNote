@@ -1,12 +1,84 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FastNote</title>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+      
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      
+      #splash {
+        position: fixed; inset: 0; z-index: 9999;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 50%, #f1f5f9 100%);
+        transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        font-family: 'Inter', -apple-system, sans-serif;
+      }
+      #splash.hidden { opacity: 0; pointer-events: none; }
+      
+      .splash-logo {
+        width: 56px; height: 56px;
+        background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+        border-radius: 16px;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 8px 24px -4px rgb(99 102 241 / 0.35);
+        margin-bottom: 20px;
+        animation: logoPulse 2s ease-in-out infinite;
+      }
+      
+      @keyframes logoPulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 8px 24px -4px rgb(99 102 241 / 0.35); }
+        50% { transform: scale(1.05); box-shadow: 0 12px 32px -4px rgb(99 102 241 / 0.45); }
+      }
+      
+      .splash-logo svg { width: 28px; height: 28px; color: white; }
+      
+      .splash-title {
+        font-size: 20px; font-weight: 700;
+        background: linear-gradient(135deg, #312e81, #6366f1);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 24px;
+        letter-spacing: -0.02em;
+      }
+      
+      .splash-bar {
+        width: 120px; height: 3px;
+        background: #e2e8f0;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .splash-bar::after {
+        content: '';
+        display: block;
+        width: 40%; height: 100%;
+        background: linear-gradient(90deg, #6366f1, #818cf8);
+        border-radius: 2px;
+        animation: loading 1.2s ease-in-out infinite;
+      }
+      
+      @keyframes loading {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="./src/main.ts"></script>
-    <script src="./electron/renderer.js" type="module"></script>
+    <div id="splash">
+      <div class="splash-logo">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
+      </div>
+      <div class="splash-title">FastNote</div>
+      <div class="splash-bar"></div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
