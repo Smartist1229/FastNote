@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import * as api from "../api";
-import { AiChatMessage, AiChatSession, AiProvider } from "../types";
+import { AiChatMessage, AiChatSession, AiProvider, AiPromptEntry, AiSettings } from "../types";
 import {
   buildFinalContent,
   cleanSessionTitle,
+  compressTranscript,
   finalReplyText,
   firstLine,
   formatError,
   hasActionClaim,
   isThinkingDeepEnough,
+  localSummaryFallback,
   parseResponse,
   parseStreamContent,
+  selectContextWindow,
   shouldRetryForShallowThinking,
   streamStartsWithThinking,
   stripAiTags,
@@ -30,6 +33,12 @@ interface AIChatPanelProps {
   onInsertText: (text: string) => void;
   onReplaceContent: (text: string) => void;
   onOpenProviderSettings: () => void;
+  /** 打开「AI 记忆 / 前置提示词」设置 */
+  onOpenAiMemory: () => void;
+  /** 用户自定义的前置提示词与长期记忆（启用中的会追加到系统提示词） */
+  aiPrompts: AiPromptEntry[];
+  /** 统一设置窗口里的 AI 设置 */
+  aiSettings: AiSettings;
   /** 关闭面板 */
   onClose?: () => void;
 }
@@ -47,8 +56,10 @@ const ANCHOR_PREVIEW_LEN = 80;
 const TOOL_DEFS = [
   { name: "searchNotes", desc: "搜索笔记标题", args: {"query":"搜索关键词"}, needsConfirm: false },
   { name: "listNotes", desc: "列出笔记（可按分组/数量）", args: {"categoryName":"分组名(可选)","limit":"条数(可选)"}, needsConfirm: false },
-  { name: "getNoteContent", desc: "获取笔记全文", args: {"noteId":"笔记ID"}, needsConfirm: false },
+  { name: "getNoteContent", desc: "获取笔记正文（默认前200行，可指定行范围）", args: {"noteId":"笔记ID","startLine":"起始行(可选)","lineCount":"行数(可选)"}, needsConfirm: false },
   { name: "getCurrentNote", desc: "读取当前打开的笔记", args: {}, needsConfirm: false },
+  { name: "readNoteLines", desc: "按行范围读取长文", args: {"noteId":"笔记ID","startLine":"起始行","lineCount":"行数(可选)"}, needsConfirm: false },
+  { name: "findInNote", desc: "按内容定位行号（grep -n）", args: {"noteId":"笔记ID","query":"要找的内容","contextLines":"附带上下文行数(可选,0-3)","limit":"最多返回几处(可选)"}, needsConfirm: false },
   { name: "getCategories", desc: "获取所有分组", args: {}, needsConfirm: false },
   { name: "listTrash", desc: "查看回收站", args: {}, needsConfirm: false },
   { name: "createNote", desc: "创建笔记", args: {"title":"标题","content":"内容(可选)","categoryName":"分组名(可选)"}, needsConfirm: true },
@@ -56,6 +67,10 @@ const TOOL_DEFS = [
   { name: "appendToNote", desc: "在笔记末尾追加内容（不覆盖）", args: {"noteId":"笔记ID(可选)","text":"要追加的正文"}, needsConfirm: true },
   { name: "updateNote", desc: "按 ID 修改指定笔记", args: {"noteId":"笔记ID","title":"新标题(可选)","content":"新内容(可选)","categoryName":"新分组名(可选)"}, needsConfirm: true },
   { name: "updateCurrentNote", desc: "修改当前打开的笔记（无需 ID，精确作用于用户正在看的那一篇）", args: {"title":"新标题(可选)","content":"新内容(覆盖正文)","categoryName":"新分组名(可选)"}, needsConfirm: true },
+  { name: "replaceLines", desc: "按行替换指定区间（只改这一段）", args: {"noteId":"笔记ID","startLine":"起始行","endLine":"结束行","text":"替换后的内容"}, needsConfirm: true },
+  { name: "insertLines", desc: "在指定行之后插入内容", args: {"noteId":"笔记ID","afterLine":"插到这一行之后(0=最前)","text":"插入的内容"}, needsConfirm: true },
+  { name: "deleteLines", desc: "删除指定行区间", args: {"noteId":"笔记ID","startLine":"起始行","endLine":"结束行"}, needsConfirm: true },
+  { name: "replaceInNote", desc: "定点替换文本（不用整篇覆盖）", args: {"noteId":"笔记ID","oldText":"原文","newText":"替换为","replaceAll":"是否全部替换(可选)"}, needsConfirm: true },
   { name: "deleteNote", desc: "删除笔记(移到回收站)", args: {"noteId":"笔记ID"}, needsConfirm: true },
   { name: "restoreNote", desc: "从回收站还原笔记", args: {"noteId":"笔记ID"}, needsConfirm: true },
   { name: "deleteFromTrash", desc: "彻底删除回收站中的笔记(不可恢复)", args: {"noteId":"笔记ID"}, needsConfirm: true },
@@ -73,6 +88,8 @@ const TOOL_LABELS: Record<string, string> = {
   listNotes: "列出笔记",
   getNoteContent: "读取笔记",
   getCurrentNote: "读取当前笔记",
+  readNoteLines: "读取行范围",
+  findInNote: "定位行号",
   getCategories: "读取分组",
   listTrash: "查看回收站",
   createNote: "创建笔记",
@@ -80,6 +97,10 @@ const TOOL_LABELS: Record<string, string> = {
   appendToNote: "追加内容",
   updateNote: "修改笔记",
   updateCurrentNote: "修改当前笔记",
+  replaceLines: "按行替换",
+  insertLines: "插入内容",
+  deleteLines: "删除行",
+  replaceInNote: "替换文本",
   deleteNote: "删除笔记",
   restoreNote: "还原笔记",
   deleteFromTrash: "彻底删除",
@@ -91,51 +112,145 @@ const TOOL_LABELS: Record<string, string> = {
   selectNote: "打开笔记",
 };
 
-/** 工具轨迹右侧的目标信息：优先用执行结果里的标题，其次用入参 */
+/** 工具轨迹右侧的目标信息：执行前用入参，执行后用结果把它补得更具体 */
 const toolDetail = (name: string, args: Record<string, unknown>, result: unknown): string => {
-  const r = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
-  const title = typeof r.title === "string" && r.title ? `《${r.title}》` : "";
+  const isObj = !!result && typeof result === "object";
+  const r = (isObj && !Array.isArray(result) ? result : {}) as Record<string, unknown>;
+  const arr = Array.isArray(result) ? (result as Record<string, unknown>[]) : null;
+  const rawTitle = (typeof r.title === "string" && r.title) || (args.title !== undefined ? String(args.title) : "");
+  const title = rawTitle ? `《${String(rawTitle).slice(0, 18)}》` : "";
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : Number(v));
   const clip = (v: unknown, n = 22) => {
     const s = String(v ?? "").replace(/\s+/g, " ").trim();
     return s.length > n ? `${s.slice(0, n)}…` : s;
   };
+  const head = (id: unknown) => (id !== undefined && id !== null && id !== "" && Number.isFinite(Number(id)) ? `#${id}` : "");
+  /** 目标笔记的统一写法：#ID · 《标题》（结果里的 id/noteId 都认，标题也可以从入参兜底） */
+  const target = [head(r.id ?? r.noteId ?? args.noteId), title].filter(Boolean).join(" · ");
+  /** 失败时轨迹上直接显示原因（红色行），不用点开才知道 */
+  const failure = typeof r.error === "string" && r.error ? `失败：${clip(r.error, 40)}` : "";
   switch (name) {
     case "selectNote":
+      return target ? `已打开 ${target}` : failure;
     case "getNoteContent":
-    case "appendToNote": {
-      // 形如 "#16 · 《白雪公主》"：执行前只有 ID，执行后用结果里的标题补全
-      const id = args.noteId !== undefined ? `#${args.noteId}` : "";
-      return [id, title].filter(Boolean).join(" · ");
-    }
     case "getCurrentNote":
-      return title;
-    case "listNotes":
-      return args.categoryName ? `「${clip(args.categoryName)}」` : `最近 ${args.limit || 15} 篇`;
-    case "createNotes":
-      return Array.isArray(args.notes) ? `${(args.notes as unknown[]).length} 篇` : "";
-    case "listTrash":
-      return "";
-    case "restoreNote":
-    case "deleteNote":
-    case "deleteFromTrash":
-      return args.noteId !== undefined ? `#${args.noteId}` : "";
-    case "emptyTrash":
-      return "";
-    case "searchNotes":
-      return args.query ? `「${clip(args.query)}」` : "";
+    case "readNoteLines": {
+      // 读了哪几行、整篇多大：这是"读取笔记"最该让用户看到的信息
+      const range = typeof r.lines === "string" ? r.lines : "";
+      const total = num(r.totalLines);
+      const chars = num(r.totalChars);
+      const parts = [target];
+      if (range) parts.push(`第 ${range} 行`);
+      if (Number.isFinite(total) && total > 0) parts.push(`共 ${total} 行`);
+      if (Number.isFinite(chars) && chars > 0 && !range) parts.push(`${chars} 字`);
+      return parts.filter(Boolean).join(" · ") || failure;
+    }
+    case "findInNote": {
+      const count = num(r.count);
+      const lines = Array.isArray(r.matches)
+        ? (r.matches as { line?: unknown }[]).map((m) => num(m.line)).filter((n) => Number.isFinite(n)).slice(0, 6)
+        : [];
+      const parts = [target, args.query ? `「${clip(args.query, 14)}」` : ""];
+      if (Number.isFinite(count)) parts.push(`命中 ${count} 处`);
+      if (lines.length > 0) parts.push(`第 ${lines.join("、")}${count > lines.length ? "…" : ""} 行`);
+      return parts.filter(Boolean).join(" · ");
+    }
+    case "replaceLines": {
+      const total = num(r.totalLines);
+      return [target, `改第 ${args.startLine}-${args.endLine} 行`, Number.isFinite(total) ? `现共 ${total} 行` : ""].filter(Boolean).join(" · ");
+    }
+    case "insertLines": {
+      const total = num(r.totalLines);
+      const text = String(args.text ?? "");
+      return [target, `第 ${args.afterLine} 行后插入 ${text ? text.split("\n").length : 0} 行`, Number.isFinite(total) ? `现共 ${total} 行` : ""].filter(Boolean).join(" · ");
+    }
+    case "deleteLines": {
+      const total = num(r.totalLines);
+      return [target, `删第 ${args.startLine}-${args.endLine} 行`, Number.isFinite(total) ? `现共 ${total} 行` : ""].filter(Boolean).join(" · ");
+    }
+    case "replaceInNote": {
+      const replaced = num(r.replaced);
+      return [target, `替换 ${Number.isFinite(replaced) ? replaced : 1} 处`, args.oldText ? `「${clip(args.oldText, 12)}」` : ""].filter(Boolean).join(" · ");
+    }
+    case "appendToNote": {
+      const len = num(r.appendedLength);
+      return [target, Number.isFinite(len) ? `追加 ${len} 字` : args.text ? `追加 ${String(args.text).length} 字` : ""].filter(Boolean).join(" · ");
+    }
     case "createNote":
     case "updateNote":
     case "updateCurrentNote": {
-      const id = args.noteId !== undefined ? `#${args.noteId}` : "";
-      return [id, title].filter(Boolean).join(" · ") || "";
+      // 写操作要说清"改了哪些字段"，光一个标题看不出做了什么
+      const changed: string[] = [];
+      if (name !== "createNote") {
+        if (args.title !== undefined) changed.push("标题");
+        if (args.content !== undefined) changed.push("正文");
+        if (args.categoryName !== undefined) changed.push("分组");
+      } else if (args.content) {
+        changed.push(`${String(args.content).length} 字`);
+      }
+      return [target, changed.length > 0 ? changed.join("/") : ""].filter(Boolean).join(" · ");
     }
+    case "createNotes": {
+      const created = Array.isArray(r.created) ? (r.created as { id?: unknown; title?: unknown }[]) : [];
+      if (created.length > 0) {
+        const names = created.slice(0, 3).map((c) => `#${c.id}《${clip(c.title, 10)}》`).join("、");
+        return `创建 ${created.length} 篇：${names}${created.length > 3 ? "…" : ""}`;
+      }
+      return Array.isArray(args.notes) ? `${(args.notes as unknown[]).length} 篇` : "";
+    }
+    case "getCategories": {
+      const list = Array.isArray(result) ? (result as { name?: unknown }[]) : [];
+      const names = list.slice(0, 3).map((c) => clip(c.name, 8)).join("、");
+      return list.length > 0 ? `${list.length} 个分组${names ? `：${names}${list.length > 3 ? "…" : ""}` : ""}` : "";
+    }
+    case "moveNote": {
+      const to = typeof r.category === "string" && r.category ? `→「${clip(r.category, 12)}」` : args.categoryId !== undefined ? `→分组 #${args.categoryId}` : "";
+      return [head(r.id ?? args.noteId), to].filter(Boolean).join(" ");
+    }
+    case "emptyTrash": {
+      const deleted = num(r.deleted);
+      return Number.isFinite(deleted) ? `清空 ${deleted} 篇` : "";
+    }
+    case "searchNotes": {
+      const q = args.query ? `「${clip(args.query, 14)}」` : "";
+      const total = num(r.total);
+      const fuzzy = r.fuzzy === true ? "（模糊）" : "";
+      return [q + fuzzy, Number.isFinite(total) ? `命中 ${total} 篇` : ""].filter(Boolean).join(" · ");
+    }
+    case "listNotes": {
+      const scope = args.categoryName ? `「${clip(args.categoryName)}」` : "全部";
+      const total = num(r.total);
+      const shown = Array.isArray(r.notes) ? r.notes.length : NaN;
+      return [scope, Number.isFinite(total) ? `${total} 篇${Number.isFinite(shown) ? `（列出 ${shown}）` : ""}` : ""].filter(Boolean).join(" · ");
+    }
+    case "listTrash": {
+      const total = num(r.total);
+      return Number.isFinite(total) ? `${total} 篇` : "";
+    }
+    case "deleteNote":
+      return [target, "已移入回收站（可还原）"].filter(Boolean).join(" · ") || failure;
+    case "restoreNote":
+      return [target, "已还原"].filter(Boolean).join(" · ") || failure;
+    case "deleteFromTrash":
+      return [target, "已彻底删除（不可恢复）"].filter(Boolean).join(" · ") || failure;
     case "createCategory":
+      return [head(r.id), args.name ? `「${clip(args.name)}」` : ""].filter(Boolean).join(" · ") || failure;
     case "renameCategory":
-      return args.name ? `「${clip(args.name)}」` : "";
-    case "moveNote":
-      return args.noteId !== undefined ? `#${args.noteId}` : "";
-    default:
-      return "";
+      return [head(r.id ?? args.categoryId), args.name ? `改名为「${clip(args.name)}」` : ""].filter(Boolean).join(" · ") || failure;
+    case "deleteCategory": {
+      const cnt = num(r.noteCount);
+      const mode = r.notesMovedToTrash === true ? (Number.isFinite(cnt) && cnt > 0 ? `组内 ${cnt} 篇已移入回收站` : "组内笔记已移入回收站") : "组内笔记已变为未分类";
+      return [head(r.id ?? args.categoryId), r.name ? `「${clip(r.name)}」` : "", mode].filter(Boolean).join(" · ") || failure;
+    }
+    default: {
+      // 兜底：任何工具都至少说清"做了什么/多大/几项"，不留空白
+      if (failure) return failure;
+      if (arr) return `${arr.length} 项`;
+      if (target) return target;
+      const keys = Object.keys(r).filter(k => k !== "success" && k !== "note");
+      if (keys.length > 0) return clip(JSON.stringify(r), 40);
+      return r.note ? clip(r.note, 40) : "已完成";
+    }
   }
 };
 
@@ -145,8 +260,14 @@ const TOOLS_PROMPT = `你是 FastNote 智能笔记助手，通过工具操作笔
 ## 可用工具（参数都是 JSON 对象）
 - searchNotes: 按关键词搜索笔记（标题 + 内容），参数：{"query":"关键词"}
 - listNotes: 列出笔记，按更新时间倒序，参数：{"categoryName":"分组名(可选)","limit":"条数(可选,默认15)"}
-- getNoteContent: 读取某篇笔记的完整正文，参数：{"noteId":"笔记ID"} —— 只读取，**不会打开**
-- getCurrentNote: 读取**当前打开的**笔记（无需 ID），参数：{}
+- getNoteContent: 读取某篇笔记的正文（**默认只返回前 200 行**，带行号），参数：{"noteId":"笔记ID","startLine":"起始行(可选,默认1)","lineCount":"读多少行(可选,默认200,最多800)"} —— 只读取，**不会打开**
+- getCurrentNote: 读取**当前打开的**笔记（同样只返回一个行窗口），参数：{}
+- readNoteLines: 读取指定行范围（长文专用，等价于 getNoteContent 带 startLine），参数：{"noteId":"笔记ID","startLine":"起始行","lineCount":"行数(可选)"}
+- findInNote: 按内容定位行号（grep -n），返回命中行号与上下文，参数：{"noteId":"笔记ID","query":"要找的内容","contextLines":"附带上下文行数(可选,0-3)","limit":"最多返回几处(可选,默认20)"} —— 问"这段话在第几行"就用它
+- replaceLines: **按行替换**指定区间（只改这一段，其余原样保留），参数：{"noteId":"笔记ID","startLine":"起始行","endLine":"结束行","text":"替换后的内容(可以是多行)"}
+- insertLines: 在指定行之后插入内容，参数：{"noteId":"笔记ID","afterLine":"插到这一行之后(0=最前面)","text":"要插入的内容"}
+- deleteLines: 删除指定行区间，参数：{"noteId":"笔记ID","startLine":"起始行","endLine":"结束行"}
+- replaceInNote: 定点替换文本（改错别字、统一措辞），参数：{"noteId":"笔记ID","oldText":"要被替换的原文","newText":"替换为","replaceAll":"是否全部替换(可选,默认只替换第一处)"}
 - selectNote: 打开（切换到）某篇笔记，参数：{"noteId":"笔记ID"} —— 用户说"打开"时**必须**用它
 - getCategories: 获取所有分组，参数：{}
 - listTrash: 查看回收站里的笔记，参数：{}
@@ -172,6 +293,18 @@ const TOOLS_PROMPT = `你是 FastNote 智能笔记助手，通过工具操作笔
 - "误删了 / 找回" → listTrash 查看、restoreNote 还原。
 - "从回收站彻底删掉 / 清空回收站" → deleteFromTrash / emptyTrash。这两个**不可恢复**：必须先 listTrash 确认到底是哪几篇，并在回复里说明将要彻底删除哪些，再调用。
 - 要产出多篇笔记（如把一份内容拆成几篇）→ 一次 createNotes，而不是反复 createNote。
+
+## 长文处理（行号工作流，重要）
+读取返回的是**带行号的窗口**（形如 12| 正文… ，行号只是定位标记，不要写进正文）。长笔记一律按这个流程，禁止"从头读到尾"和"全文覆盖"：
+1. **先定位**：想知道"某段话在第几行"用 findInNote（grep 式，直接给行号）；想通读某一段用 getNoteContent/readNoteLines（默认 200 行、可指定 startLine），需要总行数看返回里的 totalLines。
+2. **只改要改的地方**：
+   - 改某几行 → replaceLines（startLine/endLine 用行号，text 写替换后的内容）
+   - 加内容 → insertLines（afterLine）或 appendToNote（末尾）
+   - 删内容 → deleteLines
+   - 改词/改错别字 → replaceInNote
+3. **分段改写/翻译长文**：每次只处理一个窗口（例如 100-200 行），用 replaceLines 写回这一段，然后再读下一段。**不要**把 1000 行整篇塞进一次 updateNote——既超出输出长度，也容易把没读到的部分写丢。
+4. 写回成功后回执里只有"总行数 + 局部预览"，这是正常的；需要更多上下文就再按行号读取，不要重复全文。
+5. 只有当笔记很短（几十行）且用户明确要求整体重写时，才用 updateNote/updateCurrentNote 覆盖正文。
 
 ## 输出格式（必须严格遵守）
 每次回复先写 <thinking>...</thinking>（真实推理，不少于 120 字），然后二选一：
@@ -258,6 +391,16 @@ const summarizeToolCall = (c: ToolCall): string => {
     }
     case "deleteNote":
       return `删除笔记 #${c.args.noteId}`;
+    case "replaceLines":
+      return `替换笔记 #${c.args.noteId} 的第 ${c.args.startLine}-${c.args.endLine} 行（只改这一段，其余保留）`;
+    case "insertLines":
+      return `在笔记 #${c.args.noteId} 第 ${c.args.afterLine} 行后插入内容（约 ${String(c.args.text || "").length} 字）`;
+    case "deleteLines":
+      return `删除笔记 #${c.args.noteId} 的第 ${c.args.startLine}-${c.args.endLine} 行`;
+    case "replaceInNote": {
+      const all = c.args.replaceAll === true || c.args.replaceAll === "true";
+      return `在笔记 #${c.args.noteId} 里把「${String(c.args.oldText || "").slice(0, 20)}」替换为「${String(c.args.newText || "").slice(0, 20)}」${all ? "（全部匹配）" : "（仅第一处）"}`;
+    }
     case "restoreNote":
       return `从回收站还原笔记 #${c.args.noteId}`;
     case "deleteFromTrash":
@@ -364,7 +507,8 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   getNoteContent: async (args) => {
     const n: any = await fetchNoteById(Number(args.noteId));
-    return n ? { id: n.id, title: n.title, content: n.content, category_id: n.category_id } : null;
+    if (!n) return null;
+    return readNoteWindow(n, args.startLine, args.lineCount);
   },
   /** 列出笔记（按更新时间倒序，可限定分组与条数）：回答"我最近记了什么/某个分组里有什么" */
   listNotes: async (args) => {
@@ -391,7 +535,142 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const nid = Number(ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { error: "当前没有打开任何笔记，请让用户先打开一篇或提供标题" };
     const n: any = await fetchNoteById(nid);
-    return n ? { id: n.id, title: n.title, content: n.content, category_id: n.category_id } : { error: `未找到 ID 为 ${nid} 的笔记` };
+    return n ? readNoteWindow(n) : { error: `未找到 ID 为 ${nid} 的笔记` };
+  },
+  /**
+   * 按行范围读取（长文的关键工具）。
+   * 1000 行的笔记不必从头读到尾：只取需要的窗口，带行号返回，方便随后按行修改。
+   */
+  readNoteLines: async (args) => {
+    const nid = Number(args.noteId ?? args.id);
+    if (!Number.isFinite(nid) || nid <= 0) return { error: "缺少 noteId" };
+    const n: any = await fetchNoteById(nid);
+    if (!n) return { error: `未找到 ID 为 ${nid} 的笔记` };
+    return readNoteWindow(n, args.startLine, args.lineCount);
+  },
+  /**
+   * 在笔记里按内容定位行号（相当于 grep -n）。
+   * 解决"这段话在第几行"：返回命中行号（可带上下文行），拿到行号后就能直接用
+   * replaceLines/deleteLines 精确定位修改，完全不用把全文读进来。
+   */
+  findInNote: async (args) => {
+    const nid = Number(args.noteId ?? args.id);
+    if (!Number.isFinite(nid) || nid <= 0) return { error: "缺少 noteId" };
+    const n: any = await fetchNoteById(nid);
+    if (!n) return { error: `未找到 ID 为 ${nid} 的笔记` };
+    const query = String(args.query ?? "").trim();
+    if (!query) return { error: "query 不能为空" };
+    const lines = String(n.content ?? "").split("\n");
+    const caseSensitive = args.caseSensitive === true || args.caseSensitive === "true";
+    const needle = caseSensitive ? query : query.toLowerCase();
+    const limit = Math.min(Math.max(Math.floor(Number(args.limit) || 20), 1), 50);
+    const ctx = Math.min(Math.max(Math.floor(Number(args.contextLines) || 0), 0), 3);
+    const matches: { line: number; text: string; context?: string }[] = [];
+    for (let i = 0; i < lines.length && matches.length < limit; i++) {
+      const hay = caseSensitive ? lines[i] : lines[i].toLowerCase();
+      if (!hay.includes(needle)) continue;
+      const from = Math.max(0, i - ctx);
+      const to = Math.min(lines.length - 1, i + ctx);
+      matches.push({
+        line: i + 1,
+        text: lines[i].slice(0, 200),
+        ...(ctx > 0 ? { context: lines.slice(from, to + 1).map((l, k) => `${from + k + 1}| ${l}`).join("\n") } : {}),
+      });
+    }
+    return {
+      id: nid,
+      title: n.title,
+      totalLines: lines.length,
+      query,
+      count: matches.length,
+      matches,
+      ...(matches.length === 0
+        ? { hint: "没有命中。这里用的是连续子串匹配，换更短的关键词（2~4 个字）再试。" }
+        : { hint: "拿到行号后可直接用 replaceLines/deleteLines 精确修改，不要整篇覆盖。" }),
+    };
+  },
+  /** 按行替换：只改指定行区间，前后内容原样保留（不必全文覆盖） */
+  replaceLines: async (args) => {
+    const nid = Number(args.noteId);
+    const n: any = await fetchNoteById(nid);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    const lines = String(n.content ?? "").split("\n");
+    const from = Math.max(1, Math.floor(Number(args.startLine) || 1));
+    const to = Math.min(lines.length, Math.max(from, Math.floor(Number(args.endLine) || from)));
+    const text = String(args.text ?? "");
+    const newLines = text.length > 0 ? text.split("\n") : [];
+    lines.splice(from - 1, to - from + 1, ...newLines);
+    await api.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      totalLines: lines.length,
+      message: noteEditReceipt(lines, `已用 ${newLines.length} 行替换原第 ${from}-${to} 行`, from, from + Math.max(0, newLines.length - 1)),
+    };
+  },
+  /** 在指定行之后插入内容；afterLine=0 表示插到最前面 */
+  insertLines: async (args) => {
+    const nid = Number(args.noteId);
+    const n: any = await fetchNoteById(nid);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    const lines = String(n.content ?? "").split("\n");
+    const after = Math.min(lines.length, Math.max(0, Math.floor(Number(args.afterLine) || 0)));
+    const text = String(args.text ?? "");
+    const newLines = text.length > 0 ? text.split("\n") : [];
+    if (newLines.length === 0) return { success: false, error: "插入内容为空" };
+    lines.splice(after, 0, ...newLines);
+    await api.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      totalLines: lines.length,
+      message: noteEditReceipt(lines, `已在第 ${after} 行后插入 ${newLines.length} 行`, after + 1, after + newLines.length),
+    };
+  },
+  /** 按行删除 */
+  deleteLines: async (args) => {
+    const nid = Number(args.noteId);
+    const n: any = await fetchNoteById(nid);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    const lines = String(n.content ?? "").split("\n");
+    const from = Math.max(1, Math.floor(Number(args.startLine) || 1));
+    const to = Math.min(lines.length, Math.max(from, Math.floor(Number(args.endLine) || from)));
+    lines.splice(from - 1, to - from + 1);
+    await api.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      totalLines: lines.length,
+      message: noteEditReceipt(lines, `已删除第 ${from}-${to} 行`, Math.max(1, from - 2), from + 2),
+    };
+  },
+  /** 定点替换文本：适合改错别字、统一措辞、替换某个词（不必按行） */
+  replaceInNote: async (args) => {
+    const nid = Number(args.noteId);
+    const n: any = await fetchNoteById(nid);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    const oldText = String(args.oldText ?? "");
+    const newText = String(args.newText ?? "");
+    if (!oldText) return { success: false, error: "oldText 不能为空" };
+    const content = String(n.content ?? "");
+    const count = content.split(oldText).length - 1;
+    if (count === 0) return { success: false, error: `正文里没有找到「${oldText.slice(0, 40)}」，请先读取确认原文` };
+    const replaceAll = args.replaceAll === true || args.replaceAll === "true";
+    const next = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText);
+    await api.updateNote(nid, n.title, next, n.category_id ?? null);
+    const lines = next.split("\n");
+    const hitLine = lines.findIndex(l => l.includes(newText || oldText)) + 1;
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      totalLines: lines.length,
+      replaced: replaceAll ? count : 1,
+      message: noteEditReceipt(lines, `已替换 ${replaceAll ? count : 1} 处（共匹配 ${count} 处）`, Math.max(1, hitLine - 2), hitLine + 2),
+    };
   },
   /** 在末尾追加内容（不覆盖原有正文），续写/补充信息比 updateNote 更安全 */
   appendToNote: async (args, ctx) => {
@@ -418,8 +697,14 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   restoreNote: async (args) => {
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId" };
+    // 从回收站列表里取标题（回收站里的笔记用 get_note_content 不一定可靠）
+    let title = "";
+    try {
+      const trashed: any[] = await api.getTrashNotes();
+      title = trashed.find(n => n.id === nid)?.title || "";
+    } catch {}
     await api.restoreNote(nid);
-    return { success: true, id: nid };
+    return { success: true, id: nid, title, restored: true };
   },
   /** 彻底删除回收站中的某篇笔记（不可恢复） */
   deleteFromTrash: async (args) => {
@@ -478,8 +763,10 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   deleteNote: async (args) => {
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId" };
+    // 先取出标题：轨迹里要能显示"删除笔记 #16 · 《XX》"，只有一个 ID 用户看不出删了什么
+    const before: any = await fetchNoteById(nid);
     await api.moveToTrash(nid);
-    return { deleted: true, id: nid };
+    return { deleted: true, id: nid, title: before?.title ?? "", toTrash: true };
   },
   createCategory: async (args) => { const r = await api.createCategory(String(args.name)); return { id: r.id, name: r.name }; },
   renameCategory: async (args) => { await api.updateCategory(Number(args.categoryId), String(args.name)); return { id: Number(args.categoryId), name: args.name }; },
@@ -491,9 +778,22 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const cid = Number(args.categoryId);
     if (!Number.isFinite(cid)) return { success: false, error: "缺少有效的 categoryId" };
     const withNotes = args.deleteNotes === true || args.deleteNotes === "true";
+    // 先取分组名与组内笔记数：轨迹要显示"删除分组「读书」· 组内 3 篇移入回收站"
+    let name = "";
+    let noteCount = 0;
+    try {
+      const cats: any[] = await api.getCategories();
+      const hit = cats.find(c => c.id === cid);
+      name = hit?.name || "";
+      noteCount = Number(hit?.note_count || 0);
+      if (!name && !hit) return { success: false, error: `未找到 ID 为 ${cid} 的分组` };
+    } catch {}
     await api.deleteCategory(cid, withNotes);
     return {
       deleted: true,
+      id: cid,
+      name,
+      noteCount,
       notesMovedToTrash: withNotes,
       note: withNotes ? "组内笔记已移入回收站（可还原，未被彻底删除）" : "组内笔记已变为未分类",
     };
@@ -503,7 +803,13 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const n: any = await fetchNoteById(nid);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     await api.updateNote(nid, n.title, n.content, Number(args.categoryId));
-    return { moved: true, id: nid };
+    // 带上目标分组名：这样界面上能看到"移动笔记 #29 → 「读书笔记」"，而不是只有一个 ID
+    let category = "";
+    try {
+      const cats = await api.getCategories();
+      category = cats.find((c: any) => c.id === Number(args.categoryId))?.name || "";
+    } catch {}
+    return { moved: true, id: nid, title: n.title, category };
   },
   selectNote: async (args) => {
     const nid = Number(args.noteId);
@@ -524,7 +830,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
  * 若不隔离，历史消息里的每一个 MdPreview（markdown 重解析）都会被重新渲染一遍，界面就会卡。
  */
 const ChatMessageRow = memo(function ChatMessageRow({
-  msg, index, expanded, toolOpen, isSending, onToggleThinking, onToggleTool, onInsertText, onReplaceContent,
+  msg, index, expanded, toolOpen, isSending, showToolTrace, onToggleThinking, onToggleTool, onInsertText, onReplaceContent,
 }: {
   msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number };
   index: number;
@@ -532,6 +838,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
   /** 这一行自己的工具展开状态（按行传入，切换某一行不会让整列重渲染） */
   toolOpen: Record<string, boolean>;
   isSending: boolean;
+  /** 是否显示工具执行轨迹（设置里可关） */
+  showToolTrace: boolean;
   onToggleThinking: (i: number) => void;
   onToggleTool: (key: string) => void;
   onInsertText: (text: string) => void;
@@ -555,7 +863,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   return (
     <div className="group/msg animate-fade-in space-y-0.5" style={{ animationDelay: delay }}>
       {msgThinking ? (
-        <div>
+        <div className="group/thinking">
           <button
             onClick={() => onToggleThinking(index)}
             className="flex w-full items-center gap-1.5 text-left text-[11.5px] text-slate-400 hover:text-slate-600 transition-colors py-0.5"
@@ -563,24 +871,19 @@ const ChatMessageRow = memo(function ChatMessageRow({
           >
             <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
             <span className="flex-shrink-0">思考</span>
-            {expanded ? (
-              <>
-                <span className="text-slate-300 flex-shrink-0">·</span>
-                <span className="flex-shrink-0">收起</span>
-              </>
-            ) : (
-              <>
-                <span className="text-slate-300 flex-shrink-0">·</span>
-                <span className="min-w-0 flex-1 truncate">{firstLine(msgThinking)}</span>
-              </>
-            )}
+            {/* 预览始终保留：展开/收起只靠右侧箭头旋转表示，不要把内容换成"收起"两个字 */}
+            <span className="text-slate-300 flex-shrink-0">·</span>
+            <span className="min-w-0 flex-1 truncate">{firstLine(msgThinking)}</span>
+            <span className="flex-shrink-0 text-[10.5px] text-slate-300 opacity-0 group-hover/thinking:opacity-100 transition-opacity">
+              {expanded ? "收起" : "展开"}
+            </span>
             <svg className={"w-3 h-3 flex-shrink-0 transition-transform " + (expanded ? "rotate-90" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
           </button>
           {expanded && (<div className="thinking-body chat-scrollbar mt-0.5 px-3 py-2 bg-slate-50 rounded-lg text-xs text-slate-500 leading-relaxed whitespace-pre-wrap border border-slate-100">{msgThinking}</div>)}
         </div>
       ) : null}
       {/* 实际执行过的工具：一条工具一行，点击展开可看调用 JSON 与执行结果 */}
-      {msgTools?.length ? msgTools.map((tool, ti) => {
+      {showToolTrace && msgTools?.length ? msgTools.map((tool, ti) => {
         const traceKey = `${index}-${ti}`;
         const open = !!toolOpen[traceKey];
         const running = tool.ok === null || tool.ok === undefined;
@@ -604,7 +907,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
                 <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16a2 2 0 001.73 3z" /></svg>
               )}
               <span className="flex-shrink-0">{TOOL_LABELS[tool.name] || tool.name}</span>
-              {tool.detail ? (<><span className="text-slate-300 flex-shrink-0">·</span><span className="truncate">{tool.detail}</span></>) : null}
+              {tool.detail ? (<><span className="text-slate-300 flex-shrink-0">·</span><span className="truncate" title={tool.detail}>{tool.detail}</span></>) : null}
               {running ? <span className="flex-shrink-0 text-slate-300">执行中…</span> : null}
               <svg className={"w-3 h-3 flex-shrink-0 text-slate-300 transition-transform " + (open ? "rotate-90" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
             </button>
@@ -634,41 +937,73 @@ const ChatMessageRow = memo(function ChatMessageRow({
 /** 空对象常量：给"这一行没有展开任何工具"的行用，保证 props 引用稳定、memo 不失效 */
 const NO_OPEN_TOOLS: Record<string, boolean> = {};
 
+/** 锚点每条横线的热区高度与最小/最大间距（像素）：条数多时压缩间距，永不溢出 */
+const RAIL_ITEM_H = 7;
+const RAIL_MIN_GAP = 1;
+const RAIL_MAX_GAP = 5;
+/** 悬浮波浪：离鼠标越近的横线越长越粗（0 = 鼠标正下方）。
+ *  系数刻意保守：横线放大后仍留在 24px 点击热区内，不会盖到正文。 */
+const RAIL_WAVE_SCALE_X = [1.3, 1.16, 1.06, 1.02];
+const RAIL_WAVE_SCALE_Y = [1.6, 1.3, 1.12, 1.04];
+
 /**
- * 右侧历史锚点导轨。
- * memo 化很关键：流式输出时父组件每 50ms 刷新一次，若不隔离，几十个圆点和 tooltip
+ * 右侧历史锚点导轨（横线样式）。
+ * memo 化很关键：流式输出时父组件每 50ms 刷新一次，若不隔离，几十条横线和 tooltip
  * 会跟着一起重渲染，滚动/悬停都会顿。
  */
 const AnchorRail = memo(function AnchorRail({
-  anchors, activeIndex, onJump, onHover, onLeave, onScroll,
+  anchors, activeOriginal, gap, onJump, onHover, onLeave, onScroll,
 }: {
+  /** 采样后的可见锚点（index 是它在完整列表里的原始序号） */
   anchors: { index: number; preview: string }[];
-  activeIndex: number;
-  onJump: (i: number) => void;
-  onHover: (i: number, el: HTMLElement) => void;
+  /** 当前查看的锚点原始序号 */
+  activeOriginal: number;
+  /** 横线间距（由父组件按可用高度算好） */
+  gap: number;
+  onJump: (originalIndex: number) => void;
+  onHover: (originalIndex: number, el: HTMLElement) => void;
   onLeave: () => void;
   onScroll: () => void;
 }) {
+  // hooks 必须在任何早退之前
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (anchors.length < 2) return null;
+  // 当前活跃的那条：取原始序号不超过 activeOriginal 的最后一个可见条
+  let activeBar = 0;
+  anchors.forEach((a, i) => { if (a.index <= activeOriginal) activeBar = i; });
   return (
     <nav className="chat-anchor-rail" aria-label="对话历史" onScroll={onScroll}>
-      <div className="chat-anchor-rail-inner">
-        {anchors.map((anchor, i) => (
-          <button
-            key={anchor.index}
-            type="button"
-            className={"chat-anchor-dot" + (activeIndex === i ? " is-active" : "")}
-            onClick={() => onJump(i)}
-            onMouseEnter={(e) => onHover(i, e.currentTarget)}
-            onMouseLeave={onLeave}
-            onFocus={(e) => onHover(i, e.currentTarget)}
-            onBlur={onLeave}
-            aria-label={`跳到第 ${i + 1} 条提问：${anchor.preview}`}
-            aria-current={activeIndex === i ? "true" : undefined}
-          >
-            <span className="chat-anchor-pin" />
-          </button>
-        ))}
+      <div className="chat-anchor-list" style={{ gap }}>
+        {anchors.map((anchor, i) => {
+          const isActive = i === activeBar;
+          // 11px 基准线 × 1.35（选中）× 1.3（波浪）= 19.3px，仍在 24px 热区之内
+          let sx = isActive ? 1.35 : 1;
+          let sy = isActive ? 1.2 : 1;
+          if (hoverIdx !== null) {
+            const d = Math.abs(i - hoverIdx);
+            if (d < RAIL_WAVE_SCALE_X.length) {
+              sx *= RAIL_WAVE_SCALE_X[d];
+              sy *= RAIL_WAVE_SCALE_Y[d];
+            }
+          }
+          return (
+            <button
+              key={anchor.index}
+              type="button"
+              className={"chat-anchor-bar" + (isActive ? " is-active" : "")}
+              onClick={() => onJump(anchor.index)}
+              onMouseEnter={(e) => { setHoverIdx(i); onHover(anchor.index, e.currentTarget); }}
+              onMouseLeave={() => { setHoverIdx(null); onLeave(); }}
+              onFocus={(e) => { setHoverIdx(i); onHover(anchor.index, e.currentTarget); }}
+              onBlur={() => { setHoverIdx(null); onLeave(); }}
+              style={{ height: RAIL_ITEM_H }}
+              aria-label={`跳到第 ${anchor.index + 1} 条消息（第 ${i + 1} 个锚点）：${anchor.preview}`}
+              aria-current={isActive ? "true" : undefined}
+            >
+              <span className="chat-anchor-line" style={{ transform: `scaleX(${sx.toFixed(3)}) scaleY(${sy.toFixed(3)})` }} />
+            </button>
+          );
+        })}
       </div>
     </nav>
   );
@@ -687,9 +1022,96 @@ const CONFIRM_CANCELLED = "用户已取消";
 /** 等待用户确认的超时时间：弹窗被意外关闭/遗忘时按"取消"处理，避免整轮卡死 */
 const CONFIRM_TIMEOUT_MS = 180000;
 
+/** 把用户自定义的前置提示词/记忆拼成系统提示词追加段（只取启用中的） */
+const buildMemoryBlock = (entries: AiPromptEntry[] | undefined): string => {
+  const active = (entries || []).filter(e => e.enabled && e.text.trim());
+  if (active.length === 0) return "";
+  return [
+    "## 用户自定义要求与长期记忆（必须遵守，优先级高于上面的默认风格）",
+    ...active.map((e, i) => `${i + 1}. ${e.text.trim()}`),
+  ].join("\n");
+};
+
 /** 工具轨迹的中文一句话摘要：写进正文，让用户/模型都能看清做了什么 */
 const describeTools = (tools: ToolTrace[] | undefined): string[] =>
   (tools || []).map(t => `${TOOL_LABELS[t.name] || t.name}${t.detail ? ` · ${t.detail}` : ""}`);
+
+/* ---------------- 上下文瘦身（记忆管理） ---------------- */
+
+/** 每轮最多注入多长的工具结果（超出折叠） */
+const TOOL_RESULT_MAX_CHARS = 1500;
+
+/**
+ * 工具结果进上下文前的瘦身。
+ * getNoteContent 会把整篇笔记原样回传，一次就是几千 token；多轮工具调用下来，
+ * 上下文增长的主要来源就是这些回传。这里截断并明确告诉模型"需要细节请按范围读"。
+ */
+const compactToolResult = (result: unknown, max = TOOL_RESULT_MAX_CHARS): string => {
+  let text: string;
+  try { text = JSON.stringify(result ?? null); } catch { text = String(result); }
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max)}…（已截断，需要细节请用 getNoteContent/readNoteLines 按范围读取）` : text;
+};
+
+/** 旧工具结果压缩：只保留最近 keep 条原样，更早的折叠到 max 字 */
+const compressOldToolResults = <T extends { role: string; content: string }>(msgs: T[], keep = 2, max = 400): T[] => {
+  const toolIdx = msgs
+    .map((m, i) => (m.role === "system" && m.content.startsWith("工具执行结果：") ? i : -1))
+    .filter(i => i >= 0);
+  if (toolIdx.length <= keep) return msgs;
+  const oldOnes = new Set(toolIdx.slice(0, toolIdx.length - keep));
+  return msgs.map((m, i) =>
+    oldOnes.has(i) && m.content.length > max
+      ? { ...m, content: `${m.content.slice(0, max)}…（更早的工具结果已压缩，需要时重新读取）` }
+      : m,
+  );
+};
+
+/** 把笔记正文按行切片（供"只读某一段"用），返回带行号文本与总行数 */
+const sliceNoteLines = (content: string, startLine: number, lineCount: number) => {
+  const lines = (content || "").split("\n");
+  const from = Math.max(1, Math.floor(startLine) || 1);
+  const take = Math.max(1, Math.floor(lineCount) || 1);
+  const to = Math.min(lines.length, from + take - 1);
+  const numbered = lines.slice(from - 1, to).map((l, i) => `${from + i}| ${l}`).join("\n");
+  return { totalLines: lines.length, from, to, numbered, lines };
+};
+
+/** 写回后给模型的紧凑回执：行数 + 局部预览，绝不回传全文 */
+const noteEditReceipt = (lines: string[], changed: string, fromLine: number, toLine: number): string => {
+  const from = Math.max(1, fromLine);
+  const to = Math.min(lines.length, Math.max(from, toLine));
+  const preview = lines.slice(from - 1, to).map((l, i) => `${from + i}| ${l}`).join("\n").slice(0, 600);
+  return `（${changed}，现在共 ${lines.length} 行）\n${from}-${to} 行现在是：\n${preview}`;
+};
+
+/** 默认一次读取 200 行，最多 800 行：既不给上下文塞全文，也不至于要读十几次 */
+const NOTE_READ_LINES = 200;
+const NOTE_READ_MAX_LINES = 800;
+
+/**
+ * 读取笔记的一个"行窗口"。
+ * 长笔记绝不整篇回传（那是上下文爆炸和"改一行读全文"的根源）：
+ * 带行号返回窗口内容，并明确告诉模型总行数与后续怎么读。
+ */
+const readNoteWindow = (n: any, startLineArg?: unknown, lineCountArg?: unknown) => {
+  const content = String(n.content ?? "");
+  const startLine = Math.max(1, Math.floor(Number(startLineArg) || 1));
+  const lineCount = Math.min(Math.max(Math.floor(Number(lineCountArg) || NOTE_READ_LINES), 1), NOTE_READ_MAX_LINES);
+  const { totalLines, from, to, numbered } = sliceNoteLines(content, startLine, lineCount);
+  return {
+    id: n.id,
+    title: n.title,
+    category_id: n.category_id ?? null,
+    totalLines,
+    totalChars: content.length,
+    lines: `${from}-${to}`,
+    content: numbered,
+    ...(to < totalLines
+      ? { hint: `本笔记共 ${totalLines} 行，本次只返回第 ${from}-${to} 行；继续读取请调用 getNoteContent/readNoteLines 并带 startLine=${to + 1}。修改请用 replaceLines/insertLines/deleteLines，不要整篇覆盖。` }
+      : { hint: "已返回全部内容（行号仅用于定位，不要写进正文）。" }),
+  };
+};
 
 /**
  * 消息时间显示：今天只显示 时:分，昨天加"昨天"，更早带上日期。
@@ -710,7 +1132,7 @@ const formatMessageTime = (at?: number): string => {
   return `${d.getFullYear()}-${md} ${hh}:${mm}`;
 };
 
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenProviderSettings, onClose }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onClose }) => {
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
   const [sessions, setSessions] = useState<AiChatSession[]>([]);
@@ -734,7 +1156,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
   const confirmTimerRef = useRef<number | null>(null);
   const confirmSettledRef = useRef(false);
-  const [confirmMode, setConfirmMode] = useState(true);
+  const [confirmMode, setConfirmMode] = useState(aiSettings.confirmByDefault);
   const { showToast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 是否贴底跟随最新回复：滚轮上滑查看历史时置 false，回到底部自动恢复 */
@@ -743,6 +1165,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [atBottom, setAtBottom] = useState(true);
   /** 当前视口所处的历史锚点（第几条用户消息） */
   const [activeAnchor, setActiveAnchor] = useState(0);
+  /** 消息区可用高度：锚点导轨按它决定条数与间距，保证永不溢出 */
+  const [messagesAreaH, setMessagesAreaH] = useState(0);
   /** 锚点悬浮气泡：内容取用户消息，位置贴着被悬停的那个点 */
   const [anchorTip, setAnchorTip] = useState<{ index: number; top: number; visible: boolean }>({ index: 0, top: 0, visible: false });
   /** 消息视口外层容器：用于把气泡定位在点的同一高度 */
@@ -784,6 +1208,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    * 否则每一轮都要白等一次、白烧一遍 token。
    */
   const thinkingCapableRef = useRef(true);
+  /** 已生成的上下文摘要（按会话缓存）：{sid 会话, covered 已覆盖的消息条数, text 摘要} */
+  const contextSummaryRef = useRef<{ sid: number; covered: number; text: string } | null>(null);
   /** 本次回答里已执行过的工具调用签名，用于跳过完全重复的调用 */
   const executedCallKeys = useRef<Set<string>>(new Set());
   const activeProvider = useMemo(() => providers.find((p) => p.id === selectedProviderId) || null, [providers, selectedProviderId]);
@@ -1117,7 +1543,49 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     /** 本轮的编号：一旦被"停止"或被新消息取代，旧循环必须立刻安静退出，绝不再改界面 */
     const myRun = runIdRef.current;
     const isStale = () => abortRef.current || runIdRef.current !== myRun;
+    /** 系统提示词 = 工具协议 + 用户自定义的前置提示词/记忆（每次请求都带上） */
+    const memoryBlock = buildMemoryBlock(aiPrompts);
+    /** 深度思考的字数要求也随设置走，和传给后端的值保持一致 */
+    const thinkRule = `## 深度思考要求\n- 每次回复的 <thinking> 都要写够 ${aiSettings.minThinkingLen} 字以上（写真实推理，不要复述用户的话）。`;
+    const systemPrompt = [TOOLS_PROMPT, thinkRule, memoryBlock].filter(Boolean).join("\n\n");
     let roundMsgs = [...msgs];
+
+    /* ---------- 上下文压缩（滑动窗口 + 摘要，主流做法） ----------
+     * 对话越来越长时，把更早的部分压成一段要点，只把"摘要 + 最近若干条"发给模型。
+     * 界面上历史依旧完整，压缩只作用于请求；同一段只摘要一次（缓存在 ref 里）。
+     */
+    {
+      const { kept, dropped } = selectContextWindow(msgs, aiSettings.contextBudget, aiSettings.keepRecent);
+      const cache = contextSummaryRef.current;
+      let summary = cache && cache.sid === sid ? cache.text : "";
+      let covered = cache && cache.sid === sid ? cache.covered : 0;
+      if (covered > dropped.length) { summary = ""; covered = 0; }              // 换会话或历史被清空
+      const needsSummary = dropped.length > 0 && (!summary || dropped.length - covered >= 6);
+      if (needsSummary && activeProvider?.id) {
+        try {
+          const text = await api.sendAiChat(
+            activeProvider.id,
+            [
+              { role: "system", content: "你是对话压缩助手。把给定对话压缩成要点，务必保留：用户长期偏好与硬性要求、已确认的结论、出现过的笔记 ID 与标题、尚未完成的事项。不要寒暄、不要输出任何标签，直接给要点，400 字以内。" },
+              { role: "user", content: `${summary ? `已知摘要：${summary}\n\n` : ""}需要压缩的对话：\n${compressTranscript(dropped)}` },
+            ],
+            "",
+            activeModel,
+          );
+          const clean = stripAiTags(text || "").replace(/<[^>]*>/g, "").trim().slice(0, 1200);
+          if (clean) { summary = clean; covered = dropped.length; }
+        } catch { /* 摘要失败不影响本轮：下面会用本地兜底说明 */ }
+      }
+      contextSummaryRef.current = summary ? { sid, covered, text: summary } : null;
+      const uncovered = dropped.slice(covered);
+      // selectContextWindow 返回的是通用 {role, content}，这里角色只可能是 user/assistant/system
+      const rebuilt = [
+        ...(summary ? [{ role: "system", content: `【更早对话的要点摘要】${summary}` }] : []),
+        ...(uncovered.length > 0 ? [{ role: "system", content: localSummaryFallback(uncovered) }] : []),
+        ...kept,
+      ].filter(m => m.content && m.content.trim()) as AiChatMessage[];
+      roundMsgs = rebuilt;
+    }
     /** 交给 Rust 端提示词的最小思考字数 */
     const MIN_THINKING_LEN = 120;
     /**
@@ -1128,25 +1596,39 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     const THINKING_RETRY_MIN_LEN = 24;
     /** 每轮允许的一次"强制思考/工具使用"纠正机会 */
     let correctionUsed = false;
+    /** 连续多少轮"全是重复调用、没有任何新动作"——用于不限制轮数时防止空转 */
+    let noProgressRounds = 0;
 
-    for (let round = 0; round < 8; round++) {
+    // 最多工具轮数：设置为 0 表示不限制；这里仍给一个很大的硬上限作为"死循环保险"
+    const UNLIMITED_ROUND_SAFETY = 500;
+    const roundLimit = aiSettings.maxRounds > 0 ? aiSettings.maxRounds : UNLIMITED_ROUND_SAFETY;
+    for (let round = 0; round < roundLimit; round++) {
       if (isStale()) return;
       setIsSending(true);
       const roundGen = bumpStreamGen();
       let nativeReasoning = '';
       try {
-        const full = await api.sendAiChatStream(
-          activeProvider!.id,
-          [{ role: 'system', content: TOOLS_PROMPT }, ...roundMsgs],
-          noteTitle || '',
-          noteContent,
-          (c, r) => {
-            nativeReasoning = r;
-            if (!isStale()) pushStreamContent(c, roundGen);
-          },
-          MIN_THINKING_LEN,
-          currentNoteId ?? null,
-        );
+        // 设置里关掉流式时走一次性请求：个别服务商的流式不稳定，这时界面先显示"思考中"，
+        // 拿到完整结果再一次性呈现（解析与后续流程完全一致）。
+        const full = aiSettings.streaming
+          ? await api.sendAiChatStream(
+              activeProvider!.id,
+              [{ role: 'system', content: systemPrompt }, ...roundMsgs],
+              noteTitle || '',
+              noteContent,
+              (c, r) => {
+                nativeReasoning = r;
+                if (!isStale()) pushStreamContent(c, roundGen);
+              },
+              aiSettings.minThinkingLen,
+              currentNoteId ?? null,
+            )
+          : await api.sendAiChat(
+              activeProvider!.id,
+              [{ role: 'system', content: systemPrompt }, ...roundMsgs],
+              "",
+              activeModel,
+            );
         if (isStale()) return;
         const parsed = parseResponse(full, nativeReasoning);
         // thinking 为纯推理（用于校验深度），thinkingDisplay 才是思考区展示文本（含工具调用原文）
@@ -1169,7 +1651,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           streamStartsWithThinking(full) ||
           !thinkingCapableRef.current
         );
-        if (shouldRetryForShallowThinking({
+        if (aiSettings.retryShallowThinking && shouldRetryForShallowThinking({
           correctionUsed,
           replyShown,
           toolCallCount: toolCalls.length,
@@ -1268,7 +1750,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           });
           try { await api.saveChatMessage(sid, 'assistant', full); } catch {}
           // 生成标题只喂清洗后的正文，避免把截断的工具调用 JSON 塞给标题模型
-          genTitle(sid, prompt, finalReply);
+          if (aiSettings.autoTitle) genTitle(sid, prompt, finalReply);
           return;
         }
 
@@ -1342,12 +1824,25 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             }
           }
         }
+        // 全是重复调用 = 这一轮没有任何进展。设置为"不限制轮数"时，这种空转必须掐掉，
+        // 否则模型反复要同一份数据就会一直转下去（既烧额度又看不到结果）。
+        if (results.length === 0 && skippedCount > 0) {
+          noProgressRounds++;
+          if (noProgressRounds >= 2) break;
+        } else {
+          noProgressRounds = 0;
+        }
         // 工具轨迹已在每条工具执行时逐条写入气泡，这里不再批量补写
         // Build result message and continue loop
-        const resultParts = results.map(r => `${r.name}: ${r.success ? JSON.stringify(r.result) : '失败: ' + r.result}`);
+        const resultParts = results.map(r => `${r.name}: ${r.success ? compactToolResult(r.result, aiSettings.toolResultChars) : '失败: ' + r.result}`);
         if (skippedCount > 0) resultParts.push(`已跳过 ${skippedCount} 个重复调用（本次回答中执行过，未重复执行）`);
         const resultSummary = resultParts.join('; ');
-        if (results.length > 0) { try { window.dispatchEvent(new CustomEvent('fastnote-data-changed')); await loadSessions(); } catch {} }
+        if (results.length > 0) {
+          try { window.dispatchEvent(new CustomEvent('fastnote-data-changed')); await loadSessions(); } catch {}
+          // 历史里的工具结果按主流做法做"旧结果摘要化"：只给前 2 条保留原始长度，
+          // 更早的压到 400 字以内。多轮工具调用时上下文增长最凶的就是这里。
+          roundMsgs = compressOldToolResults(roundMsgs);
+        }
         roundMsgs = [...roundMsgs, { role: 'assistant', content: full }, { role: 'system', content: '工具执行结果：' + resultSummary + '\n请根据结果继续处理或给用户最终回复（仍需先输出 <thinking>）。如果上一轮你已经写好了要展示给用户的正文，本轮不要重复它，只需补充工具执行后的说明。' }];
       } catch (e) {
         // 以前这里只 console.error 就直接 return：请求失败时界面上一句话都没有，
@@ -1375,7 +1870,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     // 这份清单同时是给模型看的上下文：工具调用记录只存在于界面，不在对话历史里，
     // 写进正文用户下次说"继续"时模型才知道自己刚做了什么。
     const notice = doneTools.length > 0
-      ? `（本次操作步骤已达上限，先停在这里。已完成的操作为：\n${doneTools.map(d => `- ${d}`).join("\n")}\n\n还需要继续的话，回一句「继续」就行。）`
+      ? (noProgressRounds >= 2
+          ? `（模型连续两轮重复请求同样的数据、没有新进展，已先停下。已完成的操作为：\n${doneTools.map(d => `- ${d}`).join("\n")}\n\n还需要继续的话，回一句「继续」并说明下一步要做什么。）`
+          : `（本次操作步骤已达上限，先停在这里。已完成的操作为：\n${doneTools.map(d => `- ${d}`).join("\n")}\n\n还需要继续的话，回一句「继续」就行。）`)
       : "（模型没有返回有效内容，请重试，或把需求说得更具体一些。）";
     await commitNotice(sid, notice, leftover);
   };
@@ -1548,16 +2045,22 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     isSending && (!streamingPreview || (!streamingPreview.reply && !streamingPreview.thinking) || holdEarlyReply);
 
   /**
-   * 右侧历史锚点：每条用户消息对应一个点（顺序与 DOM 中 [data-chat-anchor] 一致）。
-   * 刻意只用 messages 派生：流式气泡永远是最后一条 assistant 消息，不会产生锚点，
-   * 因此流式期间这个数组保持同一引用，AnchorRail 的 memo 才不会被每 50ms 打破。
+   * 右侧历史锚点：每条用户消息对应一条横线。
+   *
+   * **index 是"第几个锚点"（0 起），不是它在 messages 里的下标** —— 这一点必须统一：
+   * jumpToAnchor 用 querySelectorAll('[data-chat-anchor]')[index] 取节点、滚动同步
+   * 算出的 activeAnchor 也是锚点序号。之前这里塞的是消息下标（用户消息在 messages 里
+   * 的 index 是 0、2、4…），于是点第 N 条会跳错、高亮也对不上。
+   *
+   * 只用 messages 派生：流式气泡永远是 assistant，不产生锚点，所以流式期间这个数组
+   * 保持同一引用，AnchorRail 的 memo 才不会被每 50ms 打破。
    */
   const userAnchors = useMemo(
-    () => messages.reduce<{ index: number; preview: string }[]>((acc, msg, index) => {
+    () => messages.reduce<{ index: number; preview: string }[]>((acc, msg) => {
       if (msg.role === 'user') {
         const plain = (msg.content || '').replace(/\s+/g, ' ').trim();
         acc.push({
-          index,
+          index: acc.length,
           preview: plain
             ? (plain.length > ANCHOR_PREVIEW_LEN ? `${plain.slice(0, ANCHOR_PREVIEW_LEN)}…` : plain)
             : '（空消息）',
@@ -1570,6 +2073,24 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 切换会话后旧索引可能越界，渲染前夹一下，保证总有一个点处于高亮态 */
   const activeDotIndex = Math.min(activeAnchor, Math.max(0, userAnchors.length - 1));
 
+  /**
+   * 锚点防溢出：按聊天区可用高度算出"最多能放几条"，超出就等距采样。
+   * 这样无论多少轮对话，横线导轨都刚好铺满、居中、不出现滚动条。
+   */
+  const railFits = Math.max(3, Math.floor(Math.max(0, messagesAreaH - 24) / (RAIL_ITEM_H + RAIL_MIN_GAP)));
+  const railGap = userAnchors.length <= 1
+    ? RAIL_MAX_GAP
+    : Math.min(RAIL_MAX_GAP, Math.max(RAIL_MIN_GAP, Math.floor(Math.max(0, messagesAreaH - 24) / userAnchors.length) - RAIL_ITEM_H));
+  const visibleAnchors = useMemo(() => {
+    if (userAnchors.length <= railFits) return userAnchors;
+    // 等距采样，且务必包含最后一条（最新话题）
+    const picked: typeof userAnchors = [];
+    const step = userAnchors.length / railFits;
+    for (let k = 0; k < railFits; k++) picked.push(userAnchors[Math.min(userAnchors.length - 1, Math.floor(k * step))]);
+    if (picked[picked.length - 1]?.index !== userAnchors[userAnchors.length - 1].index) picked[picked.length - 1] = userAnchors[userAnchors.length - 1];
+    return picked;
+  }, [userAnchors, railFits]);
+
   /** 把"哪些工具轨迹展开着"按消息分组：每行只拿自己那份，引用稳定、memo 才有效 */
   const toolOpenByRow = useMemo(() => {
     const map: Record<number, Record<string, boolean>> = {};
@@ -1581,6 +2102,18 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     }
     return map;
   }, [expandedTools]);
+
+  /** 观察消息区高度：面板宽度变化、窗口缩放时锚点条数要跟着重算 */
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = messagesAreaRef.current;
+    if (!el) return;
+    const update = () => setMessagesAreaH(el.clientHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -1601,6 +2134,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         </div>
         <button className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="服务商设置" onClick={onOpenProviderSettings}><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>
         {/* 面板内也放一个关闭入口，鼠标离工具栏较远时更顺手 */}
+        <button className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="AI 记忆 / 前置提示词" onClick={onOpenAiMemory}>
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+        </button>
         {onClose && (
           <button className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="关闭 AI 对话" onClick={onClose}>
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
@@ -1619,7 +2155,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         onScroll={handleChatScroll}
         onWheel={releaseJumpTarget}
         onTouchStart={releaseJumpTarget}
-        className="flex-1 min-h-0 overflow-y-auto pl-3 py-3 pr-6 space-y-4 chat-scrollbar [overflow-anchor:none]"
+        className="flex-1 min-h-0 overflow-y-auto pl-3 py-3 pr-9 space-y-4 chat-scrollbar [overflow-anchor:none]"
       >
         {!activeProvider ? (
           <div className="empty-state"><div className="empty-state-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div><p className="empty-state-title">暂无配置</p><p className="empty-state-desc">请先配置 AI 服务商</p><button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs">立即配置</button></div>
@@ -1633,6 +2169,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             expanded={!!expandedThinking[i]}
             toolOpen={toolOpenByRow[i] || NO_OPEN_TOOLS}
             isSending={isSending}
+            showToolTrace={aiSettings.showToolTrace}
             onToggleThinking={toggleThinking}
             onToggleTool={toggleToolTrace}
             onInsertText={insertTextStable}
@@ -1650,8 +2187,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       {userAnchors.length >= 2 && (
         <>
           <AnchorRail
-            anchors={userAnchors}
-            activeIndex={activeDotIndex}
+            anchors={visibleAnchors}
+            activeOriginal={activeDotIndex}
+            gap={railGap}
             onJump={jumpToAnchor}
             onHover={showAnchorTip}
             onLeave={hideAnchorTip}

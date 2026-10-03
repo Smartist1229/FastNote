@@ -83,6 +83,21 @@ export const formatError = (error: unknown): string => {
   }
 };
 
+/* ---------------- 标签归一化 ---------------- */
+
+/**
+ * 把模型写歪的标签统一成标准写法。
+ * 实测模型经常写成 <tool_call>（少个 s）、<function_call>、<Thought> 等。
+ * 旧实现只认 <tool_calls>，于是这类标签既没被执行、也没被剥掉，
+ * 用户看到的就是"一段自说自话 + 一个裸的 <tool_call>"，然后对话就结束了。
+ */
+export const normalizeAiTags = (text: string): string =>
+  text
+    // 思考类：<thought>/<think>/<thinking ...> → <thinking>
+    .replace(/<\/?(?:thought|think|thinking)\b[^>]*>/gi, (m) => (m.startsWith("</") ? "</thinking>" : "<thinking>"))
+    // 工具类：<tool_call>/<toolcall>/<function_call> 及其复数 → <tool_calls>
+    .replace(/<\/?(?:tool_?calls?|toolcalls?|function_?calls?)\b[^>]*>/gi, (m) => (m.startsWith("</") ? "</tool_calls>" : "<tool_calls>"));
+
 /* ---------------- 标签剥离与正文提取 ---------------- */
 
 /** 标签只有开标签、没有闭标签 → 模型输出被截断 */
@@ -183,12 +198,14 @@ const findJsonArrayEnd = (text: string, start: number): number => {
   return -1;
 };
 
-/** 解析工具调用数组；容忍常见的多余逗号写法 */
+/** 解析工具调用数组；容忍常见的多余逗号写法、以及"只给一个对象而不是数组"的写法 */
 const parseToolCallArray = (raw: string): ToolCall[] => {
   for (const candidate of [raw, raw.replace(/,\s*([\]}])/g, "$1")]) {
     try {
-      const arr = JSON.parse(candidate);
-      if (Array.isArray(arr) && arr.length > 0) {
+      const parsed = JSON.parse(candidate);
+      // 有的模型把 <tool_calls> 里写成单个对象 {"name":…,"args":…}
+      const arr = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === "object" && "name" in parsed ? [parsed] : null);
+      if (arr && arr.length > 0) {
         const calls = arr.map(normalizeToolCall);
         if (calls.every((c): c is ToolCall => c !== null)) return calls;
       }
@@ -251,7 +268,9 @@ const readToolCalls = (bodyText: string, replyBase: string): { calls: ToolCall[]
 /* ---------------- 统一解析入口 ---------------- */
 
 /** 统一的解析入口：流式渲染与最终消息共用同一套规则 */
-export const parseAssistantText = (text: string, reasoning?: string): ParsedResponse => {
+export const parseAssistantText = (rawText: string, reasoning?: string): ParsedResponse => {
+  // 先把模型写歪的标签（<tool_call>、<Thought> 等）归一化，后面所有规则才吃得准
+  const text = normalizeAiTags(rawText || "");
   const thinking = readThinking(text, reasoning);
   const bodyOnly = bodyWithoutThinking(text); // 思考里"提到"的 <tool_calls> 字样不算调用
   const { calls, toolText, reply } = readToolCalls(bodyOnly, readReply(text).reply);
@@ -294,6 +313,77 @@ export const finalReplyText = (p: ParsedResponse): string => {
  */
 export const streamStartsWithThinking = (text: string): boolean => /^\s*<thinking>/.test(text);
 
+/* ---------------- 上下文压缩（记忆管理） ---------------- */
+
+/** 会话里能进上下文的最小消息形状（不依赖业务类型） */
+export interface ContextMessage {
+  role: string;
+  content: string;
+}
+
+/**
+ * 粗略估算 token 数。中日韩字符按 1 token/字，其余按 4 字符 1 token 计。
+ * 不追求精确，只用于"什么时候该压缩"的阈值判断——上下文失控比估算误差危险得多。
+ */
+export const estimateTokens = (text: string): number => {
+  if (!text) return 0;
+  const cjk = text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/g);
+  const cjkCount = cjk ? cjk.length : 0;
+  const rest = text.length - cjkCount;
+  return cjkCount + Math.ceil(rest / 4);
+};
+
+/**
+ * 单条消息的瘦身：超长内容保留头尾、中间折叠。
+ * 用户粘贴整篇长文、或工具回传整篇笔记时，靠它把单条消息从几万 token 压到几百。
+ */
+export const shrinkMessage = (text: string, head = 1200, tail = 400): string => {
+  if (!text || text.length <= head + tail + 40) return text;
+  const cut = text.length - head - tail;
+  return `${text.slice(0, head)}\n\n…（此处省略 ${cut} 字，需要细节请用工具按范围读取）…\n\n${text.slice(-tail)}`;
+};
+
+/**
+ * 选出要送进模型的消息窗口（主流的"滑动窗口 + 摘要"策略）。
+ *
+ * 规则：
+ *   1. 从最新往回放，直到预算用完；至少保留 keepRecent 条完整消息；
+ *   2. 超预算的更早消息不直接丢弃，而是交给调用方做摘要（returned 的 dropped）；
+ *   3. 每条消息都先瘦身，避免一条超长消息吃掉整个预算。
+ * 界面上的历史始终是完整的，这里只影响"发给模型的内容"。
+ */
+export const selectContextWindow = (
+  msgs: ContextMessage[],
+  budgetTokens: number,
+  keepRecent = 8,
+): { kept: ContextMessage[]; dropped: ContextMessage[] } => {
+  const prepared = msgs.map((m) => ({ role: m.role, content: shrinkMessage(m.content) }));
+  let used = 0;
+  let cutAt = prepared.length;
+  for (let i = prepared.length - 1; i >= 0; i--) {
+    const cost = estimateTokens(prepared[i].content) + 4;
+    const mustKeep = prepared.length - i <= keepRecent;
+    if (!mustKeep && used + cost > budgetTokens) break;
+    used += cost;
+    cutAt = i;
+  }
+  return { kept: prepared.slice(cutAt), dropped: prepared.slice(0, cutAt) };
+};
+
+/** 摘要失效时的本地兜底：至少让模型知道"前面还有一些对话" */
+export const localSummaryFallback = (dropped: ContextMessage[]): string => {
+  if (dropped.length === 0) return "";
+  const firstUser = dropped.find((m) => m.role === "user")?.content.replace(/\s+/g, " ").slice(0, 60) || "";
+  return `（更早的 ${dropped.length} 条对话因长度限制已省略${firstUser ? `，最初的话题是「${firstUser}…」` : ""}。需要细节时请用工具重新读取笔记。）`;
+};
+
+/** 生成摘要时喂给模型的对话文本（带角色和条数上限，避免摘要请求本身又超长） */
+export const compressTranscript = (dropped: ContextMessage[], maxChars = 6000): string => {
+  const lines = dropped.map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content.replace(/\s+/g, " ").trim()}`);
+  const text = lines.join("\n");
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n…（后续省略）` : text;
+};
+
 /* ---------------- 会话标题清洗 ---------------- */
 
 /**
@@ -319,22 +409,58 @@ export const cleanSessionTitle = (raw: string): string => {
 /* ---------------- 事实校验 ---------------- */
 
 /**
+ * 去掉"引用来的内容"，只保留模型对自己动作的陈述。
+ *
+ * 事实校验以前直接在整段正文上匹配，于是两类误报：
+ *   1. 总结/翻译笔记时，**笔记原文里**写着"已移动到读书分组"被当成模型自己的动作；
+ *   2. 代码块、引用块里同样会出现这类句式。
+ * 这里把引号内、代码块内、引用行内、书名号内的内容先抹掉再判断。
+ */
+export const stripQuotedText = (text: string): string =>
+  (text || "")
+    .replace(/```[\s\S]*?```/g, " ")      // 代码块
+    .replace(/`[^`\n]*`/g, " ")            // 行内代码
+    .replace(/^[ \t]*>.*$/gm, " ")         // 引用行
+    .replace(/「[^」]*」/g, " ")
+    .replace(/『[^』]*』/g, " ")
+    .replace(/《[^》]*》/g, " ")
+    .replace(/“[^”]*”/g, " ")
+    .replace(/"[^"\n]{0,200}"/g, " ")
+    .replace(/‘[^’]*’/g, " ");
+
+/**
  * "模型声称已完成的动作" ↔ "必须真实执行过的工具"。
  * 用于最终回复的事实校验：说了"已打开"就必须真的调过 selectNote。
+ *
+ * 规则要点：
+ *   - "移入回收站"属于**删除**（deleteNote/deleteCategory），不属于移动；
+ *     移动规则里用负向断言把这个说法排除掉，否则删完笔记会误报"没有执行移动笔记"。
+ *   - 只在去掉引用内容后的文本上匹配（见 stripQuotedText）。
  */
+/**
+ * 声称前缀："已/已经/成功"之后允许接"为/把/将 + 它/其/这条笔记…"，
+ * 这样"已将其移入回收站""已把它删除了"这类说法也能识别到。
+ */
+const CLAIM_PREFIX = "(?:已|已经|成功)\\s*(?:为[你您]|把|将)?\\s*(?:它|其|这条笔记|该笔记|这条分组|该分组)?\\s*";
+const claimRe = (verbs: string) => new RegExp(`${CLAIM_PREFIX}(?:${verbs})`);
+
 const ACTION_CLAIM_RULES: { label: string; re: RegExp; tools: string[] }[] = [
-  { label: "打开笔记", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*打开/, tools: ["selectNote"] },
-  { label: "创建笔记/分组", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:创建|新建|添加)/, tools: ["createNote", "createNotes", "createCategory"] },
-  { label: "修改笔记/分组", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:修改|更新|改成|改为|重命名|改名)/, tools: ["updateNote", "updateCurrentNote", "renameCategory"] },
-  { label: "删除笔记/分组", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:删除|移除|清空)/, tools: ["deleteNote", "deleteCategory", "deleteFromTrash", "emptyTrash"] },
-  { label: "移动笔记", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:移动|移入)/, tools: ["moveNote"] },
-  { label: "还原笔记", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*还原/, tools: ["restoreNote"] },
-  { label: "追加内容", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*追加/, tools: ["appendToNote"] },
+  { label: "打开笔记", re: claimRe("打开"), tools: ["selectNote"] },
+  { label: "创建笔记/分组", re: claimRe("创建|新建|添加"), tools: ["createNote", "createNotes", "createCategory"] },
+  { label: "修改笔记/分组", re: claimRe("修改|更新|改成|改为|重命名|改名"), tools: ["updateNote", "updateCurrentNote", "renameCategory"] },
+  // "移入回收站"属于删除动作；移动规则里用负向断言排除它，
+  // 否则删完笔记会被误报成"没有执行移动笔记"。
+  { label: "删除笔记/分组", re: claimRe("删除|移除|清空|移入回收站"), tools: ["deleteNote", "deleteCategory", "deleteFromTrash", "emptyTrash"] },
+  { label: "移动笔记", re: claimRe("移动|移到|移至|移入(?!回收站)"), tools: ["moveNote"] },
+  { label: "还原笔记", re: claimRe("还原"), tools: ["restoreNote"] },
+  { label: "追加内容", re: claimRe("追加"), tools: ["appendToNote"] },
 ];
 
 /** 正文里是否出现了"已完成某操作"的表述（用于纠正"谎报操作"的回复） */
-export const hasActionClaim = (reply: string): boolean =>
-  ACTION_CLAIM_RULES.some(rule => rule.re.test(reply));
+export const hasActionClaim = (reply: string): boolean => {
+  const clean = stripQuotedText(reply);
+  return ACTION_CLAIM_RULES.some(rule => rule.re.test(clean));
+};
 
 /**
  * 组装最终正文：保留工具轮里已经写给用户的正文，并对"声称已完成但没执行"做事实校验。
@@ -344,7 +470,9 @@ export const buildFinalContent = (finalReply: string, carriedContent: string, to
   const carried = carriedContent.trim();
   const base = carried && !finalReply.includes(carried) ? `${carried}\n\n${finalReply}` : finalReply;
   const ranTools = new Set(tools.filter(t => t.ok).map(t => t.name));
-  const unverified = ACTION_CLAIM_RULES.filter(rule => rule.re.test(base) && !rule.tools.some(t => ranTools.has(t)));
+  // 同样只在"去掉引用内容"后的文本上判断，避免把笔记原文当成模型的动作
+  const claimText = stripQuotedText(base);
+  const unverified = ACTION_CLAIM_RULES.filter(rule => rule.re.test(claimText) && !rule.tools.some(t => ranTools.has(t)));
   if (unverified.length === 0) return base;
   return `${base}\n\n> ⚠️ 提示：本次回答里并没有实际执行「${unverified.map(r => r.label).join("、")}」，上面的相关表述未经工具结果确认，请以左侧笔记列表的实际状态为准。`;
 };

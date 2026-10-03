@@ -5,9 +5,17 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   children: React.ReactNode;
+  /** 宽度档位：默认 lg；设置窗口这类带侧栏的内容用 2xl 才放得下 */
+  size?: "lg" | "xl" | "2xl";
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
+const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
+  lg: "max-w-lg",
+  xl: "max-w-xl",
+  "2xl": "max-w-3xl",
+};
+
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = "lg" }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen) {
@@ -36,7 +44,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }
       onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === overlayRef.current; }}
       onMouseUp={() => { if (mouseDownOnOverlay.current) { mouseDownOnOverlay.current = false; onClose(); } }}
     >
-      <div className="modal-content bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal-content bg-white rounded-2xl shadow-2xl w-full ${SIZE_CLASS[size]} overflow-hidden`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h3 className="text-base font-semibold text-slate-800">{title}</h3>
           <button

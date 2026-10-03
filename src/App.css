@@ -632,47 +632,37 @@ button:focus-visible {
   background: #cbd5e1;
 }
 
-/* ========== AI 对话历史锚点（右侧垂直居中的"目录"） ========== */
+/* ========== AI 对话历史锚点（右侧垂直居中的"目录"，横线样式） ========== */
 .chat-anchor-rail {
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 4px;
+  right: 5px;
   z-index: 20;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  /* 点很多时导轨内部可滚动，但绝不显示滚动条（width/height 双清零，兼容各内核） */
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 12px 0;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  /* 只有圆点接收鼠标事件：导轨空白处仍能把滚轮交给聊天区 */
+  justify-content: center;
+  align-items: flex-end;
+  /* 条数由 JS 按可用高度采样，永远不会溢出，所以这里不需要滚动条 */
+  overflow: hidden;
+  padding: 10px 0;
+  /* 只有横线本身接收鼠标事件：空白处仍把滚轮交给聊天区 */
   pointer-events: none;
 }
-.chat-anchor-rail::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-  display: none;
-}
-.chat-anchor-rail-inner {
+.chat-anchor-list {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  /* 放得下时垂直居中；放不下时从顶部排列并可滚动 */
-  margin: auto 0;
+  align-items: flex-end;
   pointer-events: none;
 }
 
-.chat-anchor-dot {
-  position: relative;
+/* 每条的点击热区（横线很细，热区给足高度才好点）。
+   宽度 24px：正好容纳"选中 + 波浪"放大后的最长横线，绝不越界压到正文 */
+.chat-anchor-bar {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 10px;
+  justify-content: flex-end;
+  width: 24px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -681,36 +671,27 @@ button:focus-visible {
   pointer-events: auto;
 }
 
-.chat-anchor-pin {
+/* 横线本体：只动 transform（scaleX/scaleY），不动 width，避免每帧重排 */
+.chat-anchor-line {
   display: block;
-  width: 6px;
-  height: 6px;
+  width: 11px;
+  height: 2px;
   border-radius: 999px;
-  background: #cbd5e1;
-  transform-origin: center;
-  /*
-   * 只动 transform，不动 width。
-   * 之前用 width 做"圆点变胶囊"，每一帧都要触发重排，点和 tooltip 一起抖，
-   * 这就是锚点动画卡顿的根源。这里改成 scaleX，交给合成器，稳定 60fps。
-   */
-  transform: scaleX(1) scaleY(1);
+  background: #dbe2ec;
+  transform-origin: right center;
   transition:
-    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
-    background-color 0.2s ease,
-    box-shadow 0.22s ease;
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.18s ease,
+    box-shadow 0.22s ease,
+    opacity 0.18s ease;
 }
-.chat-anchor-dot:hover .chat-anchor-pin {
-  background: #818cf8;
-  transform: scaleX(1.45) scaleY(1.45);
+.chat-anchor-bar:hover .chat-anchor-line {
+  background: #8b93f8;
 }
-.chat-anchor-dot.is-active .chat-anchor-pin {
-  /* 6px × 2.6 ≈ 原来的 15px 胶囊 */
-  transform: scaleX(2.6);
-  background: linear-gradient(90deg, #818cf8, #4f46e5);
-  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.14);
-}
-.chat-anchor-dot.is-active:hover .chat-anchor-pin {
-  transform: scaleX(2.6) scaleY(1.15);
+/* 当前正在查看的那条：更长、更亮，带一点光晕 */
+.chat-anchor-bar.is-active .chat-anchor-line {
+  background: linear-gradient(90deg, #8b93f8, #4f46e5);
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
 }
 
 /*
@@ -720,7 +701,7 @@ button:focus-visible {
  */
 .chat-anchor-tip-floating {
   position: absolute;
-  right: 26px;
+  right: 32px;
   z-index: 21;
   width: max-content;
   max-width: 220px;

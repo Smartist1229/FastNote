@@ -168,3 +168,23 @@ export const updateChatSessionTitle = async (sessionId: number, title: string): 
 export const deleteChatSession = async (sessionId: number): Promise<void> => {
   return await invoke('delete_chat_session', { sessionId });
 };
+
+/* ---------------- 应用设置（存 SQLite 的 app_settings 表） ---------------- */
+
+/** 读取全部设置键值；表不存在/读取失败时返回空对象，由调用方回退到默认值 */
+export const getAppSettings = async (): Promise<Record<string, string>> => {
+  try {
+    return await invoke<Record<string, string>>('get_app_settings');
+  } catch (e) {
+    console.error('读取设置失败：', e);
+    return {};
+  }
+};
+
+export const setAppSetting = async (key: string, value: string): Promise<void> => {
+  return await invoke('set_app_setting', { key, value });
+};
+
+export const deleteAppSetting = async (key: string): Promise<void> => {
+  return await invoke('delete_app_setting', { key });
+};

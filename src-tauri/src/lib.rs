@@ -177,6 +177,18 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    // ---- 应用设置（AI 设置、记忆/前置提示词等）----
+    // 键值对形式：每个设置一行，缺键时前端自动回退到默认值。
+    // 老版本用 localStorage 存的设置会在首次读取时迁移进来（见前端 migrateLocalSettings）。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
     // ---- 迁移：多选模型列表 ----
     // 老库只有 enabled_model（单选），这里补上 enabled_models（JSON 数组）并把旧值回填进去
     if !has_column(conn, "ai_providers", "enabled_models") {
@@ -366,6 +378,47 @@ fn create_category(name: String, state: State<AppState>) -> Result<Category, Str
         created_at: now,
         note_count: 0,
     })
+}
+
+/* ---------------- 应用设置（键值对） ----------------
+ * 所有设置都存在 app_settings 表里：读不到某个键时由前端回退到默认值，
+ * 因此升级/新增设置项都不需要迁移脚本。
+ */
+
+#[tauri::command]
+fn get_app_settings(state: State<AppState>) -> Result<std::collections::HashMap<String, String>, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM app_settings")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (key, value) = row.map_err(|e| e.to_string())?;
+        map.insert(key, value);
+    }
+    Ok(map)
+}
+
+#[tauri::command]
+fn set_app_setting(key: String, value: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, Local::now().to_rfc3339()],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_app_setting(key: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1354,6 +1407,9 @@ pub fn run() {
             save_chat_message,
             update_chat_session_title,
             delete_chat_session,
+            get_app_settings,
+            set_app_setting,
+            delete_app_setting,
         ])
         .setup(|app| {
             let data_dir = match std::env::current_exe() {

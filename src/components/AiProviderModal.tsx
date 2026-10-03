@@ -71,9 +71,9 @@ interface AiProviderModalProps {
   onSelectedProviderChange: (id: number) => void;
 }
 
-export const AiProviderModal: React.FC<AiProviderModalProps> = ({
+/** 服务商配置面板本体（不含弹窗外壳，便于嵌进统一设置窗口的标签页） */
+export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   isOpen,
-  onClose,
   providers,
   selectedProviderId,
   onProvidersChange,
@@ -371,14 +371,13 @@ export const AiProviderModal: React.FC<AiProviderModalProps> = ({
   const activeProvider = listProviders.find((p) => p.id === selectedProviderId);
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="AI 服务商配置">
-      <div className="space-y-4 min-w-[420px]">
+    <div className="space-y-4 min-w-0">
         {/* Provider list */}
         {!showForm && (
           <>
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-700">已配置的服务商</h3>
-              <div className="flex gap-1.5">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h3 className="text-sm font-semibold text-slate-700 flex-shrink-0">已配置的服务商</h3>
+              <div className="flex gap-1.5 flex-wrap">
                 {(["openai", "google", "claude"] as AiProviderType[]).map((type) => (
                   <button
                     key={type}
@@ -608,6 +607,15 @@ export const AiProviderModal: React.FC<AiProviderModalProps> = ({
           </>
         )}
       </div>
-    </Modal>
   );
 };
+
+/**
+ * 统一的「AI 设置」窗口：把服务商配置作为其中一个标签页复用同一个组件，
+ * 避免维护两份表单（这也是设置窗口能收敛到一处的前提）。
+ */
+export const AiProviderModal: React.FC<AiProviderModalProps> = (props) => (
+  <Modal isOpen={props.isOpen} onClose={props.onClose} title="AI 服务商配置">
+    <AiProviderSettings {...props} />
+  </Modal>
+);

@@ -12,11 +12,17 @@
  */
 import {
   buildFinalContent,
+  stripQuotedText,
   cleanSessionTitle,
+  compressTranscript,
+  estimateTokens,
   finalReplyText,
   hasActionClaim,
+  localSummaryFallback,
   parseAssistantText,
   parseStreamContent,
+  selectContextWindow,
+  shrinkMessage,
   shouldRetryForShallowThinking,
   streamStartsWithThinking,
 } from "../src/aiChatParse.ts";
@@ -161,6 +167,74 @@ console.log("\n[7] 事实校验（谎报操作）");
   check("工具轮已写正文被保留", buildFinalContent("好的。", "这是工具轮已写的正文", []).includes("这是工具轮已写的正文"), true);
   check("普通表述不算谎报（已为您总结）", hasActionClaim("已为您总结如下"), false);
   check("明显谎报能识别（已为您删除）", hasActionClaim("已为您删除该笔记"), true);
+}
+
+console.log("\n[8] 标签兼容（模型写歪的标签）");
+{
+  // 实测故障：模型写 <tool_call>（少个 s），旧代码既不执行也剥不掉，
+  // 用户看到的是一段自说自话 + 裸标签，然后对话结束。
+  const p1 = parseAssistantText("<thinking>要读笔记。</thinking>\n<tool_call>[{\"name\":\"getNoteContent\",\"args\":{\"noteId\":\"89\"}}]</tool_call>");
+  check("单数 <tool_call> 能解析执行", p1.toolCalls.map(c => c.name), ["getNoteContent"]);
+  check("单数 <tool_call> 不会残留在正文", /tool_call/.test(p1.reply), false);
+
+  const p2 = parseAssistantText("<Thought>先看看。</Thought>\n好的，我来回答。<tool_calls>[{\"name\":\"getCategories\",\"args\":{}}]</tool_calls>");
+  check("<Thought> 被当作思考", p2.thinking, "先看看。");
+  check("<Thought> 不会残留正文", /Thought/.test(p2.reply), false);
+
+  const p3 = parseAssistantText("<thinking>查一下。</thinking>\n<function_call>[{\"name\":\"listNotes\",\"args\":{}}]</function_call>");
+  check("<function_call> 能解析", p3.toolCalls.map(c => c.name), ["listNotes"]);
+
+  const p4 = parseAssistantText("<thinking>单个对象写法。</thinking>\n<tool_calls>{\"name\":\"getCategories\",\"args\":{}}</tool_calls>");
+  check("工具调用写成单个对象也能解析", p4.toolCalls.map(c => c.name), ["getCategories"]);
+
+  const p5 = parseAssistantText("<thinking>截断。</thinking>\n<tool_call>[{\"name\":\"getNoteContent\",\"args\":{\"noteId\":\"89\"}}");
+  check("单数标签写到一半 → 识别为截断（触发重试）", p5.truncated, true);
+  check("单数标签写到一半 → 正文无标签残留", /tool_call/.test(p5.reply), false);
+}
+
+console.log("\n[9] 上下文压缩（记忆管理）");
+{
+  check("token 估算：中文按字数", estimateTokens("中".repeat(100)), 100);
+  check("token 估算：英文按 4 字符 1 token", estimateTokens("a".repeat(400)), 100);
+
+  const long = "甲".repeat(5000);
+  const shrunk = shrinkMessage(long);
+  check("超长消息被折叠（远小于原文）", shrunk.length < 2000, true);
+  check("折叠后保留头部内容", shrunk.startsWith("甲".repeat(100)), true);
+
+  const msgs = Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `第${i}条 ` + "乙".repeat(500) }));
+  const { kept, dropped } = selectContextWindow(msgs, 3000, 8);
+  check("超预算时确实丢弃了更早的消息", dropped.length > 0, true);
+  check("至少保留最近 8 条完整消息", kept.length >= 8, true);
+  check("保留的必然是最后若干条", kept[kept.length - 1].content.includes("第39条"), true);
+  check("丢弃的必然在更早的位置", dropped[dropped.length - 1].content.includes(`第${dropped.length - 1}条`), true);
+
+  const small = [{ role: "user", content: "你好" }, { role: "assistant", content: "在的" }];
+  check("远低于预算时不丢任何消息", selectContextWindow(small, 3000, 8).dropped.length, 0);
+
+  check("本地兜底说明会提到省略条数", localSummaryFallback([{ role: "user", content: "最早的提问" }]).includes("1 条对话"), true);
+  check("摘要输入不会超长", compressTranscript(dropped, 500).length <= 500 + 20, true);
+}
+
+console.log("\n[10] 事实校验不得误报（引用内容 / 移入回收站 ≠ 移动）");
+{
+  // 误报 1：删除笔记后，回复里说"已移入回收站"，被当成"没有执行移动笔记"
+  const delReply = "已把《山居遇友记》移入回收站，可以随时还原。";
+  check("删除后说'已移入回收站'且删过笔记 → 不提示", buildFinalContent(delReply, "", [{ name: "deleteNote", ok: true }]).includes("并没有实际执行"), false);
+
+  // 误报 2：总结/翻译时，笔记原文里的话被当成模型的动作
+  const summaryReply = "这篇笔记里写着「已经移动到读书分组」，另外还提到「已删除旧稿」。以下是总结：……";
+  check("总结里引用笔记原文 → 不提示", buildFinalContent(summaryReply, "", [{ name: "getNoteContent", ok: true }]).includes("并没有实际执行"), false);
+  check("代码块里的动作句式 → 不算声称", hasActionClaim("```\n已经删除了所有文件\n```"), false);
+  check("引用行里的动作句式 → 不算声称", hasActionClaim("> 已经移动了笔记"), false);
+
+  // 该报的还得报：真的谎报
+  check("谎报'已删除'且没执行 → 提示", buildFinalContent("已删除该笔记。", "", []).includes("并没有实际执行"), true);
+  check("谎报'已移入回收站'且没执行 → 提示", buildFinalContent("已将其移入回收站。", "", []).includes("并没有实际执行"), true);
+  check("谎报'已移动'且没执行 → 提示", buildFinalContent("已移动到读书分组。", "", []).includes("并没有实际执行"), true);
+  check("真的移动过 → 不提示", buildFinalContent("已移动到读书分组。", "", [{ name: "moveNote", ok: true }]).includes("并没有实际执行"), false);
+  check("hasActionClaim：'已移动到分组'为真", hasActionClaim("已移动到读书分组"), true);
+  check("hasActionClaim：'已移入回收站'属于删除而非移动", hasActionClaim("已移入回收站"), true);
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

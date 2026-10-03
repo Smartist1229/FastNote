@@ -86,7 +86,21 @@ console.log("\n=== 4) 需确认工具都有确认文案 ===");
   else ok(`${needsConfirm.length} 个需确认工具文案齐全`);
 }
 
-console.log("\n=== 5) Rules of Hooks：hooks 必须全部在条件早退之前 ===");
+console.log("\n=== 5) 每个工具都要有明确的轨迹详情（toolDetail 分支） ===");
+{
+  const detailBlock = grab(src, /(const toolDetail = \(name[\s\S]*?\n  \}\n\};)/);
+  const detailCases = [...detailBlock.matchAll(/case "(\w+)"/g)].map((m) => m[1]);
+  const missing = defs.filter((n) => !detailCases.includes(n));
+  const extra = detailCases.filter((n) => !defs.includes(n));
+  if (extra.length) bad(`toolDetail 含未定义工具: ${extra.join(",")}`);
+  if (missing.length) {
+    bad(`以下工具没有专门的轨迹详情（只有兜底文案，用户看不出细节）: ${missing.join(",")}`);
+  } else {
+    ok(`${defs.length} 个工具都有专门的轨迹详情`);
+  }
+}
+
+console.log("\n=== 6) Rules of Hooks：hooks 必须全部在条件早退之前 ===");
 {
   const lines = src.split("\n");
   const start = lines.findIndex((l) => l.startsWith("export const AIChatPanel"));

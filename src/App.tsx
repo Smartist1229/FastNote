@@ -1,13 +1,16 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
 import "./App.css";
-import { Note, Category, AiProvider } from "./types";
+import { Note, Category, AiProvider, AiPromptEntry, AiSettings, DEFAULT_AI_SETTINGS } from "./types";
+import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "./aiSettingsStore";
 import * as api from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Modal } from "./components/Modal";
 import { ToastProvider, useToast } from "./components/Toast";
 import { WelcomeDashboard } from "./components/WelcomeDashboard";
 import { AIChatPanel } from "./components/AIChatPanel";
-import { AiProviderModal } from "./components/AiProviderModal";
+
+import { AiMemoryModal } from "./components/AiMemoryModal";
+import { AiSettingsModal } from "./components/AiSettingsModal";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
 const NoteEditor = lazy(() =>
@@ -46,6 +49,60 @@ function AppContent() {
   const [editorCursorOffset, setEditorCursorOffset] = useState(0);
   const [showProviderModal, setShowProviderModal] = useState(false);
   const [providerModalProviders, setProviderModalProviders] = useState<AiProvider[]>([]);
+  /**
+   * AI 记忆 / 前置提示词 + AI 全局设置。
+   * 全部持久化在 SQLite 的 app_settings 表里：启动时读库，读不到的键回退默认值；
+   * 首次运行会把老版本存在 localStorage 的设置自动迁移进库。
+   */
+  const [aiPrompts, setAiPrompts] = useState<AiPromptEntry[]>([]);
+  const [aiSettings, setAiSettings] = useState<AiSettings>(DEFAULT_AI_SETTINGS);
+  /** 设置是否已从数据库读回：读回前不写库，避免用默认值覆盖用户数据 */
+  const [aiConfigLoaded, setAiConfigLoaded] = useState(false);
+  const [showAiMemory, setShowAiMemory] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadAiConfig()
+      .then(({ settings, prompts, migrated }) => {
+        if (cancelled) return;
+        setAiSettings(settings);
+        setAiPrompts(prompts);
+        setAiConfigLoaded(true);
+        // 首次运行：把每个设置项显式写入一行，方便排查"哪一项被改过"
+        if (migrated) ensureSettingsSeeded(settings);
+      })
+      .catch((e) => {
+        console.error('读取设置失败，使用默认值：', e);
+        if (!cancelled) setAiConfigLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // 设置变化后只写变化的那一项（读回之前不写，避免覆盖库里已有值）
+  const prevSettingsRef = useRef<AiSettings | null>(null);
+  useEffect(() => {
+    if (!aiConfigLoaded) return;
+    const prev = prevSettingsRef.current;
+    prevSettingsRef.current = aiSettings;
+    if (!prev) {
+      // 第一次拿到设置：与默认值不同的项补齐写入，保证库里始终有一份完整记录
+      saveAllSettings(aiSettings);
+      return;
+    }
+    for (const field of Object.keys(DEFAULT_AI_SETTINGS) as (keyof AiSettings)[]) {
+      if (prev[field] !== aiSettings[field]) saveSetting(field, aiSettings[field]);
+    }
+  }, [aiSettings, aiConfigLoaded]);
+
+  // 记忆列表变化后写库
+  const prevPromptsRef = useRef<AiPromptEntry[] | null>(null);
+  useEffect(() => {
+    if (!aiConfigLoaded) return;
+    const prev = prevPromptsRef.current;
+    prevPromptsRef.current = aiPrompts;
+    if (!prev) return;                       // 首次读回不入库
+    if (JSON.stringify(prev) !== JSON.stringify(aiPrompts)) savePrompts(aiPrompts);
+  }, [aiPrompts, aiConfigLoaded]);
   const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
   const { showToast } = useToast();
   const selectedNoteRef = useRef<Note | null>(selectedNote);
@@ -500,6 +557,9 @@ function AppContent() {
             noteTitle={selectedNote?.title || ""}
             noteContent={selectedNote?.content || ""}
             currentNoteId={selectedNote?.id ?? null}
+            aiPrompts={aiPrompts}
+            aiSettings={aiSettings}
+            onOpenAiMemory={() => setShowAiMemory(true)}
             onInsertText={handleAiInsertText}
             onReplaceContent={handleAiReplaceContent}
             onOpenProviderSettings={() => {
@@ -632,8 +692,8 @@ function AppContent() {
         </div>
       </Modal>
 
-      {/* AI 服务商配置弹窗（全局） */}
-      <AiProviderModal
+      {/* 统一的 AI 设置窗口：服务商 / 对话行为 / 上下文 / 记忆入口 都收敛在这里 */}
+      <AiSettingsModal
         isOpen={showProviderModal}
         onClose={() => setShowProviderModal(false)}
         providers={providerModalProviders}
@@ -643,6 +703,19 @@ function AppContent() {
           window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
         }}
         onSelectedProviderChange={setProviderModalSelectedId}
+        settings={aiSettings}
+        onSettingsChange={setAiSettings}
+        promptCount={aiPrompts.length}
+        enabledPromptCount={aiPrompts.filter((p) => p.enabled).length}
+        onOpenMemory={() => setShowAiMemory(true)}
+      />
+
+      {/* AI 记忆 / 前置提示词：输入添加、列表展示、可编辑/删除/停用 */}
+      <AiMemoryModal
+        isOpen={showAiMemory}
+        entries={aiPrompts}
+        onChange={setAiPrompts}
+        onClose={() => setShowAiMemory(false)}
       />
     </div>
   );
