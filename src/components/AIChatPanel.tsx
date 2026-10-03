@@ -1,6 +1,22 @@
 import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import * as api from "../api";
 import { AiChatMessage, AiChatSession, AiProvider } from "../types";
+import {
+  buildFinalContent,
+  cleanSessionTitle,
+  finalReplyText,
+  firstLine,
+  formatError,
+  hasActionClaim,
+  isThinkingDeepEnough,
+  parseResponse,
+  parseStreamContent,
+  shouldRetryForShallowThinking,
+  streamStartsWithThinking,
+  stripAiTags,
+  type ToolCall,
+  type ToolTrace,
+} from "../aiChatParse";
 import { useToast } from "./Toast";
 import { MdPreview } from "md-editor-rt";
 import "md-editor-rt/lib/style.css";
@@ -74,46 +90,6 @@ const TOOL_LABELS: Record<string, string> = {
   moveNote: "移动笔记",
   selectNote: "打开笔记",
 };
-
-/** 思考行折叠态显示的一行预览 */
-const firstLine = (text: string, max = 90): string => {
-  const line = text.split("\n").map(s => s.trim()).find(Boolean) || "";
-  return line.length > max ? `${line.slice(0, max)}…` : line;
-};
-
-/**
- * 把模型返回的标题文本洗干净。
- * 标题生成这次调用同样会命中"必须深度思考"的系统提示，模型可能回 <thinking>…</thinking>；
- * 旧实现只删掉了尖括号，于是 `<thinking>用</thinking>` 变成了标题"thinking用"。
- * 这里先整块剥掉思考/工具标签，再去 markdown 记号、引号书名号，只取第一行。
- */
-const cleanSessionTitle = (raw: string): string => {
-  const text = stripTaggedBlocks(raw || "")
-    .replace(/<[^>]*>/g, "")                    // 其它残留标签
-    .replace(/^#+\s*/, "")                      // markdown 标题记号
-    .replace(/[*#`_~]/g, "")
-    .replace(/["'「」『』《》【】]/g, "")
-    .replace(/^\s*(?:标题|title)\s*[:：]\s*/i, "")
-    .split("\n").map(s => s.trim()).filter(Boolean)[0] || "";
-  const title = text.replace(/[。！？!?，,、：:；;.\s]+$/g, "").trim();
-  // 仍然夹带 "thinking / reasoning" 字样的一律判为无效，宁可保持"新对话"
-  if (!title || /thinking|reasoning|<|>/i.test(title)) return "";
-  return title.slice(0, 12);
-};
-
-/**
- * "模型声称已完成的动作" ↔ "必须真实执行过的工具"。
- * 用于最终回复的事实校验：说了"已打开"就必须真的调过 selectNote。
- */
-const ACTION_CLAIM_RULES: { label: string; re: RegExp; tools: string[] }[] = [
-  { label: "打开笔记", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*打开/, tools: ["selectNote"] },
-  { label: "创建笔记/分组", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:创建|新建|添加)/, tools: ["createNote", "createNotes", "createCategory"] },
-  { label: "修改笔记/分组", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:修改|更新|改成|改为|重命名|改名)/, tools: ["updateNote", "updateCurrentNote", "renameCategory"] },
-  { label: "删除笔记/分组", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:删除|移除|清空)/, tools: ["deleteNote", "deleteCategory", "deleteFromTrash", "emptyTrash"] },
-  { label: "移动笔记", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*(?:移动|移入)/, tools: ["moveNote"] },
-  { label: "还原笔记", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*还原/, tools: ["restoreNote"] },
-  { label: "追加内容", re: /(?:已|已经|成功)\s*(?:为[你您])?\s*追加/, tools: ["appendToNote"] },
-];
 
 /** 工具轨迹右侧的目标信息：优先用执行结果里的标题，其次用入参 */
 const toolDetail = (name: string, args: Record<string, unknown>, result: unknown): string => {
@@ -260,153 +236,6 @@ B) 不需要操作、或工具已经执行完且结果足够回答时，只写�
 助手：<thinking>用户询问天气，与笔记、分组都无关，没有任何工具能查实时天气，因此不调用任何工具，直接说明即可。</thinking>
 我无法获取实时天气，建议查看手机自带的天气应用或天气预报网站。`;
 
-/** 判断用户消息是否属于需要执行工具的请求 */
-const ACTION_INTENT_PATTERN =
-  /打开|查看|显示|搜索|查找|找一?下|找到|新建|创建|添加|新增|修改|更新|改成|编辑|删除|移除|移到|移动|归类|整理|重命名|改名|分组|标签|有哪些|列出|列一下|帮我|把.*(改|删|移|加)/;
-
-const looksLikeActionRequest = (text: string): boolean =>
-  ACTION_INTENT_PATTERN.test(text.replace(/\s/g, ""));
-
-/** thinking 是否达到"深度思考"的最低要求 */
-const isThinkingDeepEnough = (thinking: string, minLen: number): boolean =>
-  thinking.replace(/\s/g, "").length >= minLen;
-
-interface ToolCall { name: string; args: Record<string, unknown>; }
-interface ParsedResponse {
-  /** 纯推理内容：只用于"思考是否足够深入"的校验，不掺工具调用原文 */
-  thinking: string;
-  /** 思考区展示内容：推理 + 工具调用原文（工具调用只允许出现在这里） */
-  thinkingDisplay: string;
-  toolCalls: ToolCall[];
-  reply: string;
-  /** 生成被截断（<thinking>/<tool_calls> 只有开标签）或工具调用 JSON 非法 */
-  truncated: boolean;
-}
-
-/** 标签只有开标签、没有闭标签 → 模型输出被截断 */
-const hasUnclosedTag = (text: string, tag: string): boolean => {
-  const open = text.lastIndexOf(`<${tag}>`);
-  return open !== -1 && text.indexOf(`</${tag}>`, open) === -1;
-};
-
-/**
- * 剥离 <thinking>/<tool_calls> 块——包含未闭合的尾部片段与孤立的闭合标签。
- * 模型被长度限制截断、或漏写开标签时，半截的 <tool_calls>[{"name":... 以及
- * 孤零零的 </tool_calls> 绝不能被当成正文渲染出来。
- */
-const stripTaggedBlocks = (text: string): string =>
-  text
-    .replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
-    .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, "")
-    .replace(/<thinking>[\s\S]*/g, "")
-    .replace(/<tool_calls>[\s\S]*/g, "")
-    // 漏写开标签时会留下孤立的闭合标签
-    .replace(/<\/?thinking>/g, "")
-    .replace(/<\/?tool_calls>/g, "");
-
-/** 工具调用数组的起始特征（模型漏写 <tool_calls> 开标签时，正文里会直接出现它） */
-const LOOSE_TOOL_CALL_HEAD_RE = /\[\s*\{\s*"name"\s*:\s*"[^"]*"\s*(?:,|\})/;
-
-/** 宽松校验一条工具调用；args 缺失时补空对象，避免执行器拿到 undefined */
-const normalizeToolCall = (value: unknown): ToolCall | null => {
-  if (!value || typeof value !== "object") return null;
-  const call = value as { name?: unknown; args?: unknown };
-  if (typeof call.name !== "string" || !call.name) return null;
-  return {
-    name: call.name,
-    args: call.args && typeof call.args === "object" ? (call.args as Record<string, unknown>) : {},
-  };
-};
-
-/** 从 start 处扫描 JSON 数组的配对闭合位置（忽略字符串内的括号）；未闭合返回 -1 */
-const findJsonArrayEnd = (text: string, start: number): number => {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === "\\") escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') inString = true;
-    else if (ch === "[") depth++;
-    else if (ch === "]") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-};
-
-/** 解析工具调用数组；容忍常见的多余逗号写法 */
-const parseToolCallArray = (raw: string): ToolCall[] => {
-  for (const candidate of [raw, raw.replace(/,\s*([\]}])/g, "$1")]) {
-    try {
-      const arr = JSON.parse(candidate);
-      if (Array.isArray(arr) && arr.length > 0) {
-        const calls = arr.map(normalizeToolCall);
-        if (calls.every((c): c is ToolCall => c !== null)) return calls;
-      }
-    } catch {
-      // 换一种写法再试
-    }
-  }
-  return [];
-};
-
-/** 在给定文本里定位工具调用数组：能解析出调用就返回 calls，只写了一半则只返回 payloadText */
-const readToolCallArray = (text: string): { calls: ToolCall[]; payloadText: string } => {
-  const head = text.search(LOOSE_TOOL_CALL_HEAD_RE);
-  if (head === -1) return { calls: [], payloadText: "" };
-  const end = findJsonArrayEnd(text, head);
-  if (end === -1) return { calls: [], payloadText: text.slice(head).trim() };
-  const payloadText = text.slice(head, end + 1).trim();
-  return { calls: parseToolCallArray(payloadText), payloadText };
-};
-
-/**
- * 兜底解析"漏写 <tool_calls> 开标签"的工具调用。判定标准：
- * 1. 开头是 [{"name": ... 这类工具调用数组特征；
- * 2. 数组必须在文本结尾结束（后面只剩空白/代码围栏），否则视为正文里的普通 JSON，不做处理；
- * 3. 数组没闭合 = 写到一半（流式或被截断），照样剥掉，绝不能显示成正文。
- */
-const extractLooseToolCall = (text: string): { reply: string; payloadText: string; calls: ToolCall[] } => {
-  const head = text.search(LOOSE_TOOL_CALL_HEAD_RE);
-  if (head === -1) return { reply: text, payloadText: "", calls: [] };
-  const end = findJsonArrayEnd(text, head);
-  // 数组之后还有正文 → 只是正文里正常出现的 JSON 片段，原样保留
-  if (end !== -1 && text.slice(end + 1).replace(/[`\s]/g, "")) return { reply: text, payloadText: "", calls: [] };
-  const { calls, payloadText } = readToolCallArray(text);
-  return { reply: text.slice(0, head), payloadText, calls };
-};
-
-/** 思考区展示文本：推理 + 工具调用原文，用分隔线隔开 */
-const composeThinkingDisplay = (thinking: string, toolText: string): string => {
-  const reasoning = thinking.trim();
-  const tools = toolText.trim();
-  if (!tools) return reasoning;
-  return reasoning ? `${reasoning}\n\n---\n${tools}` : tools;
-};
-
-/**
- * 去掉完整思考块后的正文。
- * 模型经常在思考里"提到"标签本身（例如"我应该直接回答，不需要 <tool_calls>"），
- * 若直接在原文里找 <tool_calls>，会把后面的整段正文误当成工具载荷：
- * 既污染思考区，又会把正常回复误判为"截断"而多跑一轮纠正。
- */
-const bodyWithoutThinking = (text: string): string => text.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
-
-/** 正文兜底：任何情况下都不能把 <thinking>/<tool_calls> 原文当正文显示 */
-const finalReplyText = (p: ParsedResponse): string => {
-  if (p.reply) return p.reply;
-  if (p.truncated) return "（回复在输出过程中被截断，未执行任何操作。请重试，或把内容拆成更小的步骤。）";
-  if (p.toolCalls.length > 0) return "（已发起工具调用，没有正文。）";
-  if (p.thinkingDisplay) return p.thinkingDisplay;
-  return "（模型没有返回内容，请重试）";
-};
 
 /** Generate a human-readable summary of a tool call for the confirm dialog */
 const summarizeToolCall = (c: ToolCall): string => {
@@ -458,110 +287,14 @@ const summarizeToolCall = (c: ToolCall): string => {
   }
 };
 
-const parseResponse = (text: string, reasoning?: string): ParsedResponse => {
-  // 模型原生思维链（reasoning_content / thought）优先用于 thinking 展示
-  const nativeReasoning = (reasoning || "").trim();
-  let thinking = text.match(/<thinking>([\s\S]*?)<\/thinking>/)?.[1]?.trim() || "";
-  if (!thinking && nativeReasoning) {
-    thinking = nativeReasoning;
-  }
-  if (!thinking) {
-    // 思考写到一半被截断：保留可见部分，仍只放在思考区
-    thinking = text.match(/<thinking>([\s\S]*)/)?.[1]?.trim() || "";
-  }
-  // 只在"思考块之外"的正文里找工具标签：思考里提到的 <tool_calls> 字样不算调用
-  const bodyOnly = bodyWithoutThinking(text);
-  const tcMatch = bodyOnly.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
-  let toolCalls: ToolCall[] = [];
-  let toolText = "";
-  let replyBase = stripTaggedBlocks(text);
-  if (tcMatch) {
-    // 标准写法：闭合的 <tool_calls>…</tool_calls>
-    toolText = tcMatch[1].trim();
-    // 移除 markdown 代码块包裹（```json ... ``` 或 ``` ... ```）
-    const raw = toolText.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
-    toolCalls = parseToolCallArray(raw);
-  } else {
-    // 没有闭合标签，两种常见形态都要救回来：
-    //   a) 漏写闭标签：<tool_calls>[{...}] 后面直接没了；
-    //   b) 漏写开标签：正文里裸着一个 [{...}]。
-    // 关键：必须在剥离之前把 JSON 取出来——stripTaggedBlocks 会把 <tool_calls> 之后的整段删掉，
-    // 先剥离再找就等于把模型请求的工具静默丢掉了。
-    const afterOpen = bodyOnly.match(/<tool_calls>([\s\S]*)/)?.[1] ?? "";
-    if (afterOpen) {
-      const found = readToolCallArray(afterOpen);
-      toolCalls = found.calls;
-      toolText = found.payloadText || afterOpen.trim();
-    } else {
-      const loose = extractLooseToolCall(replyBase);
-      if (loose.payloadText) replyBase = loose.reply;
-      toolCalls = loose.calls;
-      toolText = loose.payloadText;
-    }
-  }
-  // 截断，或写了工具调用却没能解析出任何调用：都不该被当成最终正文
-  const truncated =
-    hasUnclosedTag(bodyOnly, "tool_calls") ||
-    hasUnclosedTag(text, "thinking") ||
-    (toolText.length > 0 && toolCalls.length === 0);
-  // 正文里彻底剥离标签内容（含未闭合片段与裸的工具调用 JSON）
-  const reply = replyBase.trim();
-  return {
-    thinking,
-    thinkingDisplay: composeThinkingDisplay(thinking, toolText),
-    toolCalls,
-    reply,
-    truncated,
-  };
-};
-
-/** Parse streaming text to extract thinking (supports partial tags) and visible reply */
-const parseStreamContent = (text: string, reasoning?: string): { thinking: string; reply: string } => {
-  // Extract complete thinking tag
-  const fullThinking = text.match(/<thinking>([\s\S]*?)<\/thinking>/)?.[1]?.trim() || "";
-  // 工具标签只在思考块之外查找：思考里提到的 <tool_calls> 字样不算调用
-  const bodyOnly = bodyWithoutThinking(text);
-  // Extract complete tool_calls tag
-  const fullTc = bodyOnly.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/)?.[1]?.trim() || "";
-  // Partial tags (still streaming)
-  const partialThinking = !fullThinking ? text.match(/<thinking>([\s\S]*)/)?.[1]?.trim() || "" : "";
-  const partialTc = !fullTc ? bodyOnly.match(/<tool_calls>([\s\S]*)/)?.[1]?.trim() || "" : "";
-
-  // 模型原生思维链作为 thinking 的兜底来源
-  const thinking = fullThinking || partialThinking || (reasoning || "").trim();
-  let tcContent = fullTc || partialTc;
-  let replyText = stripTaggedBlocks(text);
-  // 没有标签时也要防"漏写开标签"：流式过程中 JSON 可能只写了一半，同样不能出现在正文里
-  if (!tcContent) {
-    const loose = extractLooseToolCall(replyText);
-    replyText = loose.reply;
-    tcContent = loose.payloadText;
-  }
-
-  // 工具调用原文一律并入思考区（含流式未闭合的半截 JSON），正文只保留真正的回复文本
-  return {
-    thinking: composeThinkingDisplay(thinking, tcContent),
-    reply: replyText.trim(),
-  };
-};
-
 /**
- * 当前打开笔记的 ID。工具执行器定义在组件外层，通过这个 ref 读取最新值，
- * 这样 updateCurrentNote 永远作用于用户此刻正在看的那一篇。
+ * 工具执行上下文：把"当前打开的笔记"等易变状态显式传进来，
+ * 而不是让执行器去读模块级可变变量——后者是全局状态，没法隔离也没法测。
  */
-/** 把（Tauri 返回的）错误转成可读文案 */
-const formatError = (error: unknown): string => {
-  if (error == null) return "未知错误";
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-};
-
-const currentNoteIdRef: { current: number | null } = { current: null };
+interface ToolContext {
+  /** 用户此刻正在看的笔记 ID（"这篇笔记"的指代对象） */
+  currentNoteId: number | null;
+}
 
 /** 读取服务商在设置中勾选的可用模型（兼容只有单个 enabled_model 的旧数据） */
 const getEnabledModels = (provider: AiProvider): string[] => {
@@ -593,7 +326,7 @@ const resolveCategoryId = async (categoryName: unknown): Promise<number | null |
   return hit ? hit.id : undefined;
 };
 
-const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
+const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>> = {
   searchNotes: async (args) => {
     const all = await api.getNotes(null, "updated_at", "desc");
     const q = String(args.query || "").trim().toLowerCase();
@@ -654,15 +387,15 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>) => Promise<
     };
   },
   /** 读取"当前打开的笔记"，让"总结这篇/续写这篇"无需 ID */
-  getCurrentNote: async () => {
-    const nid = Number(currentNoteIdRef.current);
+  getCurrentNote: async (_args, ctx) => {
+    const nid = Number(ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { error: "当前没有打开任何笔记，请让用户先打开一篇或提供标题" };
     const n: any = await fetchNoteById(nid);
     return n ? { id: n.id, title: n.title, content: n.content, category_id: n.category_id } : { error: `未找到 ID 为 ${nid} 的笔记` };
   },
   /** 在末尾追加内容（不覆盖原有正文），续写/补充信息比 updateNote 更安全 */
-  appendToNote: async (args) => {
-    const nid = Number(args.noteId ?? currentNoteIdRef.current);
+  appendToNote: async (args, ctx) => {
+    const nid = Number(args.noteId ?? ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
     const n: any = await fetchNoteById(nid);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
@@ -729,8 +462,8 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>) => Promise<
     await api.updateNote(nid, String(args.title ?? n.title), String(args.content ?? n.content), cid ?? n.category_id ?? null);
     return { success: true, id: nid, title: String(args.title ?? n.title) };
   },
-  updateCurrentNote: async (args) => {
-    const nid = Number(currentNoteIdRef.current);
+  updateCurrentNote: async (args, ctx) => {
+    const nid = Number(ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) {
       return { success: false, error: "当前没有打开的笔记，无法执行 updateCurrentNote" };
     }
@@ -785,26 +518,19 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>) => Promise<
 
 
 
-interface ToolTrace {
-  name: string;
-  args?: Record<string, unknown>;
-  ok: boolean | null;
-  detail?: string;
-  result?: unknown;
-}
-
 /**
  * 单条消息（用户气泡 / AI 无气泡回复）。
  * 用 memo 隔离是非常关键的性能优化：流式输出时 streamingContent 每 50ms 变一次，
  * 若不隔离，历史消息里的每一个 MdPreview（markdown 重解析）都会被重新渲染一遍，界面就会卡。
  */
 const ChatMessageRow = memo(function ChatMessageRow({
-  msg, index, expanded, expandedTools, isSending, onToggleThinking, onToggleTool, onInsertText, onReplaceContent,
+  msg, index, expanded, toolOpen, isSending, onToggleThinking, onToggleTool, onInsertText, onReplaceContent,
 }: {
-  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[] };
+  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number };
   index: number;
   expanded: boolean;
-  expandedTools: Record<string, boolean>;
+  /** 这一行自己的工具展开状态（按行传入，切换某一行不会让整列重渲染） */
+  toolOpen: Record<string, boolean>;
   isSending: boolean;
   onToggleThinking: (i: number) => void;
   onToggleTool: (key: string) => void;
@@ -820,6 +546,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return (
       <div data-chat-anchor="true" className="flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
         <div className="rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-slate-100 text-slate-700 max-w-[85%]">{msg.content}</div>
+        {msg.at ? <div className="mt-0.5 mr-1 text-[10.5px] text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}</div> : null}
       </div>
     );
   }
@@ -855,7 +582,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       {/* 实际执行过的工具：一条工具一行，点击展开可看调用 JSON 与执行结果 */}
       {msgTools?.length ? msgTools.map((tool, ti) => {
         const traceKey = `${index}-${ti}`;
-        const open = !!expandedTools[traceKey];
+        const open = !!toolOpen[traceKey];
         const running = tool.ok === null || tool.ok === undefined;
         return (
           <div key={traceKey}>
@@ -898,9 +625,90 @@ const ChatMessageRow = memo(function ChatMessageRow({
           </div>)}
         </div>
       ) : null}
+      {/* 时间：与用户消息对称，AI 这条在左下角 */}
+      {msg.at ? <div className="pt-0.5 text-[10.5px] text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}</div> : null}
     </div>
   );
 });
+
+/** 空对象常量：给"这一行没有展开任何工具"的行用，保证 props 引用稳定、memo 不失效 */
+const NO_OPEN_TOOLS: Record<string, boolean> = {};
+
+/**
+ * 右侧历史锚点导轨。
+ * memo 化很关键：流式输出时父组件每 50ms 刷新一次，若不隔离，几十个圆点和 tooltip
+ * 会跟着一起重渲染，滚动/悬停都会顿。
+ */
+const AnchorRail = memo(function AnchorRail({
+  anchors, activeIndex, onJump, onHover, onLeave, onScroll,
+}: {
+  anchors: { index: number; preview: string }[];
+  activeIndex: number;
+  onJump: (i: number) => void;
+  onHover: (i: number, el: HTMLElement) => void;
+  onLeave: () => void;
+  onScroll: () => void;
+}) {
+  if (anchors.length < 2) return null;
+  return (
+    <nav className="chat-anchor-rail" aria-label="对话历史" onScroll={onScroll}>
+      <div className="chat-anchor-rail-inner">
+        {anchors.map((anchor, i) => (
+          <button
+            key={anchor.index}
+            type="button"
+            className={"chat-anchor-dot" + (activeIndex === i ? " is-active" : "")}
+            onClick={() => onJump(i)}
+            onMouseEnter={(e) => onHover(i, e.currentTarget)}
+            onMouseLeave={onLeave}
+            onFocus={(e) => onHover(i, e.currentTarget)}
+            onBlur={onLeave}
+            aria-label={`跳到第 ${i + 1} 条提问：${anchor.preview}`}
+            aria-current={activeIndex === i ? "true" : undefined}
+          >
+            <span className="chat-anchor-pin" />
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+});
+
+/** 工具执行结果的一条记录 */
+interface ToolResult {
+  name: string;
+  args: Record<string, unknown>;
+  result: unknown;
+  success: boolean;
+}
+
+/** 用户点了"取消"时写进工具结果的固定文案 */
+const CONFIRM_CANCELLED = "用户已取消";
+/** 等待用户确认的超时时间：弹窗被意外关闭/遗忘时按"取消"处理，避免整轮卡死 */
+const CONFIRM_TIMEOUT_MS = 180000;
+
+/** 工具轨迹的中文一句话摘要：写进正文，让用户/模型都能看清做了什么 */
+const describeTools = (tools: ToolTrace[] | undefined): string[] =>
+  (tools || []).map(t => `${TOOL_LABELS[t.name] || t.name}${t.detail ? ` · ${t.detail}` : ""}`);
+
+/**
+ * 消息时间显示：今天只显示 时:分，昨天加"昨天"，更早带上日期。
+ * 遇到非法/缺失的时间戳返回空串，绝不显示 NaN。
+ */
+const formatMessageTime = (at?: number): string => {
+  if (!at || Number.isNaN(at)) return "";
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const startOfDay = (t: Date) => new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86400000);
+  if (dayDiff <= 0) return `${hh}:${mm}`;
+  if (dayDiff === 1) return `昨天 ${hh}:${mm}`;
+  const md = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (d.getFullYear() === new Date().getFullYear()) return `${md} ${hh}:${mm}`;
+  return `${d.getFullYear()}-${md} ${hh}:${mm}`;
+};
 
 export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenProviderSettings, onClose }) => {
   const [providers, setProviders] = useState<AiProvider[]>([]);
@@ -922,6 +730,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 工具轨迹行的展开状态（key = 消息序号-工具序号），展开可看调用 JSON 与结果 */
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [pendingConfirm, setPendingConfirm] = useState<{calls: ToolCall[]; resolve: (v: boolean) => void} | null>(null);
+  /** 确认弹窗的 resolver 与超时定时器：保证"等待确认"一定会有结果，不会卡死发送锁 */
+  const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
+  const confirmTimerRef = useRef<number | null>(null);
+  const confirmSettledRef = useRef(false);
   const [confirmMode, setConfirmMode] = useState(true);
   const { showToast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -947,13 +759,31 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 发送同步锁：防止连按回车 / 输入法提交把同一条消息发出两次 */
   const sendLockRef = useRef(false);
   /**
+   * 当前请求的轮次编号。
+   * 点"停止"时只是打断了本地流程，**正在飞的那次流式请求不会立刻结束**，
+   * 所以要靠这个编号让旧循环在下一个检查点安静退出；同时旧循环收尾时
+   * 也不能误释放"新一轮"的发送锁（否则连点两下就会重复发送）。
+   */
+  const runIdRef = useRef(0);
+  /**
    * 流式内容缓冲：模型每个 token 都回调一次，若每次都 setState，整棵消息树（含每条消息里
    * 的 MdPreview）都要重新 diff 一次，界面就会卡。这里按 50ms 合并刷新一次。
    */
   const streamGenRef = useRef(0);
   const streamPendingRef = useRef<string | null>(null);
   const streamTimerRef = useRef<number | null>(null);
+  /** 本轮流式开始的时间：用于"先按住正文、避免抢答闪一下"的时间上限 */
+  const streamStartedAtRef = useRef(0);
   const placeholderRef = useRef<AiChatMessage | null>(null);
+  /** 当前打开笔记的 ID（组件内持有，工具执行时作为上下文传入） */
+  const currentNoteIdRef = useRef<number | null>(null);
+  /**
+   * 这个模型是否"会写思考"。
+   * 协议要求先 <thinking> 再回答；若某轮没写，我们会按住它的回答并要求重来一次。
+   * 如果重来后仍然没有思考，说明这个模型根本不写标签 —— 之后就不再按住、不再重来，
+   * 否则每一轮都要白等一次、白烧一遍 token。
+   */
+  const thinkingCapableRef = useRef(true);
   /** 本次回答里已执行过的工具调用签名，用于跳过完全重复的调用 */
   const executedCallKeys = useRef<Set<string>>(new Set());
   const activeProvider = useMemo(() => providers.find((p) => p.id === selectedProviderId) || null, [providers, selectedProviderId]);
@@ -970,11 +800,18 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   }, [activeProvider]);
 
   // 同步"当前打开笔记的 ID"，供 updateCurrentNote 等工具使用
+  // 同步"当前打开笔记的 ID"：工具执行时作为 ToolContext 传入，
+  // 让 updateCurrentNote / appendToNote 永远作用于用户此刻正在看的那一篇。
   useEffect(() => { currentNoteIdRef.current = currentNoteId ?? null; }, [currentNoteId]);
 
   useEffect(() => {
     // 面板收起时 DOM 被销毁，悬浮气泡的状态要一并复位，避免重新展开时残留显示
-    if (!isOpen) { hideAnchorTip(); return; }
+    if (!isOpen) {
+      hideAnchorTip();
+      // 确认弹窗也会随面板消失：必须把它结算掉，否则 agentLoop 会永远停在等待确认上
+      settleConfirm(false);
+      return;
+    }
     resetToLatest();
     loadProviders();
     loadSessions();
@@ -1007,6 +844,50 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     window.addEventListener('fastnote-provider-selected', handler);
     return () => window.removeEventListener('fastnote-provider-selected', handler);
   }, []);
+  /**
+   * 结束一次"等待确认"：只生效一次，并且一定让 agentLoop 里的 Promise 落地。
+   * 关闭面板、切换会话、点停止、超时都会走这里，避免确认弹窗凭空消失导致整轮卡死。
+   */
+  const settleConfirm = useCallback((value: boolean) => {
+    if (confirmSettledRef.current) return;
+    confirmSettledRef.current = true;
+    if (confirmTimerRef.current !== null) {
+      window.clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = null;
+    }
+    const resolve = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    setPendingConfirm(null);
+    resolve?.(value);
+  }, []);
+
+  /** 打开确认弹窗前重置"已结算"标记 */
+  const beginConfirm = useCallback(() => { confirmSettledRef.current = false; }, []);
+
+  /**
+   * 询问用户是否执行这批破坏性工具。
+   * 返回的 Promise 一定会 settle（按钮、遮罩、关闭面板、切换会话、点停止、超时都会结算），
+   * 否则 agentLoop 永不返回、发送锁永不释放，之后所有发送都会被静默吞掉。
+   */
+  const confirmDestructive = useCallback((calls: ToolCall[]): Promise<boolean> => {
+    beginConfirm();
+    return new Promise<boolean>(resolve => {
+      confirmResolveRef.current = resolve;
+      setPendingConfirm({ calls, resolve: settleConfirm });
+      confirmTimerRef.current = window.setTimeout(() => settleConfirm(false), CONFIRM_TIMEOUT_MS);
+    });
+  }, [beginConfirm, settleConfirm]);
+
+  /** 把一段结果说明写回对话：优先就地替换占位气泡，没有占位就追加 */
+  const commitNotice = useCallback(async (sid: number, text: string, leftover: any) => {
+    setMessages(m => {
+      const msg = { role: 'assistant' as const, content: text, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now() } as any;
+      const idx = leftover ? m.findIndex(x => x === leftover) : -1;
+      return idx >= 0 ? [...m.slice(0, idx), msg] : [...m, msg];
+    });
+    try { await api.saveChatMessage(sid, 'assistant', text); } catch {}
+  }, []);
+
   /** 重置为"跟随最新回复"状态（切换/新建会话、发送新消息、重新打开面板时调用） */
   const resetToLatest = useCallback(() => {
     stickToBottomRef.current = true;
@@ -1019,6 +900,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 开始新一轮流式输出：作废上一次缓冲，旧文本会一直显示到新内容到来（避免闪一下空白） */
   const bumpStreamGen = useCallback(() => {
     streamGenRef.current += 1;
+    streamStartedAtRef.current = Date.now();
     if (streamTimerRef.current !== null) {
       window.clearTimeout(streamTimerRef.current);
       streamTimerRef.current = null;
@@ -1185,17 +1067,20 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       resetToLatest();
       setMessages(m.map(x => {
         const p = x.role === "assistant" ? parseResponse(x.content) : null;
+        // 历史消息用数据库里的真实时间（created_at 是 RFC3339）
+        const at = Date.parse(x.created_at);
         return {
           role: x.role as "user" | "assistant",
           content: p ? finalReplyText(p) : x.content,
           thinking: p?.thinkingDisplay,
+          at: Number.isNaN(at) ? undefined : at,
         };
       }));
     } catch {}
   };
   const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
-  const switchSession = async (sid: number) => { if (sid === activeSessionId) return; setActiveSessionId(sid); resetStreaming(); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
-  const handleNewSession = async () => { const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); resetStreaming(); resetToLatest(); titleGenRef.current = null; };
+  const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); setActiveSessionId(sid); resetStreaming(); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
+  const handleNewSession = async () => { settleConfirm(false); const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); resetStreaming(); resetToLatest(); titleGenRef.current = null; };
   const handleDeleteSession = async () => { if (!activeSessionId) return; try { await api.deleteChatSession(activeSessionId); setSessions(p => p.filter(x => x.id !== activeSessionId)); const r = sessions.filter(x => x.id !== activeSessionId); if (r.length > 0) { setActiveSessionId(r[0].id); titleGenRef.current = null; await loadSessionMessages(r[0].id); } else { setActiveSessionId(0); setMessages([]); } } catch { showToast('删除失败', 'error'); } };
   /**
    * 自动生成对话标题。
@@ -1212,8 +1097,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       const session = list.find(s => s.id === sid);
       if (!session || session.title !== "新对话") return;
       // 送进去的内容也要先去标签：否则整段 <thinking> 推理会被当成"对话内容"喂给标题模型
-      const userText = stripTaggedBlocks(up).replace(/<[^>]+>/g, "").trim().slice(0, 300);
-      const assistantText = stripTaggedBlocks(ar).replace(/<[^>]+>/g, "").trim().slice(0, 300);
+      const userText = stripAiTags(up).replace(/<[^>]+>/g, "").trim().slice(0, 300);
+      const assistantText = stripAiTags(ar).replace(/<[^>]+>/g, "").trim().slice(0, 300);
       const t = await api.sendAiChat(activeProvider.id, [{ role: "system", content: `I will give you some dialogue content in the <content> block.\nYou need to summarize the conversation between user and assistant into a short title.\n1. The title language should be consistent with the user's primary language\n2. Do not use punctuation or other special symbols\n3. Reply directly with the title\n4. The title should not exceed 10 characters\n5. Do not include any JSON, tags, or technical details\n6. Do not output <thinking> or any reasoning process, and never mention words like "thinking" — reply with the title only\n\n<content>\nUser: ${userText}\nAssistant: ${assistantText}\n</content>` }, { role: "user", content: "Generate title" }], "", "");
       const ct = cleanSessionTitle(t);
       // 洗不出有效标题就保持原样，下次再试；绝不要把 "thinking用" 这类垃圾写进去
@@ -1229,6 +1114,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const agentLoop = async (sid: number, msgs: AiChatMessage[], prompt: string): Promise<void> => {
     placeholderRef.current = null;
     executedCallKeys.current = new Set();
+    /** 本轮的编号：一旦被"停止"或被新消息取代，旧循环必须立刻安静退出，绝不再改界面 */
+    const myRun = runIdRef.current;
+    const isStale = () => abortRef.current || runIdRef.current !== myRun;
     let roundMsgs = [...msgs];
     /** 交给 Rust 端提示词的最小思考字数 */
     const MIN_THINKING_LEN = 120;
@@ -1238,12 +1126,11 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
      * 会让界面出现"先回复一大段 → 清空 → 再思考 → 又回复一遍同样的内容"，还白烧一遍 token。
      */
     const THINKING_RETRY_MIN_LEN = 24;
-    const hasToolResult = () => roundMsgs.some(m => (m.content || '').startsWith('工具执行结果'));
     /** 每轮允许的一次"强制思考/工具使用"纠正机会 */
     let correctionUsed = false;
 
     for (let round = 0; round < 8; round++) {
-      if (abortRef.current) return;
+      if (isStale()) return;
       setIsSending(true);
       const roundGen = bumpStreamGen();
       let nativeReasoning = '';
@@ -1255,20 +1142,41 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           noteContent,
           (c, r) => {
             nativeReasoning = r;
-            if (!abortRef.current) pushStreamContent(c, roundGen);
+            if (!isStale()) pushStreamContent(c, roundGen);
           },
           MIN_THINKING_LEN,
           currentNoteId ?? null,
         );
-        if (abortRef.current) return;
+        if (isStale()) return;
         const parsed = parseResponse(full, nativeReasoning);
         // thinking 为纯推理（用于校验深度），thinkingDisplay 才是思考区展示文本（含工具调用原文）
         const { thinking, thinkingDisplay, toolCalls, truncated } = parsed;
 
-        // ---------- 纠错 1：几乎没有思考，强制重新深度思考 ----------
-        if (!correctionUsed && !isThinkingDeepEnough(thinking, THINKING_RETRY_MIN_LEN)) {
+        // ---------- 纠错 1：思考过浅，要求重新深入思考 ----------
+        // 只有"本轮正文从未显示给用户"时才能重来，否则会把已经看到的回答吞掉重来
+        // （用户可见的"回答一次 → 文字瞬间消失 → 又出一个回答"）。
+        const thinkingOk = isThinkingDeepEnough(thinking, THINKING_RETRY_MIN_LEN);
+        if (thinkingOk) {
+          thinkingCapableRef.current = true;
+        } else if (correctionUsed) {
+          // 重来过一次仍然没有思考：认定这个模型不写标签，别再折腾
+          thinkingCapableRef.current = false;
+        }
+        // 正文什么时候算"已经显示"：原生思维链（Rust 会包成 <thinking> 放在前面）、
+        // 或模型自己写了思考（正文在思考之后）、或已确认模型不写思考（不再按住）→ 都是可见的
+        const replyShown = !!parsed.reply && (
+          nativeReasoning.trim() !== "" ||
+          streamStartsWithThinking(full) ||
+          !thinkingCapableRef.current
+        );
+        if (shouldRetryForShallowThinking({
+          correctionUsed,
+          replyShown,
+          toolCallCount: toolCalls.length,
+          thinking,
+          minLen: THINKING_RETRY_MIN_LEN,
+        })) {
           correctionUsed = true;
-          // 不清空已显示的内容：让上一轮文本停留到新内容到来，避免"清空 → 再重打一遍"的闪动
           setIsSending(false);
           roundMsgs = [
             ...roundMsgs,
@@ -1283,20 +1191,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           continue;
         }
 
-        // ---------- 纠错 2：应当调用工具却直接作答，强制重新决策 ----------
-        if (!correctionUsed && toolCalls.length === 0 && !abortRef.current && looksLikeActionRequest(prompt) && !hasToolResult()) {
+        // ---------- 纠错 2：嘴上说"已完成"，实际一个工具都没调用 ----------
+        // 以前的触发条件是"用户的话里出现打开/创建/帮我 等词"，太宽：
+        // "帮我总结一下"这类正常提问也会被误判，于是把已经写好的回答整段丢掉重来
+        // （用户看到的就是"先回答 → 清空 → 思考 → 再回答一遍"）。
+        // 现在只在回复**声称已经完成了某个操作**、却没有对应工具执行过时才纠正。
+        const claimedWithoutTools =
+          toolCalls.length === 0 &&
+          hasActionClaim(parsed.reply);
+        if (!correctionUsed && claimedWithoutTools && !isStale()) {
           correctionUsed = true;
           setIsSending(false);
-          resetStreaming();
           roundMsgs = [
             ...roundMsgs,
             { role: 'assistant', content: full },
             {
               role: 'system',
               content:
-                '用户的请求明确要求对笔记或分组执行操作，但你的回复中没有 <tool_calls>，因此没有任何工具被执行。' +
-                '请重新判断：如果确实需要执行操作，必须同时输出 <thinking> 与 <tool_calls>；用户不知道笔记或分组 ID，必须先用 searchNotes 或 getCategories 查询。' +
-                '只有当你确认该请求完全不需要操作笔记数据时，才可以直接用文字回复。',
+                '你的回复里声称已经完成了某个操作（例如"已打开/已创建/已修改/已删除"），但本轮没有任何 <tool_calls>，' +
+                '因此这些操作实际上并没有发生。请二选一：\n' +
+                '1. 如果确实需要执行操作：同时输出 <thinking> 与 <tool_calls>（用户不知道 ID，先用 searchNotes / listNotes 或 getCategories 查询）；\n' +
+                '2. 如果不需要操作：删掉"已完成"之类的表述，直接如实回答。',
             },
           ];
           continue;
@@ -1304,7 +1219,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
         // ---------- 工具调用被截断 / JSON 非法：先给一次纠正机会 ----------
         // 模型被输出长度限制截断时，半截的 <tool_calls> 既不能当正文，也不能当"已完成"。
-        if (truncated && toolCalls.length === 0 && !correctionUsed && !abortRef.current) {
+        if (truncated && toolCalls.length === 0 && !correctionUsed && !isStale()) {
           correctionUsed = true;
           setIsSending(false);
           resetStreaming();
@@ -1334,27 +1249,22 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           const placeholderAtFinal = placeholderRef.current as any;
           placeholderRef.current = null;
           // 工具调用之前已经写给用户的正文（如"先总结剧情，再打开下一篇"里的总结）要保留；
-          // 最终回复若已经包含它，就不重复拼接。
-          const carried = String(placeholderAtFinal?.content || '').trim();
-          const carriedTools = placeholderAtFinal?.tools as { name: string; ok: boolean; detail?: string }[] | undefined;
-          const baseContent = carried && !finalReply.includes(carried) ? `${carried}\n\n${finalReply}` : finalReply;
-          // 事实校验：正文"声称已打开/已创建/已修改/已删除"时，必须真的有对应工具成功执行过，
-          // 否则补一句提示——这是用户最容易被误导的地方。
-          const ranTools = new Set(((carriedTools || []) as any[]).filter(t => t.ok).map(t => t.name as string));
-          const unverified = ACTION_CLAIM_RULES.filter(rule => rule.re.test(baseContent) && !rule.tools.some(t => ranTools.has(t)));
-          const finalContent = unverified.length > 0
-            ? `${baseContent}\n\n> ⚠️ 提示：本次回答里并没有实际执行「${unverified.map(r => r.label).join("、")}」，上面的相关表述未经工具结果确认，请以左侧笔记列表的实际状态为准。`
-            : baseContent;
+          // 并对"声称已完成却没执行"做事实校验（见 buildFinalContent）。
+          const carriedTools = placeholderAtFinal?.tools as ToolTrace[] | undefined;
+          const finalContent = buildFinalContent(finalReply, String(placeholderAtFinal?.content || ''), carriedTools || []);
+          // 时间沿用占位气泡（这一轮开始的时间），没有占位就用此刻
+          const finalAt: number = placeholderAtFinal?.at ?? Date.now();
           setMessages(m => {
+            const msg = { role: 'assistant' as const, content: finalContent, thinking: thinkingDisplay, tools: carriedTools, at: finalAt };
             const idx = placeholderAtFinal ? m.findIndex(x => x === placeholderAtFinal) : -1;
-            if (idx >= 0) return [...m.slice(0, idx), { role: 'assistant', content: finalContent, thinking: thinkingDisplay, tools: carriedTools } as any];
+            if (idx >= 0) return [...m.slice(0, idx), msg as any];
             // 兜底：末尾若残留了"内容为空但有思考"的空壳助手消息，直接替换掉，
             // 否则它会和最终回复各带一份深度思考，看起来又是重复。
             const last = m[m.length - 1] as { role?: string; content?: string } | undefined;
             if (last && last.role === 'assistant' && !last.content) {
-              return [...m.slice(0, -1), { role: 'assistant', content: finalContent, thinking: thinkingDisplay, tools: carriedTools } as any];
+              return [...m.slice(0, -1), msg as any];
             }
-            return [...m, { role: 'assistant', content: finalContent, thinking: thinkingDisplay, tools: carriedTools } as any];
+            return [...m, msg as any];
           });
           try { await api.saveChatMessage(sid, 'assistant', full); } catch {}
           // 生成标题只喂清洗后的正文，避免把截断的工具调用 JSON 塞给标题模型
@@ -1378,7 +1288,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           placeholderRef.current = nextPlaceholder;
           setMessages(m => m.map(x => (x === existingPlaceholder ? nextPlaceholder : x)));
         } else {
-          const createdPlaceholder: any = { role: 'assistant' as const, content: roundReply, thinking: thinkingDisplay };
+          const createdPlaceholder: any = { role: 'assistant' as const, content: roundReply, thinking: thinkingDisplay, at: Date.now() };
           placeholderRef.current = createdPlaceholder;
           setMessages(m => [...m, createdPlaceholder]);
         }
@@ -1399,42 +1309,37 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         const readOnly = freshCalls.filter(tc => !TOOL_DEFS.find(td => td.name === tc.name)?.needsConfirm);
         const destructive = freshCalls.filter(tc => TOOL_DEFS.find(td => td.name === tc.name)?.needsConfirm);
         // Execute read-only tools immediately —— 逐个执行，每执行一条就立即在界面上显示出来
-        let results: { name: string; args: Record<string, unknown>; result: unknown; success: boolean }[] = [];
+        let results: ToolResult[] = [];
         const runTool = async (tc: { name: string; args: Record<string, unknown> }) => {
           appendToolTrace(tc);
           let result: unknown;
           let success = true;
           try {
-            result = await TOOL_EXECUTORS[tc.name](tc.args);
+            result = await TOOL_EXECUTORS[tc.name](tc.args, { currentNoteId: currentNoteIdRef.current });
           } catch (e) {
-            result = String(e);
+            result = formatError(e);
             success = false;
           }
           finishToolTrace({ name: tc.name, args: tc.args, result, success });
           results.push({ name: tc.name, args: tc.args, result, success });
         };
+        // 只读工具直接跑；需要确认的写操作先问一次，用户取消就逐条记为"已取消"
+        // 每条执行前都检查轮次：用户点了停止就不再继续动数据
         for (const tc of readOnly) {
+          if (isStale()) return;
           await runTool(tc);
         }
-        // If destructive tools exist, ask user for confirmation (if confirmMode enabled)
-        if (destructive.length > 0 && confirmMode) {
-          const confirmed = await new Promise<boolean>(resolve => {
-            setPendingConfirm({ calls: destructive, resolve });
-          });
-          if (!confirmed) {
-            for (const tc of destructive) {
-              appendToolTrace(tc);
-              finishToolTrace({ name: tc.name, args: tc.args, result: '用户已取消', success: false });
-              results.push({ name: tc.name, args: tc.args, result: '用户已取消', success: false });
-            }
-          } else {
-            for (const tc of destructive) {
-              await runTool(tc);
-            }
-          }
-        } else if (destructive.length > 0) {
+        if (destructive.length > 0) {
+          const confirmed = confirmMode ? await confirmDestructive(destructive) : true;
           for (const tc of destructive) {
-            await runTool(tc);
+            if (isStale()) return;
+            if (confirmed) {
+              await runTool(tc);
+            } else {
+              appendToolTrace(tc);
+              finishToolTrace({ name: tc.name, args: tc.args, result: CONFIRM_CANCELLED, success: false });
+              results.push({ name: tc.name, args: tc.args, result: CONFIRM_CANCELLED, success: false });
+            }
           }
         }
         // 工具轨迹已在每条工具执行时逐条写入气泡，这里不再批量补写
@@ -1445,9 +1350,17 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         if (results.length > 0) { try { window.dispatchEvent(new CustomEvent('fastnote-data-changed')); await loadSessions(); } catch {} }
         roundMsgs = [...roundMsgs, { role: 'assistant', content: full }, { role: 'system', content: '工具执行结果：' + resultSummary + '\n请根据结果继续处理或给用户最终回复（仍需先输出 <thinking>）。如果上一轮你已经写好了要展示给用户的正文，本轮不要重复它，只需补充工具执行后的说明。' }];
       } catch (e) {
+        // 以前这里只 console.error 就直接 return：请求失败时界面上一句话都没有，
+        // 用户只会看到"没反应"，然后反复发"继续"。必须把失败原因说出来。
         console.error(e);
         setIsSending(false);
         resetStreaming();
+        const leftover: any = placeholderRef.current;
+        placeholderRef.current = null;
+        const doneTools = describeTools(leftover?.tools);
+        const failure = `⚠️ 本轮请求失败了：${formatError(e)}\n\n可以检查一下：服务商配置/模型是否可用、网络是否正常，然后重发或点「继续」。`
+          + (doneTools.length > 0 ? `\n\n失败前已完成的操作：\n${doneTools.map(d => `- ${d}`).join("\n")}` : "");
+        await commitNotice(sid, failure, leftover);
         return;
       }
     }
@@ -1458,16 +1371,13 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     resetStreaming();
     const leftover: any = placeholderRef.current;
     placeholderRef.current = null;
-    const doneCount = ((leftover?.tools || []) as any[]).length;
-    const notice = doneCount > 0
-      ? "（本次操作步骤已达上限，先停在这里。上面列出的就是已经完成的全部操作，还需要继续的话回一句「继续」就行。）"
+    const doneTools = describeTools(leftover?.tools);
+    // 这份清单同时是给模型看的上下文：工具调用记录只存在于界面，不在对话历史里，
+    // 写进正文用户下次说"继续"时模型才知道自己刚做了什么。
+    const notice = doneTools.length > 0
+      ? `（本次操作步骤已达上限，先停在这里。已完成的操作为：\n${doneTools.map(d => `- ${d}`).join("\n")}\n\n还需要继续的话，回一句「继续」就行。）`
       : "（模型没有返回有效内容，请重试，或把需求说得更具体一些。）";
-    setMessages(m => {
-      const msg = { role: 'assistant' as const, content: notice, thinking: leftover?.thinking, tools: leftover?.tools } as any;
-      const idx = leftover ? m.findIndex(x => x === leftover) : -1;
-      return idx >= 0 ? [...m.slice(0, idx), msg] : [...m, msg];
-    });
-    try { await api.saveChatMessage(sid, 'assistant', notice); } catch {}
+    await commitNotice(sid, notice, leftover);
   };
 
   const toggleThinking = useCallback((i: number) => { setExpandedThinking(p => ({ ...p, [i]: !p[i] })); }, []);
@@ -1522,13 +1432,19 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (!prompt) return;
     // 同步锁：isSending 是 state，要等下一次渲染才生效；连按两次回车（中文输入法提交候选词
     // 的 Enter 尤其容易触发）会在它生效之前把同一条消息发两遍，AI 也就回答两遍。
-    if (sendLockRef.current || isSendingRef.current) return;
+    if (sendLockRef.current || isSendingRef.current) {
+      // 正常流式输出时按钮是"停止"，不会走到这里；能走到这里说明是异常态
+      // （例如上一轮卡在等待确认）——必须明确告诉用户，否则就是"点了发送没反应"。
+      if (!isSendingRef.current) showToast("上一条请求还没结束（可能在等待确认），本次发送已忽略", "error");
+      return;
+    }
     if (!activeProvider?.id || !activeModel) { showToast("请先在设置中勾选可用模型", "error"); return; }
+    const myRun = ++runIdRef.current;
     sendLockRef.current = true;
     try {
       abortRef.current = false;
       // Show user message and thinking indicator immediately
-      const userMsg: AiChatMessage = { role: "user", content: prompt };
+      const userMsg: AiChatMessage & { at: number } = { role: "user", content: prompt, at: Date.now() };
       setMessages(m => [...m, userMsg]);
       setInput("");
       resetStreaming();
@@ -1543,12 +1459,20 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       await loadSessions();
       try { window.dispatchEvent(new CustomEvent('fastnote-data-changed')); } catch {}
     } finally {
-      sendLockRef.current = false;
+      // 只有"自己仍是当前轮次"时才释放锁：旧循环收尾不能把新一轮的锁放掉
+      if (runIdRef.current === myRun) sendLockRef.current = false;
     }
   };
 
   const handleStop = () => {
     abortRef.current = true;
+    // 停止 = 立即作废当前轮次并解锁：正在飞的那次流式请求可能还要一会儿才返回，
+    // 不能让它卡住下一次发送（否则就会出现"上一条请求还没结束，本次发送已忽略"）。
+    runIdRef.current += 1;
+    sendLockRef.current = false;
+    isSendingRef.current = false;
+    // 若正卡在"等待确认"，把它按取消结算，agentLoop 才能立刻退出
+    settleConfirm(false);
     // 中断时把"空壳占位气泡"就地替换成"已停止"，避免它带着一份思考留在对话里
     const placeholder = placeholderRef.current as any;
     placeholderRef.current = null;
@@ -1558,6 +1482,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         content: placeholder?.content ? `${placeholder.content}\n\n已停止` : '已停止',
         thinking: placeholder?.thinking,
         tools: placeholder?.tools,
+        at: placeholder?.at ?? Date.now(),
       };
       const idx = placeholder ? m.findIndex(x => x === placeholder) : -1;
       return idx >= 0 ? [...m.slice(0, idx), stopped] : [...m, stopped];
@@ -1593,29 +1518,71 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     document.addEventListener('mouseup', mu);
   }, []);
 
-  if (!isOpen) return null;
-  const allMsgs = streamingContent
-    ? (() => {
-        const p = parseStreamContent(streamingContent);
-        return [...messages, { role: 'assistant' as const, content: p.reply, thinking: p.thinking }];
-      })()
+  /* ======================= 派生数据（必须全部在 isOpen 早退之前） =======================
+   * React 要求 hooks 每次渲染都以相同顺序调用；这里曾经把 useMemo 放在
+   * `if (!isOpen) return null` 之后，导致开关面板时 hook 数量不一致，
+   * React 抛错并卸载整棵树 —— 表现就是"点任何按钮整页变空白"。
+   */
+  /** 流式阶段解析出的思考与正文（与最终消息走同一套规则） */
+  const streamingPreview = streamingContent ? parseStreamContent(streamingContent) : null;
+  /**
+   * 只显示"以思考开头"的流式内容（协议要求的形态）。
+   * 模型有时先抢答一整段（例如"扩写"直接给结果）再补思考，甚至被重来覆盖——
+   * 显示出来就是"闪一下又消失"。所以这类内容一律先按住只显示"思考中"：
+   * 被丢弃的那一版用户永远看不到，最终只会出现"思考 → 回答"。
+   * 例外：若已确认这个模型根本不写思考（连续重来仍没有），就不再按住，恢复逐字输出。
+   */
+  const holdEarlyReply = !!streamingPreview
+    && thinkingCapableRef.current
+    && !streamStartsWithThinking(streamingContent);
+  const allMsgs: (AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number })[] = streamingPreview
+    ? [...messages, {
+        role: 'assistant' as const,
+        content: holdEarlyReply ? '' : streamingPreview.reply,
+        thinking: streamingPreview.thinking,
+        at: streamStartedAtRef.current || undefined,
+      }]
     : messages;
+  /** 正在等模型吐出第一个有效内容（含"正文被暂时按住"的情况）：显示"思考中"而不是空气泡 */
+  const waitingFirstContent =
+    isSending && (!streamingPreview || (!streamingPreview.reply && !streamingPreview.thinking) || holdEarlyReply);
 
-  /** 右侧历史锚点：每条用户消息对应一个点（顺序与 DOM 中 [data-chat-anchor] 一致） */
-  const userAnchors = allMsgs.reduce<{ index: number; preview: string }[]>((acc, msg, index) => {
-    if (msg.role === 'user') {
-      const plain = (msg.content || '').replace(/\s+/g, ' ').trim();
-      acc.push({
-        index,
-        preview: plain
-          ? (plain.length > ANCHOR_PREVIEW_LEN ? `${plain.slice(0, ANCHOR_PREVIEW_LEN)}…` : plain)
-          : '（空消息）',
-      });
-    }
-    return acc;
-  }, []);
+  /**
+   * 右侧历史锚点：每条用户消息对应一个点（顺序与 DOM 中 [data-chat-anchor] 一致）。
+   * 刻意只用 messages 派生：流式气泡永远是最后一条 assistant 消息，不会产生锚点，
+   * 因此流式期间这个数组保持同一引用，AnchorRail 的 memo 才不会被每 50ms 打破。
+   */
+  const userAnchors = useMemo(
+    () => messages.reduce<{ index: number; preview: string }[]>((acc, msg, index) => {
+      if (msg.role === 'user') {
+        const plain = (msg.content || '').replace(/\s+/g, ' ').trim();
+        acc.push({
+          index,
+          preview: plain
+            ? (plain.length > ANCHOR_PREVIEW_LEN ? `${plain.slice(0, ANCHOR_PREVIEW_LEN)}…` : plain)
+            : '（空消息）',
+        });
+      }
+      return acc;
+    }, []),
+    [messages]
+  );
   /** 切换会话后旧索引可能越界，渲染前夹一下，保证总有一个点处于高亮态 */
   const activeDotIndex = Math.min(activeAnchor, Math.max(0, userAnchors.length - 1));
+
+  /** 把"哪些工具轨迹展开着"按消息分组：每行只拿自己那份，引用稳定、memo 才有效 */
+  const toolOpenByRow = useMemo(() => {
+    const map: Record<number, Record<string, boolean>> = {};
+    for (const key of Object.keys(expandedTools)) {
+      if (!expandedTools[key]) continue;
+      const rowIndex = Number(key.slice(0, key.indexOf('-')));
+      if (Number.isNaN(rowIndex)) continue;
+      (map[rowIndex] ||= {})[key] = true;
+    }
+    return map;
+  }, [expandedTools]);
+
+  if (!isOpen) return null;
 
   return (<>
     <aside
@@ -1664,7 +1631,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             msg={msg as AiChatMessage & { thinking?: string; tools?: ToolTrace[] }}
             index={i}
             expanded={!!expandedThinking[i]}
-            expandedTools={expandedTools}
+            toolOpen={toolOpenByRow[i] || NO_OPEN_TOOLS}
             isSending={isSending}
             onToggleThinking={toggleThinking}
             onToggleTool={toggleToolTrace}
@@ -1672,7 +1639,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             onReplaceContent={replaceContentStable}
           />
         )))}
-        {isSending && !streamingContent && (
+        {waitingFirstContent && (
           <div className="flex items-center gap-2 py-1 text-xs text-slate-400">
             <span className="thinking-dots"><span/><span/><span/></span>思考中
           </div>
@@ -1682,26 +1649,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       {/* 右侧垂直居中的历史锚点：一眼看出发过几次提问，点一下跳到那次提问 */}
       {userAnchors.length >= 2 && (
         <>
-          <nav className="chat-anchor-rail" aria-label="对话历史" onScroll={hideAnchorTip}>
-            <div className="chat-anchor-rail-inner">
-              {userAnchors.map((anchor, i) => (
-                <button
-                  key={anchor.index}
-                  type="button"
-                  className={"chat-anchor-dot" + (activeDotIndex === i ? " is-active" : "")}
-                  onClick={() => jumpToAnchor(i)}
-                  onMouseEnter={(e) => showAnchorTip(i, e.currentTarget)}
-                  onMouseLeave={hideAnchorTip}
-                  onFocus={(e) => showAnchorTip(i, e.currentTarget)}
-                  onBlur={hideAnchorTip}
-                  aria-label={`跳到第 ${i + 1} 条提问：${anchor.preview}`}
-                  aria-current={activeDotIndex === i ? "true" : undefined}
-                >
-                  <span className="chat-anchor-pin" />
-                </button>
-              ))}
-            </div>
-          </nav>
+          <AnchorRail
+            anchors={userAnchors}
+            activeIndex={activeDotIndex}
+            onJump={jumpToAnchor}
+            onHover={showAnchorTip}
+            onLeave={hideAnchorTip}
+            onScroll={hideAnchorTip}
+          />
           {/* 悬浮气泡：放在导轨外面，否则会被导轨的滚动容器裁掉 */}
           <div
             className={"chat-anchor-tip-floating" + (anchorTip.visible ? " is-visible" : "")}
@@ -1796,7 +1751,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         ))}
       </div>
     </div>)}
-    {pendingConfirm && (<div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => { pendingConfirm.resolve(false); setPendingConfirm(null); }}>
+    {pendingConfirm && (<div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => settleConfirm(false)}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
       <div className="relative bg-white rounded-xl shadow-2xl border border-slate-200 w-80 p-4 animate-fade-in" onClick={e => e.stopPropagation()}>
         <h3 className="text-sm font-medium text-slate-700 mb-3">确认操作</h3>
@@ -1809,8 +1764,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           })}
         </div>
         <div className="flex items-center justify-end gap-2">
-          <button onClick={() => { pendingConfirm.resolve(false); setPendingConfirm(null); }} className="px-3 py-1.5 text-xs font-medium text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">取消</button>
-          <button onClick={() => { pendingConfirm.resolve(true); setPendingConfirm(null); }} className="px-3 py-1.5 text-xs font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors">确认执行</button>
+          <button onClick={() => settleConfirm(false)} className="px-3 py-1.5 text-xs font-medium text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">取消</button>
+          <button onClick={() => settleConfirm(true)} className="px-3 py-1.5 text-xs font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors">确认执行</button>
         </div>
       </div>
     </div>)}

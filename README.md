@@ -1,31 +1,54 @@
 # FastNote
 
-FastNote是一个使用Tauri、React和TypeScript开发的跨平台笔记应用。
+FastNote 是一个使用 Tauri、React 和 TypeScript 开发的跨平台笔记应用，内置可调用工具的 AI 笔记助手。
 
 ## 功能特性
 
-- ✅ 笔记管理：创建、编辑、删除笔记
-- ✅ 分类管理：创建、编辑、删除分类
-- ✅ 拖拽排序：通过拖拽笔记到分类上快速切换分组
-- ✅ 编辑器切换：支持Monaco Editor和Markdown Editor
-- ✅ 笔记导出：支持多种格式导出
-- ✅ 实时保存：自动保存笔记内容
-- ✅ 分类选择：通过下拉菜单选择笔记分类
-- ✅ 搜索功能：支持按标题和内容搜索笔记
-- ✅ 排序功能：支持按更新时间、创建时间和标题排序
+- ✅ 笔记管理：创建、编辑、删除笔记，实时自动保存
+- ✅ 分组管理：创建、编辑、删除分组，支持把笔记拖拽到分组上快速归类
+- ✅ 回收站：删除先进回收站（可还原），也可以彻底删除 / 清空；超过 30 天的会自动清理
+- ✅ 双编辑器：Monaco Editor 与 Markdown 编辑器一键切换
+- ✅ 笔记导出：导出为文件（保存对话框）
+- ✅ 搜索与排序：按标题/内容搜索（支持中文宽松匹配），按更新时间/创建时间/标题排序
+- ✅ 欢迎面板：统计概览与最近更新的笔记
+- ✅ 错误兜底：任何界面异常都会显示错误卡片而不是白屏
+
+## AI 笔记助手
+
+### 配置
+
+在「AI 服务商」中新增服务商（支持 OpenAI 兼容 / Claude / Gemini 协议），填入 API Base URL、Key，勾选可用模型即可开始对话。
+对话面板在右侧，可拖动边缘调整宽度，也可折叠。
+
+### 能做什么（共 20 个工具）
+
+| 分类 | 工具 |
+| --- | --- |
+| 查找 | 搜索笔记、列出笔记（可按分组/条数）、读取笔记、读取当前打开的笔记、读取分组、查看回收站 |
+| 写入 | 创建笔记、批量创建笔记、追加内容（不覆盖原文）、修改笔记、修改当前笔记 |
+| 删除 | 删除笔记（进回收站）、还原笔记、彻底删除、清空回收站 |
+| 分组 | 创建分组、重命名分组、删除分组、移动笔记 |
+| 导航 | 打开笔记（切换到指定笔记） |
+
+「删除分组」不会彻底删除笔记：默认只让组内笔记变为未分类，勾选后也是**移入回收站**（可还原）。
+
+### 交互细节
+
+- **深度思考**：每次回复都先输出 `<thinking>…</thinking>` 再回答；思考折叠在「思考 · …」一行里，点开可看全文。
+- **工具轨迹**：实际执行过的每个工具各占一行（如 `打开笔记 · #16 · 《白雪公主》`），**点击可展开调用 JSON 与执行结果**；失败是红色并带原因。工具是按顺序逐个执行、逐条出现的。
+- **不做假承诺**：回复里若声称"已打开/已创建/已删除"却没有对应的成功工具记录，会自动追加一条 ⚠️ 提示，避免被误导。
+- **消息时间**：用户消息在气泡下方、AI 回复在正文下方显示时间（今天为 `HH:mm`，昨天带"昨天"，更早带日期）；历史消息用的是数据库里的真实时间。
+- **停止与继续**：生成中点「停止」会立即停下（正在执行的操作不会再继续、正在飞的请求结果会被丢弃），并且**马上就能发下一条**；一句「继续」可以让模型接着处理未完成的任务。
+- **历史锚点**：对话右侧垂直居中有一列圆点，一条用户消息一个点；悬停显示该条提问摘要，点击平滑跳转，滚轮浏览历史时高亮会跟着走；往上滚不会被流式输出拽回底部，滚回底部自动恢复跟随。
 
 ## 技术栈
 
-- **前端**：React + TypeScript + Vite
-- **桌面应用**：Tauri
-- **编辑器**：Monaco Editor + md-editor-rt
+- **前端**：React 19 + TypeScript + Vite
+- **桌面端**：Tauri 2（Rust 后端，26 个命令）
+- **编辑器**：Monaco Editor + md-editor-rt（Markdown/KaTeX/Mermaid/代码高亮）
 - **样式**：Tailwind CSS
 
-## 开发环境设置
-
-### 推荐IDE
-
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## 开发
 
 ### 安装依赖
 
@@ -36,40 +59,62 @@ pnpm install
 ### 开发模式
 
 ```bash
-pnpm tauri:dev
+pnpm tauri:dev      # 桌面端（推荐）
+pnpm dev            # 仅前端（浏览器打开，AI 与本地数据库相关功能不可用）
 ```
 
-### 构建应用
+### 构建
 
 ```bash
-pnpm tauri:build
+pnpm tauri:build    # 打包桌面应用
+pnpm build          # 仅前端产物（tsc + vite build）
 ```
 
-## 使用说明
+### 测试与审计
 
-1. **创建笔记**：点击右上角的"+"按钮创建新笔记
-2. **编辑笔记**：在编辑器中输入内容，自动保存
-3. **分类管理**：在侧边栏管理分类，支持创建、编辑和删除
-4. **拖拽分类**：将笔记拖拽到分类上快速切换分组
-5. **切换编辑器**：点击编辑器切换按钮在Monaco Editor和Markdown Editor之间切换
-6. **导出笔记**：点击导出按钮导出笔记为多种格式
-7. **搜索笔记**：在搜索框中输入关键词搜索笔记
-8. **排序笔记**：通过排序下拉菜单选择排序方式
+```bash
+pnpm test:parse     # AI 输出解析层回归测试（Node 直接跑 TS，48 项）
+pnpm check          # 一致性审计：死码 / 冗余 import / 工具定义对齐 / Rules of Hooks
+```
+
+改动 AI 解析、工具定义或对话组件后，建议这两个都跑一遍——它们覆盖了历史上出现过的故障形态（工具标签漏写、思考被误判、回答被覆盖、标题被污染、谎报操作等）。
 
 ## 项目结构
 
 ```
 FastNote/
 ├── src/
-│   ├── components/        # React组件
-│   ├── config/            # 配置文件
-│   ├── api/               # API调用
-│   ├── types/             # TypeScript类型定义
-│   ├── App.tsx            # 主应用组件
-│   └── main.tsx           # 应用入口
-├── public/                # 静态资源
-├── src-tauri/             # Tauri后端
-├── package.json           # 项目配置
-├── tsconfig.json          # TypeScript配置
-└── README.md              # 项目说明
+│   ├── components/            # React 组件
+│   │   ├── AIChatPanel.tsx    # AI 对话面板（编排 + 渲染 + 工具执行）
+│   │   ├── AiProviderModal.tsx
+│   │   ├── Sidebar.tsx        # 分组侧边栏（抽屉式）
+│   │   ├── CategoryDrawer.tsx # 分组抽屉与笔记卡片
+│   │   ├── NoteEditor.tsx     # 编辑器（Monaco / Markdown 切换、导出、保存）
+│   │   ├── NoteList.tsx
+│   │   ├── WelcomeDashboard.tsx
+│   │   ├── ErrorBoundary.tsx  # 顶层错误兜底（避免整页空白）
+│   │   ├── Modal.tsx / Toast.tsx / ContextMenu.tsx / icons.tsx
+│   ├── config/                # Monaco / Markdown 编辑器配置
+│   ├── aiChatParse.ts         # AI 输出解析层（纯函数：标签、思考、正文、工具调用、事实校验）
+│   ├── api.ts                 # 与 Tauri 后端的所有调用
+│   ├── types.ts               # 共享类型
+│   ├── App.tsx                # 应用外壳与状态编排
+│   ├── App.css / index.css    # 样式
+│   └── main.tsx               # 入口（StrictMode + ErrorBoundary）
+├── scripts/
+│   ├── ai-parse.test.mjs      # 解析层回归测试
+│   └── audit.mjs              # 一致性审计
+├── src-tauri/                 # Rust 后端（SQLite、文件系统、AI 流式请求）
+├── tailwind.config.cjs / vite.config.ts / tsconfig.json
+└── README.md
 ```
+
+## 设计约定（二次开发前请先读）
+
+1. **AI 输出解析只有一处实现**：`src/aiChatParse.ts`。流式渲染与最终消息都走同一套规则，避免出现"流式显示的"和"最终落地的"不一致（历史上因此出现过闪烁、正文重复、工具被静默丢弃）。
+2. **标签协议**：模型输出形如 `<thinking>…</thinking>` + `<tool_calls>[{"name":"…","args":{…}}]</tool_calls>` + 正文。解析层对三种畸形写法都做了兜底：漏写开标签、漏写闭标签、JSON 写到一半。
+3. **正文只取思考块之后的内容**：模型抢先说的半句不算正文（否则会与真正的回答重复）。
+4. **不显示"可能被丢弃的内容"**：本轮不是以 `<thinking>` 开头时，正文先按住不显示；只有确认模型根本不写思考时才放行，避免"闪一下又消失"。
+5. **工具定义有 7 处需要同步**（`TOOL_DEFS`、标签、执行器、提示词、轨迹详情、确认文案、事实校验规则），`pnpm check` 会校验它们是否对齐——新增工具时记得跑。
+6. **组件内 hooks 必须全部写在条件早退之前**（`pnpm check` 已把这条做成规则），否则开/关面板会导致 hook 数量不一致、React 直接卸载整棵树（表现为整页空白）。
+7. **发送锁按"轮次编号"管理**：点停止会立即作废当前轮次并解锁，旧循环在下一个检查点安静退出，不会再去改界面或执行工具。

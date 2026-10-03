@@ -532,11 +532,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* 底部统计 */}
-      <div className="px-4 py-2.5 border-t border-slate-200/60 flex-shrink-0">
+      {/* 底部统计 + 刷新界面：打包后没有浏览器的右键"刷新"，这里给一个常驻入口 */}
+      <div className="px-4 py-2 border-t border-slate-200/60 flex-shrink-0">
         <div className="flex items-center justify-between text-[11px] text-slate-400">
           <span>{categoryCount} 个分组</span>
-          <span>{allNotesCount} 篇笔记</span>
+          <div className="flex items-center gap-1.5">
+            <span>{allNotesCount} 篇笔记</span>
+            <button
+              onClick={() => window.location.reload()}
+              className="p-1 -mr-1 rounded-md text-slate-300 hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-90"
+              title="刷新界面"
+              aria-label="刷新界面"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 
