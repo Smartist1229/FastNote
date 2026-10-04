@@ -24,6 +24,42 @@
       linear-gradient(135deg, #f8fafc 0%, #eef2ff 45%, #f8fafc 100%);
   }
 
+  /*
+   * UI 文字默认不可选中：拖动鼠标时不会把按钮、标签、标题一起选蓝（更像原生桌面应用）。
+   * 下面白名单只保留"真正需要复制"的东西：输入框、编辑器、笔记/回复正文、代码块与预格式化文本。
+   */
+  body,
+  #root {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  input,
+  textarea,
+  select,
+  [contenteditable="true"],
+  pre,
+  code,
+  kbd,
+  .selectable,
+  .selectable *,
+  .monaco-editor,
+  .monaco-editor *,
+  .md-editor,
+  .md-editor *,
+  .md-editor-preview,
+  .md-editor-preview *,
+  .ai-markdown,
+  .ai-markdown * {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* 允许在需要的局部临时打开选中（例如错误详情卡片） */
+  .selectable {
+    user-select: text !important;
+  }
+
   * {
     scrollbar-width: thin;
     scrollbar-color: rgb(203 213 225 / 0.75) transparent;
