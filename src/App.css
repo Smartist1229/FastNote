@@ -632,6 +632,488 @@ button:focus-visible {
   background: #cbd5e1;
 }
 
+/* ========== AI 对话输入区（Composer） ========== */
+.composer-wrap {
+  position: relative;
+  padding: 4px 12px 10px;
+}
+
+/* 拖动上边缘调整输入框高度：默认只有一条很淡的"抓手"，不再是一整条半透明横条 */
+.composer-resize {
+  position: absolute;
+  top: -2px;
+  left: 12px;
+  right: 12px;
+  height: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+}
+.composer-resize::after {
+  content: "";
+  width: 34px;
+  height: 3px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  opacity: 0;
+  transform: scaleX(0.6);
+  transition: opacity 0.18s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease;
+}
+.composer-wrap:hover .composer-resize::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.composer-resize:hover::after {
+  background: #c7d2fe;
+}
+.composer-resize.is-dragging::after {
+  opacity: 1;
+  transform: scaleX(1.35);
+  background: #6366f1;
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.16);
+}
+/* 拖动时给整卡片一圈提示，视觉上"抓住了" */
+.composer-wrap.is-resizing .composer-card {
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
+}
+
+/* 输入卡片：整体一个圆角容器，聚焦时描边高亮（比裸 textarea 更像现代聊天框） */
+.composer-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.composer-card:focus-within {
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  padding: 10px 12px 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 兜底：无论怎么拖都不会高到把整面板撑爆 */
+  max-height: 70vh;
+}
+.composer-input::placeholder {
+  color: #cbd5e1;
+}
+
+.composer-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 6px 8px;
+  /* 窄面板下不换行：按钮改为只显示图标（见 JSX 里的 compact 判断），否则会错位 */
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+/* 底部小胶囊按钮（模型选择、确认开关、附加笔记） */
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 170px;
+  padding: 4px 8px;
+  border-radius: 9px;
+  font-size: 11.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: #64748b;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.composer-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-chip.is-compact {
+  padding: 5px 7px;
+}
+/* 可压缩的胶囊（模型名）：窄面板时先缩它，避免把发送按钮顶出去 */
+.composer-chip.is-shrinkable {
+  flex-shrink: 1;
+  max-width: 190px;
+}
+.composer-chip:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+.composer-chip.is-on {
+  color: #4f46e5;
+  background: #eef2ff;
+  border-color: #e0e7ff;
+}
+.composer-chip.is-warn {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+/* 发送按钮：圆形，有内容时才亮起 */
+.composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  box-shadow: 0 4px 12px -4px rgb(79 70 229 / 0.5);
+  transition: transform 0.16s ease, box-shadow 0.2s ease, opacity 0.2s ease, background 0.2s ease;
+}
+.composer-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -4px rgb(79 70 229 / 0.55);
+}
+.composer-send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.composer-send:disabled {
+  background: #e2e8f0;
+  color: #94a3b8;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.composer-stop {
+  background: linear-gradient(135deg, #f43f5e, #e11d48);
+  box-shadow: 0 4px 12px -4px rgb(225 29 72 / 0.5);
+}
+.composer-hint {
+  margin-top: 5px;
+  padding-left: 2px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #cbd5e1;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 生成中的状态胶囊：绝对定位在消息区底部（输入框正上方），不随正文增长而移动 */
+.ai-thinking-pill {
+  position: absolute;
+  left: 12px;
+  bottom: 4px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: #64748b;
+  background: rgb(255 255 255 / 0.92);
+  border: 1px solid #eef2f7;
+  box-shadow: 0 4px 14px -6px rgb(15 23 42 / 0.22);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  animation: fadeIn 0.2s ease backwards;
+}
+.ai-thinking-pill .elapsed {
+  font-variant-numeric: tabular-nums;
+  color: #a3b0c2;
+}
+
+/* 生成中的实时状态行：思考中 · 12s */
+.ai-thinking-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: #94a3b8;
+  animation: fadeIn 0.2s ease backwards;
+}
+.ai-thinking-live .elapsed {
+  font-variant-numeric: tabular-nums;
+  color: #b6c2d2;
+}
+
+/* 模型下拉菜单（向上弹出） */
+.composer-menu {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% - 2px);
+  z-index: 40;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 16px 32px -12px rgb(15 23 42 / 0.28);
+  animation: composerMenuIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes composerMenuIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.composer-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #475569;
+  text-align: left;
+  transition: background-color 0.13s ease;
+}
+.composer-menu-item:hover {
+  background: #f1f5f9;
+}
+.composer-menu-item.is-active {
+  color: #4f46e5;
+  background: #eef2ff;
+  font-weight: 500;
+}
+.composer-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: #f1f5f9;
+}
+
+/* ========== AI 面板：头部与整体容器 ========== */
+.ai-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgb(241 245 249);
+  background: linear-gradient(180deg, #fbfcfe, #ffffff);
+}
+
+/* 会话切换：标题 + 模型副标题，整块可点 */
+.ai-session-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  text-align: left;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+.ai-session-btn:hover {
+  background: #f8fafc;
+  border-color: #eef2f7;
+}
+.ai-session-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #818cf8, #4f46e5);
+  box-shadow: 0 3px 10px -4px rgb(79 70 229 / 0.6);
+}
+
+/* 头部图标按钮 */
+.ai-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: #94a3b8;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.ai-icon-btn:hover {
+  background: #f1f5f9;
+  color: #4f46e5;
+}
+.ai-icon-btn:active {
+  transform: scale(0.92);
+}
+.ai-icon-btn.is-danger:hover {
+  background: #fef2f2;
+  color: #e11d48;
+}
+.ai-icon-btn.is-on {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+/* ========== AI 空状态 ========== */
+.ai-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 40px 18px;
+  text-align: center;
+  animation: fadeIn 0.28s ease backwards;
+}
+.ai-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  border-radius: 14px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #a5b4fc, #6366f1);
+  box-shadow: 0 10px 24px -10px rgb(99 102 241 / 0.7);
+}
+.ai-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #334155;
+}
+.ai-empty-desc {
+  max-width: 260px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #94a3b8;
+}
+.ai-empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+.ai-empty-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #e8edf5;
+  background: #ffffff;
+  font-size: 11.5px;
+  color: #64748b;
+  transition: all 0.16s ease;
+}
+.ai-empty-chip:hover {
+  border-color: #c7d2fe;
+  color: #4f46e5;
+  background: #f8faff;
+  transform: translateY(-1px);
+}
+
+/* ========== AI 弹层（对话管理） ========== */
+.ai-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: rgb(15 23 42 / 0.22);
+  backdrop-filter: blur(3px);
+  animation: fadeIn 0.18s ease backwards;
+}
+.ai-modal {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  max-height: 64vh;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid #eef2f7;
+  background: #ffffff;
+  box-shadow: 0 24px 48px -18px rgb(15 23 42 / 0.35);
+  animation: scaleIn 0.2s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.ai-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 8px;
+}
+.ai-modal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.ai-modal-search {
+  padding: 0 12px 8px;
+}
+.ai-modal-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 8px;
+}
+.ai-group-label {
+  padding: 8px 8px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #b6c2d2;
+}
+.ai-session-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: 10px;
+  text-align: left;
+  transition: background-color 0.14s ease;
+}
+.ai-session-item:hover {
+  background: #f8fafc;
+}
+.ai-session-item.is-active {
+  background: #eef2ff;
+}
+.ai-session-item.is-active .ai-session-name {
+  color: #4338ca;
+  font-weight: 600;
+}
+.ai-session-name {
+  font-size: 12.5px;
+  color: #475569;
+}
+.ai-session-meta {
+  font-size: 10.5px;
+  color: #a3b0c2;
+}
+.ai-session-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.ai-session-item:hover .ai-session-actions,
+.ai-session-item:focus-within .ai-session-actions {
+  opacity: 1;
+}
+
 /* ========== AI 对话历史锚点（右侧垂直居中的"目录"，横线样式） ========== */
 .chat-anchor-rail {
   position: absolute;

@@ -93,8 +93,9 @@ export const sendAiChat = async (
   messages: AiChatMessage[],
   noteTitle: string,
   noteContent: string,
+  maxTokens = 8192,
 ): Promise<string> => {
-  return await invoke('send_ai_chat', { providerId, messages, noteTitle, noteContent });
+  return await invoke('send_ai_chat', { providerId, messages, noteTitle, noteContent, maxTokens });
 };
 
 export const sendAiChatStream = async (
@@ -105,6 +106,7 @@ export const sendAiChatStream = async (
   onChunk: (fullText: string, reasoning: string) => void,
   minThinkingLen = 120,
   currentNoteId: number | null = null,
+  maxTokens = 8192,
 ): Promise<string> => {
   const unlistenChunk = await listen<{ content: string; reasoning?: string; text?: string }>('ai-chat-chunk', (event) => {
     onChunk(event.payload.content, event.payload.reasoning || "");
@@ -135,6 +137,7 @@ export const sendAiChatStream = async (
       noteContent,
       minThinkingLen,
       currentNoteId,
+      maxTokens,
     });
     const result = await resultPromise;
     return result;

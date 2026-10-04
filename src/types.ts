@@ -75,6 +75,10 @@ export interface AiSettings {
   confirmByDefault: boolean;
   /** 是否在回复里附上工具执行轨迹 */
   showToolTrace: boolean;
+  /** 单次回复的最大输出长度（token）：太小会频繁出现「回复被截断」 */
+  maxTokens: number;
+  /** 输入框高度（像素）：0 = 自动（内容变多自动长高，上限约 320px）；大于 0 = 手动固定高度（拖上边缘设定） */
+  composerHeight: number;
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
@@ -88,6 +92,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   streaming: true,
   confirmByDefault: true,
   showToolTrace: true,
+  maxTokens: 8192,
+  composerHeight: 0,
 };
 
 /**
@@ -108,6 +114,8 @@ export const normalizeAiSettings = (raw: Record<string, unknown> | null | undefi
   merged.contextBudget = Math.min(200000, Math.max(2000, Math.round(merged.contextBudget)));
   merged.keepRecent = Math.min(50, Math.max(2, Math.round(merged.keepRecent)));
   merged.toolResultChars = Math.min(20000, Math.max(200, Math.round(merged.toolResultChars)));
+  merged.composerHeight = Math.min(1200, Math.max(0, Math.round(merged.composerHeight)));
+  merged.maxTokens = Math.min(32000, Math.max(256, Math.round(merged.maxTokens)));
   return merged;
 };
 

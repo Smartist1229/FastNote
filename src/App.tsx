@@ -559,6 +559,7 @@ function AppContent() {
             currentNoteId={selectedNote?.id ?? null}
             aiPrompts={aiPrompts}
             aiSettings={aiSettings}
+            onAiSettingsChange={(patch) => setAiSettings((prev) => ({ ...prev, ...patch }))}
             onOpenAiMemory={() => setShowAiMemory(true)}
             onInsertText={handleAiInsertText}
             onReplaceContent={handleAiReplaceContent}

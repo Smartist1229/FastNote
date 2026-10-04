@@ -119,6 +119,7 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({
             <div className="divide-y divide-slate-100">
               <NumberRow title="深度思考最少字数" desc="低于这个字数会提醒模型重新深入思考（0 表示不限制）" value={settings.minThinkingLen} min={0} max={1000} step={10} unit="字" onChange={(v) => set("minThinkingLen", v)} />
               <NumberRow title="最多工具轮数" desc="一次提问里模型最多连续调用几轮工具；填 0 表示不限制（连续两轮毫无进展时会自动停下）" value={settings.maxRounds} min={0} max={200} unit="轮" onChange={(v) => set("maxRounds", v)} />
+              <NumberRow title="最大输出长度" desc="单次回复最多生成多少 token；调大能明显减少「长文被截断」，调小更省额度" value={settings.maxTokens} min={256} max={32000} step={512} unit="token" onChange={(v) => set("maxTokens", v)} />
               <ToggleRow title="思考过浅时重来一次" desc="关闭后直接采纳模型给出的回答，不再要求重写（响应更快）" value={settings.retryShallowThinking} onChange={(v) => set("retryShallowThinking", v)} />
               <ToggleRow title="流式输出" desc="边生成边显示；关闭后等整段生成完再一次性显示（个别服务商流式不稳定时可关掉）" value={settings.streaming} onChange={(v) => set("streaming", v)} />
               <ToggleRow title="自动生成会话标题" desc="首轮对话后自动用一句话概括，关闭后标题保持「新对话」" value={settings.autoTitle} onChange={(v) => set("autoTitle", v)} />

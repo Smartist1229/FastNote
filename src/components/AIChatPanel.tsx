@@ -39,6 +39,8 @@ interface AIChatPanelProps {
   aiPrompts: AiPromptEntry[];
   /** 统一设置窗口里的 AI 设置 */
   aiSettings: AiSettings;
+  /** 设置里可改的项通过这个回调回写（例如拖动输入区高度） */
+  onAiSettingsChange?: (patch: Partial<AiSettings>) => void;
   /** 关闭面板 */
   onClose?: () => void;
 }
@@ -832,7 +834,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
 const ChatMessageRow = memo(function ChatMessageRow({
   msg, index, expanded, toolOpen, isSending, showToolTrace, onToggleThinking, onToggleTool, onInsertText, onReplaceContent,
 }: {
-  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number };
+  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number };
   index: number;
   expanded: boolean;
   /** 这一行自己的工具展开状态（按行传入，切换某一行不会让整列重渲染） */
@@ -929,7 +931,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
         </div>
       ) : null}
       {/* 时间：与用户消息对称，AI 这条在左下角 */}
-      {msg.at ? <div className="pt-0.5 text-[10.5px] text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}</div> : null}
+      {(msg.at || msg.thinkMs) ? <div className="pt-0.5 text-[10.5px] text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}{msg.thinkMs ? `${msg.at ? " · " : ""}用时 ${(msg.thinkMs / 1000).toFixed(1)}s` : ""}</div> : null}
     </div>
   );
 });
@@ -1032,6 +1034,24 @@ const buildMemoryBlock = (entries: AiPromptEntry[] | undefined): string => {
   ].join("\n");
 };
 
+/** 对话列表里的相对时间：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD */
+const relativeTime = (iso?: string): string => {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const diff = Date.now() - t;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  const d = new Date(t);
+  const today = new Date();
+  const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dayDiff = Math.round((dayStart(today) - dayStart(d)) / 86_400_000);
+  if (dayDiff === 0) return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  if (dayDiff === 1) return "昨天";
+  if (dayDiff < 7) return `${dayDiff} 天前`;
+  return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
 /** 工具轨迹的中文一句话摘要：写进正文，让用户/模型都能看清做了什么 */
 const describeTools = (tools: ToolTrace[] | undefined): string[] =>
   (tools || []).map(t => `${TOOL_LABELS[t.name] || t.name}${t.detail ? ` · ${t.detail}` : ""}`);
@@ -1132,7 +1152,7 @@ const formatMessageTime = (at?: number): string => {
   return `${d.getFullYear()}-${md} ${hh}:${mm}`;
 };
 
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onClose }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, onClose }) => {
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
   const [sessions, setSessions] = useState<AiChatSession[]>([]);
@@ -1141,12 +1161,26 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [providersError, setProvidersError] = useState("");
   const [messages, setMessages] = useState<AiChatMessage[]>([]);
   const [input, setInput] = useState("");
+  /** 模型下拉菜单（自定义，替代原生 select） */
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  /** 是否把当前打开的笔记作为上下文一起发送 */
+  const [attachNote, setAttachNote] = useState(true);
+  /** 正在拖动输入区上边缘调整高度 */
+  const [composerDragging, setComposerDragging] = useState(false);
+  /** 生成中的计时器：每 500ms 触发一次重渲染，用来显示"思考中 · 12s" */
+  const [tick, setTick] = useState(0);
+  /** 各会话的输入草稿：切换会话不丢未发送的内容 */
+  const draftsRef = useRef<Record<number, string>>({});
+  /** 本次会话发送过的内容，供 ↑ 键快速召回 */
+  const sentHistoryRef = useRef<string[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [models, setModels] = useState<string[]>([]);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  /** 对话管理弹窗里的搜索词 */
+  const [sessionQuery, setSessionQuery] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
   /** 工具轨迹行的展开状态（key = 消息序号-工具序号），展开可看调用 JSON 与结果 */
@@ -1159,6 +1193,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [confirmMode, setConfirmMode] = useState(aiSettings.confirmByDefault);
   const { showToast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 消息内容包裹层：观察它的尺寸变化，用来补"之后再长高"的贴底 */
+  const scrollContentRef = useRef<HTMLDivElement>(null);
   /** 是否贴底跟随最新回复：滚轮上滑查看历史时置 false，回到底部自动恢复 */
   const stickToBottomRef = useRef(true);
   /** 供界面使用的贴底状态（控制"回到最新"按钮） */
@@ -1210,6 +1246,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const thinkingCapableRef = useRef(true);
   /** 已生成的上下文摘要（按会话缓存）：{sid 会话, covered 已覆盖的消息条数, text 摘要} */
   const contextSummaryRef = useRef<{ sid: number; covered: number; text: string } | null>(null);
+  /** 这一轮的起点：用于生成中的实时计时，以及消息上显示的"用时" */
+  const turnStartedAtRef = useRef(0);
   /** 本次回答里已执行过的工具调用签名，用于跳过完全重复的调用 */
   const executedCallKeys = useRef<Set<string>>(new Set());
   const activeProvider = useMemo(() => providers.find((p) => p.id === selectedProviderId) || null, [providers, selectedProviderId]);
@@ -1306,8 +1344,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
   /** 把一段结果说明写回对话：优先就地替换占位气泡，没有占位就追加 */
   const commitNotice = useCallback(async (sid: number, text: string, leftover: any) => {
+    const usedMs = turnStartedAtRef.current ? Date.now() - turnStartedAtRef.current : 0;
     setMessages(m => {
-      const msg = { role: 'assistant' as const, content: text, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now() } as any;
+      const msg = { role: 'assistant' as const, content: text, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now(), thinkMs: usedMs || undefined } as any;
       const idx = leftover ? m.findIndex(x => x === leftover) : -1;
       return idx >= 0 ? [...m.slice(0, idx), msg] : [...m, msg];
     });
@@ -1416,6 +1455,30 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   }, []);
 
   /**
+   * 贴底保险（回答结束后有时"停在用户那条消息"的根因）：
+   * 流式结束、消息落地时，正文的 Markdown 高亮/表格/KaTeX 往往还在异步渲染，
+   * 内容会再长高一截。只在 messages/streamingContent 变化时滚一次底，就会漏掉这一次增长 ——
+   * 于是回答完了视口却不在底部，得手动往下拉（而且"有时候才发生"）。
+   * 这里直接观察内容尺寸，尺寸一变就重新贴底（仅限"跟随模式"，用户上滑看历史时不打扰）。
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+    const content = scrollContentRef.current;
+    if (!content) return;
+    const ro = new ResizeObserver(() => {
+      if (!stickToBottomRef.current) return;
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (!el || !stickToBottomRef.current) return;
+        el.scrollTop = el.scrollHeight;
+        syncScrollState();
+      });
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [isOpen, syncScrollState]);
+
+  /**
    * 仅"贴底"时才自动跟随最新内容：
    * - AI 流式回复（一个字一个字地增长）时，无论增长多少行，视口始终停在最底部；
    * - 用户一旦用滚轮上滑查看历史，就不再被拽回底部，滚动在哪就停在哪；
@@ -1505,9 +1568,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     } catch {}
   };
   const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
-  const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); setActiveSessionId(sid); resetStreaming(); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
-  const handleNewSession = async () => { settleConfirm(false); const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); resetStreaming(); resetToLatest(); titleGenRef.current = null; };
-  const handleDeleteSession = async () => { if (!activeSessionId) return; try { await api.deleteChatSession(activeSessionId); setSessions(p => p.filter(x => x.id !== activeSessionId)); const r = sessions.filter(x => x.id !== activeSessionId); if (r.length > 0) { setActiveSessionId(r[0].id); titleGenRef.current = null; await loadSessionMessages(r[0].id); } else { setActiveSessionId(0); setMessages([]); } } catch { showToast('删除失败', 'error'); } };
+  const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); draftsRef.current[activeSessionId] = input; setActiveSessionId(sid); setInput(draftsRef.current[sid] || ''); resetStreaming(); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
+  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); titleGenRef.current = null; };
   /**
    * 自动生成对话标题。
    * 之前的写法用组件里的 sessions 数组判断"是不是新对话"，但新建会话时那是旧闭包，
@@ -1615,19 +1677,21 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
               activeProvider!.id,
               [{ role: 'system', content: systemPrompt }, ...roundMsgs],
               noteTitle || '',
-              noteContent,
+              attachNote ? noteContent : '',
               (c, r) => {
                 nativeReasoning = r;
                 if (!isStale()) pushStreamContent(c, roundGen);
               },
               aiSettings.minThinkingLen,
               currentNoteId ?? null,
+              aiSettings.maxTokens,
             )
           : await api.sendAiChat(
               activeProvider!.id,
               [{ role: 'system', content: systemPrompt }, ...roundMsgs],
-              "",
-              activeModel,
+              noteTitle || '',
+              attachNote ? noteContent : '',
+              aiSettings.maxTokens,
             );
         if (isStale()) return;
         const parsed = parseResponse(full, nativeReasoning);
@@ -1736,8 +1800,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           const finalContent = buildFinalContent(finalReply, String(placeholderAtFinal?.content || ''), carriedTools || []);
           // 时间沿用占位气泡（这一轮开始的时间），没有占位就用此刻
           const finalAt: number = placeholderAtFinal?.at ?? Date.now();
+          // 本轮总用时：从按下发送到出结果（含工具执行），显示在消息时间旁边
+          const usedMs = turnStartedAtRef.current ? Date.now() - turnStartedAtRef.current : 0;
           setMessages(m => {
-            const msg = { role: 'assistant' as const, content: finalContent, thinking: thinkingDisplay, tools: carriedTools, at: finalAt };
+            const msg = { role: 'assistant' as const, content: finalContent, thinking: thinkingDisplay, tools: carriedTools, at: finalAt, thinkMs: usedMs || undefined };
             const idx = placeholderAtFinal ? m.findIndex(x => x === placeholderAtFinal) : -1;
             if (idx >= 0) return [...m.slice(0, idx), msg as any];
             // 兜底：末尾若残留了"内容为空但有思考"的空壳助手消息，直接替换掉，
@@ -1924,6 +1990,43 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     setMessages(m => m.map(x => (x === target ? traced : x)));
   }, []);
 
+  /**
+   * 输入框高度。
+   *   composerHeight = 0 → 自动模式：随内容长高（44 ~ 320px，超出后内部滚动）
+   *   composerHeight > 0 → 手动模式：固定成这个高度（拖上边缘设定，双击恢复自动）
+   * 自动模式每次都先归零再按 scrollHeight 计算，否则删掉内容后高度不会缩回去。
+   */
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const areaH = messagesAreaRef.current?.clientHeight || 600;
+    const manual = aiSettings.composerHeight > 0 ? aiSettings.composerHeight : 0;
+    if (manual) {
+      /*
+       * 手动高度直接照用，**不能再按"消息区高度"二次夹紧**：
+       * 输入框变高 → 消息区变矮 → 夹紧值变小 → 输入框又被压回去，
+       * 于是拖动/松手时会看到"自己矮了一大截"。（上限交给 CSS max-height 兜底）
+       */
+      el.style.height = `${manual}px`;
+      return;
+    }
+    el.style.height = "auto";
+    const autoMax = Math.max(44, Math.min(320, Math.round(areaH * 0.45)));
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 44), autoMax)}px`;
+  }, [input, aiSettings.composerHeight, activeSessionId, isOpen]);
+
+  /** 生成中每 500ms 走一次秒表 */
+  useEffect(() => {
+    if (!isSending) return;
+    const t = window.setInterval(() => setTick(v => v + 1), 500);
+    return () => window.clearInterval(t);
+  }, [isSending]);
+
+  /** 面板打开时聚焦输入框，符合"打开就能打字"的直觉 */
+  useEffect(() => {
+    if (isOpen) inputRef.current?.focus();
+  }, [isOpen, activeSessionId]);
+
   const handleSend = async () => {
     const prompt = input.trim();
     if (!prompt) return;
@@ -1937,6 +2040,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     }
     if (!activeProvider?.id || !activeModel) { showToast("请先在设置中勾选可用模型", "error"); return; }
     const myRun = ++runIdRef.current;
+    turnStartedAtRef.current = Date.now();
     sendLockRef.current = true;
     try {
       abortRef.current = false;
@@ -1944,6 +2048,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       const userMsg: AiChatMessage & { at: number } = { role: "user", content: prompt, at: Date.now() };
       setMessages(m => [...m, userMsg]);
       setInput("");
+      // 记进"已发送"历史，供 ↑ 键召回
+      sentHistoryRef.current = [...sentHistoryRef.current.slice(-20), prompt];
       resetStreaming();
       // 用户刚发出消息，理应看到最新回复：恢复贴底跟随
       resetToLatest();
@@ -2032,7 +2138,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const holdEarlyReply = !!streamingPreview
     && thinkingCapableRef.current
     && !streamStartsWithThinking(streamingContent);
-  const allMsgs: (AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number })[] = streamingPreview
+  const allMsgs: (AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number })[] = streamingPreview
     ? [...messages, {
         role: 'assistant' as const,
         content: holdEarlyReply ? '' : streamingPreview.reply,
@@ -2040,9 +2146,6 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         at: streamStartedAtRef.current || undefined,
       }]
     : messages;
-  /** 正在等模型吐出第一个有效内容（含"正文被暂时按住"的情况）：显示"思考中"而不是空气泡 */
-  const waitingFirstContent =
-    isSending && (!streamingPreview || (!streamingPreview.reply && !streamingPreview.thinking) || holdEarlyReply);
 
   /**
    * 右侧历史锚点：每条用户消息对应一条横线。
@@ -2115,6 +2218,44 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     return () => ro.disconnect();
   }, [isOpen]);
 
+  /** 当前对话在视图右侧的锚点列表（见 userAnchors 的说明） */
+  const activeSession = sessions.find(s => s.id === activeSessionId);
+  /**
+   * 窄面板适配（分两档，避免"还没到阈值就已经被挤爆"）：
+   *   compact（< 380）：确认 / 附笔记 只留图标，状态靠悬停提示；模型名仍显示（超长省略）
+   *   showCount（≥ 440）：才显示字数，否则让位给按钮
+   * 底部操作条本身也做了收缩处理：左侧胶囊可压缩，右侧发送 / 清空固定不被挤出。
+   */
+  const compact = panelWidth < 380;
+  const showCount = panelWidth >= 440;
+  /** 生成中的用时（秒）：让用户知道它在干活，而不是卡住了。按"整轮"计，工具执行的时间也算在内 */
+  const elapsedSec = isSending && turnStartedAtRef.current
+    ? Math.max(0, Math.floor((Date.now() - turnStartedAtRef.current) / 1000))
+    : 0;
+  void tick; // 计时器靠 tick 驱动重渲染
+  /** 对话管理弹窗：搜索关键词 + 按日期分组 */
+  const sessionQueryValue = sessionQuery.trim().toLowerCase();
+  const sessionGroups = (() => {
+    const filtered = sessionQueryValue
+      ? sessions.filter(s => (s.title || "新对话").toLowerCase().includes(sessionQueryValue))
+      : sessions;
+    const buckets: { label: string; items: typeof sessions }[] = [
+      { label: "今天", items: [] },
+      { label: "昨天", items: [] },
+      { label: "更早", items: [] },
+    ];
+    for (const s of filtered) {
+      const iso = s.updated_at || s.created_at;
+      const t = Date.parse(iso);
+      const d = new Date(t);
+      const now = new Date();
+      const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+      const diff = Number.isNaN(t) ? 99 : Math.round((dayStart(now) - dayStart(d)) / 86_400_000);
+      buckets[diff <= 0 ? 0 : diff === 1 ? 1 : 2].items.push(s);
+    }
+    return buckets.filter(b => b.items.length > 0);
+  })();
+
   if (!isOpen) return null;
 
   return (<>
@@ -2123,23 +2264,37 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       style={{ width: panelWidth }}
     >
       <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary-200/50 active:bg-primary-300/50 transition-colors z-10" onMouseDown={onResize}/>
-      <div className="px-3 py-2.5 border-b border-slate-100 flex items-center justify-between gap-2 flex-shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <button onClick={() => { setShowSessionPicker(true); setEditingSessionId(null); setEditTitle(''); }} className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-600 hover:border-slate-300 transition-colors max-w-[180px] truncate text-left flex items-center gap-1.5 flex-1">
-            <svg className="w-3 h-3 flex-shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16"/></svg>
-            <span className="truncate">{sessions.find(s => s.id === activeSessionId)?.title || "新对话"}</span>
-          </button>
-          <button onClick={handleNewSession} className="toolbar-btn !w-6 !h-6 flex-shrink-0" title=""><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4"/></svg></button>
-          {activeSessionId > 0 && (<button onClick={handleDeleteSession} className="toolbar-btn !w-6 !h-6 flex-shrink-0 hover:!text-red-500" title=""><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>)}
-        </div>
-        <button className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="服务商设置" onClick={onOpenProviderSettings}><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>
-        {/* 面板内也放一个关闭入口，鼠标离工具栏较远时更顺手 */}
-        <button className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="AI 记忆 / 前置提示词" onClick={onOpenAiMemory}>
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+      {/* 头部：左边是"会话卡片"（标题 + 当前模型），右边是一组图标按钮 */}
+      <div className="ai-header flex-shrink-0">
+        <button
+          className="ai-session-btn"
+          onClick={() => { setShowSessionPicker(true); setEditingSessionId(null); setEditTitle(''); setSessionQuery(''); }}
+          title="切换 / 管理对话"
+        >
+          <span className="ai-session-badge">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] font-medium text-slate-700">{activeSession?.title || "新对话"}</span>
+            <span className="block truncate text-[10.5px] text-slate-400">
+              {activeProvider ? `${activeProvider.name}${activeModel ? ` · ${activeModel}` : " · 未选模型"}` : "未配置服务商"}
+            </span>
+          </span>
+          <svg className="w-3 h-3 flex-shrink-0 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M19 9l-7 7-7-7" /></svg>
+        </button>
+
+        <button className="ai-icon-btn" onClick={handleNewSession} title="新建对话">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v16m8-8H4" /></svg>
+        </button>
+        <button className="ai-icon-btn" onClick={onOpenAiMemory} title="AI 记忆 / 前置提示词">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+        </button>
+        <button className="ai-icon-btn" onClick={onOpenProviderSettings} title="AI 设置">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
         </button>
         {onClose && (
-          <button className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="关闭 AI 对话" onClick={onClose}>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+          <button className="ai-icon-btn" title="关闭 AI 对话" onClick={onClose}>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         )}
       </div>
@@ -2155,12 +2310,36 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         onScroll={handleChatScroll}
         onWheel={releaseJumpTarget}
         onTouchStart={releaseJumpTarget}
-        className="flex-1 min-h-0 overflow-y-auto pl-3 py-3 pr-9 space-y-4 chat-scrollbar [overflow-anchor:none]"
+        className="flex-1 min-h-0 overflow-y-auto pl-3 py-3 pr-9 chat-scrollbar [overflow-anchor:none]"
       >
+        {/* 内容包裹层：给它挂 ResizeObserver，任何"之后再长高"都能重新贴底 */}
+        <div ref={scrollContentRef} className="space-y-4">
         {!activeProvider ? (
-          <div className="empty-state"><div className="empty-state-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div><p className="empty-state-title">暂无配置</p><p className="empty-state-desc">请先配置 AI 服务商</p><button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs">立即配置</button></div>
+          <div className="ai-empty">
+            <div className="ai-empty-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg></div>
+            <p className="ai-empty-title">还没有可用的 AI 服务商</p>
+            <p className="ai-empty-desc">填一个 API Key 就能用：支持 OpenAI 兼容 / Claude / Gemini 协议。</p>
+            <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">去配置服务商</button>
+          </div>
         ) : allMsgs.length === 0 ? (
-          <div className="empty-state"><div className="empty-state-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg></div><p className="empty-state-title">{activeModel ? "开始对话" : "还没有可用模型"}</p><p className="empty-state-desc">{activeModel ? "输入你的问题" : "请在设置里获取并勾选模型"}</p></div>
+          <div className="ai-empty">
+            <div className="ai-empty-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg></div>
+            <p className="ai-empty-title">{activeModel ? "开始对话" : "还没有勾选模型"}</p>
+            <p className="ai-empty-desc">
+              {activeModel
+                ? "可以让它整理笔记、改写润色、查找内容，也可以直接问问题。"
+                : "在设置里获取并勾选一个模型即可开始。"}
+            </p>
+            {activeModel ? (
+              <div className="ai-empty-chips">
+                {["总结当前这篇笔记", "把这篇文章扩写", "新建一篇读书笔记", "我的笔记都写了什么"].map((t) => (
+                  <button key={t} className="ai-empty-chip" onClick={() => { setInput(t); inputRef.current?.focus(); }}>{t}</button>
+                ))}
+              </div>
+            ) : (
+              <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">打开设置</button>
+            )}
+          </div>
         ) : (allMsgs.map((msg, i) => (
           <ChatMessageRow
             key={i}
@@ -2176,12 +2355,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             onReplaceContent={replaceContentStable}
           />
         )))}
-        {waitingFirstContent && (
-          <div className="flex items-center gap-2 py-1 text-xs text-slate-400">
-            <span className="thinking-dots"><span/><span/><span/></span>思考中
+        {isSending && (
+          <div className="ai-thinking-live">
+            <span className="thinking-dots"><span /><span /><span /></span>
+            <span>{streamingPreview?.reply ? "生成中" : "思考中"}</span>
+            {elapsedSec > 0 && <span className="elapsed">{elapsedSec}s</span>}
           </div>
         )}
+        </div>
       </div>
+
+      {/*
+        生成状态胶囊：固定在输入框正上方，**不参与消息流布局** ——
+        以前它跟在正文后面，正文一长就把它顶下去，看起来"乱跳"。
+      */}
+      {isSending && (
+        <div className="ai-thinking-pill">
+          <span className="thinking-dots"><span /><span /><span /></span>
+          <span>{streamingPreview?.reply ? "生成中" : "思考中"}</span>
+          {elapsedSec > 0 && <span className="elapsed">{elapsedSec}s</span>}
+        </div>
+      )}
 
       {/* 右侧垂直居中的历史锚点：一眼看出发过几次提问，点一下跳到那次提问 */}
       {userAnchors.length >= 2 && (
@@ -2222,73 +2416,294 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       )}
       </div>
 
-      <div className="border-t border-slate-200/60 bg-white px-4 py-2.5 space-y-2 flex-shrink-0">
-        <div className="relative">
-          <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === "Enter" && e.ctrlKey) { const t = inputRef.current; if (t) { const s = t.selectionStart; setInput(input.slice(0, s) + "\n" + input.slice(t.selectionEnd)); } return; } if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); isSendingRef.current ? handleStop() : handleSend(); } }} placeholder="" rows={2} className="w-full resize-none px-3 py-2 text-xs input-modern bg-slate-50/50 focus:bg-white transition-colors" style={{ minHeight: "56px", maxHeight: "100px" }}/>
-          {messages.length > 0 && (<button onClick={() => { setMessages([]); resetStreaming(); resetToLatest(); }} className="absolute top-1 right-1 p-1 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors z-10" title="清空对话"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>)}
-        </div>
-        <div className="flex items-center gap-1.5 justify-end flex-nowrap">
-          <div className="flex-shrink-1 min-w-0">
-            {/* 只列出设置中已勾选的模型 */}
-            <select
-              value={activeModel}
-              onChange={e => {
-                if (!e.target.value || !activeProvider) return;
-                const u = { ...activeProvider, enabled_model: e.target.value };
-                api.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
-              }}
-              className="bg-transparent text-xs text-slate-500 cursor-pointer min-w-[60px] max-w-[140px] w-auto px-1 py-1 truncate outline-none focus:outline-none focus:ring-0"
-              disabled={!activeProvider || models.length === 0}
-              title={models.length === 0 ? "请先在设置中勾选可用模型" : "选择本次对话使用的模型"}
+      {/* ================= 输入区（Composer） =================
+          一个圆角卡片把输入框和底部操作条装在一起：聚焦时整卡描边高亮；
+          输入越多自动长高，长到上限后内部滚动；上边缘可拖动调整上限高度。 */}
+      <div className={"composer-wrap flex-shrink-0" + (composerDragging ? " is-resizing" : "")}>
+        <div
+          className={"composer-resize" + (composerDragging ? " is-dragging" : "")}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const el = inputRef.current;
+            if (!el) return;
+            const startY = e.clientY;
+            /*
+             * 关键：基准取"当前实际高度"（el.clientHeight），而不是存起来的手动高度。
+             * 否则自动模式下输入框比存储值矮时，拖动前一段完全没反应、跨过临界点又突然跳一截。
+             * 拖动过程中直接改 DOM、不 setState：每次 mousemove 都触发重渲染会明显不跟手。
+             */
+            const startH = el.clientHeight;
+            const areaH = messagesAreaRef.current?.clientHeight || 600;
+            /*
+             * 上限不能低于"当前实际高度"。
+             * 输入框拉高后消息区会变矮，于是按新消息区算出的上限可能比现在的输入框还低；
+             * 若直接拿它夹紧，第一次 mousemove 就会瞬间矮一大截（也就是"突然降低一半"）。
+             * 取 max(startH, 计算上限) 之后：往下拖全程跟手，往上拖最多到当前高度或该上限。
+             */
+            const maxH = Math.max(startH, Math.max(120, Math.round(areaH * 0.7)));
+            let next = startH;
+            setComposerDragging(true);
+            const onMove = (ev: MouseEvent) => {
+              next = Math.min(maxH, Math.max(44, startH + (startY - ev.clientY)));
+              el.style.height = `${next}px`;
+            };
+            const onUp = () => {
+              document.removeEventListener("mousemove", onMove);
+              document.removeEventListener("mouseup", onUp);
+              setComposerDragging(false);
+              // 松手才写回设置（只一次状态更新），并保持跟手时看到的高度
+              onAiSettingsChange?.({ composerHeight: next });
+            };
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+          }}
+          onDoubleClick={() => onAiSettingsChange?.({ composerHeight: 0 })}
+          title="上下拖动调整输入框高度（双击恢复自动高度）"
+        />
+
+        {/* 模型下拉：向上弹出，不再是突兀的原生 select */}
+        {modelMenuOpen && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setModelMenuOpen(false)} />
+            <div className="composer-menu chat-scrollbar">
+              {models.length === 0 ? (
+                <div className="px-3 py-2 text-[11.5px] text-slate-400">还没有勾选可用模型</div>
+              ) : models.map((m) => (
+                <button
+                  key={m}
+                  className={"composer-menu-item" + (m === activeModel ? " is-active" : "")}
+                  onClick={() => {
+                    setModelMenuOpen(false);
+                    if (!activeProvider) return;
+                    const u = { ...activeProvider, enabled_model: m };
+                    api.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
+                  }}
+                >
+                  <svg className={"w-3 h-3 flex-shrink-0 " + (m === activeModel ? "opacity-100" : "opacity-0")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                  <span className="truncate">{m}</span>
+                </button>
+              ))}
+              <div className="composer-menu-sep" />
+              <button className="composer-menu-item" onClick={() => { setModelMenuOpen(false); onOpenProviderSettings(); }}>
+                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                <span>管理模型 / 服务商…</span>
+              </button>
+            </div>
+          </>
+        )}
+
+        <div className="composer-card">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              // Esc：生成中=停止，否则清空输入
+              if (e.key === "Escape") {
+                if (isSendingRef.current) { e.preventDefault(); handleStop(); }
+                else if (input) { e.preventDefault(); setInput(""); }
+                return;
+              }
+              // ↑：输入为空且光标在最前时，召回上一条发送过的内容
+              if (e.key === "ArrowUp" && !input && sentHistoryRef.current.length > 0) {
+                e.preventDefault();
+                setInput(sentHistoryRef.current[sentHistoryRef.current.length - 1]);
+                return;
+              }
+              if (e.key === "Enter" && (e.shiftKey === false || e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                if (isSendingRef.current) handleStop();
+                else handleSend();
+              }
+            }}
+            placeholder="输入消息…（Enter 发送 / Shift+Enter 换行）"
+            rows={2}
+            className="composer-input chat-scrollbar"
+          />
+          <div className="composer-foot">
+            {/* 左：模型 + 附加选项。整组可压缩、超出裁掉，绝不把右边的按钮顶出去 */}
+            <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
+            <button
+              className={"composer-chip is-shrinkable" + (modelMenuOpen ? " is-on" : "")}
+              onClick={() => setModelMenuOpen(v => !v)}
+              disabled={!activeProvider}
+              title={models.length === 0 ? "尚未勾选模型，点开去设置" : `当前模型：${activeModel || "未选"}（点击切换）`}
             >
-              {models.length === 0 && (
-                <option value="">{activeProvider ? "未勾选模型" : "无可用模型"}</option>
-              )}
-              {models.map(m => (<option key={m} value={m}>{m}</option>))}
-            </select>
-            {/* 没勾选任何模型时，给一个直达设置的入口 */}
-            {activeProvider && models.length === 0 && (
+              <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+              <span className="truncate">{models.length === 0 ? (activeProvider ? "未勾选模型" : "无服务商") : (activeModel || "选择模型")}</span>
+              <svg className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (modelMenuOpen ? "rotate-180" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 15l7-7 7 7" /></svg>
+            </button>
+
+            {models.length === 0 && activeProvider && (
+              <button className="composer-chip is-warn" onClick={onOpenProviderSettings} title="尚未勾选模型，点击去设置">
+                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16a2 2 0 001.73 3z" /></svg>
+                {!compact && <span>去设置</span>}
+              </button>
+            )}
+
+            <button
+              className={"composer-chip" + (confirmMode ? " is-on" : "") + (compact ? " is-compact" : "")}
+              onClick={() => setConfirmMode(!confirmMode)}
+              title={confirmMode ? "写操作执行前需要确认（点击改为自动执行）" : "写操作直接执行（点击改为需确认）"}
+            >
+              <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+              {!compact && <span>{confirmMode ? "需确认" : "自动"}</span>}
+            </button>
+
+            {noteContent ? (
               <button
-                onClick={onOpenProviderSettings}
-                className="ml-1 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-amber-600 bg-amber-50 border border-amber-200 hover:bg-amber-100 transition-colors flex-shrink-0"
-                title="前往设置勾选可用模型"
+                className={"composer-chip" + (attachNote ? " is-on" : "") + (compact ? " is-compact" : "")}
+                onClick={() => setAttachNote(v => !v)}
+                title={attachNote ? `已附上当前笔记《${noteTitle || "未命名"}》作为上下文（点击取消）` : "不附上当前笔记（点击改为附上）"}
               >
-                未勾选模型 · 去设置
+                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                {!compact && <span>附笔记</span>}
+              </button>
+            ) : null}
+            </div>
+
+            {/* 右：字数（够宽才显示）+ 清空 + 发送/停止。固定不压缩，保证永远点得到 */}
+            {showCount && input.length > 0 && (
+              <span className={"text-[10.5px] tabular-nums flex-shrink-0 " + (input.length > 2000 ? "text-amber-500" : "text-slate-300")} title={input.length > 2000 ? "内容较长，发送前会先做瘦身" : ""}>
+                {input.length > 2000 ? `${input.length} 字 · 较长` : `${input.length} 字`}
+              </span>
+            )}
+            {messages.length > 0 && !isSending && (
+              <button
+                className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                title="清空当前会话的显示内容"
+                onClick={() => { setMessages([]); resetStreaming(); resetToLatest(); }}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              </button>
+            )}
+            {isSending ? (
+              <button className="composer-send composer-stop" onClick={handleStop} title="停止生成（Esc）" aria-label="停止生成">
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+              </button>
+            ) : (
+              <button
+                className="composer-send"
+                onClick={handleSend}
+                disabled={!input.trim() || !activeModel}
+                title={!activeModel ? "请先选择模型" : "发送（Enter）"}
+                aria-label="发送"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 19V5m0 0l-6 6m6-6l6 6" /></svg>
               </button>
             )}
           </div>
-          <button onClick={() => setConfirmMode(!confirmMode)} className={"inline-flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-medium border transition-all flex-shrink-0 " + (confirmMode ? "border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100" : "border-slate-200 bg-white text-slate-400 hover:bg-slate-50")} title={confirmMode ? "操作需确认" : "自动执行"}>
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-            <span>{confirmMode ? "需确认" : "自动"}</span>
-          </button>
-          {isSending ? (
-            <button onClick={handleStop} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-white bg-red-500 hover:bg-red-600 shadow-sm transition-all active:scale-[0.97]"><svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>停止</button>
-          ) : (
-            <button onClick={handleSend} disabled={!input.trim() || !activeModel} className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-medium text-white bg-gradient-to-r from-primary-500 to-primary-600 shadow-md hover:shadow-lg hover:from-primary-600 hover:to-primary-700 transition-all active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 flex-shrink-0 whitespace-nowrap"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>发送</button>
-          )}
+        </div>
+
+        <div className="composer-hint">
+          {compact ? "Enter 发送 · Shift+Enter 换行" : `Enter 发送 · Shift+Enter 换行 · Esc ${isSending ? "停止" : "清空"} · ↑ 召回上一条 · 拖上边缘调高度（双击复位）`}
         </div>
       </div>
     </aside>
-    {showSessionPicker && (<div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" onClick={() => setShowSessionPicker(false)}>
-      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-xl shadow-2xl border border-slate-200/80 w-72 max-h-[50vh] overflow-y-auto p-2 animate-fade-in" onClick={e => e.stopPropagation()}>
-        {sessions.length === 0 ? (<div className="text-xs text-slate-400 text-center py-6">暂无对话</div>) : sessions.map(s => (
-          <div key={s.id} className={"flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs cursor-pointer transition-colors " + (s.id === activeSessionId ? "bg-primary-50 text-primary-600" : "hover:bg-slate-50 text-slate-600")} onClick={() => { switchSession(s.id); setShowSessionPicker(false); }}>
-            <div className="flex-1 min-w-0">
-              {editingSessionId === s.id ? (
-                <input autoFocus className="w-full border border-primary-300 rounded px-1.5 py-0.5 text-xs outline-none focus:ring-2 focus:ring-primary-500/20" value={editTitle} onChange={e => setEditTitle(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleRenameSession(s.id); if (e.key === "Escape") { setEditingSessionId(null); setEditTitle(""); } }} onBlur={() => { setEditingSessionId(null); setEditTitle(""); }}/>
-              ) : (
-                <span className="truncate block">{s.title || "新对话"}</span>
-              )}
-            </div>
-            <div className="flex items-center gap-0.5">
-              <button onClick={e => { e.stopPropagation(); setEditingSessionId(s.id); setEditTitle(s.title); }} className="flex-shrink-0 p-1 rounded-md text-slate-400 hover:text-primary-500 hover:bg-primary-50 transition-colors" title="重命名"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
-              <button onClick={async e => { e.stopPropagation(); try { await api.deleteChatSession(s.id); setSessions(p => p.filter(x => x.id !== s.id)); if (activeSessionId === s.id) { const r = sessions.filter(x => x.id !== s.id); if (r.length > 0) { setActiveSessionId(r[0].id); titleGenRef.current = null; await loadSessionMessages(r[0].id); } else { setActiveSessionId(0); setMessages([]); } } } catch { showToast("删除失败", "error"); } }} className="flex-shrink-0 p-1 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors" title="删除"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+    {showSessionPicker && (
+      <div className="ai-modal-overlay" onClick={() => setShowSessionPicker(false)}>
+        <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="ai-modal-head">
+            <span className="ai-modal-title">对话记录</span>
+            <div className="flex items-center gap-1">
+              <button
+                className="ai-icon-btn"
+                title="新建对话"
+                onClick={() => { setShowSessionPicker(false); handleNewSession(); }}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v16m8-8H4" /></svg>
+              </button>
+              <button className="ai-icon-btn" title="关闭" onClick={() => setShowSessionPicker(false)}>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
             </div>
           </div>
-        ))}
+
+          <div className="ai-modal-search">
+            <div className="relative">
+              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" /></svg>
+              <input
+                autoFocus
+                value={sessionQuery}
+                onChange={(e) => setSessionQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") setShowSessionPicker(false); }}
+                placeholder="搜索对话标题…"
+                className="w-full pl-7 pr-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-slate-50/60 focus:bg-white focus:border-primary-300 outline-none transition-colors"
+              />
+            </div>
+          </div>
+
+          <div className="ai-modal-list chat-scrollbar">
+            {sessionGroups.length === 0 ? (
+              <div className="py-8 text-center text-[11.5px] text-slate-400">
+                {sessions.length === 0 ? "还没有对话，开始聊一句就有了" : "没有匹配的对话"}
+              </div>
+            ) : sessionGroups.map((group) => (
+              <div key={group.label}>
+                <div className="ai-group-label">{group.label}</div>
+                {group.items.map((s) => (
+                  <div
+                    key={s.id}
+                    className={"ai-session-item group/sess" + (s.id === activeSessionId ? " is-active" : "")}
+                    onClick={() => { switchSession(s.id); setShowSessionPicker(false); }}
+                  >
+                    <div className="min-w-0 flex-1">
+                      {editingSessionId === s.id ? (
+                        <input
+                          autoFocus
+                          className="w-full border border-primary-300 rounded px-1.5 py-0.5 text-xs outline-none focus:ring-2 focus:ring-primary-500/20"
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleRenameSession(s.id);
+                            if (e.key === "Escape") { setEditingSessionId(null); setEditTitle(""); }
+                          }}
+                          onBlur={() => { setEditingSessionId(null); setEditTitle(""); }}
+                        />
+                      ) : (
+                        <>
+                          <div className="ai-session-name truncate">{s.title || "新对话"}</div>
+                          <div className="ai-session-meta truncate">{relativeTime(s.updated_at || s.created_at)}</div>
+                        </>
+                      )}
+                    </div>
+                    <div className="ai-session-actions">
+                      <button
+                        className="ai-icon-btn !w-6 !h-6"
+                        title="重命名"
+                        onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditTitle(s.title); }}
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                      </button>
+                      <button
+                        className="ai-icon-btn is-danger !w-6 !h-6"
+                        title="删除这个对话"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            await api.deleteChatSession(s.id);
+                            setSessions(p => p.filter(x => x.id !== s.id));
+                            if (activeSessionId === s.id) {
+                              const rest = sessions.filter(x => x.id !== s.id);
+                              if (rest.length > 0) { setActiveSessionId(rest[0].id); titleGenRef.current = null; await loadSessionMessages(rest[0].id); }
+                              else { setActiveSessionId(0); setMessages([]); }
+                            }
+                          } catch { showToast("删除失败", "error"); }
+                        }}
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
-    </div>)}
+    )}
     {pendingConfirm && (<div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => settleConfirm(false)}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
       <div className="relative bg-white rounded-xl shadow-2xl border border-slate-200 w-80 p-4 animate-fade-in" onClick={e => e.stopPropagation()}>

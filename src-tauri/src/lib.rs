@@ -882,8 +882,11 @@ async fn send_ai_chat(
     messages: Vec<AiChatMessage>,
     note_title: String,
     note_content: String,
+    max_tokens: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    // 输出上限由前端设置传入。以前这里写死 2048（Claude 非流式），长回答必被截断。
+    let max_tokens = max_tokens.unwrap_or(8192).clamp(256, 32000);
     let provider = get_ai_provider(provider_id, &state)?;
     let model = selected_model(&provider)?;
     let client = reqwest::Client::new();
@@ -906,7 +909,8 @@ async fn send_ai_chat(
                 .json(&json!({
                     "model": model,
                     "messages": api_messages,
-                    "temperature": 0.7
+                    "temperature": 0.7,
+                    "max_tokens": max_tokens
                 }))
                 .send()
                 .await
@@ -934,7 +938,8 @@ async fn send_ai_chat(
                     "systemInstruction": {
                         "parts": [{ "text": system_prompt }]
                     },
-                    "contents": contents
+                    "contents": contents,
+                    "generationConfig": { "maxOutputTokens": max_tokens }
                 }))
                 .send()
                 .await
@@ -957,7 +962,7 @@ async fn send_ai_chat(
                 .header("anthropic-version", "2023-06-01")
                 .json(&json!({
                     "model": model,
-                    "max_tokens": 2048,
+                    "max_tokens": max_tokens,
                     "system": system_prompt,
                     "messages": api_messages
                 }))
@@ -1084,8 +1089,12 @@ async fn send_ai_chat_stream(
     note_content: String,
     min_thinking_len: Option<usize>,
     current_note_id: Option<i64>,
+    max_tokens: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // 输出上限由前端设置传入；OpenAI 兼容分支以前**完全没发 max_tokens**，
+    // 于是走服务商默认值（常见 2048~4096），长回答/长工具参数一到头就被砍断。
+    let max_tokens = max_tokens.unwrap_or(8192).clamp(256, 32000);
     let provider = get_ai_provider(provider_id, &state)?;
     let model = selected_model(&provider)?;
     let client = reqwest::Client::new();
@@ -1125,6 +1134,7 @@ async fn send_ai_chat_stream(
             let mut body = json!({
                 "model": model.clone(),
                 "messages": api_messages,
+                "max_tokens": max_tokens,
                 "stream": true
             });
             if supports_reasoning_effort(&model) {
@@ -1182,7 +1192,7 @@ async fn send_ai_chat_stream(
                 .collect::<Vec<_>>();
             let mut body = json!({
                 "model": model.clone(),
-                "max_tokens": 8192,
+                "max_tokens": max_tokens,
                 "system": format!("{}{}", system_prompt, thinking_reminder),
                 "messages": api_messages,
                 "stream": true

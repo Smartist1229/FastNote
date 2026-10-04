@@ -298,7 +298,7 @@ export const parseStreamContent = (text: string, reasoning?: string): { thinking
 /** 正文兜底：任何情况下都不能把 <thinking>/<tool_calls> 原文当正文显示 */
 export const finalReplyText = (p: ParsedResponse): string => {
   if (p.reply) return p.reply;
-  if (p.truncated) return "（回复在输出过程中被截断，未执行任何操作。请重试，或把内容拆成更小的步骤。）";
+  if (p.truncated) return "（这次回复写到一半就到头了，通常是输出长度上限被用完——一次性写整篇长文、或把整篇内容塞进工具参数最容易触发。可在「AI 设置 → 对话行为」调大「最大输出长度」，或让模型分段写：先给一段再说「继续」；长笔记改用按行编辑工具。）";
   if (p.toolCalls.length > 0) return "（已发起工具调用，没有正文。）";
   if (p.thinkingDisplay) return p.thinkingDisplay;
   return "（模型没有返回内容，请重试）";
