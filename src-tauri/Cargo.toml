@@ -28,3 +28,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
+# API Key 加密存储：AES-256-GCM + SHA-256 派生（版本与锁文件一致，可离线构建）
+ring = "0.17"
+sha2 = "0.10"

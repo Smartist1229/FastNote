@@ -447,7 +447,8 @@ const claimRe = (verbs: string) => new RegExp(`${CLAIM_PREFIX}(?:${verbs})`);
 const ACTION_CLAIM_RULES: { label: string; re: RegExp; tools: string[] }[] = [
   { label: "打开笔记", re: claimRe("打开"), tools: ["selectNote"] },
   { label: "创建笔记/分组", re: claimRe("创建|新建|添加"), tools: ["createNote", "createNotes", "createCategory"] },
-  { label: "修改笔记/分组", re: claimRe("修改|更新|改成|改为|重命名|改名"), tools: ["updateNote", "updateCurrentNote", "renameCategory"] },
+  // 修改类补上口语说法："已改好 / 已改完 / 已改动" —— 模型谎报时常常就是这么说的
+  { label: "修改笔记/分组", re: claimRe("修改|更新|改成|改为|重命名|改名|改好|改完|改动|调整"), tools: ["updateNote", "updateCurrentNote", "renameCategory"] },
   // "移入回收站"属于删除动作；移动规则里用负向断言排除它，
   // 否则删完笔记会被误报成"没有执行移动笔记"。
   { label: "删除笔记/分组", re: claimRe("删除|移除|清空|移入回收站"), tools: ["deleteNote", "deleteCategory", "deleteFromTrash", "emptyTrash"] },

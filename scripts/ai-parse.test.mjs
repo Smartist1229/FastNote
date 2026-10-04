@@ -167,6 +167,10 @@ console.log("\n[7] 事实校验（谎报操作）");
   check("工具轮已写正文被保留", buildFinalContent("好的。", "这是工具轮已写的正文", []).includes("这是工具轮已写的正文"), true);
   check("普通表述不算谎报（已为您总结）", hasActionClaim("已为您总结如下"), false);
   check("明显谎报能识别（已为您删除）", hasActionClaim("已为您删除该笔记"), true);
+  // 长会话里模型常说"已改好了"却不调用工具 —— 口语说法也要抓到
+  check("口语谎报能识别（已经改好了）", hasActionClaim("已经改好了，你看看"), true);
+  check("口语谎报能识别（已调整）", hasActionClaim("已调整完成"), true);
+  check("诚实的非操作表述不误报（已整理好要点）", hasActionClaim("已整理好要点如上"), false);
 }
 
 console.log("\n[8] 标签兼容（模型写歪的标签）");

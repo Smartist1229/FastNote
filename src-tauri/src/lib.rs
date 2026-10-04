@@ -5,6 +5,8 @@ use std::sync::Mutex;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, Manager, State};
 use chrono::{Local, Duration};
+use sha2::{Digest, Sha256};
+use ring::rand::{SecureRandom, SystemRandom};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Note {
@@ -695,6 +697,8 @@ fn create_ai_provider(
     let models_json = serde_json::to_string(&clean_models).unwrap_or_else(|_| "[]".to_string());
     // 当前使用模型默认取列表第一项，保证保存后就能直接对话
     let enabled_model = clean_models.first().cloned();
+    // API Key 落库前加密（绝不明文写入数据库文件）
+    let api_key = encrypt_secret(&conn, &api_key)?;
 
     conn.execute(
         "INSERT INTO ai_providers (name, provider_type, api_base_url, api_key, api_path, enabled_model, enabled_models, created_at, updated_at)
@@ -743,6 +747,26 @@ fn get_ai_providers(state: State<AppState>) -> Result<Vec<AiProvider>, String> {
     for provider in providers {
         result.push(provider.map_err(|e| e.to_string())?);
     }
+    // 读出后统一解密；顺便把历史遗留的明文记录迁移成密文（一次性自动完成）
+    for provider in result.iter_mut() {
+        if is_encrypted(&provider.api_key) {
+            // 解密失败（例如密钥文件被删/换机器）时只让这一条留空，不整体报错，
+            // 用户重新填一次 Key 即可，其余服务商照常可用。
+            match decrypt_secret(&conn, &provider.api_key) {
+                Ok(plain) => provider.api_key = plain,
+                Err(e) => {
+                    eprintln!("[fastnote] 服务商 {} 的 API Key 解密失败：{e}", provider.id);
+                    provider.api_key = String::new();
+                }
+            }
+        } else if !provider.api_key.is_empty() {
+            let encrypted = encrypt_secret(&conn, &provider.api_key)?;
+            conn.execute(
+                "UPDATE ai_providers SET api_key = ?1 WHERE id = ?2",
+                params![encrypted, provider.id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(result)
 }
 
@@ -761,6 +785,12 @@ fn update_ai_provider(provider: AiProvider, state: State<AppState>) -> Result<()
         .filter(|m| !m.is_empty() && seen.insert(m.clone()))
         .collect();
     let models_json = serde_json::to_string(&clean_models).unwrap_or_else(|_| "[]".to_string());
+    // 同样是加密后落库（若前端回传的就是密文则原样保留，避免二次加密）
+    let api_key = if is_encrypted(&provider.api_key) {
+        provider.api_key.clone()
+    } else {
+        encrypt_secret(&conn, &provider.api_key)?
+    };
 
     conn.execute(
         "UPDATE ai_providers
@@ -771,7 +801,7 @@ fn update_ai_provider(provider: AiProvider, state: State<AppState>) -> Result<()
             provider.name,
             provider.provider_type,
             provider.api_base_url,
-            provider.api_key,
+            api_key,
             clean_api_path,
             clean_enabled_model,
             now,
@@ -793,13 +823,154 @@ fn delete_ai_provider(id: i64, state: State<AppState>) -> Result<(), String> {
 
 fn get_ai_provider(id: i64, state: &State<AppState>) -> Result<AiProvider, String> {
     let conn = state.conn.lock().unwrap();
-    conn.query_row(
+    let mut provider = conn.query_row(
         "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
                 created_at, updated_at, enabled_models
          FROM ai_providers WHERE id = ?1",
         params![id],
         map_row_to_ai_provider,
-    ).map_err(|e| e.to_string())
+    ).map_err(|e| e.to_string())?;
+    // 单条读取同样解密，并顺手迁移明文（对话、拉取模型都走这里）
+    if is_encrypted(&provider.api_key) {
+        match decrypt_secret(&conn, &provider.api_key) {
+            Ok(plain) => provider.api_key = plain,
+            Err(e) => {
+                eprintln!("[fastnote] 服务商 {} 的 API Key 解密失败：{e}", provider.id);
+                provider.api_key = String::new();
+            }
+        }
+    } else if !provider.api_key.is_empty() {
+        let encrypted = encrypt_secret(&conn, &provider.api_key)?;
+        conn.execute(
+            "UPDATE ai_providers SET api_key = ?1 WHERE id = ?2",
+            params![encrypted, provider.id],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(provider)
+}
+
+/* ---------------- API Key 加密存储 ----------------
+ * 目标：数据库文件里绝不出现明文 Key。
+ *
+ * 方案：AES-256-GCM（ring）+ 独立密钥文件，密钥再与"当前用户 + 机器名"绑定派生。
+ * 为什么不用非对称加密：本机应用如果把私钥随程序一起发出去，等于把钥匙和锁放一起，
+ * 起不到保护作用；真正有效的是"密钥不写在数据库里、且换台机器/换个用户解不开"，
+ * 这正是下面这套做法提供的性质。
+ *
+ * 存储格式：enc:v1:<hex(12 字节 nonce || 密文+tag)>；不带前缀的一律视为历史明文。
+ */
+const ENC_PREFIX: &str = "enc:v1:";
+const KEY_FILE: &str = "fastnote.key";
+
+fn is_encrypted(stored: &str) -> bool {
+    stored.starts_with(ENC_PREFIX)
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn from_hex(text: &str) -> Result<Vec<u8>, String> {
+    if text.len() % 2 != 0 {
+        return Err("密文格式不正确".into());
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(text.len() / 2);
+    for pair in bytes.chunks(2) {
+        let hi = (pair[0] as char).to_digit(16).ok_or("密文格式不正确")?;
+        let lo = (pair[1] as char).to_digit(16).ok_or("密文格式不正确")?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Ok(out)
+}
+
+/// 取（必要时生成）主密钥：文件存在则读，不存在则随机生成 32 字节写入。
+/// 密钥文件与数据库同目录，但**不在数据库里**；复制走数据库文件也解不开。
+fn load_or_create_master_key(conn: &Connection) -> Result<[u8; 32], String> {
+    let db_path = conn.path().ok_or("无法定位数据库文件，不能保存加密密钥")?;
+    let key_path = std::path::Path::new(db_path)
+        .parent()
+        .ok_or("数据库目录不可用")?
+        .join(KEY_FILE);
+    let raw = if key_path.exists() {
+        std::fs::read(&key_path).map_err(|e| format!("读取密钥文件失败：{e}"))?
+    } else {
+        let mut buf = [0u8; 32];
+        SystemRandom::new()
+            .fill(&mut buf)
+            .map_err(|_| "生成随机密钥失败".to_string())?;
+        std::fs::write(&key_path, buf).map_err(|e| format!("写入密钥文件失败：{e}"))?;
+        buf.to_vec()
+    };
+    if raw.len() < 32 {
+        return Err("密钥文件已损坏（长度不足）".into());
+    }
+    // 再与当前用户 + 机器名混合派生：换用户或换机器都解不开
+    let mut hasher = Sha256::new();
+    hasher.update(&raw);
+    hasher.update(b"|fastnote-api-key-v1|");
+    hasher.update(std::env::var("USERNAME").unwrap_or_default().as_bytes());
+    hasher.update(b"|");
+    hasher.update(std::env::var("COMPUTERNAME").unwrap_or_default().as_bytes());
+    let digest = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&digest);
+    Ok(key)
+}
+
+fn aead_key(conn: &Connection) -> Result<ring::aead::LessSafeKey, String> {
+    let key = load_or_create_master_key(conn)?;
+    let unbound = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key)
+        .map_err(|_| "初始化加密器失败".to_string())?;
+    Ok(ring::aead::LessSafeKey::new(unbound))
+}
+
+/// 加密：返回 enc:v1:<hex>，空串原样返回（没填 Key 时不必加密）
+fn encrypt_secret(conn: &Connection, plain: &str) -> Result<String, String> {
+    if plain.is_empty() {
+        return Ok(String::new());
+    }
+    if is_encrypted(plain) {
+        return Ok(plain.to_string());
+    }
+    let key = aead_key(conn)?;
+    let mut nonce_bytes = [0u8; ring::aead::NONCE_LEN];
+    SystemRandom::new()
+        .fill(&mut nonce_bytes)
+        .map_err(|_| "生成随机数失败".to_string())?;
+    let nonce = ring::aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let mut in_out = plain.as_bytes().to_vec();
+    key.seal_in_place_append_tag(nonce, ring::aead::Aad::empty(), &mut in_out)
+        .map_err(|_| "加密失败".to_string())?;
+    let mut payload = nonce_bytes.to_vec();
+    payload.extend_from_slice(&in_out);
+    Ok(format!("{ENC_PREFIX}{}", to_hex(&payload)))
+}
+
+/// 解密：非密文（历史明文）原样返回，交由调用方迁移
+fn decrypt_secret(conn: &Connection, stored: &str) -> Result<String, String> {
+    if !is_encrypted(stored) {
+        return Ok(stored.to_string());
+    }
+    let key = aead_key(conn)?;
+    let raw = from_hex(&stored[ENC_PREFIX.len()..])?;
+    if raw.len() <= ring::aead::NONCE_LEN {
+        return Err("密文长度不正确".into());
+    }
+    let (nonce_bytes, cipher_text) = raw.split_at(ring::aead::NONCE_LEN);
+    let nonce = ring::aead::Nonce::try_assume_unique_for_key(nonce_bytes)
+        .map_err(|_| "密文 nonce 不正确".to_string())?;
+    let mut buf = cipher_text.to_vec();
+    let plain = key
+        .open_in_place(nonce, ring::aead::Aad::empty(), &mut buf)
+        .map_err(|_| "解密失败（密钥文件可能已更换或损坏）".to_string())?;
+    String::from_utf8(plain.to_vec()).map_err(|_| "解密结果不是合法文本".to_string())
 }
 
 #[tauri::command]

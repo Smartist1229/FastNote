@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Category, Note } from '../types';
 import * as api from '../api';
 import { useToast } from './Toast';
@@ -7,6 +7,7 @@ import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem }
 import { AiSparkleIcon } from './icons';
 
 /** 虚拟分组 ID：用于承载 category_id 指向已删除分组的笔记 */
+const SORT_OPTIONS = [ { value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' } ];
 const ORPHAN_GROUP_ID = -1;
 
 interface SidebarProps {
@@ -76,6 +77,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const { showToast } = useToast();
 
   const categoryContextMenuRef = useRef<Category | null>(null);
+  /** 排序下拉浮层：open + 位置（用 fixed 定位，避免被列表滚动容器裁掉） */
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  const [sortMenu, setSortMenu] = useState<{ open: boolean; top: number; left: number; width: number }>({ open: false, top: 0, left: 0, width: 0 });
   const noteContextMenuRef = useRef<Note | null>(null);
 
   const isSearching = searchQuery.trim().length > 0;
@@ -346,16 +350,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </h2>
         <div className="flex items-center gap-0.5">
-          <select
-            value={sortBy}
-            onChange={(e) => onSortByChange(e.target.value)}
-            className="text-[11px] border-none bg-transparent text-slate-400 hover:text-slate-600 cursor-pointer focus:outline-none focus:ring-0 px-0.5 py-0.5 max-w-[68px]"
+          {/* 排序方式：自定义浮层，替代原生 select（原生下拉在深色/浅色主题下都很突兀） */}
+          <button
+            ref={sortBtnRef}
+            className={"sort-trigger" + (sortMenu.open ? " is-open" : "")}
             title="排序方式"
+            onClick={() => {
+              const r = sortBtnRef.current?.getBoundingClientRect();
+              setSortMenu({ open: !sortMenu.open, top: (r?.bottom ?? 0) + 4, left: r?.left ?? 0, width: r?.width ?? 0 });
+            }}
           >
-            <option value="updated_at">更新时间</option>
-            <option value="created_at">创建时间</option>
-            <option value="title">标题</option>
-          </select>
+            <span className="truncate max-w-[56px]">{SORT_OPTIONS.find(o => o.value === sortBy)?.label || "更新时间"}</span>
+            <svg className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (sortMenu.open ? "rotate-180" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M19 9l-7 7-7-7" /></svg>
+          </button>
+          {sortMenu.open && (
+            <>
+              <div className="fixed inset-0 z-50" onClick={() => setSortMenu(m => ({ ...m, open: false }))} />
+              <div
+                className="pop-menu"
+                style={{ position: "fixed", top: sortMenu.top, left: Math.max(8, sortMenu.left - 40), minWidth: 132 }}
+              >
+                {SORT_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    className={"pop-menu-item" + (sortBy === o.value ? " is-active" : "")}
+                    onClick={() => { onSortByChange(o.value); setSortMenu(m => ({ ...m, open: false })); }}
+                  >
+                    <svg className={"w-3 h-3 flex-shrink-0 " + (sortBy === o.value ? "opacity-100" : "opacity-0")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                    <span>{o.label}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <button
             onClick={onToggleSortOrder}
             className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:bg-white/80 hover:text-primary-500 transition-all"

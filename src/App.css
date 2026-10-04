@@ -101,6 +101,44 @@ body {
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
+/*
+ * UI 文字默认不可选中：拖动鼠标时不会把按钮、标签、标题一起选蓝（更接近原生桌面应用）。
+ * 下面白名单只保留"真正需要复制"的内容：输入框、编辑器、笔记/回复正文、代码块等。
+ */
+body,
+#root {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"],
+pre,
+code,
+kbd,
+.selectable,
+.selectable *,
+.monaco-editor,
+.monaco-editor *,
+.md-editor,
+.md-editor *,
+.md-editor-preview,
+.md-editor-preview *,
+.ai-markdown,
+.ai-markdown * {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
+}
+
+/* 局部临时开放选中（例如错误详情、需要复制的日志） */
+.selectable {
+  user-select: text !important;
+}
+
 /* ========== 自定义滚动条 ========== */
 ::-webkit-scrollbar {
   width: 5px;
@@ -849,12 +887,9 @@ button:focus-visible {
   color: #b6c2d2;
 }
 
-/* 模型下拉菜单（向上弹出） */
-.composer-menu {
-  position: absolute;
-  left: 12px;
-  bottom: calc(100% - 2px);
-  z-index: 40;
+/* 通用下拉浮层（模型选择、排序方式共用同一套观感） */
+.composer-menu,
+.pop-menu {
   min-width: 200px;
   max-width: 280px;
   max-height: 46vh;
@@ -866,11 +901,23 @@ button:focus-visible {
   box-shadow: 0 16px 32px -12px rgb(15 23 42 / 0.28);
   animation: composerMenuIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
 }
+.composer-menu {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% - 2px);
+  z-index: 40;
+}
+/* 排序浮层用 fixed 定位（由 JS 按按钮位置算），窄一点更像原生菜单 */
+.pop-menu {
+  z-index: 60;
+  min-width: 132px;
+}
 @keyframes composerMenuIn {
   from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.composer-menu-item {
+.composer-menu-item,
+.pop-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -882,18 +929,38 @@ button:focus-visible {
   text-align: left;
   transition: background-color 0.13s ease;
 }
-.composer-menu-item:hover {
+.composer-menu-item:hover,
+.pop-menu-item:hover {
   background: #f1f5f9;
 }
-.composer-menu-item.is-active {
+.composer-menu-item.is-active,
+.pop-menu-item.is-active {
   color: #4f46e5;
   background: #eef2ff;
   font-weight: 500;
 }
-.composer-menu-sep {
+.composer-menu-sep,
+.pop-menu-sep {
   height: 1px;
   margin: 4px 6px;
   background: #f1f5f9;
+}
+
+/* 排序触发按钮：替代原生 select，风格与面板一致 */
+.sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 7px;
+  font-size: 11px;
+  color: #94a3b8;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.sort-trigger:hover,
+.sort-trigger.is-open {
+  background: #ffffff;
+  color: #4f46e5;
 }
 
 /* ========== AI 面板：头部与整体容器 ========== */

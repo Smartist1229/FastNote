@@ -1656,8 +1656,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
      * 会让界面出现"先回复一大段 → 清空 → 再思考 → 又回复一遍同样的内容"，还白烧一遍 token。
      */
     const THINKING_RETRY_MIN_LEN = 24;
-    /** 每轮允许的一次"强制思考/工具使用"纠正机会 */
-    let correctionUsed = false;
+    /** 三个纠正各自独立记一次，互不挤占（以前共用一个标记，思考纠错一次后谎报纠错就失效了） */
+    let thinkingRetryUsed = false;
+    let claimRetryUsed = false;
+    let truncationRetryUsed = false;
     /** 连续多少轮"全是重复调用、没有任何新动作"——用于不限制轮数时防止空转 */
     let noProgressRounds = 0;
 
@@ -1704,7 +1706,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         const thinkingOk = isThinkingDeepEnough(thinking, THINKING_RETRY_MIN_LEN);
         if (thinkingOk) {
           thinkingCapableRef.current = true;
-        } else if (correctionUsed) {
+        } else if (thinkingRetryUsed) {
           // 重来过一次仍然没有思考：认定这个模型不写标签，别再折腾
           thinkingCapableRef.current = false;
         }
@@ -1716,13 +1718,13 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           !thinkingCapableRef.current
         );
         if (aiSettings.retryShallowThinking && shouldRetryForShallowThinking({
-          correctionUsed,
+          correctionUsed: thinkingRetryUsed,
           replyShown,
           toolCallCount: toolCalls.length,
           thinking,
           minLen: THINKING_RETRY_MIN_LEN,
         })) {
-          correctionUsed = true;
+          thinkingRetryUsed = true;
           setIsSending(false);
           roundMsgs = [
             ...roundMsgs,
@@ -1745,8 +1747,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         const claimedWithoutTools =
           toolCalls.length === 0 &&
           hasActionClaim(parsed.reply);
-        if (!correctionUsed && claimedWithoutTools && !isStale()) {
-          correctionUsed = true;
+        if (!claimRetryUsed && claimedWithoutTools && !isStale()) {
+          claimRetryUsed = true;
           setIsSending(false);
           roundMsgs = [
             ...roundMsgs,
@@ -1765,8 +1767,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
         // ---------- 工具调用被截断 / JSON 非法：先给一次纠正机会 ----------
         // 模型被输出长度限制截断时，半截的 <tool_calls> 既不能当正文，也不能当"已完成"。
-        if (truncated && toolCalls.length === 0 && !correctionUsed && !isStale()) {
-          correctionUsed = true;
+        if (truncated && toolCalls.length === 0 && !truncationRetryUsed && !isStale()) {
+          truncationRetryUsed = true;
           setIsSending(false);
           resetStreaming();
           roundMsgs = [
@@ -2041,6 +2043,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (!activeProvider?.id || !activeModel) { showToast("请先在设置中勾选可用模型", "error"); return; }
     const myRun = ++runIdRef.current;
     turnStartedAtRef.current = Date.now();
+    /*
+     * 每轮新提问都重新给它一次"按协议思考"的机会。
+     * thinkingCapableRef 以前是单向锁：某轮"重来过仍没写思考"就被判定为"这个模型不写标签"，
+     * 之后既不按住它的抢答、也不再要求它重来 —— 于是长会话里越来越容易出现
+     * "不思考、不调用工具、嘴上说改完了"，而且再也纠不回来（不重试就永远等不到一次合格思考）。
+     * 改为按轮复位后，最坏情况只是每轮多跑一次纠正。
+     */
+    thinkingCapableRef.current = true;
     sendLockRef.current = true;
     try {
       abortRef.current = false;
