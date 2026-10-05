@@ -6,8 +6,10 @@ import { readFileSync } from "node:fs";
 
 const PANEL = "src/components/AIChatPanel.tsx";
 const PARSE = "src/aiChatParse.ts";
+const CONFIG = "src/config/aiDefaults.ts";
 const src = readFileSync(PANEL, "utf8");
 const parseSrc = readFileSync(PARSE, "utf8");
+const cfgSrc = readFileSync(CONFIG, "utf8");
 
 let problems = 0;
 const bad = (msg) => { problems++; console.log(`  ❌ ${msg}`); };
@@ -47,11 +49,11 @@ console.log("\n=== 2) 无用 import 检查 ===");
 
 console.log("\n=== 3) 工具定义 7 处对齐 ===");
 const grab = (text, re) => { const m = text.match(re); return m ? m[1] : ""; };
-const defsBlock = grab(src, /const TOOL_DEFS = \[([\s\S]*?)\n\];/);
+const defsBlock = grab(cfgSrc, /const TOOL_DEFS = \[([\s\S]*?)\n\];/);
 const defs = [...defsBlock.matchAll(/name:\s*"(\w+)"/g)].map((m) => m[1]);
 const labels = [...grab(src, /const TOOL_LABELS: Record<string, string> = \{([\s\S]*?)\n\};/).matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
 const execs = [...grab(src, /const TOOL_EXECUTORS:[\s\S]*?= \{([\s\S]*?)\n\};/).matchAll(/^\s{2}(\w+):\s*async/gm)].map((m) => m[1]);
-const promptTools = [...grab(src, /## 可用工具（参数都是 JSON 对象）([\s\S]*?)\n\n选工具的要点/).matchAll(/^- (\w+):/gm)].map((m) => m[1]);
+const promptTools = [...grab(cfgSrc, /## Tools \(all parameters are JSON objects\)([\s\S]*?)\n## Choosing tools/).matchAll(/^- (\w+):/gm)].map((m) => m[1]);
 const details = [...grab(src, /const toolDetail =[\s\S]*?switch \(name\) \{([\s\S]*?)\n  \}/).matchAll(/case "(\w+)"/g)].map((m) => m[1]);
 const summaries = [...grab(src, /const summarizeToolCall[\s\S]*?switch \(c\.name\) \{([\s\S]*?)\n    default:/).matchAll(/case "(\w+)"/g)].map((m) => m[1]);
 const claimTools = [...grab(parseSrc, /const ACTION_CLAIM_RULES[\s\S]*?= \[([\s\S]*?)\n\];/).matchAll(/tools:\s*\[([^\]]*)\]/g)]
@@ -61,7 +63,7 @@ console.log(`  工具总数：${defs.length}`);
 for (const [label, list, allowMissing] of [
   ["TOOL_LABELS", labels, false],
   ["TOOL_EXECUTORS", execs, false],
-  ["TOOLS_PROMPT", promptTools, false],
+  ["AI_SYSTEM_PROMPT", promptTools, false],
   ["toolDetail", details, true],         // 只读工具不需要展示目标信息
   ["summarizeToolCall", summaries, true], // 只有需确认的工具需要确认文案
 ]) {

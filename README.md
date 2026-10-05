@@ -138,7 +138,6 @@ FastNote/
 │   │   ├── Sidebar.tsx        # 分组侧边栏（抽屉式）
 │   │   ├── CategoryDrawer.tsx # 分组抽屉与笔记卡片
 │   │   ├── NoteEditor.tsx     # 编辑器（Monaco / Markdown 切换、导出、保存）
-│   │   ├── NoteList.tsx
 │   │   ├── WelcomeDashboard.tsx
 │   │   ├── ErrorBoundary.tsx  # 顶层错误兜底（避免整页空白）
 │   │   ├── Modal.tsx / Toast.tsx / ContextMenu.tsx / icons.tsx
@@ -147,7 +146,7 @@ FastNote/
 │   ├── api.ts                 # 与 Tauri 后端的所有调用
 │   ├── types.ts               # 共享类型
 │   ├── App.tsx                # 应用外壳与状态编排
-│   ├── App.css / index.css    # 样式
+│   ├── App.css                # 样式
 │   └── main.tsx               # 入口（StrictMode + ErrorBoundary）
 ├── scripts/
 │   ├── ai-parse.test.mjs      # 解析层回归测试

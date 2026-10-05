@@ -216,7 +216,7 @@ console.log("\n[9] 上下文压缩（记忆管理）");
   const small = [{ role: "user", content: "你好" }, { role: "assistant", content: "在的" }];
   check("远低于预算时不丢任何消息", selectContextWindow(small, 3000, 8).dropped.length, 0);
 
-  check("本地兜底说明会提到省略条数", localSummaryFallback([{ role: "user", content: "最早的提问" }]).includes("1 条对话"), true);
+  check("本地兜底说明会提到省略条数", localSummaryFallback([{ role: "user", content: "最早的提问" }]).includes("1 earlier messages were omitted"), true);
   check("摘要输入不会超长", compressTranscript(dropped, 500).length <= 500 + 20, true);
 }
 

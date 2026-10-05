@@ -23,6 +23,25 @@ import {
 import { useToast } from "./Toast";
 import { MdPreview } from "md-editor-rt";
 import "md-editor-rt/lib/style.css";
+import {
+  AI_SYSTEM_PROMPT,
+  CLAIM_WITHOUT_TOOLS_NOTICE,
+  CONTEXT_SUMMARY_PROMPT,
+  MIN_THINKING_LEN,
+  SUMMARY_INJECT_PREFIX,
+  THINKING_RETRY_MIN_LEN,
+  TITLE_USER_MESSAGE,
+  TOOL_DEFS,
+  TOOL_RESULT_MAX_CHARS,
+  TRUNCATED_TOOL_CALL_NOTICE,
+  UNLIMITED_ROUND_SAFETY,
+  buildMemoryBlock,
+  buildShallowThinkingNotice,
+  buildSummaryUserMessage,
+  buildThinkRule,
+  buildTitlePrompt,
+  buildToolResultMessage,
+} from "../config/aiDefaults";
 
 interface AIChatPanelProps {
   isOpen: boolean;
@@ -54,35 +73,6 @@ const ANCHOR_READING_LINE = 40;
 const ANCHOR_JUMP_OFFSET = 8;
 /** 单条锚点提示最多显示的字数 */
 const ANCHOR_PREVIEW_LEN = 80;
-
-const TOOL_DEFS = [
-  { name: "searchNotes", desc: "搜索笔记标题", args: {"query":"搜索关键词"}, needsConfirm: false },
-  { name: "listNotes", desc: "列出笔记（可按分组/数量）", args: {"categoryName":"分组名(可选)","limit":"条数(可选)"}, needsConfirm: false },
-  { name: "getNoteContent", desc: "获取笔记正文（默认前200行，可指定行范围）", args: {"noteId":"笔记ID","startLine":"起始行(可选)","lineCount":"行数(可选)"}, needsConfirm: false },
-  { name: "getCurrentNote", desc: "读取当前打开的笔记", args: {}, needsConfirm: false },
-  { name: "readNoteLines", desc: "按行范围读取长文", args: {"noteId":"笔记ID","startLine":"起始行","lineCount":"行数(可选)"}, needsConfirm: false },
-  { name: "findInNote", desc: "按内容定位行号（grep -n）", args: {"noteId":"笔记ID","query":"要找的内容","contextLines":"附带上下文行数(可选,0-3)","limit":"最多返回几处(可选)"}, needsConfirm: false },
-  { name: "getCategories", desc: "获取所有分组", args: {}, needsConfirm: false },
-  { name: "listTrash", desc: "查看回收站", args: {}, needsConfirm: false },
-  { name: "createNote", desc: "创建笔记", args: {"title":"标题","content":"内容(可选)","categoryName":"分组名(可选)"}, needsConfirm: true },
-  { name: "createNotes", desc: "批量创建多篇笔记", args: {"notes":"[{title,content?,categoryName?}]"}, needsConfirm: true },
-  { name: "appendToNote", desc: "在笔记末尾追加内容（不覆盖）", args: {"noteId":"笔记ID(可选)","text":"要追加的正文"}, needsConfirm: true },
-  { name: "updateNote", desc: "按 ID 修改指定笔记", args: {"noteId":"笔记ID","title":"新标题(可选)","content":"新内容(可选)","categoryName":"新分组名(可选)"}, needsConfirm: true },
-  { name: "updateCurrentNote", desc: "修改当前打开的笔记（无需 ID，精确作用于用户正在看的那一篇）", args: {"title":"新标题(可选)","content":"新内容(覆盖正文)","categoryName":"新分组名(可选)"}, needsConfirm: true },
-  { name: "replaceLines", desc: "按行替换指定区间（只改这一段）", args: {"noteId":"笔记ID","startLine":"起始行","endLine":"结束行","text":"替换后的内容"}, needsConfirm: true },
-  { name: "insertLines", desc: "在指定行之后插入内容", args: {"noteId":"笔记ID","afterLine":"插到这一行之后(0=最前)","text":"插入的内容"}, needsConfirm: true },
-  { name: "deleteLines", desc: "删除指定行区间", args: {"noteId":"笔记ID","startLine":"起始行","endLine":"结束行"}, needsConfirm: true },
-  { name: "replaceInNote", desc: "定点替换文本（不用整篇覆盖）", args: {"noteId":"笔记ID","oldText":"原文","newText":"替换为","replaceAll":"是否全部替换(可选)"}, needsConfirm: true },
-  { name: "deleteNote", desc: "删除笔记(移到回收站)", args: {"noteId":"笔记ID"}, needsConfirm: true },
-  { name: "restoreNote", desc: "从回收站还原笔记", args: {"noteId":"笔记ID"}, needsConfirm: true },
-  { name: "deleteFromTrash", desc: "彻底删除回收站中的笔记(不可恢复)", args: {"noteId":"笔记ID"}, needsConfirm: true },
-  { name: "emptyTrash", desc: "清空回收站(不可恢复)", args: {}, needsConfirm: true },
-  { name: "createCategory", desc: "创建分组", args: {"name":"分组名"}, needsConfirm: true },
-  { name: "renameCategory", desc: "重命名分组", args: {"categoryId":"分组ID","name":"新名称"}, needsConfirm: true },
-  { name: "deleteCategory", desc: "删除分组", args: {"categoryId":"分组ID","deleteNotes":"是否同时把组内笔记移入回收站(可选)"}, needsConfirm: true },
-  { name: "moveNote", desc: "移动笔记到其他分组", args: {"noteId":"笔记ID","categoryId":"目标分组ID"}, needsConfirm: true },
-  { name: "selectNote", desc: "选择并打开指定笔记", args: {"noteId":"笔记ID"}, needsConfirm: false },
-];
 
 /** 工具调用的中文短标签：回复上方以紧凑轨迹展示，一眼能看清到底做了什么 */
 const TOOL_LABELS: Record<string, string> = {
@@ -255,121 +245,6 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
     }
   }
 };
-
-
-const TOOLS_PROMPT = `你是 FastNote 智能笔记助手，通过工具操作笔记与分组。
-
-## 可用工具（参数都是 JSON 对象）
-- searchNotes: 按关键词搜索笔记（标题 + 内容），参数：{"query":"关键词"}
-- listNotes: 列出笔记，按更新时间倒序，参数：{"categoryName":"分组名(可选)","limit":"条数(可选,默认15)"}
-- getNoteContent: 读取某篇笔记的正文（**默认只返回前 200 行**，带行号），参数：{"noteId":"笔记ID","startLine":"起始行(可选,默认1)","lineCount":"读多少行(可选,默认200,最多800)"} —— 只读取，**不会打开**
-- getCurrentNote: 读取**当前打开的**笔记（同样只返回一个行窗口），参数：{}
-- readNoteLines: 读取指定行范围（长文专用，等价于 getNoteContent 带 startLine），参数：{"noteId":"笔记ID","startLine":"起始行","lineCount":"行数(可选)"}
-- findInNote: 按内容定位行号（grep -n），返回命中行号与上下文，参数：{"noteId":"笔记ID","query":"要找的内容","contextLines":"附带上下文行数(可选,0-3)","limit":"最多返回几处(可选,默认20)"} —— 问"这段话在第几行"就用它
-- replaceLines: **按行替换**指定区间（只改这一段，其余原样保留），参数：{"noteId":"笔记ID","startLine":"起始行","endLine":"结束行","text":"替换后的内容(可以是多行)"}
-- insertLines: 在指定行之后插入内容，参数：{"noteId":"笔记ID","afterLine":"插到这一行之后(0=最前面)","text":"要插入的内容"}
-- deleteLines: 删除指定行区间，参数：{"noteId":"笔记ID","startLine":"起始行","endLine":"结束行"}
-- replaceInNote: 定点替换文本（改错别字、统一措辞），参数：{"noteId":"笔记ID","oldText":"要被替换的原文","newText":"替换为","replaceAll":"是否全部替换(可选,默认只替换第一处)"}
-- selectNote: 打开（切换到）某篇笔记，参数：{"noteId":"笔记ID"} —— 用户说"打开"时**必须**用它
-- getCategories: 获取所有分组，参数：{}
-- listTrash: 查看回收站里的笔记，参数：{}
-- createNote: 创建笔记，参数：{"title":"标题","content":"正文(可选)","categoryName":"分组名(可选)"}
-- createNotes: 一次创建多篇笔记，参数：{"notes":[{"title":"标题","content":"正文(可选)","categoryName":"分组名(可选)"}]}
-- appendToNote: 在笔记**末尾追加**内容（不覆盖原正文），参数：{"noteId":"笔记ID(可选,默认当前打开的笔记)","text":"要追加的正文"}
-- updateNote: 按 ID 修改笔记，参数：{"noteId":"笔记ID","title":"新标题(可选)","content":"新正文(可选)","categoryName":"分组名(可选)"}
-- updateCurrentNote: 修改当前打开的笔记（无需 ID），参数：{"title":"新标题(可选)","content":"新正文(可选)","categoryName":"分组名(可选)"}
-- deleteNote: 删除笔记（移入回收站），参数：{"noteId":"笔记ID"}
-- restoreNote: 把笔记从回收站还原，参数：{"noteId":"笔记ID"}
-- deleteFromTrash: 把回收站里的某篇笔记**彻底删除**（不可恢复），参数：{"noteId":"笔记ID"}
-- emptyTrash: **清空回收站**（不可恢复），参数：{}
-- createCategory: 创建分组，参数：{"name":"分组名"}
-- renameCategory: 重命名分组，参数：{"categoryId":"分组ID","name":"新名称"}
-- deleteCategory: 删除分组，参数：{"categoryId":"分组ID","deleteNotes":"是否同时把组内笔记移入回收站(可选,默认false)"}
-  - deleteNotes=true 只是把笔记**移入回收站**（可还原），**不会彻底删除**；不确定时用 false，只解除归类。
-- moveNote: 移动笔记到其他分组，参数：{"noteId":"笔记ID","categoryId":"目标分组ID"}
-
-选工具的要点：
-- "这篇/当前笔记" → getCurrentNote / updateCurrentNote / appendToNote（不传 noteId 即当前笔记）。
-- 只是**补充、续写、加一段** → 用 appendToNote；**整篇改写**才用 updateNote / updateCurrentNote（会覆盖正文）。
-- "我最近记了什么 / 某分组里有什么" → listNotes（不要用 searchNotes 空搜）。
-- "误删了 / 找回" → listTrash 查看、restoreNote 还原。
-- "从回收站彻底删掉 / 清空回收站" → deleteFromTrash / emptyTrash。这两个**不可恢复**：必须先 listTrash 确认到底是哪几篇，并在回复里说明将要彻底删除哪些，再调用。
-- 要产出多篇笔记（如把一份内容拆成几篇）→ 一次 createNotes，而不是反复 createNote。
-
-## 长文处理（行号工作流，重要）
-读取返回的是**带行号的窗口**（形如 12| 正文… ，行号只是定位标记，不要写进正文）。长笔记一律按这个流程，禁止"从头读到尾"和"全文覆盖"：
-1. **先定位**：想知道"某段话在第几行"用 findInNote（grep 式，直接给行号）；想通读某一段用 getNoteContent/readNoteLines（默认 200 行、可指定 startLine），需要总行数看返回里的 totalLines。
-2. **只改要改的地方**：
-   - 改某几行 → replaceLines（startLine/endLine 用行号，text 写替换后的内容）
-   - 加内容 → insertLines（afterLine）或 appendToNote（末尾）
-   - 删内容 → deleteLines
-   - 改词/改错别字 → replaceInNote
-3. **分段改写/翻译长文**：每次只处理一个窗口（例如 100-200 行），用 replaceLines 写回这一段，然后再读下一段。**不要**把 1000 行整篇塞进一次 updateNote——既超出输出长度，也容易把没读到的部分写丢。
-4. 写回成功后回执里只有"总行数 + 局部预览"，这是正常的；需要更多上下文就再按行号读取，不要重复全文。
-5. 只有当笔记很短（几十行）且用户明确要求整体重写时，才用 updateNote/updateCurrentNote 覆盖正文。
-
-## 输出格式（必须严格遵守）
-每次回复先写 <thinking>...</thinking>（真实推理，不少于 120 字），然后二选一：
-
-A) 需要操作数据时，本轮**只**输出思考 + 工具调用，不要写正文：
-<tool_calls>[{"name":"工具名","args":{"参数名":"参数值"}}]</tool_calls>
-
-B) 不需要操作、或工具已经执行完且结果足够回答时，只写正文，不要输出 <tool_calls>。
-
-格式硬要求：开标签 <tool_calls> 和闭标签 </tool_calls> **必须都写全**；标签内只能是合法 JSON 数组，不要用 \`\`\`json 代码块包裹，不要写注释、单引号或多余逗号。
-
-## 执行顺序（重要）
-1. 系统会按你列出的顺序**逐个**执行工具，并在界面上逐条显示动作（例如"打开笔记 #16 · 《白雪公主》"）。所以：
-   - 只列本轮真正需要、且不依赖其他工具结果的调用；需要依赖前一步结果时，先只调用前一步。
-   - 多个互不依赖的调用（例如同时"打开 A + 读取 A + 搜索 B"）可以在同一轮一起列出。
-2. 工具结果会以"工具执行结果：..."的 system 消息返回给你，然后你再进入下一轮。
-3. **总结、结论、说明必须放在所有工具都执行完之后的那一轮回复里**，不要提前写、也不要在工具轮里预告结论。
-
-## 绝对不要编造（最高优先级）
-- 只有出现在"工具执行结果"里的事情才真正发生了。**没有对应的工具执行结果，就绝对不能声称"已经打开 / 已经创建 / 已经修改 / 已经删除 / 已经移动"。**
-- 严禁编造笔记 ID、分组 ID、标题或正文内容；回复里提到的标题、ID 必须来自工具结果本身。
-- 工具失败或没找到时，如实说明失败原因和可选方案，不要把它粉饰成成功。
-- 用户要"打开"，就必须真的调用 selectNote 并看到成功结果，才能说"已打开"。
-
-## 回复风格（让回答好看又好读）
-- **结构化**：先给结论/结果，再给细节；用短标题、有序/无序列表分点，必要时用表格或代码块。避免整段文字墙。
-- **易读**：段落之间留空行；每个要点尽量控制在一行内、不超过 30 字；并列信息用列表而不是逗号长句。
-- **少用 emoji**：整条回复最多 1~2 个，只用在小标题或关键结论处；不要在每个列表项、每句正文前都挂 emoji。
-- **适量来点颜文字**：问候、鼓励、轻松闲聊或收尾时可以自然带一个，例如 (๑•̀ㅂ•́)و✧ ٩(๑•̀ω•́๑)۶ (´▽｀) (・ω・) (￣▽￣) (๑¯ω¯๑)；一条回复最多一个，别每段都放。
-- **严肃场合要克制**：报错、失败说明、删除/清空确认、数据风险提示等场景，不要颜文字，也不要卖萌的 emoji。
-- 需要用户做选择时，把选项列成清单并给出推荐；操作失败要说明原因和下一步建议。
-- 直接以 FastNote 笔记助手的身份回答，不必强调底层模型或厂商。
-
-## 定位对象的规则
-1. 一切操作以 ID 为准：标题可以重复，ID 才唯一。
-2. 用户说"这篇笔记 / 当前笔记 / 它"→ 用上下文里给出的当前笔记 ID；若上下文显示"当前没有打开任何笔记"，就直接说明并请用户指明是哪一篇，不要猜。
-3. 用户给的是标题或关键词 → 先 searchNotes 查 ID：
-   - 关键词要短（2~4 个字）。搜索是连续子串匹配：搜"浏览器渲染"会漏掉《浏览器是如何渲染页面的？》，应该搜"渲染"或"浏览器"。
-   - 未命中时会自动放宽为"每个字都出现"的模糊匹配，结果带 fuzzy: true 时说明不是精确匹配，必须核对标题、必要时向用户确认。
-   - 结果带 duplicateTitles（存在同名笔记）时，必须把候选列给用户确认，禁止自行挑一条修改或删除。
-
-## 示例
-用户：打开《白雪公主》笔记，总结剧情，然后再打开关于浏览器渲染的笔记
-助手（第 1 轮：只调用工具，不写正文）
-<thinking>用户要三件事：打开白雪公主笔记、总结剧情、再打开浏览器渲染那篇。我没有 ID，必须先 searchNotes 查白雪公主；浏览器渲染那篇也一样要先搜，而且关键词要短（"浏览器渲染"这种连续长串很可能搜不到，应该搜"渲染"或"浏览器"）。本轮先搜白雪公主。</thinking>
-<tool_calls>[{"name":"searchNotes","args":{"query":"白雪公主"}}]</tool_calls>
-
-助手（第 2 轮：拿到 ID 后打开并读取，同时搜第二篇；仍然不写正文）
-<thinking>搜索返回《白雪公主》ID=16。现在打开它、读取正文以便待会儿总结，同时搜索第二篇。这三个调用互不依赖，可以一起列出；总结要等读取结果返回后再写，所以本轮不输出正文。</thinking>
-<tool_calls>[{"name":"selectNote","args":{"noteId":"16"}},{"name":"getNoteContent","args":{"noteId":"16"}},{"name":"searchNotes","args":{"query":"渲染"}}]</tool_calls>
-
-助手（第 3 轮：打开第二篇，仍然不写正文）
-<thinking>搜索"渲染"命中《浏览器是如何渲染页面的？》ID=17。用户要求最后打开它，所以本轮只调用 selectNote 打开，正文留到下一轮。</thinking>
-<tool_calls>[{"name":"selectNote","args":{"noteId":"17"}}]</tool_calls>
-
-助手（第 4 轮：所有工具都已执行完，此时才写正文）
-<thinking>selectNote 16、getNoteContent 16、selectNote 17 都成功，正文也已拿到。现在给出剧情总结，并说明当前已切换到《浏览器是如何渲染页面的？》。这些都是工具结果里真实发生的事，可以放心陈述。</thinking>
-《白雪公主》剧情总结：……
-另外，已为您打开《浏览器是如何渲染页面的？》。
-
-用户：今天天气怎么样？
-助手：<thinking>用户询问天气，与笔记、分组都无关，没有任何工具能查实时天气，因此不调用任何工具，直接说明即可。</thinking>
-我无法获取实时天气，建议查看手机自带的天气应用或天气预报网站。`;
 
 
 /** Generate a human-readable summary of a tool call for the confirm dialog */
@@ -826,13 +701,24 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
 
 
 
+/** 消息操作按钮：只有小图标、不带文字 */
+const MSG_ACTION_BTN =
+  "inline-flex items-center justify-center p-1 rounded-lg text-slate-400 hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-95";
+
+/** 复制图标 */
+const CopyIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
+  <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+  </svg>
+);
+
 /**
  * 单条消息（用户气泡 / AI 无气泡回复）。
  * 用 memo 隔离是非常关键的性能优化：流式输出时 streamingContent 每 50ms 变一次，
  * 若不隔离，历史消息里的每一个 MdPreview（markdown 重解析）都会被重新渲染一遍，界面就会卡。
  */
 const ChatMessageRow = memo(function ChatMessageRow({
-  msg, index, expanded, toolOpen, isSending, showToolTrace, onToggleThinking, onToggleTool, onInsertText, onReplaceContent,
+  msg, index, expanded, toolOpen, isSending, showToolTrace, onToggleThinking, onToggleTool, onInsertText, onReplaceContent, onCopyText,
 }: {
   msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number };
   index: number;
@@ -846,6 +732,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   onToggleTool: (key: string) => void;
   onInsertText: (text: string) => void;
   onReplaceContent: (text: string) => void;
+  onCopyText: (text: string) => void;
 }) {
   const msgThinking = msg.thinking;
   const msgTools = msg.tools;
@@ -854,9 +741,18 @@ const ChatMessageRow = memo(function ChatMessageRow({
   if (msg.role === 'user') {
     // 用户消息：浅色气泡、右对齐（对齐主流编程 Agent 的样式）
     return (
-      <div data-chat-anchor="true" className="flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
-        <div className="rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-slate-100 text-slate-700 max-w-[85%]">{msg.content}</div>
-        {msg.at ? <div className="mt-0.5 mr-1 text-[10.5px] text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}</div> : null}
+      <div data-chat-anchor="true" className="group/msg flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
+        <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-slate-100 text-slate-700 max-w-[85%]">{msg.content}</div>
+        <div className="mt-0.5 mr-1 flex items-center gap-0.5">
+          {msg.at ? <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}</span> : null}
+          <button
+            onClick={() => onCopyText(msg.content)}
+            className={MSG_ACTION_BTN}
+            title="复制消息"
+          >
+            <CopyIcon />
+          </button>
+        </div>
       </div>
     );
   }
@@ -924,14 +820,21 @@ const ChatMessageRow = memo(function ChatMessageRow({
       {msg.content ? (
         <div className="text-[13px] leading-[1.75] text-slate-700 ai-markdown">
           <MdPreview modelValue={msg.content} theme="light" previewTheme="github" codeTheme="github" noMermaid={false} noKatex={false} noHighlight={false}/>
-          {!isSending && (<div className="mt-1 -ml-1 flex gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
-            <button onClick={() => onInsertText(msg.content)} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-400 hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-95" title="插入到当前笔记"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>插入</button>
-            <button onClick={() => onReplaceContent(msg.content)} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors active:scale-95" title="替换当前笔记正文"><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>替换</button>
-          </div>)}
         </div>
       ) : null}
-      {/* 时间：与用户消息对称，AI 这条在左下角 */}
-      {(msg.at || msg.thinkMs) ? <div className="pt-0.5 text-[10.5px] text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}{msg.thinkMs ? `${msg.at ? " · " : ""}用时 ${(msg.thinkMs / 1000).toFixed(1)}s` : ""}</div> : null}
+      {/* 时间 + 操作按钮：同一行固定展示（与用户消息对称，AI 这条在左下角） */}
+      {(msg.content || msg.at || msg.thinkMs) ? (
+        <div className="pt-0.5 flex items-center gap-0.5">
+          {msg.content && !isSending && (
+            <>
+              <button onClick={() => onInsertText(msg.content)} className={MSG_ACTION_BTN} title="将内容插入到光标处"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg></button>
+              <button onClick={() => onReplaceContent(msg.content)} className={`${MSG_ACTION_BTN} hover:!text-amber-600 hover:!bg-amber-50`} title="覆盖当前打开的笔记"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></button>
+              <button onClick={() => onCopyText(msg.content)} className={MSG_ACTION_BTN} title="复制消息"><CopyIcon /></button>
+            </>
+          )}
+          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}{msg.thinkMs ? `${msg.at ? " · " : ""}用时 ${(msg.thinkMs / 1000).toFixed(1)}s` : ""}</span>
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -944,9 +847,9 @@ const RAIL_ITEM_H = 7;
 const RAIL_MIN_GAP = 1;
 const RAIL_MAX_GAP = 5;
 /** 悬浮波浪：离鼠标越近的横线越长越粗（0 = 鼠标正下方）。
- *  系数刻意保守：横线放大后仍留在 24px 点击热区内，不会盖到正文。 */
+ *  系数刻意保守：横线放大后仍留在 24px 点击热区内，不会盖到正文；纵向上限也压低，避免线条显粗。 */
 const RAIL_WAVE_SCALE_X = [1.3, 1.16, 1.06, 1.02];
-const RAIL_WAVE_SCALE_Y = [1.6, 1.3, 1.12, 1.04];
+const RAIL_WAVE_SCALE_Y = [1.4, 1.18, 1.06, 1.02];
 
 /**
  * 右侧历史锚点导轨（横线样式）。
@@ -980,7 +883,7 @@ const AnchorRail = memo(function AnchorRail({
           const isActive = i === activeBar;
           // 11px 基准线 × 1.35（选中）× 1.3（波浪）= 19.3px，仍在 24px 热区之内
           let sx = isActive ? 1.35 : 1;
-          let sy = isActive ? 1.2 : 1;
+          let sy = isActive ? 1.1 : 1;
           if (hoverIdx !== null) {
             const d = Math.abs(i - hoverIdx);
             if (d < RAIL_WAVE_SCALE_X.length) {
@@ -1024,16 +927,6 @@ const CONFIRM_CANCELLED = "用户已取消";
 /** 等待用户确认的超时时间：弹窗被意外关闭/遗忘时按"取消"处理，避免整轮卡死 */
 const CONFIRM_TIMEOUT_MS = 180000;
 
-/** 把用户自定义的前置提示词/记忆拼成系统提示词追加段（只取启用中的） */
-const buildMemoryBlock = (entries: AiPromptEntry[] | undefined): string => {
-  const active = (entries || []).filter(e => e.enabled && e.text.trim());
-  if (active.length === 0) return "";
-  return [
-    "## 用户自定义要求与长期记忆（必须遵守，优先级高于上面的默认风格）",
-    ...active.map((e, i) => `${i + 1}. ${e.text.trim()}`),
-  ].join("\n");
-};
-
 /** 对话列表里的相对时间：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD */
 const relativeTime = (iso?: string): string => {
   if (!iso) return "";
@@ -1058,9 +951,6 @@ const describeTools = (tools: ToolTrace[] | undefined): string[] =>
 
 /* ---------------- 上下文瘦身（记忆管理） ---------------- */
 
-/** 每轮最多注入多长的工具结果（超出折叠） */
-const TOOL_RESULT_MAX_CHARS = 1500;
-
 /**
  * 工具结果进上下文前的瘦身。
  * getNoteContent 会把整篇笔记原样回传，一次就是几千 token；多轮工具调用下来，
@@ -1070,19 +960,19 @@ const compactToolResult = (result: unknown, max = TOOL_RESULT_MAX_CHARS): string
   let text: string;
   try { text = JSON.stringify(result ?? null); } catch { text = String(result); }
   if (!text) return "";
-  return text.length > max ? `${text.slice(0, max)}…（已截断，需要细节请用 getNoteContent/readNoteLines 按范围读取）` : text;
+  return text.length > max ? `${text.slice(0, max)}…(truncated; for details, read again by range with getNoteContent/readNoteLines)` : text;
 };
 
 /** 旧工具结果压缩：只保留最近 keep 条原样，更早的折叠到 max 字 */
 const compressOldToolResults = <T extends { role: string; content: string }>(msgs: T[], keep = 2, max = 400): T[] => {
   const toolIdx = msgs
-    .map((m, i) => (m.role === "system" && m.content.startsWith("工具执行结果：") ? i : -1))
+    .map((m, i) => (m.role === "system" && m.content.startsWith("Tool execution results:") ? i : -1))
     .filter(i => i >= 0);
   if (toolIdx.length <= keep) return msgs;
   const oldOnes = new Set(toolIdx.slice(0, toolIdx.length - keep));
   return msgs.map((m, i) =>
     oldOnes.has(i) && m.content.length > max
-      ? { ...m, content: `${m.content.slice(0, max)}…（更早的工具结果已压缩，需要时重新读取）` }
+      ? { ...m, content: `${m.content.slice(0, max)}…(earlier tool results were compressed; read them again if needed)` }
       : m,
   );
 };
@@ -1587,7 +1477,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       // 送进去的内容也要先去标签：否则整段 <thinking> 推理会被当成"对话内容"喂给标题模型
       const userText = stripAiTags(up).replace(/<[^>]+>/g, "").trim().slice(0, 300);
       const assistantText = stripAiTags(ar).replace(/<[^>]+>/g, "").trim().slice(0, 300);
-      const t = await api.sendAiChat(activeProvider.id, [{ role: "system", content: `I will give you some dialogue content in the <content> block.\nYou need to summarize the conversation between user and assistant into a short title.\n1. The title language should be consistent with the user's primary language\n2. Do not use punctuation or other special symbols\n3. Reply directly with the title\n4. The title should not exceed 10 characters\n5. Do not include any JSON, tags, or technical details\n6. Do not output <thinking> or any reasoning process, and never mention words like "thinking" — reply with the title only\n\n<content>\nUser: ${userText}\nAssistant: ${assistantText}\n</content>` }, { role: "user", content: "Generate title" }], "", "");
+      const t = await api.sendAiChat(activeProvider.id, [{ role: "system", content: buildTitlePrompt(userText, assistantText) }, { role: "user", content: TITLE_USER_MESSAGE }], "", "");
       const ct = cleanSessionTitle(t);
       // 洗不出有效标题就保持原样，下次再试；绝不要把 "thinking用" 这类垃圾写进去
       if (!ct) { titleGenRef.current = null; return; }
@@ -1605,11 +1495,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     /** 本轮的编号：一旦被"停止"或被新消息取代，旧循环必须立刻安静退出，绝不再改界面 */
     const myRun = runIdRef.current;
     const isStale = () => abortRef.current || runIdRef.current !== myRun;
-    /** 系统提示词 = 工具协议 + 用户自定义的前置提示词/记忆（每次请求都带上） */
+    /** 系统提示词 = 工具协议 + 深度思考要求 + 用户自定义的前置提示词/记忆（每次请求都带上） */
     const memoryBlock = buildMemoryBlock(aiPrompts);
-    /** 深度思考的字数要求也随设置走，和传给后端的值保持一致 */
-    const thinkRule = `## 深度思考要求\n- 每次回复的 <thinking> 都要写够 ${aiSettings.minThinkingLen} 字以上（写真实推理，不要复述用户的话）。`;
-    const systemPrompt = [TOOLS_PROMPT, thinkRule, memoryBlock].filter(Boolean).join("\n\n");
+    const systemPrompt = [AI_SYSTEM_PROMPT, buildThinkRule(aiSettings.minThinkingLen), memoryBlock].filter(Boolean).join("\n\n");
     let roundMsgs = [...msgs];
 
     /* ---------- 上下文压缩（滑动窗口 + 摘要，主流做法） ----------
@@ -1628,8 +1516,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           const text = await api.sendAiChat(
             activeProvider.id,
             [
-              { role: "system", content: "你是对话压缩助手。把给定对话压缩成要点，务必保留：用户长期偏好与硬性要求、已确认的结论、出现过的笔记 ID 与标题、尚未完成的事项。不要寒暄、不要输出任何标签，直接给要点，400 字以内。" },
-              { role: "user", content: `${summary ? `已知摘要：${summary}\n\n` : ""}需要压缩的对话：\n${compressTranscript(dropped)}` },
+              { role: "system", content: CONTEXT_SUMMARY_PROMPT },
+              { role: "user", content: buildSummaryUserMessage(summary, compressTranscript(dropped)) },
             ],
             "",
             activeModel,
@@ -1642,20 +1530,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       const uncovered = dropped.slice(covered);
       // selectContextWindow 返回的是通用 {role, content}，这里角色只可能是 user/assistant/system
       const rebuilt = [
-        ...(summary ? [{ role: "system", content: `【更早对话的要点摘要】${summary}` }] : []),
+        ...(summary ? [{ role: "system", content: `${SUMMARY_INJECT_PREFIX}${summary}` }] : []),
         ...(uncovered.length > 0 ? [{ role: "system", content: localSummaryFallback(uncovered) }] : []),
         ...kept,
       ].filter(m => m.content && m.content.trim()) as AiChatMessage[];
       roundMsgs = rebuilt;
     }
-    /** 交给 Rust 端提示词的最小思考字数 */
-    const MIN_THINKING_LEN = 120;
-    /**
-     * 触发"重新思考"纠正的门槛。
-     * 只处理"基本没思考"的情况：为了一百来字和一百二十字的差别就丢弃一整段已经写好的回答，
-     * 会让界面出现"先回复一大段 → 清空 → 再思考 → 又回复一遍同样的内容"，还白烧一遍 token。
-     */
-    const THINKING_RETRY_MIN_LEN = 24;
     /** 三个纠正各自独立记一次，互不挤占（以前共用一个标记，思考纠错一次后谎报纠错就失效了） */
     let thinkingRetryUsed = false;
     let claimRetryUsed = false;
@@ -1663,8 +1543,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     /** 连续多少轮"全是重复调用、没有任何新动作"——用于不限制轮数时防止空转 */
     let noProgressRounds = 0;
 
-    // 最多工具轮数：设置为 0 表示不限制；这里仍给一个很大的硬上限作为"死循环保险"
-    const UNLIMITED_ROUND_SAFETY = 500;
+    // 最多工具轮数：设置为 0 表示不限制；UNLIMITED_ROUND_SAFETY 是"死循环保险"
     const roundLimit = aiSettings.maxRounds > 0 ? aiSettings.maxRounds : UNLIMITED_ROUND_SAFETY;
     for (let round = 0; round < roundLimit; round++) {
       if (isStale()) return;
@@ -1732,8 +1611,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             {
               role: 'system',
               content:
-                `你的 <thinking> 过于简略（当前 ${thinking.replace(/\s/g, '').length} 字，要求至少 ${MIN_THINKING_LEN} 字），本次回复无效。` +
-                '请重新深入思考：分析用户的真实意图、缺少哪些信息、应调用哪个工具及参数来源、是否有破坏性风险，然后重新输出完整回复。',
+                buildShallowThinkingNotice(thinking.replace(/\s/g, '').length, MIN_THINKING_LEN),
             },
           ];
           continue;
@@ -1755,11 +1633,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             { role: 'assistant', content: full },
             {
               role: 'system',
-              content:
-                '你的回复里声称已经完成了某个操作（例如"已打开/已创建/已修改/已删除"），但本轮没有任何 <tool_calls>，' +
-                '因此这些操作实际上并没有发生。请二选一：\n' +
-                '1. 如果确实需要执行操作：同时输出 <thinking> 与 <tool_calls>（用户不知道 ID，先用 searchNotes / listNotes 或 getCategories 查询）；\n' +
-                '2. 如果不需要操作：删掉"已完成"之类的表述，直接如实回答。',
+              content: CLAIM_WITHOUT_TOOLS_NOTICE,
             },
           ];
           continue;
@@ -1776,10 +1650,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             { role: 'assistant', content: full },
             {
               role: 'system',
-              content:
-                '你上一条回复的工具调用格式不合法：<tool_calls> 缺少开标签、没有闭合，或里面的 JSON 无法解析（内容过长时会被截断），本次回复无效，没有任何工具被执行。' +
-                '请重新输出：必须写成 <tool_calls>[{"name":"工具名","args":{...}}]</tool_calls>，开闭标签齐全、JSON 完整，且不要用 ```json 代码块包裹；' +
-                '如果内容太长，请精简，或拆成几步分次完成。',
+              content: TRUNCATED_TOOL_CALL_NOTICE,
             },
           ];
           continue;
@@ -1911,7 +1782,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           // 更早的压到 400 字以内。多轮工具调用时上下文增长最凶的就是这里。
           roundMsgs = compressOldToolResults(roundMsgs);
         }
-        roundMsgs = [...roundMsgs, { role: 'assistant', content: full }, { role: 'system', content: '工具执行结果：' + resultSummary + '\n请根据结果继续处理或给用户最终回复（仍需先输出 <thinking>）。如果上一轮你已经写好了要展示给用户的正文，本轮不要重复它，只需补充工具执行后的说明。' }];
+        roundMsgs = [...roundMsgs, { role: 'assistant', content: full }, { role: 'system', content: buildToolResultMessage(resultSummary) }];
       } catch (e) {
         // 以前这里只 console.error 就直接 return：请求失败时界面上一句话都没有，
         // 用户只会看到"没反应"，然后反复发"继续"。必须把失败原因说出来。
@@ -1958,6 +1829,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   });
   const insertTextStable = useCallback((text: string) => insertTextRef.current(text), []);
   const replaceContentStable = useCallback((text: string) => replaceContentRef.current(text), []);
+  const copyTextStable = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(
+      () => showToast("已复制", "success"),
+      () => showToast("复制失败", "error")
+    );
+  }, [showToast]);
 
   /**
    * 工具执行是逐个进行的，这里把"正在执行"的一条轨迹立刻追加到当前助手气泡上，
@@ -2148,13 +2025,33 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const holdEarlyReply = !!streamingPreview
     && thinkingCapableRef.current
     && !streamStartsWithThinking(streamingContent);
+  /**
+   * 流式预览行的归属。
+   * 若本轮之前已经因为工具调用留下一条助手占位气泡（带 thinking + 工具轨迹），
+   * 就把正在流式输出的正文并进那一条，而不是再追加一条新的预览行 ——
+   * 否则同一次回复会同时出现两份「思考」和两个时间（占位一条、预览一条）。
+   * 合并时保留靠上的那份思考与它原来的时间，即"只有一个思考、一个时间"。
+   */
+  const lastMsg = messages[messages.length - 1] as any;
+  const mergeIntoPlaceholder = !!streamingPreview && !!placeholderRef.current && lastMsg === placeholderRef.current;
+  const previewReply = streamingPreview ? (holdEarlyReply ? '' : streamingPreview.reply) : '';
+  const previewContent = (() => {
+    if (!mergeIntoPlaceholder) return previewReply;
+    // 按住抢答时保持占位气泡原有正文不动
+    if (holdEarlyReply) return String(lastMsg?.content || '');
+    // 占位气泡的正文是"边调工具边写的那段"，最终回复要接在它后面（与 buildFinalContent 同规则）
+    const carried = String(lastMsg?.content || '').trim();
+    return carried && !previewReply.includes(carried) ? `${carried}\n\n${previewReply}` : previewReply;
+  })();
   const allMsgs: (AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number })[] = streamingPreview
-    ? [...messages, {
-        role: 'assistant' as const,
-        content: holdEarlyReply ? '' : streamingPreview.reply,
-        thinking: streamingPreview.thinking,
-        at: streamStartedAtRef.current || undefined,
-      }]
+    ? mergeIntoPlaceholder
+      ? [...messages.slice(0, -1), { ...lastMsg, content: previewContent, thinking: lastMsg?.thinking || streamingPreview.thinking }]
+      : [...messages, {
+          role: 'assistant' as const,
+          content: previewContent,
+          thinking: streamingPreview.thinking,
+          at: streamStartedAtRef.current || undefined,
+        }]
     : messages;
 
   /**
@@ -2363,6 +2260,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             onToggleTool={toggleToolTrace}
             onInsertText={insertTextStable}
             onReplaceContent={replaceContentStable}
+            onCopyText={copyTextStable}
           />
         )))}
         {isSending && (

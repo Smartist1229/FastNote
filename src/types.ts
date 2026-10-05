@@ -1,3 +1,5 @@
+import { DEFAULT_AI_SETTINGS } from "./config/aiDefaults";
+
 export interface Note {
   id: number;
   title: string;
@@ -81,20 +83,7 @@ export interface AiSettings {
   composerHeight: number;
 }
 
-export const DEFAULT_AI_SETTINGS: AiSettings = {
-  minThinkingLen: 120,
-  maxRounds: 0,
-  contextBudget: 14000,
-  keepRecent: 8,
-  toolResultChars: 1500,
-  retryShallowThinking: true,
-  autoTitle: true,
-  streaming: true,
-  confirmByDefault: true,
-  showToolTrace: true,
-  maxTokens: 8192,
-  composerHeight: 0,
-};
+export { DEFAULT_AI_SETTINGS };
 
 /**
  * 逐项把"数据库里的值"归一化成合法设置：

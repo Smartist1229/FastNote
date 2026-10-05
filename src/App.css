@@ -1224,7 +1224,7 @@ button:focus-visible {
 .chat-anchor-line {
   display: block;
   width: 11px;
-  height: 2px;
+  height: 1.5px;
   border-radius: 999px;
   background: #dbe2ec;
   transform-origin: right center;
@@ -1237,10 +1237,9 @@ button:focus-visible {
 .chat-anchor-bar:hover .chat-anchor-line {
   background: #8b93f8;
 }
-/* 当前正在查看的那条：更长、更亮，带一点光晕 */
+/* 当前正在查看的那条：更长、颜色更深即可辨识，不再加粗、不再套硬边框环 */
 .chat-anchor-bar.is-active .chat-anchor-line {
   background: linear-gradient(90deg, #8b93f8, #4f46e5);
-  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
 }
 
 /*

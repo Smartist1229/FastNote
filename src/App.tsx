@@ -11,7 +11,7 @@ import { AIChatPanel } from "./components/AIChatPanel";
 
 import { AiMemoryModal } from "./components/AiMemoryModal";
 import { AiSettingsModal } from "./components/AiSettingsModal";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { useConfirm } from "./components/ConfirmDialog";
 
 const NoteEditor = lazy(() =>
   import("./components/NoteEditor").then((module) => ({
@@ -105,6 +105,7 @@ function AppContent() {
   }, [aiPrompts, aiConfigLoaded]);
   const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
   const { showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
   const focusTimerRef = useRef<number | null>(null);
@@ -282,7 +283,12 @@ function AppContent() {
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
     const noteId = selectedNote.id;
-    const confirmed = await confirm("确定要将这条笔记移入回收站吗？", "删除笔记");
+    const confirmed = await confirm({
+      title: "删除笔记",
+      message: "确定要将这条笔记移入回收站吗？",
+      confirmText: "移入回收站",
+      danger: true,
+    });
     if (!confirmed) return;
     try {
       await api.moveToTrash(noteId);
@@ -332,7 +338,12 @@ function AppContent() {
 
   const handleEmptyTrash = async () => {
     if (trashNotes.length === 0) return;
-    const confirmed = await confirm("确定要清空回收站吗？此操作不可恢复。", "清空回收站");
+    const confirmed = await confirm({
+      title: "清空回收站",
+      message: "确定要清空回收站吗？此操作不可恢复。",
+      confirmText: "清空回收站",
+      danger: true,
+    });
     if (!confirmed) return;
     try {
       await api.deleteMultipleNotesPermanently(trashNotes.map((n) => n.id));
@@ -352,7 +363,12 @@ function AppContent() {
 
   const handleDeleteSelected = async () => {
     if (selectedTrashIds.size === 0) return;
-    const confirmed = await confirm("确定要永久删除选中的笔记吗？此操作不可恢复。", "永久删除");
+    const confirmed = await confirm({
+      title: "永久删除",
+      message: "确定要永久删除选中的笔记吗？此操作不可恢复。",
+      confirmText: "永久删除",
+      danger: true,
+    });
     if (!confirmed) return;
     const ids = Array.from(selectedTrashIds);
     try {
@@ -466,7 +482,12 @@ function AppContent() {
               }
             }}
             onDeleteNote={async (note) => {
-              const confirmed = await confirm("确定要将这条笔记移入回收站吗？", "删除笔记");
+              const confirmed = await confirm({
+                title: "删除笔记",
+                message: "确定要将这条笔记移入回收站吗？",
+                confirmText: "移入回收站",
+                danger: true,
+              });
               if (!confirmed) return;
               try {
                 await api.moveToTrash(note.id);
@@ -718,6 +739,9 @@ function AppContent() {
         onChange={setAiPrompts}
         onClose={() => setShowAiMemory(false)}
       />
+
+      {/* 通用确认弹窗：替换原生 confirm()，样式跟随主题 */}
+      {confirmDialog}
     </div>
   );
 }

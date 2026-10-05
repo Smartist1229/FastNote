@@ -317,21 +317,21 @@ fn selected_model(provider: &AiProvider) -> Result<String, String> {
 }
 
 /// 强制深度思考的系统提示词（始终生效，独立于前端提示词）
-const DEEP_THINKING_PROMPT: &str = r#"## 深度思考要求（最高优先级，不可跳过）
-在给出任何回答或调用任何工具之前，你必须在 <thinking> 与 </thinking> 之间完成一次完整、深入的推理。这不是可选项。
+const DEEP_THINKING_PROMPT: &str = r#"## Deep thinking requirement (highest priority, cannot be skipped)
+Before giving any answer or calling any tool, you MUST complete one full, in-depth reasoning pass between <thinking> and </thinking>. This is not optional.
 
-思考时必须覆盖：
-1. 用户真正想要的结果是什么（识别隐含意图、指代的笔记或分组）。
-2. 现有信息是否足够？缺少哪些信息？
-3. 是否需要调用工具？如果需要，应该调用哪个工具、按什么顺序调用、参数从哪里来。
-4. 涉及删除、覆盖、重命名等破坏性操作时，先确认目标对象是否真的是用户所指的那一个。
-5. 执行结果是否符合预期，是否需要下一步操作。
+Your thinking must cover:
+1. What result the user actually wants (identify implicit intent, and which note or category is being referred to).
+2. Is the information you have enough? What is missing?
+3. Do you need to call a tool? If so, which tool, in what order, and where do the arguments come from?
+4. For destructive operations such as deleting, overwriting or renaming, first confirm that the target object really is the one the user means.
+5. Did the execution result match expectations, and is a next step needed?
 
-硬性规则：
-- 每次回复都必须包含 <thinking>...</thinking>，且内容必须是真实的推理过程（建议 80 字以上），不能是空标签、不能只写一句话敷衍。
-- 只思考而不输出 <tool_calls> 不会触发任何工具，思考与调用必须同时输出。
-- 严禁在 <thinking> 之外输出工具调用；严禁编造笔记 ID、分组 ID 或执行结果。
-- 工具结果返回后，必须再次进入 <thinking> 分析结果，再决定继续调用工具还是给出最终答复。"#;
+Hard rules:
+- Every reply must contain <thinking>...</thinking>, and its content must be genuine reasoning (at least about 80 characters is recommended) — never an empty tag, never a single throwaway sentence.
+- Thinking alone, without also outputting <tool_calls>, triggers no tools; the thinking and the call must be output together.
+- Never output tool calls outside <thinking>; never fabricate note IDs, category IDs or execution results.
+- After a tool result comes back, you must enter <thinking> again to analyze that result, then decide whether to keep calling tools or give a final answer."#;
 
 /// 判断该模型是否可能拒绝 OpenAI 的 reasoning_effort 参数（DeepSeek 推理模型自带思考）
 fn is_deepseek_reasoner(model: &str) -> bool {
@@ -1062,7 +1062,7 @@ async fn send_ai_chat(
     let model = selected_model(&provider)?;
     let client = reqwest::Client::new();
     let base_prompt = format!(
-        "你是 FastNote 内置的笔记助手。当前笔记标题：{}。\n你可以帮助用户润色、续写、总结、改写或生成可插入笔记的内容。需要修改笔记时，直接给出可使用的正文，不要编造不存在的信息。\n当前笔记内容：\n{}",
+        "You are FastNote's built-in note assistant. Current note title: {}.\nYou help the user polish, continue, summarize, rewrite, or generate content that can be inserted into the note. When the note needs to be modified, output ready-to-use body text directly; never make up information that does not exist.\nCurrent note content:\n{}",
         note_title, note_content
     );
     let system_prompt = format!("{}\n\n{}", DEEP_THINKING_PROMPT, base_prompt);
@@ -1272,13 +1272,13 @@ async fn send_ai_chat_stream(
     // 单独给出当前笔记 ID：同名笔记无法靠标题区分，只有 ID 唯一
     let note_id_line = match current_note_id {
         Some(id) if id > 0 => format!(
-            "- 当前打开笔记 ID：{}（用户说\"这篇笔记/当前笔记/它\"时指的就是这个 ID）",
+            "- ID of the currently open note: {} (when the user says \"this note / the current note / it\", this is the ID they mean)",
             id
         ),
-        _ => "- 当前没有打开任何笔记（用户指代\"这篇笔记\"时，应先请他指明是哪一篇）".to_string(),
+        _ => "- No note is currently open (if the user refers to \"this note\", first ask them to point out which one)".to_string(),
     };
     let base_prompt = format!(
-        "你是 FastNote 内置的笔记助手。\n\n## 当前上下文\n{}\n- 当前笔记标题：{}\n\n你可以帮助用户润色、续写、总结、改写或生成可插入笔记的内容。需要修改笔记时，直接给出可使用的正文，不要编造不存在的信息。\n\n当前笔记内容：\n{}",
+        "You are FastNote's built-in note assistant.\n\n## Current context\n{}\n- Current note title: {}\n\nYou help the user polish, continue, summarize, rewrite, or generate content that can be inserted into the note. When the note needs to be modified, output ready-to-use body text directly; never make up information that does not exist.\n\nCurrent note content:\n{}",
         note_id_line, note_title, note_content
     );
     // 深度思考提示词始终注入，保证模型看到它的优先级高于其它提示词
@@ -1287,7 +1287,7 @@ async fn send_ai_chat_stream(
     let min_thinking = min_thinking_len.unwrap_or(80);
     let thinking_reminder = if min_thinking > 0 {
         format!(
-            "\n\n## 本次回复的强制检查\n- 你的 <thinking> 内容不得少于 {} 个字符，且必须包含对用户意图与下一步操作的分析。\n- 若思考后确认需要工具，必须同时输出 <tool_calls>，否则视为无效回复。",
+            "\n\n## Mandatory checks for this reply\n- Your <thinking> content must be at least {} characters long, and must include an analysis of the user's intent and of the next step to take.\n- If your thinking concludes that a tool is needed, you must also output <tool_calls>; otherwise the reply is considered invalid.",
             min_thinking
         )
     } else {

@@ -10,6 +10,8 @@
  * 纯函数也便于直接用 Node 单测（见 tmp 脚本 / 后续可加正式测试）。
  */
 
+import { buildLocalSummaryFallback } from "./config/aiDefaults.ts";
+
 export interface ToolCall {
   name: string;
   args: Record<string, unknown>;
@@ -374,14 +376,14 @@ export const selectContextWindow = (
 export const localSummaryFallback = (dropped: ContextMessage[]): string => {
   if (dropped.length === 0) return "";
   const firstUser = dropped.find((m) => m.role === "user")?.content.replace(/\s+/g, " ").slice(0, 60) || "";
-  return `（更早的 ${dropped.length} 条对话因长度限制已省略${firstUser ? `，最初的话题是「${firstUser}…」` : ""}。需要细节时请用工具重新读取笔记。）`;
+  return buildLocalSummaryFallback(dropped.length, firstUser);
 };
 
 /** 生成摘要时喂给模型的对话文本（带角色和条数上限，避免摘要请求本身又超长） */
 export const compressTranscript = (dropped: ContextMessage[], maxChars = 6000): string => {
-  const lines = dropped.map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content.replace(/\s+/g, " ").trim()}`);
+  const lines = dropped.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content.replace(/\s+/g, " ").trim()}`);
   const text = lines.join("\n");
-  return text.length > maxChars ? `${text.slice(0, maxChars)}\n…（后续省略）` : text;
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n...(rest omitted)` : text;
 };
 
 /* ---------------- 会话标题清洗 ---------------- */
