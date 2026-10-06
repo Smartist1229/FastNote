@@ -1,30 +1,12 @@
 import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
-import { Editor, loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
-import { Note } from "../types";
-import { monacoEditorConfig } from "../config/monacoEditor";
+import { Note, Category } from "../types";
 import { markdownEditorConfig } from "../config/markdownEditor";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { saveNoteAsFile } from "../utils/noteFileExport";
 import { useToast } from "./Toast";
 import { AiSparkleIcon } from "./icons";
+import { Icon } from "./Icon";
 
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-
-self.MonacoEnvironment = {
-  getWorker(_, label) {
-    if (label === "typescript" || label === "javascript") return new tsWorker();
-    if (label === "json") return new jsonWorker();
-    return new editorWorker();
-  },
-};
-
-loader.config({ monaco });
-
-type EditorType = "monaco" | "markdown";
 type MarkdownEditorModule = typeof import("md-editor-rt");
 let markdownEditorModulePromise: Promise<MarkdownEditorModule> | null = null;
 let markdownExtensionsPromise: Promise<void> | null = null;
@@ -106,6 +88,12 @@ const MarkdownEditor = lazy(async () => {
   return { default: MdEditor };
 });
 
+/** 编辑器正文字号（px）：Ctrl/⌘ + 滚轮缩放，范围 12–24，持久化在本地 */
+const EDITOR_FONT_SIZE_KEY = "fastnote-editor-font-size";
+const FONT_SIZE_MIN = 12;
+const FONT_SIZE_MAX = 24;
+const FONT_SIZE_DEFAULT = 16;
+
 interface NoteEditorProps {
   note: Note | null;
   onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
@@ -114,6 +102,16 @@ interface NoteEditorProps {
   /** 打开/关闭 AI 对话面板 */
   onToggleAiPanel?: () => void;
   isAiPanelOpen?: boolean;
+  /** 临时预览模式（AI 回复）：只在界面上展示，绝不写入数据库 */
+  isTemporary?: boolean;
+  /** 关闭临时预览（回到欢迎页） */
+  onCloseTemporary?: () => void;
+  /** 全部分组：临时预览下「保存到分组」菜单用 */
+  categories?: Category[];
+  /** 把临时预览另存为真实笔记（保存到指定分组） */
+  onSaveToCategory?: (categoryId: number | null, title: string, content: string) => Promise<void>;
+  /** 把「保存笔记到文件」的能力暴露给外部（侧边栏右键菜单用，等价于 Ctrl+S） */
+  onRegisterExport?: (exportNote: (() => void) | null) => void;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
@@ -123,13 +121,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onCursorOffsetChange,
   onToggleAiPanel,
   isAiPanelOpen = false,
+  isTemporary = false,
+  onCloseTemporary,
+  categories = [],
+  onSaveToCategory,
+  onRegisterExport,
 }) => {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [editorType, setEditorType] = useState<EditorType>("markdown");
-  const [isMarkdownLoading, setIsMarkdownLoading] = useState(false);
   const isComposingRef = useRef(false);
-  const [editorKey] = useState(0);
   const lastNoteIdRef = useRef<number | null>(null);
   const latestTitleRef = useRef("");
   const latestContentRef = useRef("");
@@ -140,39 +140,73 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const hasUnsavedChangesRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const currentNoteIdRef = useRef<number | null>(null);
-  const editorContainerRef = useRef<HTMLDivElement>(null);
-  const monacoEditorRef = useRef<any>(null);
-  const cursorDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const { showToast } = useToast();
+  /** 编辑器正文字号：Ctrl/⌘ + 滚轮调整 */
+  const [editorFontSize, setEditorFontSize] = useState(() => {
+    const saved = Number(localStorage.getItem(EDITOR_FONT_SIZE_KEY));
+    return saved >= FONT_SIZE_MIN && saved <= FONT_SIZE_MAX ? saved : FONT_SIZE_DEFAULT;
+  });
+  const editorWrapRef = useRef<HTMLDivElement>(null);
+
+  // 记住字号，下次打开保持
+  useEffect(() => {
+    localStorage.setItem(EDITOR_FONT_SIZE_KEY, String(editorFontSize));
+  }, [editorFontSize]);
+
+  // Ctrl/⌘ + 滚轮缩放：必须用非 passive 监听，否则阻止不了 WebView 自身的页面缩放
+  useEffect(() => {
+    const el = editorWrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      setEditorFontSize((size) =>
+        Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, size + (e.deltaY < 0 ? 1 : -1)))
+      );
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+  /** 用 ref 承载临时标记，避免它进入 saveNow 的依赖链 */
+  const isTemporaryRef = useRef(false);
+  useEffect(() => {
+    isTemporaryRef.current = isTemporary;
+  }, [isTemporary]);
+
+  /** 临时预览的「保存到分组」下拉菜单 */
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false);
+  const [isSavingToCategory, setIsSavingToCategory] = useState(false);
+  const saveMenuRef = useRef<HTMLDivElement>(null);
+
+  // 点菜单外部收起
+  useEffect(() => {
+    if (!saveMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (saveMenuRef.current && !saveMenuRef.current.contains(e.target as Node)) {
+        setSaveMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [saveMenuOpen]);
+
+  /** 临时预览另存为真实笔记：取编辑器里当前（可能改过）的标题与内容 */
+  const handleSaveToCategory = async (categoryId: number | null) => {
+    if (!onSaveToCategory || isSavingToCategory) return;
+    setIsSavingToCategory(true);
+    try {
+      await onSaveToCategory(categoryId, latestTitleRef.current, latestContentRef.current);
+    } finally {
+      setIsSavingToCategory(false);
+      setSaveMenuOpen(false);
+    }
+  };
 
   const handleExport = useCallback(async () => {
     if (!note) return;
     try {
-      const defaultFileName = title || "无标题笔记";
-      const filePath = await save({
-        defaultPath: defaultFileName,
-        filters: [
-          { name: "Plain Text", extensions: ["txt", "text"] },
-          { name: "Markdown", extensions: ["md", "mdx"] },
-          { name: "JSON", extensions: ["json", "jsonc"] },
-          { name: "HTML", extensions: ["html", "htm", "xhtml"] },
-          { name: "Source Code", extensions: ["js", "ts", "jsx", "tsx", "py", "java", "c", "cpp", "h", "css", "scss", "less"] },
-          { name: "Config File", extensions: ["ini", "yaml", "yml", "toml", "env"] },
-          { name: "Table Text", extensions: ["csv", "tsv"] },
-          { name: "XML", extensions: ["xml", "svg"] },
-          { name: "Log File", extensions: ["log"] },
-          { name: "All Files", extensions: ["*"] }
-        ],
-      });
-      if (filePath) {
-        let exportContent = content;
-        const metadata = ["---"];
-        if (title) metadata.push(`title: "${title}"`);
-        if (note.created_at) metadata.push(`created: ${note.created_at.split("T")[0]}`);
-        metadata.push("---\n");
-        exportContent = metadata.join("\n") + exportContent;
-        await writeTextFile(filePath, exportContent);
+      if (await saveNoteAsFile(title, content)) {
         showToast("导出成功！", "success");
       }
     } catch (error) {
@@ -180,6 +214,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       showToast("导出失败，请重试", "error");
     }
   }, [note, title, content, showToast]);
+
+  // 把「保存笔记到文件」交给外部调用（侧边栏笔记右键菜单）
+  useEffect(() => {
+    onRegisterExport?.(handleExport);
+    return () => onRegisterExport?.(null);
+  }, [onRegisterExport, handleExport]);
 
   const handleCopyContent = useCallback(async () => {
     try {
@@ -233,25 +273,20 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [note?.title, note?.content, note?.id, onCursorOffsetChange]);
 
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      handleExport();
+    }
+  };
   useEffect(() => {
-    return () => {
-      cursorDisposableRef.current?.dispose();
-      cursorDisposableRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        handleExport();
-      }
-    };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleExport]);
 
   const saveNow = useCallback(async () => {
+    // 临时预览（AI 回复）永不落库
+    if (isTemporaryRef.current) return;
     const savingNoteId = currentNoteIdRef.current;
     if (!savingNoteId || !hasUnsavedChangesRef.current) return;
     if (saveTimerRef.current !== null) {
@@ -309,8 +344,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   const handleContentChange = (value: string | undefined) => {
     const newContent = value || "";
+    // md-editor-rt 在「外部赋值同步进编辑器」时也会触发 onChange（内部 docChanged 为真），
+    // 这类回填不是用户编辑，直接忽略，避免一打开笔记就被标记「编辑中」并无意义地保存。
+    if (newContent === latestContentRef.current) return;
     setContent(newContent);
     latestContentRef.current = newContent;
+    // 富文本编辑器不暴露光标位置，统一以文末作为插入锚点
+    onCursorOffsetChange?.(newContent.length);
     if (!isComposingRef.current) scheduleSave();
   };
 
@@ -344,6 +384,17 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   return (
     <div className="h-full flex flex-col">
+      {isTemporary && (
+        <div className="px-4 py-2 bg-amber-50/70 border-b border-amber-100 flex items-center justify-between flex-shrink-0">
+          <span className="text-[11px] text-amber-700">临时预览 · 来自 AI 回复，不会保存为笔记</span>
+          <button
+            onClick={onCloseTemporary}
+            className="text-[11px] px-2 py-0.5 rounded-md text-amber-700 hover:bg-amber-100 transition-colors"
+          >
+            关闭
+          </button>
+        </div>
+      )}
       {/* 标题栏 */}
       <div className="px-4 py-3 border-b border-slate-100 flex-shrink-0">
         <div className="flex items-center gap-2">
@@ -357,33 +408,68 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             placeholder="输入笔记标题..."
             className="title-input flex-1 px-4 py-2.5 text-base font-semibold text-slate-800 placeholder:text-slate-300"
           />
-          <button
-            onClick={onDelete}
-            className="toolbar-btn hover:!bg-red-50 hover:!text-red-500"
-            title="删除笔记"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
+          {!isTemporary && (
+            <button
+              onClick={onDelete}
+              className="toolbar-btn hover:!bg-red-50 hover:!text-red-500"
+              title="删除笔记"
+            >
+              <Icon name="editor-trash" className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
       {/* 工具栏 */}
       <div className="px-4 py-1.5 border-b border-slate-100/80 flex-shrink-0 bg-slate-50/50">
         <div className="flex items-center gap-1 flex-wrap">
-          {/* 保存状态 */}
+          {/* 保存状态：临时预览下换成「保存到分组」按钮 */}
           <div className="flex items-center gap-1.5 mr-2 text-xs text-slate-400">
-            {hasUnsavedChangesRef.current ? (
+            {isTemporary ? (
+              onSaveToCategory && (
+                <div className="relative" ref={saveMenuRef}>
+                  <button
+                    onClick={() => setSaveMenuOpen((open) => !open)}
+                    disabled={isSavingToCategory}
+                    className={`flex items-center justify-center p-1.5 rounded-md transition-colors disabled:opacity-50 ${
+                      saveMenuOpen
+                        ? "bg-primary-50 text-primary-500"
+                        : "text-slate-500 hover:bg-slate-100 hover:text-slate-600"
+                    }`}
+                    title={isSavingToCategory ? "保存中..." : "保存到分组"}
+                  >
+                    <Icon name="editor-save-to-group" className="w-3.5 h-3.5" />
+                  </button>
+                  {saveMenuOpen && (
+                    <div className="absolute left-0 top-full mt-1 z-30 w-44 max-h-60 overflow-y-auto py-1 bg-white border border-slate-200 rounded-lg shadow-lg">
+                      <button
+                        onClick={() => handleSaveToCategory(null)}
+                        className="w-full text-left px-3 py-1.5 text-[12px] text-slate-600 hover:bg-slate-50 transition-colors"
+                      >
+                        未分组
+                      </button>
+                      {categories.map((category) => (
+                        <button
+                          key={category.id}
+                          onClick={() => handleSaveToCategory(category.id)}
+                          className="w-full text-left px-3 py-1.5 text-[12px] text-slate-600 hover:bg-slate-50 transition-colors truncate"
+                          title={category.name}
+                        >
+                          {category.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            ) : hasUnsavedChangesRef.current ? (
               <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-amber-50 text-amber-600">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
                 <span className="text-[11px] font-medium">编辑中</span>
               </span>
             ) : lastSavedAt ? (
               <span className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-400">
-                <svg className="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                </svg>
+                <Icon name="editor-check" className="w-3 h-3 text-emerald-500" />
                 <span className="text-[11px]">{formatSavedTime(lastSavedAt)}</span>
               </span>
             ) : null}
@@ -414,9 +500,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             className="toolbar-btn"
             title="导出笔记 (Ctrl+S)"
           >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
+            <Icon name="editor-export" className="w-3.5 h-3.5" />
           </button>
 
           {/* 复制 */}
@@ -425,43 +509,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             className="toolbar-btn"
             title="复制内容"
           >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-          </button>
-
-          {/* 编辑器切换 */}
-          <button
-            onClick={async () => {
-              if (editorType === "monaco") {
-                setIsMarkdownLoading(true);
-                try {
-                  await ensureMarkdownExtensions();
-                  setEditorType("markdown");
-                } catch (error) {
-                  console.error("Failed to load markdown editor extensions:", error);
-                  showToast("Markdown编辑器加载失败", "error");
-                } finally {
-                  setIsMarkdownLoading(false);
-                }
-              } else {
-                setEditorType("monaco");
-              }
-            }}
-            disabled={isMarkdownLoading}
-            className="toolbar-btn disabled:opacity-30"
-            title={isMarkdownLoading ? "正在加载Markdown编辑器" : `切换到${editorType === "monaco" ? "Markdown" : "Monaco"}`}
-          >
-            {isMarkdownLoading ? (
-              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-            ) : (
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-              </svg>
-            )}
+            <Icon name="editor-copy" className="w-3.5 h-3.5" />
           </button>
 
           <div className="flex-1" />
@@ -475,67 +523,39 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       </div>
 
       {/* 编辑器 */}
-      <div ref={editorContainerRef} className="flex-1 min-h-0 overflow-hidden">
-        {editorType === "monaco" ? (
-          <div className="editor-container h-full">
-            <Editor
-              key={editorKey}
-              height="100%"
-              defaultLanguage="markdown"
-              value={content}
-              onChange={handleContentChange}
-              onMount={(editor) => {
-                monacoEditorRef.current = editor;
-                cursorDisposableRef.current?.dispose();
-                const updateCursorOffset = () => {
-                  const model = editor.getModel();
-                  const position = editor.getPosition();
-                  if (!model || !position) return;
-                  onCursorOffsetChange?.(model.getOffsetAt(position));
-                };
-                updateCursorOffset();
-                cursorDisposableRef.current = editor.onDidChangeCursorPosition(updateCursorOffset);
-              }}
-              options={monacoEditorConfig as any}
-            />
-          </div>
-        ) : (
-          <div
-            className="editor-container h-full"
-            onClick={async (e) => {
-              const target = e.target as HTMLElement;
-              const link = target.closest("a");
-              if (link && link.href) {
-                e.preventDefault();
-                try {
-                  await openUrl(link.href);
-                } catch (error) {
-                  console.error("Failed to open link:", error);
-                }
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div
+          ref={editorWrapRef}
+          className="editor-container h-full"
+          style={{ "--md-editor-font-size": `${editorFontSize}px` } as React.CSSProperties}
+          onClick={async (e) => {
+            const target = e.target as HTMLElement;
+            const link = target.closest("a");
+            if (link && link.href) {
+              e.preventDefault();
+              try {
+                await openUrl(link.href);
+              } catch (error) {
+                console.error("Failed to open link:", error);
               }
-            }}
+            }
+          }}
+        >
+          <Suspense
+            fallback={
+              <div className="h-full flex items-center justify-center text-sm text-slate-400">
+                正在加载 Markdown 编辑器...
+              </div>
+            }
           >
-            <Suspense
-              fallback={
-                <div className="h-full flex items-center justify-center text-sm text-slate-400">
-                  正在加载 Markdown 编辑器...
-                </div>
-              }
-            >
-              <MarkdownEditor
-                value={content}
-                {...markdownEditorConfig}
-                onChange={(value) => {
-                  const newContent = value || "";
-                  setContent(newContent);
-                  latestContentRef.current = newContent;
-                  if (!isComposingRef.current) scheduleSave();
-                }}
-                style={{ height: "100%" }}
-              />
-            </Suspense>
-          </div>
-        )}
+            <MarkdownEditor
+              value={content}
+              {...markdownEditorConfig}
+              onChange={handleContentChange}
+              style={{ height: "100%" }}
+            />
+          </Suspense>
+        </div>
       </div>
     </div>
   );

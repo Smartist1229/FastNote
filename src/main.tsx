@@ -38,7 +38,7 @@ const isOnNativeScrollbar = (el: HTMLElement, e: MouseEvent) => {
   return onVertical || onHorizontal;
 };
 
-/** 自绘滚动条：6px 宽、贴着父容器右边缘的细长元素（md-editor-rt / Monaco） */
+/** 自绘滚动条：6px 宽、贴着父容器右边缘的细长元素（md-editor-rt） */
 const isOnCustomScrollbar = (el: HTMLElement) => {
   const rect = el.getBoundingClientRect();
   const parentRect = el.parentElement?.getBoundingClientRect();
@@ -51,9 +51,9 @@ const isOnCustomScrollbar = (el: HTMLElement) => {
 
 const isOnScrollbar = (target: EventTarget | null, e: MouseEvent) => {
   if (!(target instanceof HTMLElement)) return false;
-  // 自绘滚动条：md-editor-rt 的 custom-scrollbar、Monaco 的 .scrollbar
+  // 自绘滚动条：md-editor-rt 的 custom-scrollbar
   const custom = target.closest<HTMLElement>(
-    ".md-editor-custom-scrollbar__track, .monaco-scrollable-element > .scrollbar",
+    ".md-editor-custom-scrollbar__track",
   );
   if (custom || isOnCustomScrollbar(target)) return true;
   // 原生滚动条：往上找最近的可滚动祖先，判断指针是否落在它的滚动条几何区域内

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { Icon } from "./Icon";
 
 type ToastType = "success" | "error" | "info";
 
@@ -45,19 +46,13 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
           >
             <div className="flex items-center gap-2">
               {toast.type === "success" && (
-                <svg className="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                </svg>
+                <Icon name="toast-check" className="w-4 h-4 text-emerald-500" />
               )}
               {toast.type === "error" && (
-                <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <Icon name="toast-error" className="w-4 h-4 text-red-500" />
               )}
               {toast.type === "info" && (
-                <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+                <Icon name="toast-info" className="w-4 h-4 text-slate-400" />
               )}
               {toast.message}
             </div>

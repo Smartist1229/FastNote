@@ -5,6 +5,7 @@ import { useToast } from './Toast';
 import { ContextMenu, ContextMenuItem, useContextMenu } from './ContextMenu';
 import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem } from './CategoryDrawer';
 import { AiSparkleIcon } from './icons';
+import { Icon } from './Icon';
 
 /** 虚拟分组 ID：用于承载 category_id 指向已删除分组的笔记 */
 const SORT_OPTIONS = [ { value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' } ];
@@ -35,6 +36,12 @@ interface SidebarProps {
   /** 打开/关闭 AI 对话面板（全局入口，未打开笔记时也可用） */
   onToggleAiPanel?: () => void;
   isAiPanelOpen?: boolean;
+  /** 打开「数据备份与恢复」窗口 */
+  onOpenBackup?: () => void;
+  /** 右键菜单「导出分组」：把整个分组导出为压缩包或电子书 */
+  onExportCategory: (category: Category) => void;
+  /** 右键菜单「保存笔记」：等价于编辑器里的 Ctrl+S（导出到文件） */
+  onSaveNote: (note: Note) => void;
   onCreateCategory: () => void;
   onEditCategory: (category: Category) => void;
   onDeleteCategory: (category: Category) => void;
@@ -65,6 +72,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isCollapsed = false,
   onToggleAiPanel,
   isAiPanelOpen = false,
+  onOpenBackup,
+  onExportCategory,
+  onSaveNote,
   onCreateCategory,
   onEditCategory,
   onDeleteCategory,
@@ -129,39 +139,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const getCategoryMenuItems = (category: Category): ContextMenuItem[] => [
     {
-      label: '展开查看笔记',
-      icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-      ),
+      label: expandedDrawer === category.id ? '折叠分组' : '展开分组',
+      icon: <Icon name="sidebar-chevron-right" className="w-4 h-4" />,
       onClick: () => onToggleDrawer(category.id),
     },
     {
       label: '在此分组新建笔记',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
+        <Icon name="sidebar-plus" className="w-4 h-4" />
       ),
       onClick: () => onCreateNote(category.id),
+    },
+    {
+      label: '导出分组',
+      icon: (
+        <Icon name="editor-export" className="w-4 h-4" />
+      ),
+      onClick: () => onExportCategory(category),
     },
     { divider: true, label: '', onClick: () => {} },
     {
       label: '编辑分组',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-        </svg>
+        <Icon name="sidebar-edit" className="w-4 h-4" />
       ),
       onClick: () => onEditCategory(category),
     },
     {
       label: '新建分组',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
+        <Icon name="sidebar-plus" className="w-4 h-4" />
       ),
       onClick: onCreateCategory,
     },
@@ -169,9 +176,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       label: '删除分组',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
+        <Icon name="sidebar-trash" className="w-4 h-4" />
       ),
       onClick: () => onDeleteCategory(category),
       danger: true,
@@ -182,28 +187,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       label: '打开笔记',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-        </svg>
+        <Icon name="sidebar-eye" className="w-4 h-4" />
       ),
       onClick: () => onSelectNote(note),
     },
     {
+      label: '保存笔记',
+      icon: (
+        <Icon name="editor-export" className="w-4 h-4" />
+      ),
+      onClick: () => onSaveNote(note),
+    },
+    {
       label: '移动分组',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-        </svg>
+        <Icon name="sidebar-folder" className="w-4 h-4" />
       ),
       onClick: () => {},
       submenu: [
         {
           label: '未分类',
           icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-            </svg>
+            <Icon name="sidebar-list" className="w-4 h-4" />
           ),
           onClick: () => onMoveToCategory(note, null),
           disabled: note.category_id === null,
@@ -211,9 +216,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ...categories.map((cat) => ({
           label: cat.name,
           icon: (
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-            </svg>
+            <Icon name="sidebar-folder" className="w-4 h-4" />
           ),
           onClick: () => onMoveToCategory(note, cat.id),
           disabled: note.category_id === cat.id,
@@ -224,9 +227,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       label: '删除笔记',
       icon: (
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
+        <Icon name="sidebar-trash" className="w-4 h-4" />
       ),
       onClick: () => onDeleteNote(note),
       danger: true,
@@ -255,15 +256,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="px-3.5 pt-3.5 pb-2 flex-shrink-0">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 bg-gradient-to-br from-primary-500 to-primary-700 rounded-lg flex items-center justify-center shadow-sm">
-            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
+            <Icon name="sidebar-edit-square" className="w-4 h-4 text-white" />
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="text-sm font-bold text-slate-800 leading-none">FastNote</h1>
             <p className="text-[10px] text-slate-400 mt-0.5">简洁高效</p>
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            {/* 数据备份与恢复：全局入口 */}
+            {onOpenBackup && (
+              <button
+                onClick={onOpenBackup}
+                className="sidebar-header-btn"
+                title="数据备份与恢复"
+                aria-label="数据备份与恢复"
+              >
+                <Icon name="app-backup" className="w-4 h-4" />
+              </button>
+            )}
             {/* 全局 AI 入口：没有打开笔记编辑页时也能打开 AI 窗口 */}
             {onToggleAiPanel && (
               <button
@@ -282,9 +292,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="隐藏分组侧边栏"
                 aria-label="隐藏分组侧边栏"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
+                <Icon name="sidebar-chevron-left" className="w-4 h-4" />
               </button>
             )}
           </div>
@@ -295,14 +303,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="px-3 pb-2 flex-shrink-0">
         <div className="flex items-center gap-1.5">
           <div className="relative flex-1 min-w-0">
-            <svg
+            <Icon
+              name="sidebar-search"
               className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 pointer-events-none"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
+            />
             <input
               type="text"
               placeholder="搜索笔记..."
@@ -316,9 +320,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-md text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
                 title="清空搜索"
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <Icon name="sidebar-close" className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -327,14 +329,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="btn-primary w-7 h-7 flex items-center justify-center flex-shrink-0"
             title="新建笔记"
           >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-            </svg>
+            <Icon name="sidebar-plus-bold" className="w-3.5 h-3.5" />
           </button>
           <button onClick={onOpenTrash} className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="回收站">
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
+            <Icon name="sidebar-trash" className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -361,7 +359,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }}
           >
             <span className="truncate max-w-[56px]">{SORT_OPTIONS.find(o => o.value === sortBy)?.label || "更新时间"}</span>
-            <svg className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (sortMenu.open ? "rotate-180" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M19 9l-7 7-7-7" /></svg>
+            <Icon name="sidebar-chevron-down" className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (sortMenu.open ? "rotate-180" : "")} />
           </button>
           {sortMenu.open && (
             <>
@@ -376,7 +374,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     className={"pop-menu-item" + (sortBy === o.value ? " is-active" : "")}
                     onClick={() => { onSortByChange(o.value); setSortMenu(m => ({ ...m, open: false })); }}
                   >
-                    <svg className={"w-3 h-3 flex-shrink-0 " + (sortBy === o.value ? "opacity-100" : "opacity-0")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                    <Icon name="sidebar-check" className={"w-3 h-3 flex-shrink-0 " + (sortBy === o.value ? "opacity-100" : "opacity-0")} />
                     <span>{o.label}</span>
                   </button>
                 ))}
@@ -388,23 +386,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:bg-white/80 hover:text-primary-500 transition-all"
             title={sortOrder === 'asc' ? '切换为降序' : '切换为升序'}
           >
-            <svg
+            <Icon
+              name="sidebar-chevron-up"
               className={`w-3 h-3 transition-transform duration-200 ${sortOrder === 'desc' ? 'rotate-180' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-            </svg>
+            />
           </button>
           <button
             onClick={onCreateCategory}
             className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:bg-white/80 hover:text-primary-500 transition-all"
             title="创建分组"
           >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-            </svg>
+            <Icon name="sidebar-plus-bold" className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -420,9 +412,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           sortedAllNotes.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 px-4">
               <div className="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
-                <svg className="w-5 h-5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
+                <Icon name="sidebar-search" className="w-5 h-5 text-slate-300" />
               </div>
               <p className="text-xs text-slate-400">无匹配笔记</p>
               <p className="text-[10px] text-slate-300 mt-1">换个关键词试试</p>
@@ -501,9 +491,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {categories.length === 0 && (
             <div className="px-3 py-5 text-center">
-              <svg className="w-8 h-8 text-slate-200 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
+              <Icon name="sidebar-folder-thin" className="w-8 h-8 text-slate-200 mx-auto mb-2" />
               <p className="text-xs text-slate-400">暂无分组</p>
               <p className="text-[10px] text-slate-300 mt-0.5">点击上方 + 创建分组</p>
             </div>
@@ -518,7 +506,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   e.preventDefault();
                   e.dataTransfer.dropEffect = 'move';
                   const el = e.currentTarget as HTMLElement;
-                  el.style.background = 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)';
+                  el.style.background = 'linear-gradient(135deg, var(--color-accent-light) 0%, var(--color-accent-soft) 100%)';
                   el.style.borderRadius = '12px';
                 }}
                 onDragLeave={(e) => {
@@ -571,9 +559,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               title="刷新界面"
               aria-label="刷新界面"
             >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
+              <Icon name="sidebar-refresh" className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>

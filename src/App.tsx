@@ -6,12 +6,17 @@ import * as api from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Modal } from "./components/Modal";
 import { ToastProvider, useToast } from "./components/Toast";
+
 import { WelcomeDashboard } from "./components/WelcomeDashboard";
 import { AIChatPanel } from "./components/AIChatPanel";
 
 import { AiMemoryModal } from "./components/AiMemoryModal";
 import { AiSettingsModal } from "./components/AiSettingsModal";
+import { BackupModal } from "./components/BackupModal";
+import { ExportCategoryModal } from "./components/ExportCategoryModal";
+import { saveNoteAsFile } from "./utils/noteFileExport";
 import { useConfirm } from "./components/ConfirmDialog";
+import { Icon } from "./components/Icon";
 
 const NoteEditor = lazy(() =>
   import("./components/NoteEditor").then((module) => ({
@@ -23,6 +28,22 @@ function AppContent() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
+  /** AI 回复的临时预览：只在编辑器里展示，绝不写入数据库（软件新开时为 null → 正常显示欢迎页） */
+  const [tempNote, setTempNote] = useState<{ id: number; title: string; content: string } | null>(null);
+  /** 临时预览的负 id 计数器：每次打开都换一个新 id，确保编辑器一定会刷新成新内容 */
+  const tempNoteIdRef = useRef(-1);
+  /** 临时预览对应的伪笔记：id 为负数哨兵值，落库操作会被 NoteEditor 的 isTemporary 挡掉 */
+  const tempPreviewNote: Note | null = tempNote
+    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null }
+    : null;
+  /** 编辑器当前展示的内容：优先真实笔记，其次 AI 临时预览 */
+  const editorNote = selectedNote ?? tempPreviewNote;
+  /** AI 回复「在编辑器中打开」：退出当前笔记，切到临时预览 */
+  const handleOpenInEditor = (title: string, content: string) => {
+    tempNoteIdRef.current -= 1;
+    setSelectedNote(null);
+    setTempNote({ id: tempNoteIdRef.current, title, content });
+  };
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<string>("created_at");
   const [sortOrder, setSortOrder] = useState<string>("asc");
@@ -59,6 +80,12 @@ function AppContent() {
   /** 设置是否已从数据库读回：读回前不写库，避免用默认值覆盖用户数据 */
   const [aiConfigLoaded, setAiConfigLoaded] = useState(false);
   const [showAiMemory, setShowAiMemory] = useState(false);
+  /** 数据备份与恢复窗口 */
+  const [showBackup, setShowBackup] = useState(false);
+  /** 右键「导出分组」的目标分组，非 null 时打开导出窗口 */
+  const [exportCategory, setExportCategory] = useState<Category | null>(null);
+  /** NoteEditor 注册进来的「保存笔记到文件」（等价 Ctrl+S），侧边栏右键菜单调用 */
+  const exportNoteRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,7 +214,11 @@ function AppContent() {
   }, [loadData]);
 
   useEffect(() => { loadData(); }, [loadData]);
-  useEffect(() => { selectedNoteRef.current = selectedNote; }, [selectedNote]);
+  useEffect(() => {
+    selectedNoteRef.current = selectedNote;
+    // 一旦打开真实笔记就退出临时预览，避免"预览"和"笔记"同时存在
+    if (selectedNote) setTempNote(null);
+  }, [selectedNote]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
 
   // AI selectNote 工具：切换当前打开的笔记，并展开对应分组、聚焦高亮
@@ -223,6 +254,23 @@ function AppContent() {
     }
   };
 
+  /** 临时预览（AI 回复）另存为真实笔记：写库后打开它，从而自动退出临时预览 */
+  const handleSavePreviewToCategory = async (categoryId: number | null, title: string, content: string) => {
+    try {
+      const note = await api.createNote(title, content, categoryId);
+      setNotes((prev) => [...prev, note]);
+      setSelectedCategoryId(categoryId);
+      setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
+      setSelectedNote(note);
+      showToast("已保存为笔记", "success");
+      window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
+    } catch (error) {
+      console.error("Failed to save preview as note:", error);
+      showToast("保存失败，请重试", "error");
+      throw error;
+    }
+  };
+
   const handleSaveNote = async (id: number, title: string, content: string, categoryId: number | null) => {
     saveQueueRef.current = saveQueueRef.current.then(async () => {
       try {
@@ -241,6 +289,27 @@ function AppContent() {
       }
     });
     await saveQueueRef.current;
+  };
+
+  /** 侧边栏笔记右键「保存笔记」，等价于 Ctrl+S。
+   *  打开着的笔记用编辑器里的实时内容（可能还没落库）；没打开的笔记直接导出库里存的内容。 */
+  const registerExportNote = useCallback((fn: (() => void) | null) => {
+    exportNoteRef.current = fn;
+  }, []);
+
+  const handleExportNoteFromMenu = async (note: Note) => {
+    if (selectedNote?.id === note.id && exportNoteRef.current) {
+      exportNoteRef.current();
+      return;
+    }
+    try {
+      if (await saveNoteAsFile(note.title, note.content)) {
+        showToast("导出成功！", "success");
+      }
+    } catch (e) {
+      console.error("导出失败:", e);
+      showToast("导出失败，请重试", "error");
+    }
   };
 
   const applyAiContentChange = async (nextContent: string) => {
@@ -499,6 +568,9 @@ function AppContent() {
               }
             }}
             onOpenTrash={handleOpenTrash}
+            onOpenBackup={() => setShowBackup(true)}
+            onExportCategory={setExportCategory}
+            onSaveNote={handleExportNoteFromMenu}
             onNotesUpdated={loadData}
           />
         </div>
@@ -525,9 +597,7 @@ function AppContent() {
               title="显示分组侧边栏"
               aria-label="显示分组侧边栏"
             >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
+              <Icon name="app-chevron-right" className="w-3.5 h-3.5" />
               <span className="sidebar-reveal-label">分组</span>
             </button>
           </>
@@ -545,15 +615,20 @@ function AppContent() {
               }
             >
               {/* 编辑器与欢迎页互斥渲染：无笔记时欢迎页可用，AI 面板依然在右侧可用 */}
-              {selectedNote ? (
+              {editorNote ? (
                 <div className="editor-layer">
                   <NoteEditor
-                    note={selectedNote}
+                    note={editorNote}
+                    isTemporary={!selectedNote}
+                    onCloseTemporary={() => setTempNote(null)}
+                    categories={categories}
+                    onSaveToCategory={handleSavePreviewToCategory}
                     onSave={handleSaveNote}
                     onDelete={handleDeleteNote}
                     onCursorOffsetChange={setEditorCursorOffset}
                     onToggleAiPanel={toggleAiPanel}
                     isAiPanelOpen={aiPanelOpen}
+                    onRegisterExport={registerExportNote}
                   />
                 </div>
               ) : (
@@ -584,6 +659,7 @@ function AppContent() {
             onOpenAiMemory={() => setShowAiMemory(true)}
             onInsertText={handleAiInsertText}
             onReplaceContent={handleAiReplaceContent}
+            onOpenInEditor={handleOpenInEditor}
             onOpenProviderSettings={() => {
               setShowProviderModal(true);
               api.getAiProviders().then((list) => {
@@ -676,9 +752,7 @@ function AppContent() {
             {trashNotes.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
-                  <svg className="w-6 h-6 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                  <Icon name="app-trash-thin" className="w-6 h-6 text-slate-300" />
                 </div>
                 <p className="text-sm text-slate-400">回收站为空</p>
               </div>
@@ -697,14 +771,10 @@ function AppContent() {
                   </div>
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                     <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-emerald-50 hover:!text-emerald-600" title="还原">
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                      </svg>
+                      <Icon name="app-restore" className="w-3.5 h-3.5" />
                     </button>
                     <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-red-50 hover:!text-red-500" title="永久删除">
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
+                      <Icon name="app-trash" className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
@@ -738,6 +808,16 @@ function AppContent() {
         entries={aiPrompts}
         onChange={setAiPrompts}
         onClose={() => setShowAiMemory(false)}
+      />
+
+      {/* 数据备份与恢复：导出/导入单个 JSON，用于换机迁移或整体还原 */}
+      <BackupModal isOpen={showBackup} onClose={() => setShowBackup(false)} />
+
+      {/* 导出分组：右键分组菜单进入，可导出为压缩包或电子书 */}
+      <ExportCategoryModal
+        category={exportCategory}
+        onClose={() => setExportCategory(null)}
+        onDone={loadData}
       />
 
       {/* 通用确认弹窗：替换原生 confirm()，样式跟随主题 */}

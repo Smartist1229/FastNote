@@ -44,12 +44,6 @@ export default defineConfig(async () => ({
           if (path.includes("/@tauri-apps/")) {
             return "vendor-tauri";
           }
-          if (path.includes("/@monaco-editor/react/")) {
-            return "editor-monaco-react";
-          }
-          if (path.includes("/monaco-editor/")) {
-            return "editor-monaco";
-          }
           if (path.includes("/md-editor-rt/")) {
             return "editor-markdown";
           }

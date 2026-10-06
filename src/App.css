@@ -4,23 +4,33 @@
 
 /* ========== CSS 变量 ========== */
 :root {
-  --color-bg: #f8fafc;
-  --color-surface: #ffffff;
-  --color-surface-hover: #f8fafc;
-  --color-border: #e2e8f0;
-  --color-border-light: #f1f5f9;
-  --color-text: #0f172a;
-  --color-text-secondary: #64748b;
-  --color-text-muted: #94a3b8;
-  --color-accent: #6366f1;
-  --color-accent-light: #eef2ff;
-  --color-accent-hover: #4f46e5;
+  /* ---- 颜色（统一主题色板：slate 中性色 + indigo 强调色 + 语义色） ---- */
+  --color-bg: #f8fafc;             /* 页面底色 */
+  --color-surface: #ffffff;        /* 卡片/面板/弹层底色 */
+  --color-surface-hover: #f8fafc;  /* 悬停底色 */
+  --color-surface-alt: #f1f5f9;    /* 次级填充：工具条/分隔/滚动条槽 */
+  --color-border: #e2e8f0;         /* 常规边框 */
+  --color-border-light: #f1f5f9;   /* 极浅边框/分隔线 */
+  --color-border-strong: #cbd5e1;  /* 悬停边框/滚动条 */
+  --color-text: #0f172a;           /* 标题/主文字 */
+  --color-text-body: #334155;      /* 正文文字 */
+  --color-text-secondary: #64748b; /* 次要文字 */
+  --color-text-muted: #94a3b8;     /* 弱化文字/图标 */
+  --color-on-accent: #ffffff;      /* 强调色底色上的文字/图标 */
+  --color-accent: #6366f1;         /* 主题强调色 */
+  --color-accent-light: #eef2ff;   /* 强调色极浅底 */
+  --color-accent-soft: #e0e7ff;    /* 强调色浅底/描边 */
+  --color-accent-muted: #a5b4fc;   /* 强调色柔和前景/焦点 */
+  --color-accent-hover: #4f46e5;   /* 强调色 hover */
+  --color-accent-strong: #4338ca;  /* 强调色深阶 */
   --color-danger: #ef4444;
   --color-danger-light: #fef2f2;
   --color-success: #10b981;
   --color-success-light: #ecfdf5;
   --color-warning: #f59e0b;
   --color-warning-light: #fffbeb;
+  --color-overlay: rgb(15 23 42 / 0.22);  /* 遮罩层 */
+  --color-tooltip: rgb(30 41 59 / 0.95);  /* 深色浮层气泡 */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -92,13 +102,12 @@
 body {
   margin: 0;
   padding: 0;
-  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Segoe UI", Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  /* 全应用统一字体栈：内置 MiSans 可变字体（150-700 连续字重）优先，
+     缺字时回落到各平台原生界面字体（Segoe UI / 苹方 / 微软雅黑）。 */
+  font-family: "MiSans VF", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   background: var(--color-bg);
   color: var(--color-text);
   overflow: hidden;
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 /*
@@ -121,8 +130,6 @@ code,
 kbd,
 .selectable,
 .selectable *,
-.monaco-editor,
-.monaco-editor *,
 .md-editor,
 .md-editor *,
 .md-editor-preview,
@@ -148,18 +155,18 @@ kbd,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--color-border-strong);
   border-radius: 10px;
   transition: background var(--transition-fast);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--color-text-muted);
 }
 
 /* ========== 选中颜色 ========== */
 ::selection {
-  background: #c7d2fe;
-  color: #312e81;
+  background: var(--color-accent-muted);
+  color: var(--color-accent-strong);
 }
 
 /* ========== 列表样式 ========== */
@@ -173,12 +180,12 @@ li.task-list-item input[type="checkbox"] { vertical-align: middle; margin-right:
 /* ========== 用户选择 ========== */
 button, select, .select-none { user-select: none; }
 input, textarea, [contenteditable="true"],
-.monaco-editor, .md-editor, .cm-editor { user-select: text; }
+.md-editor, .cm-editor { user-select: text; }
 
 /*
  * 拖动滚动条时不得选中正文。
  *
- * 上面 .monaco-editor / .md-editor 的 user-select: text 会覆盖滚动条默认的
+ * 上面 .md-editor 的 user-select: text 会覆盖滚动条默认的
  * user-select: none，导致拖滚动条时"既选中文字又滚动"。注意 md-editor-rt
  * 用的是自绘滚动条（custom-scrollbar），不是原生滚动条，因此必须针对它
  * 的真实结构单独声明 —— ::-webkit-scrollbar 那套在这里是无效的。
@@ -188,13 +195,6 @@ input, textarea, [contenteditable="true"],
  */
 .md-editor-custom-scrollbar__track,
 .md-editor-custom-scrollbar__thumb {
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-/* Monaco 自绘滚动条同样需要抢回选择性 */
-.monaco-scrollable-element > .scrollbar,
-.monaco-scrollable-element > .scrollbar > .slider {
   user-select: none;
   -webkit-user-select: none;
 }
@@ -266,8 +266,8 @@ button:focus-visible {
   transform: translateY(0) scale(0.985);
 }
 .note-card-selected {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-hover) 100%);
+  color: var(--color-on-accent);
   border-color: transparent;
   box-shadow: 0 4px 16px -2px rgb(99 102 241 / 0.35);
 }
@@ -303,16 +303,16 @@ button:focus-visible {
 /* AI 打开笔记时的聚焦高亮 */
 .note-focus-ring {
   animation: noteFocusPulse 2.4s ease-out 1;
-  border-color: #a5b4fc !important;
+  border-color: var(--color-accent-muted) !important;
 }
 @keyframes noteFocusPulse {
   0% {
     box-shadow: 0 0 0 0 rgb(99 102 241 / 0.55);
-    background-color: #eef2ff;
+    background-color: var(--color-accent-light);
   }
   30% {
     box-shadow: 0 0 0 5px rgb(99 102 241 / 0.18);
-    background-color: #eef2ff;
+    background-color: var(--color-accent-light);
   }
   100% {
     box-shadow: 0 0 0 0 rgb(99 102 241 / 0);
@@ -323,7 +323,7 @@ button:focus-visible {
 /* 侧边栏抽屉滚动条 */
 .drawer-scroll {
   scrollbar-width: thin;
-  scrollbar-color: #e2e8f0 transparent;
+  scrollbar-color: var(--color-border) transparent;
   /* 常驻滚动条槽位：滚动条出现/消失时内容宽度不再变化，展开分组不会"挤压" */
   scrollbar-gutter: stable;
 }
@@ -334,11 +334,11 @@ button:focus-visible {
   background: transparent;
 }
 .drawer-scroll::-webkit-scrollbar-thumb {
-  background: #e2e8f0;
+  background: var(--color-border);
   border-radius: 3px;
 }
 .drawer-scroll::-webkit-scrollbar-thumb:hover {
-  background: #cbd5e1;
+  background: var(--color-border-strong);
 }
 
 /* ========== 侧边栏折叠 / 唤出把手 ========== */
@@ -391,7 +391,7 @@ button:focus-visible {
   border: 1px solid var(--color-border);
   border-left: none;
   border-radius: 0 10px 10px 0;
-  background: #ffffff;
+  background: var(--color-surface);
   color: var(--color-text-muted);
   box-shadow: 2px 0 10px -2px rgb(15 23 42 / 0.16);
   opacity: 0;
@@ -413,7 +413,7 @@ button:focus-visible {
 }
 .sidebar-reveal.is-visible:hover {
   background: var(--color-accent);
-  color: #ffffff;
+  color: var(--color-on-accent);
   width: 26px;
 }
 .sidebar-reveal-label {
@@ -439,7 +439,7 @@ button:focus-visible {
     transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 .sidebar-header-btn:hover {
-  background: #ffffff;
+  background: var(--color-surface);
   color: var(--color-accent);
   box-shadow: var(--shadow-xs);
 }
@@ -531,7 +531,7 @@ button:focus-visible {
   transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 .input-modern:hover {
-  border-color: #cbd5e1;
+  border-color: var(--color-border-strong);
 }
 .input-modern:focus {
   border-color: var(--color-accent);
@@ -541,8 +541,8 @@ button:focus-visible {
 
 /* ========== 按钮通用样式 ========== */
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-hover) 100%);
+  color: var(--color-on-accent);
   border: none;
   border-radius: var(--radius-lg);
   font-weight: 500;
@@ -550,7 +550,7 @@ button:focus-visible {
   box-shadow: 0 1px 3px rgb(99 102 241 / 0.3);
 }
 .btn-primary:hover {
-  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  background: linear-gradient(135deg, var(--color-accent-hover) 0%, var(--color-accent-strong) 100%);
   box-shadow: 0 4px 12px rgb(99 102 241 / 0.35);
   transform: translateY(-1px);
 }
@@ -567,7 +567,7 @@ button:focus-visible {
   transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 .btn-ghost:hover {
-  background: #f1f5f9;
+  background: var(--color-surface-alt);
   color: var(--color-text);
 }
 
@@ -582,7 +582,7 @@ button:focus-visible {
 
 /* ========== 侧边栏背景 ========== */
 .sidebar-bg {
-  background: linear-gradient(180deg, #fafbff 0%, #f8fafc 100%);
+  background: var(--color-bg);
 }
 
 /* ========== 标题输入框 ========== */
@@ -618,11 +618,11 @@ button:focus-visible {
   cursor: pointer;
 }
 .toolbar-btn:hover {
-  background: #f1f5f9;
+  background: var(--color-surface-alt);
   color: var(--color-text-secondary);
 }
 .toolbar-btn:active {
-  background: #e2e8f0;
+  background: var(--color-border);
 }
 
 /* ========== 徽章 ========== */
@@ -662,12 +662,12 @@ button:focus-visible {
   background: transparent;
 }
 .chat-scrollbar::-webkit-scrollbar-thumb {
-  background: #e2e8f0;
+  background: var(--color-border);
   border-radius: 4px;
   transition: background 0.2s;
 }
 .chat-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #cbd5e1;
+  background: var(--color-border-strong);
 }
 
 /* ========== AI 对话输入区（Composer） ========== */
@@ -693,7 +693,7 @@ button:focus-visible {
   width: 34px;
   height: 3px;
   border-radius: 999px;
-  background: #e2e8f0;
+  background: var(--color-border);
   opacity: 0;
   transform: scaleX(0.6);
   transition: opacity 0.18s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease;
@@ -703,29 +703,29 @@ button:focus-visible {
   transform: scaleX(1);
 }
 .composer-resize:hover::after {
-  background: #c7d2fe;
+  background: var(--color-accent-muted);
 }
 .composer-resize.is-dragging::after {
   opacity: 1;
   transform: scaleX(1.35);
-  background: #6366f1;
+  background: var(--color-accent);
   box-shadow: 0 0 0 3px rgb(99 102 241 / 0.16);
 }
 /* 拖动时给整卡片一圈提示，视觉上"抓住了" */
 .composer-wrap.is-resizing .composer-card {
-  border-color: #a5b4fc;
+  border-color: var(--color-accent-muted);
   box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
 }
 
 /* 输入卡片：整体一个圆角容器，聚焦时描边高亮（比裸 textarea 更像现代聊天框） */
 .composer-card {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--color-border);
   border-radius: 14px;
-  background: #ffffff;
+  background: var(--color-surface);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 .composer-card:focus-within {
-  border-color: #a5b4fc;
+  border-color: var(--color-accent-muted);
   box-shadow: 0 0 0 3px rgb(99 102 241 / 0.12);
 }
 
@@ -739,14 +739,14 @@ button:focus-visible {
   padding: 10px 12px 4px;
   font-size: 13px;
   line-height: 1.6;
-  color: #334155;
+  color: var(--color-text-body);
   overflow-y: auto;
   overscroll-behavior: contain;
   /* 兜底：无论怎么拖都不会高到把整面板撑爆 */
   max-height: 70vh;
 }
 .composer-input::placeholder {
-  color: #cbd5e1;
+  color: var(--color-border-strong);
 }
 
 .composer-foot {
@@ -771,7 +771,7 @@ button:focus-visible {
   font-size: 11.5px;
   line-height: 1.2;
   white-space: nowrap;
-  color: #64748b;
+  color: var(--color-text-secondary);
   background: transparent;
   border: 1px solid transparent;
   cursor: pointer;
@@ -791,18 +791,18 @@ button:focus-visible {
   max-width: 190px;
 }
 .composer-chip:hover {
-  background: #f1f5f9;
-  color: #334155;
+  background: var(--color-surface-alt);
+  color: var(--color-text-body);
 }
 .composer-chip.is-on {
-  color: #4f46e5;
-  background: #eef2ff;
-  border-color: #e0e7ff;
+  color: var(--color-accent-hover);
+  background: var(--color-accent-light);
+  border-color: var(--color-accent-soft);
 }
 .composer-chip.is-warn {
-  color: #b45309;
-  background: #fffbeb;
-  border-color: #fde68a;
+  color: var(--color-warning);
+  background: var(--color-warning-light);
+  border-color: var(--color-warning);
 }
 
 /* 发送按钮：圆形，有内容时才亮起 */
@@ -813,8 +813,8 @@ button:focus-visible {
   width: 32px;
   height: 32px;
   border-radius: 999px;
-  color: #ffffff;
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  color: var(--color-on-accent);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-hover));
   box-shadow: 0 4px 12px -4px rgb(79 70 229 / 0.5);
   transition: transform 0.16s ease, box-shadow 0.2s ease, opacity 0.2s ease, background 0.2s ease;
 }
@@ -826,21 +826,21 @@ button:focus-visible {
   transform: scale(0.94);
 }
 .composer-send:disabled {
-  background: #e2e8f0;
-  color: #94a3b8;
+  background: var(--color-border);
+  color: var(--color-text-muted);
   box-shadow: none;
   cursor: not-allowed;
 }
 .composer-stop {
-  background: linear-gradient(135deg, #f43f5e, #e11d48);
-  box-shadow: 0 4px 12px -4px rgb(225 29 72 / 0.5);
+  background: var(--color-danger);
+  box-shadow: 0 4px 12px -4px rgb(239 68 68 / 0.5);
 }
 .composer-hint {
   margin-top: 5px;
   padding-left: 2px;
   font-size: 10.5px;
   line-height: 1.5;
-  color: #cbd5e1;
+  color: var(--color-border-strong);
   user-select: none;
   white-space: nowrap;
   overflow: hidden;
@@ -859,9 +859,9 @@ button:focus-visible {
   padding: 4px 10px;
   border-radius: 999px;
   font-size: 11.5px;
-  color: #64748b;
+  color: var(--color-text-secondary);
   background: rgb(255 255 255 / 0.92);
-  border: 1px solid #eef2f7;
+  border: 1px solid var(--color-border-light);
   box-shadow: 0 4px 14px -6px rgb(15 23 42 / 0.22);
   backdrop-filter: blur(4px);
   pointer-events: none;
@@ -869,7 +869,7 @@ button:focus-visible {
 }
 .ai-thinking-pill .elapsed {
   font-variant-numeric: tabular-nums;
-  color: #a3b0c2;
+  color: var(--color-text-muted);
 }
 
 /* 生成中的实时状态行：思考中 · 12s */
@@ -879,12 +879,12 @@ button:focus-visible {
   gap: 8px;
   padding: 2px 0;
   font-size: 11.5px;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   animation: fadeIn 0.2s ease backwards;
 }
 .ai-thinking-live .elapsed {
   font-variant-numeric: tabular-nums;
-  color: #b6c2d2;
+  color: var(--color-text-muted);
 }
 
 /* 通用下拉浮层（模型选择、排序方式共用同一套观感） */
@@ -896,8 +896,8 @@ button:focus-visible {
   overflow-y: auto;
   padding: 4px;
   border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   box-shadow: 0 16px 32px -12px rgb(15 23 42 / 0.28);
   animation: composerMenuIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -925,25 +925,25 @@ button:focus-visible {
   padding: 7px 9px;
   border-radius: 8px;
   font-size: 12px;
-  color: #475569;
+  color: var(--color-text-secondary);
   text-align: left;
   transition: background-color 0.13s ease;
 }
 .composer-menu-item:hover,
 .pop-menu-item:hover {
-  background: #f1f5f9;
+  background: var(--color-surface-alt);
 }
 .composer-menu-item.is-active,
 .pop-menu-item.is-active {
-  color: #4f46e5;
-  background: #eef2ff;
+  color: var(--color-accent-hover);
+  background: var(--color-accent-light);
   font-weight: 500;
 }
 .composer-menu-sep,
 .pop-menu-sep {
   height: 1px;
   margin: 4px 6px;
-  background: #f1f5f9;
+  background: var(--color-surface-alt);
 }
 
 /* 排序触发按钮：替代原生 select，风格与面板一致 */
@@ -954,13 +954,13 @@ button:focus-visible {
   padding: 2px 5px;
   border-radius: 7px;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 .sort-trigger:hover,
 .sort-trigger.is-open {
-  background: #ffffff;
-  color: #4f46e5;
+  background: var(--color-surface);
+  color: var(--color-accent-hover);
 }
 
 /* ========== AI 面板：头部与整体容器 ========== */
@@ -969,8 +969,8 @@ button:focus-visible {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid rgb(241 245 249);
-  background: linear-gradient(180deg, #fbfcfe, #ffffff);
+  border-bottom: 1px solid var(--color-surface-alt);
+  background: var(--color-surface);
 }
 
 /* 会话切换：标题 + 模型副标题，整块可点 */
@@ -987,8 +987,8 @@ button:focus-visible {
   transition: background-color 0.16s ease, border-color 0.16s ease;
 }
 .ai-session-btn:hover {
-  background: #f8fafc;
-  border-color: #eef2f7;
+  background: var(--color-bg);
+  border-color: var(--color-border-light);
 }
 .ai-session-badge {
   display: inline-flex;
@@ -998,8 +998,8 @@ button:focus-visible {
   height: 24px;
   flex-shrink: 0;
   border-radius: 8px;
-  color: #ffffff;
-  background: linear-gradient(135deg, #818cf8, #4f46e5);
+  color: var(--color-on-accent);
+  background: linear-gradient(135deg, var(--color-accent-muted), var(--color-accent-hover));
   box-shadow: 0 3px 10px -4px rgb(79 70 229 / 0.6);
 }
 
@@ -1012,23 +1012,23 @@ button:focus-visible {
   height: 28px;
   flex-shrink: 0;
   border-radius: 9px;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 .ai-icon-btn:hover {
-  background: #f1f5f9;
-  color: #4f46e5;
+  background: var(--color-surface-alt);
+  color: var(--color-accent-hover);
 }
 .ai-icon-btn:active {
   transform: scale(0.92);
 }
 .ai-icon-btn.is-danger:hover {
-  background: #fef2f2;
-  color: #e11d48;
+  background: var(--color-danger-light);
+  color: var(--color-danger);
 }
 .ai-icon-btn.is-on {
-  background: #eef2ff;
-  color: #4f46e5;
+  background: var(--color-accent-light);
+  color: var(--color-accent-hover);
 }
 
 /* ========== AI 空状态 ========== */
@@ -1050,20 +1050,20 @@ button:focus-visible {
   height: 44px;
   margin-bottom: 4px;
   border-radius: 14px;
-  color: #ffffff;
-  background: linear-gradient(135deg, #a5b4fc, #6366f1);
+  color: var(--color-on-accent);
+  background: linear-gradient(135deg, var(--color-accent-muted), var(--color-accent));
   box-shadow: 0 10px 24px -10px rgb(99 102 241 / 0.7);
 }
 .ai-empty-title {
   font-size: 13.5px;
   font-weight: 600;
-  color: #334155;
+  color: var(--color-text-body);
 }
 .ai-empty-desc {
   max-width: 260px;
   font-size: 11.5px;
   line-height: 1.7;
-  color: #94a3b8;
+  color: var(--color-text-muted);
 }
 .ai-empty-chips {
   display: flex;
@@ -1075,16 +1075,16 @@ button:focus-visible {
 .ai-empty-chip {
   padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid #e8edf5;
-  background: #ffffff;
+  border: 1px solid var(--color-border-light);
+  background: var(--color-surface);
   font-size: 11.5px;
-  color: #64748b;
+  color: var(--color-text-secondary);
   transition: all 0.16s ease;
 }
 .ai-empty-chip:hover {
-  border-color: #c7d2fe;
-  color: #4f46e5;
-  background: #f8faff;
+  border-color: var(--color-accent-muted);
+  color: var(--color-accent-hover);
+  background: var(--color-accent-light);
   transform: translateY(-1px);
 }
 
@@ -1097,7 +1097,7 @@ button:focus-visible {
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
-  background: rgb(15 23 42 / 0.22);
+  background: var(--color-overlay);
   backdrop-filter: blur(3px);
   animation: fadeIn 0.18s ease backwards;
 }
@@ -1109,8 +1109,8 @@ button:focus-visible {
   max-height: 64vh;
   overflow: hidden;
   border-radius: 16px;
-  border: 1px solid #eef2f7;
-  background: #ffffff;
+  border: 1px solid var(--color-border-light);
+  background: var(--color-surface);
   box-shadow: 0 24px 48px -18px rgb(15 23 42 / 0.35);
   animation: scaleIn 0.2s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
@@ -1124,7 +1124,7 @@ button:focus-visible {
 .ai-modal-title {
   font-size: 13px;
   font-weight: 600;
-  color: #334155;
+  color: var(--color-text-body);
 }
 .ai-modal-search {
   padding: 0 12px 8px;
@@ -1140,7 +1140,7 @@ button:focus-visible {
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: #b6c2d2;
+  color: var(--color-text-muted);
 }
 .ai-session-item {
   display: flex;
@@ -1153,22 +1153,22 @@ button:focus-visible {
   transition: background-color 0.14s ease;
 }
 .ai-session-item:hover {
-  background: #f8fafc;
+  background: var(--color-bg);
 }
 .ai-session-item.is-active {
-  background: #eef2ff;
+  background: var(--color-accent-light);
 }
 .ai-session-item.is-active .ai-session-name {
-  color: #4338ca;
+  color: var(--color-accent-strong);
   font-weight: 600;
 }
 .ai-session-name {
   font-size: 12.5px;
-  color: #475569;
+  color: var(--color-text-secondary);
 }
 .ai-session-meta {
   font-size: 10.5px;
-  color: #a3b0c2;
+  color: var(--color-text-muted);
 }
 .ai-session-actions {
   display: flex;
@@ -1226,7 +1226,7 @@ button:focus-visible {
   width: 11px;
   height: 1.5px;
   border-radius: 999px;
-  background: #dbe2ec;
+  background: var(--color-border-light);
   transform-origin: right center;
   transition:
     transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
@@ -1235,11 +1235,11 @@ button:focus-visible {
     opacity 0.18s ease;
 }
 .chat-anchor-bar:hover .chat-anchor-line {
-  background: #8b93f8;
+  background: var(--color-accent-muted);
 }
 /* 当前正在查看的那条：更长、颜色更深即可辨识，不再加粗、不再套硬边框环 */
 .chat-anchor-bar.is-active .chat-anchor-line {
-  background: linear-gradient(90deg, #8b93f8, #4f46e5);
+  background: linear-gradient(90deg, var(--color-accent-muted), var(--color-accent-hover));
 }
 
 /*
@@ -1255,8 +1255,8 @@ button:focus-visible {
   max-width: 220px;
   padding: 6px 10px;
   border-radius: 10px;
-  background: rgb(30 41 59 / 0.95);
-  color: #f8fafc;
+  background: var(--color-tooltip);
+  color: var(--color-bg);
   font-size: 11px;
   line-height: 1.5;
   text-align: left;
@@ -1295,9 +1295,9 @@ button:focus-visible {
   width: 28px;
   height: 28px;
   border-radius: 999px;
-  color: #6366f1;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  color: var(--color-accent);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   box-shadow: 0 4px 14px -4px rgb(15 23 42 / 0.18);
   transition:
     transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
@@ -1307,8 +1307,8 @@ button:focus-visible {
   animation: chatJumpLatestIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chat-jump-latest:hover {
-  color: #4f46e5;
-  border-color: #c7d2fe;
+  color: var(--color-accent-hover);
+  border-color: var(--color-accent-muted);
   transform: translateY(-2px);
   box-shadow: 0 8px 18px -6px rgb(79 70 229 / 0.35);
 }
@@ -1331,7 +1331,7 @@ button:focus-visible {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #6366f1, #818cf8);
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-muted));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1341,16 +1341,16 @@ button:focus-visible {
 
 /* 用户消息气泡 */
 .user-bubble {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-hover) 100%);
+  color: var(--color-on-accent);
   border-radius: 18px 18px 4px 18px;
   box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
 }
 
 /* AI 消息气泡 */
 .ai-bubble {
-  background: #ffffff;
-  border: 1px solid #f1f5f9;
+  background: var(--color-surface);
+  border: 1px solid var(--color-surface-alt);
   border-radius: 18px 18px 18px 4px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.03);
 }
@@ -1365,7 +1365,7 @@ button:focus-visible {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #6366f1;
+  background: var(--color-accent);
   animation: thinkingBounce 1.4s ease-in-out infinite;
 }
 .thinking-dots span:nth-child(2) {
@@ -1400,20 +1400,20 @@ button:focus-visible {
   width: 48px;
   height: 48px;
   border-radius: 16px;
-  background: linear-gradient(135deg, #eef2ff, #e0e7ff);
+  background: linear-gradient(135deg, var(--color-accent-light), var(--color-accent-soft));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #6366f1;
+  color: var(--color-accent);
 }
 .empty-state-title {
   font-size: 14px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--color-text);
 }
 .empty-state-desc {
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   line-height: 1.5;
 }
 
@@ -1438,7 +1438,7 @@ button:focus-visible {
   align-items: center;
   gap: 4px;
   padding: 2px;
-  background: #f8fafc;
+  background: var(--color-bg);
   border-radius: 10px;
 }
 .chat-toolbar-btn {
@@ -1448,15 +1448,15 @@ button:focus-visible {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
   border: none;
   background: transparent;
   cursor: pointer;
 }
 .chat-toolbar-btn:hover {
-  background: #e2e8f0;
-  color: #475569;
+  background: var(--color-border);
+  color: var(--color-text-secondary);
 }
 
 /* 悬浮导航按钮容器 */
@@ -1478,24 +1478,24 @@ button:focus-visible {
   align-items: center;
   justify-content: center;
   font-size: 11px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  color: #64748b;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
   cursor: pointer;
   transition: background-color var(--transition-base), color var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base), opacity var(--transition-base);
 }
 .nav-floating-btn:hover:not(:disabled) {
-  background: #eef2ff;
-  color: #6366f1;
-  border-color: #c7d2fe;
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+  border-color: var(--color-accent-muted);
   box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
   transform: scale(1.05);
 }
 .nav-floating-btn:disabled {
-  background: #f8fafc;
-  color: #cbd5e1;
-  border-color: #f1f5f9;
+  background: var(--color-bg);
+  color: var(--color-border-strong);
+  border-color: var(--color-surface-alt);
   cursor: not-allowed;
 }
 
@@ -1508,16 +1508,16 @@ button:focus-visible {
   border-radius: 8px;
   font-size: 12px;
   font-weight: 500;
-  color: #94a3b8;
-  background: #f8fafc;
-  border: 1px solid #f1f5f9;
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+  border: 1px solid var(--color-surface-alt);
   transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
   cursor: pointer;
 }
 .msg-action-btn:hover {
-  background: #eef2ff;
-  color: #6366f1;
-  border-color: #c7d2fe;
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+  border-color: var(--color-accent-muted);
 }
 
 /* ========== MdPreview 字号覆盖（对齐编程 Agent 的正文观感） ========== */
@@ -1528,4 +1528,31 @@ button:focus-visible {
 .ai-markdown .md-editor-preview th {
   font-size: 13px !important;
   line-height: 1.75 !important;
+}
+
+/* ========== 编辑器与 AI 回复正文改用内置字体 ==========
+   md-editor-rt 自己给 .md-editor 写了一套系统字体栈，Markdown 编辑器的预览区和
+   AI 回复（同样是 MdPreview）都受它管，所以中文一直没走 MiSans。
+   用重复类名 .md-editor.md-editor 提高优先级，不依赖打包顺序。
+   输入区（CodeMirror）的字体写在 .md-editor .ͼ1 .cm-scroller 上，ͼ1 是哈希类名、
+   无法稳定命中，只能对它用 !important。
+   代码块不受影响：md-editor-rt 的 code / pre 规则更具体，仍是等宽字体。 */
+.md-editor.md-editor,
+.md-editor.md-editor .md-editor-preview,
+.md-editor.md-editor .md-editor-content,
+.md-editor.md-editor .md-editor-input-wrapper {
+  font-family: "MiSans VF", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+.md-editor .cm-scroller {
+  font-family: "MiSans VF", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Microsoft YaHei UI", "Microsoft YaHei", sans-serif !important;
+  /* md-editor-rt 把行高写死成 20px（.md-editor .ͼ1 .cm-scroller），
+     字号放大后文字会被上下裁切、行与行叠在一起。改成无单位倍数，随字号等比缩放。 */
+  line-height: 1.45 !important;
+}
+
+/* ========== 编辑器正文字号 ==========
+   md-editor-rt 给 .md-editor .cm-editor 写死了 font-size: 14px，偏小。
+   这里改成可调变量：默认 16px，Ctrl/⌘ + 滚轮缩放（逻辑见 NoteEditor.tsx）。 */
+.md-editor .cm-editor {
+  font-size: var(--md-editor-font-size, 16px) !important;
 }

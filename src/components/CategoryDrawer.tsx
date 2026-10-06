@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Category, Note } from '../types';
+import { Icon } from './Icon';
 
 interface CategoryDrawerProps {
   category: Category | null;
@@ -100,21 +101,17 @@ export const DrawerNoteItem: React.FC<{
             {note.title || '无标题'}
           </h4>
           <p
-            className={`text-[11px] mt-1 line-clamp-2 leading-relaxed ${
+            className={`text-[11px] mt-0.5 line-clamp-1 ${
               isSelected ? 'text-white/70' : 'text-slate-400'
             }`}
           >
             {getNotePreview(note.content)}
           </p>
           <div className="flex items-center gap-1 mt-1.5">
-            <svg
+            <Icon
+              name="sidebar-clock"
               className={`w-3 h-3 ${isSelected ? 'text-white/50' : 'text-slate-300'}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+            />
             <span className={`text-[10.5px] ${isSelected ? 'text-white/60' : 'text-slate-300'}`}>
               {formatNoteDate(note.updated_at)}
             </span>
@@ -132,9 +129,7 @@ export const DrawerNoteItem: React.FC<{
           }`}
           title="移到回收站"
         >
-          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
+          <Icon name="sidebar-trash" className="w-3 h-3" />
         </button>
       </div>
     </div>
@@ -161,7 +156,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   const open = isExpanded;
 
   const headerBase =
-    'relative w-full text-left px-2.5 py-2 rounded-xl transition-all duration-200 flex items-center gap-2 group/drawer border';
+    'relative w-full text-left px-2.5 py-1.5 rounded-lg transition-all duration-200 flex items-center gap-2 group/drawer border';
   const activeHeader = open
     ? 'bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-md shadow-primary-500/25 border-transparent'
     : 'text-slate-600 hover:bg-white/80 hover:text-slate-900 border-transparent hover:border-slate-200/60';
@@ -191,31 +186,19 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         title={open ? '收起' : '展开'}
       >
         {/* 展开箭头 */}
-        <svg
+        <Icon
+          name="sidebar-chevron-right-bold"
           className={`w-3 h-3 flex-shrink-0 transition-transform duration-300 ease-spring ${
             open ? 'rotate-90 text-white/80' : 'text-slate-400'
           }`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-        </svg>
+        />
 
-        <svg
+        <Icon
+          name={isAllNotes ? "sidebar-archive" : "sidebar-folder"}
           className={`w-4 h-4 flex-shrink-0 ${open ? 'text-white/80' : 'text-slate-400'}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          {isAllNotes ? (
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-          ) : (
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          )}
-        </svg>
+        />
 
-        <span className="text-[13px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
+        <span className="text-[13px] leading-tight flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
           {isAllNotes ? '全部笔记' : category?.name}
         </span>
 
@@ -233,9 +216,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
               }`}
               title="在此分组新建笔记"
             >
-              <svg className="w-3 h-3 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-              </svg>
+              <Icon name="sidebar-plus-bold" className="w-3 h-3 pointer-events-none" />
             </span>
           </span>
         )}
@@ -311,32 +292,24 @@ export const UncategorizedDrawer: React.FC<{
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={noteListId}
-        className={`relative w-full text-left px-2.5 py-2 rounded-xl transition-all duration-200 flex items-center gap-2 border border-dashed ${
+        className={`relative w-full text-left px-2.5 py-1.5 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed ${
           open
             ? 'bg-slate-600 text-white shadow-md !border-transparent'
             : 'text-slate-500 hover:bg-white/80 hover:text-slate-800 border-slate-300/70 hover:border-slate-300'
         }`}
         title={open ? '收起' : '展开'}
       >
-        <svg
+        <Icon
+          name="sidebar-chevron-right-bold"
           className={`w-3 h-3 flex-shrink-0 transition-transform duration-300 ease-spring ${
             open ? 'rotate-90 text-white/80' : 'text-slate-400'
           }`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-        </svg>
-        <svg
+        />
+        <Icon
+          name="sidebar-list"
           className={`w-4 h-4 flex-shrink-0 ${open ? 'text-white/80' : 'text-slate-400'}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-        </svg>
-        <span className="text-[13px] flex-1 truncate font-medium">未分类</span>
+        />
+        <span className="text-[13px] leading-tight flex-1 truncate font-medium">未分类</span>
         <span
           className={`badge text-[10px] flex-shrink-0 ${
             open ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
@@ -409,14 +382,10 @@ export const ChildNotesDrawer: React.FC<{
         }`}
         title={open ? '收起' : '展开'}
       >
-        <svg
+        <Icon
+          name="sidebar-chevron-right-bold"
           className={`w-3 h-3 flex-shrink-0 transition-transform duration-300 ease-spring ${open ? 'rotate-90' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-        </svg>
+        />
         <span className="text-[11.5px] flex-1 truncate">未归类</span>
         <span className="badge text-[10px] flex-shrink-0 bg-white/70 text-slate-500">{notes.length}</span>
       </button>

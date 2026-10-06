@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from "./Icon";
 
 export interface ContextMenuItem {
   label: string;
@@ -150,9 +151,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ items, position, onClo
                   {item.icon && <span className="w-4 h-4 flex-shrink-0 flex items-center justify-center">{item.icon}</span>}
                   <span className="flex-1">{item.label}</span>
                   {item.submenu && (
-                    <svg className="w-3.5 h-3.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
+                    <Icon name="menu-chevron-right" className="w-3.5 h-3.5 text-slate-300" />
                   )}
                 </button>
               </div>

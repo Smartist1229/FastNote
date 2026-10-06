@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Modal } from "./Modal";
 import { AiProviderSettings } from "./AiProviderModal";
 import { AiProvider, AiSettings, DEFAULT_AI_SETTINGS } from "../types";
+import { Icon } from "./Icon";
 
 interface AiSettingsModalProps {
   isOpen: boolean;
@@ -21,10 +22,10 @@ interface AiSettingsModalProps {
 type TabKey = "provider" | "chat" | "context" | "memory";
 
 const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
-  { key: "provider", label: "服务商", icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /> },
-  { key: "chat", label: "对话行为", icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-4 4v-4z" /> },
-  { key: "context", label: "上下文", icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1.5 3 4 3h8c2.5 0 4-1 4-3V7c0-2-1.5-3-4-3H8C5.5 4 4 5 4 7zm0 5h16M9 4v6" /> },
-  { key: "memory", label: "记忆", icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /> },
+  { key: "provider", label: "服务商", icon: <Icon name="settings-provider" className="w-3.5 h-3.5 flex-shrink-0" /> },
+  { key: "chat", label: "对话行为", icon: <Icon name="settings-chat" className="w-3.5 h-3.5 flex-shrink-0" /> },
+  { key: "context", label: "上下文", icon: <Icon name="settings-context" className="w-3.5 h-3.5 flex-shrink-0" /> },
+  { key: "memory", label: "记忆", icon: <Icon name="settings-memory" className="w-3.5 h-3.5 flex-shrink-0" /> },
 ];
 
 /** 一行开关 */
@@ -96,7 +97,7 @@ export const AiSettingsModal: React.FC<AiSettingsModalProps> = ({
                 tab === t.key ? "bg-primary-50 text-primary-600" : "text-slate-500 hover:bg-slate-50"
               }`}
             >
-              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">{t.icon}</svg>
+              {t.icon}
               <span className="truncate">{t.label}</span>
             </button>
           ))}

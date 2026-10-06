@@ -1,7 +1,7 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "2.1.8",
+  "version": "2.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,6 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@monaco-editor/react": "^4.7.0",
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@tauri-apps/plugin-fs": "~2.5.1",
@@ -25,7 +24,6 @@
     "katex": "^0.16.28",
     "md-editor-rt": "^6.5.1",
     "mermaid": "^11.15.0",
-    "monaco-editor": "^0.55.1",
     "prettier": "^3.8.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { AiPromptEntry } from "../types";
+import { Icon } from "./Icon";
 
 interface AiMemoryModalProps {
   isOpen: boolean;
@@ -131,7 +132,7 @@ export const AiMemoryModal: React.FC<AiMemoryModalProps> = ({ isOpen, entries, o
                     }`}
                   >
                     {entry.enabled && (
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                      <Icon name="memory-check" className="w-3 h-3" />
                     )}
                   </button>
                   <p className={`flex-1 min-w-0 text-xs leading-relaxed whitespace-pre-wrap break-words ${entry.enabled ? "text-slate-700" : "text-slate-400"}`}>

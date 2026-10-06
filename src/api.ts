@@ -191,3 +191,52 @@ export const setAppSetting = async (key: string, value: string): Promise<void> =
 export const deleteAppSetting = async (key: string): Promise<void> => {
   return await invoke('delete_app_setting', { key });
 };
+
+/* ---------------- 数据备份与恢复 ---------------- */
+
+/** 备份内容统计（导出/恢复后用于提示用户） */
+export interface BackupSummary {
+  notes: number;
+  categories: number;
+  providers: number;
+  sessions: number;
+  messages: number;
+  settings: number;
+  /** 备份文件的导出时间（ISO 字符串） */
+  exported_at: string | null;
+}
+
+/** 把全部数据写入指定路径的 JSON 备份文件（不含 AI 服务商的 api_key） */
+export const exportBackup = async (path: string): Promise<BackupSummary> => {
+  return await invoke<BackupSummary>('export_backup', { path });
+};
+
+/** 用备份文件覆盖当前数据；同机恢复会按「名称+类型+地址」保留已填的 api_key */
+export const importBackup = async (path: string): Promise<BackupSummary> => {
+  return await invoke<BackupSummary>('import_backup', { path });
+};
+
+/* ---------------- 分组导出 ---------------- */
+
+/** 压缩包里单篇笔记的文件格式 */
+export type CategoryZipFormat = 'md' | 'txt' | 'html' | 'json';
+/** 电子书格式 */
+export type CategoryEbookFormat = 'txt' | 'html' | 'epub';
+
+/** 把整个分组导出成压缩包（一篇笔记一个文件），返回导出的笔记数 */
+export const exportCategoryZip = async (
+  categoryId: number,
+  path: string,
+  format: CategoryZipFormat,
+): Promise<number> => {
+  return await invoke<number>('export_category_zip', { categoryId, path, format });
+};
+
+/** 把整个分组导出成电子书（章节按创建时间正序，最早创建的在最前），返回导出的章节数 */
+export const exportCategoryEbook = async (
+  categoryId: number,
+  path: string,
+  format: CategoryEbookFormat,
+): Promise<number> => {
+  return await invoke<number>('export_category_ebook', { categoryId, path, format });
+};

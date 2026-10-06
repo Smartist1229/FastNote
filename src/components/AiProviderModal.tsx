@@ -3,6 +3,7 @@ import * as api from "../api";
 import { AiProvider, AiProviderType } from "../types";
 import { Modal } from "./Modal";
 import { useToast } from "./Toast";
+import { Icon } from "./Icon";
 
 const providerDefaults: Record<AiProviderType, { name: string; baseUrl: string; path: string | null }> = {
   openai: {
@@ -384,9 +385,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                     onClick={() => openCreate(type)}
                     className="px-2.5 py-1.5 text-xs font-medium rounded-lg text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors flex items-center gap-1"
                   >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-                    </svg>
+                    <Icon name="provider-plus" className="w-3 h-3" />
                     {type === "openai" ? "OpenAI" : type === "google" ? "Google" : "Claude"}
                   </button>
                 ))}
@@ -430,9 +429,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                       className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-400 hover:text-primary-500 hover:bg-primary-50 transition-all"
                       title="编辑"
                     >
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
+                      <Icon name="provider-edit" className="w-3.5 h-3.5" />
                     </button>
                     {p.id === selectedProviderId && (
                       <div className="w-1.5 h-1.5 rounded-full bg-primary-500 flex-shrink-0" />
@@ -458,9 +455,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
           <>
             <div className="flex items-center gap-2 mb-2">
               <button onClick={closeForm} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 transition-colors">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
+                <Icon name="provider-back" className="w-4 h-4" />
               </button>
               <h3 className="text-sm font-semibold text-slate-700">
                 {editingId ? "编辑服务商" : "添加服务商"}

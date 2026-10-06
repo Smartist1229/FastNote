@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from "react";
+import { Icon } from "./Icon";
 import * as api from "../api";
 import { AiChatMessage, AiChatSession, AiProvider, AiPromptEntry, AiSettings } from "../types";
 import {
   buildFinalContent,
   cleanSessionTitle,
   compressTranscript,
+  estimateTokens,
   finalReplyText,
   firstLine,
   formatError,
@@ -51,6 +53,8 @@ interface AIChatPanelProps {
   currentNoteId?: number | null;
   onInsertText: (text: string) => void;
   onReplaceContent: (text: string) => void;
+  /** 把 AI 回复当作临时内容在编辑器里打开（只预览，不写入笔记） */
+  onOpenInEditor: (title: string, content: string) => void;
   onOpenProviderSettings: () => void;
   /** 打开「AI 记忆 / 前置提示词」设置 */
   onOpenAiMemory: () => void;
@@ -65,6 +69,8 @@ interface AIChatPanelProps {
 }
 
 const MIN_PANEL_WIDTH = 350; const MAX_PANEL_WIDTH = 640; const DEFAULT_PANEL_WIDTH = 400;
+/** 内容区保底宽度：面板上限 = 可用宽度(窗口宽 − 侧栏) − 该值，窗口越宽面板越能放宽 */
+const CONTENT_MIN_WIDTH = 455;
 /** 距底部小于该像素即视为"贴底"，此时才自动跟随最新回复 */
 const STICK_BOTTOM_THRESHOLD = 48;
 /** 阅读线：容器顶部往下这么多像素以内的最后一条用户消息，就是"当前所在的历史段落" */
@@ -707,10 +713,23 @@ const MSG_ACTION_BTN =
 
 /** 复制图标 */
 const CopyIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
-  <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-  </svg>
+  <Icon name="ai-copy" className={className} />
 );
+
+/**
+ * 一条消息占用的 token 估算。AI 回复把「思考过程 + 工具调用与结果」一并计入，
+ * 因为它们同样要回传给模型、同样占上下文。
+ * 复用上下文预算的同一套估算规则，保证两处口径一致。
+ */
+const msgTokens = (msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[] }): number => {
+  const parts = [msg.content || ""];
+  if (msg.thinking) parts.push(msg.thinking);
+  if (msg.tools?.length) parts.push(JSON.stringify(msg.tools));
+  return estimateTokens(parts.join("\n"));
+};
+
+/** token 数展示：过千用 k，避免窄面板里挤出一长串数字 */
+const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
 /**
  * 单条消息（用户气泡 / AI 无气泡回复）。
@@ -718,7 +737,7 @@ const CopyIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
  * 若不隔离，历史消息里的每一个 MdPreview（markdown 重解析）都会被重新渲染一遍，界面就会卡。
  */
 const ChatMessageRow = memo(function ChatMessageRow({
-  msg, index, expanded, toolOpen, isSending, showToolTrace, onToggleThinking, onToggleTool, onInsertText, onReplaceContent, onCopyText,
+  msg, index, expanded, toolOpen, isSending, showToolTrace, onToggleThinking, onToggleTool, onInsertText, onReplaceContent, onCopyText, onOpenInEditor,
 }: {
   msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number };
   index: number;
@@ -733,10 +752,18 @@ const ChatMessageRow = memo(function ChatMessageRow({
   onInsertText: (text: string) => void;
   onReplaceContent: (text: string) => void;
   onCopyText: (text: string) => void;
+  /** 在编辑器里临时打开这条 AI 回复 */
+  onOpenInEditor: (content: string) => void;
 }) {
   const msgThinking = msg.thinking;
   const msgTools = msg.tools;
   const delay = `${Math.min(index, 5) * 15}ms`;
+  /** 底部元信息：时间 · 用时 · token（AI 回复的 token 含思考过程与工具调用） */
+  const metaText = [
+    msg.at ? formatMessageTime(msg.at) : "",
+    msg.thinkMs ? `用时 ${(msg.thinkMs / 1000).toFixed(1)}s` : "",
+    `${formatTokens(msgTokens(msg))} tok`,
+  ].filter(Boolean).join(" · ");
 
   if (msg.role === 'user') {
     // 用户消息：浅色气泡、右对齐（对齐主流编程 Agent 的样式）
@@ -744,7 +771,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       <div data-chat-anchor="true" className="group/msg flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
         <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-slate-100 text-slate-700 max-w-[85%]">{msg.content}</div>
         <div className="mt-0.5 mr-1 flex items-center gap-0.5">
-          {msg.at ? <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}</span> : null}
+          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-slate-300 tabular-nums select-none" title="整条消息的估算 token">{msg.at ? `${formatMessageTime(msg.at)} · ` : ""}{formatTokens(msgTokens(msg))} tok</span>
           <button
             onClick={() => onCopyText(msg.content)}
             className={MSG_ACTION_BTN}
@@ -767,7 +794,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             className="flex w-full items-center gap-1.5 text-left text-[11.5px] text-slate-400 hover:text-slate-600 transition-colors py-0.5"
             title={expanded ? "收起思考过程" : "展开思考过程"}
           >
-            <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+            <Icon name="ai-lightbulb" className="w-3 h-3 flex-shrink-0" />
             <span className="flex-shrink-0">思考</span>
             {/* 预览始终保留：展开/收起只靠右侧箭头旋转表示，不要把内容换成"收起"两个字 */}
             <span className="text-slate-300 flex-shrink-0">·</span>
@@ -775,7 +802,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             <span className="flex-shrink-0 text-[10.5px] text-slate-300 opacity-0 group-hover/thinking:opacity-100 transition-opacity">
               {expanded ? "收起" : "展开"}
             </span>
-            <svg className={"w-3 h-3 flex-shrink-0 transition-transform " + (expanded ? "rotate-90" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+            <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 transition-transform " + (expanded ? "rotate-90" : "")} />
           </button>
           {expanded && (<div className="thinking-body chat-scrollbar mt-0.5 px-3 py-2 bg-slate-50 rounded-lg text-xs text-slate-500 leading-relaxed whitespace-pre-wrap border border-slate-100">{msgThinking}</div>)}
         </div>
@@ -800,14 +827,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
                   <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse" />
                 </span>
               ) : tool.ok ? (
-                <svg className="w-3 h-3 flex-shrink-0 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                <Icon name="ai-file-text" className="w-3 h-3 flex-shrink-0 text-slate-300" />
               ) : (
-                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16a2 2 0 001.73 3z" /></svg>
+                <Icon name="ai-alert-triangle" className="w-3 h-3 flex-shrink-0" />
               )}
               <span className="flex-shrink-0">{TOOL_LABELS[tool.name] || tool.name}</span>
               {tool.detail ? (<><span className="text-slate-300 flex-shrink-0">·</span><span className="truncate" title={tool.detail}>{tool.detail}</span></>) : null}
               {running ? <span className="flex-shrink-0 text-slate-300">执行中…</span> : null}
-              <svg className={"w-3 h-3 flex-shrink-0 text-slate-300 transition-transform " + (open ? "rotate-90" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+              <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 text-slate-300 transition-transform " + (open ? "rotate-90" : "")} />
             </button>
             {open && (
               <pre className="mt-0.5 mb-1 ml-[18px] px-2 py-1.5 rounded-lg bg-slate-50 border border-slate-100 text-[10.5px] leading-relaxed text-slate-500 whitespace-pre-wrap break-all">{`调用 ${JSON.stringify({ name: tool.name, args: tool.args })}　结果 ${
@@ -827,12 +854,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
         <div className="pt-0.5 flex items-center gap-0.5">
           {msg.content && !isSending && (
             <>
-              <button onClick={() => onInsertText(msg.content)} className={MSG_ACTION_BTN} title="将内容插入到光标处"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg></button>
-              <button onClick={() => onReplaceContent(msg.content)} className={`${MSG_ACTION_BTN} hover:!text-amber-600 hover:!bg-amber-50`} title="覆盖当前打开的笔记"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></button>
+              <button onClick={() => onInsertText(msg.content)} className={MSG_ACTION_BTN} title="将内容插入到光标处"><Icon name="ai-plus" className="w-3.5 h-3.5" /></button>
+              <button onClick={() => onReplaceContent(msg.content)} className={`${MSG_ACTION_BTN} hover:!text-amber-600 hover:!bg-amber-50`} title="覆盖当前打开的笔记"><Icon name="ai-replace" className="w-3.5 h-3.5" /></button>
               <button onClick={() => onCopyText(msg.content)} className={MSG_ACTION_BTN} title="复制消息"><CopyIcon /></button>
+              <button onClick={() => onOpenInEditor(msg.content)} className={`${MSG_ACTION_BTN} hover:!text-sky-600 hover:!bg-sky-50`} title="在编辑器中打开（临时预览，不会保存为笔记）"><Icon name="open-in-editor" className="w-3.5 h-3.5" /></button>
             </>
           )}
-          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-slate-300 tabular-nums select-none">{formatMessageTime(msg.at)}{msg.thinkMs ? `${msg.at ? " · " : ""}用时 ${(msg.thinkMs / 1000).toFixed(1)}s` : ""}</span>
+          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-slate-300 tabular-nums select-none" title="整条回复的估算 token（含思考过程与工具调用）">{metaText}</span>
         </div>
       ) : null}
     </div>
@@ -1042,7 +1070,7 @@ const formatMessageTime = (at?: number): string => {
   return `${d.getFullYear()}-${md} ${hh}:${mm}`;
 };
 
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, onClose }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, onClose }) => {
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
   const [sessions, setSessions] = useState<AiChatSession[]>([]);
@@ -1066,6 +1094,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [isSending, setIsSending] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  /** 面板父容器（主内容区）的实际宽度：用它算上限，自动包含侧栏折叠、窗口缩放等所有布局变化 */
+  const [availWidth, setAvailWidth] = useState(0);
+  const panelRef = useRef<HTMLElement | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
@@ -1170,17 +1201,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     loadProviders();
     loadSessions();
   }, [isOpen]);
-  // 窗口变窄时收缩面板宽度，避免挤压编辑器到不可用
-  useEffect(() => {
+  // 监听面板父容器（主内容区）的实际宽度：窗口缩放、侧栏折叠、全屏切换等任何布局变化都会触发重算
+  useLayoutEffect(() => {
     if (!isOpen) return;
-    const clamp = () => {
-      const maxByViewport = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, Math.round(window.innerWidth * 0.55)));
-      setPanelWidth((w) => Math.min(w, maxByViewport));
-    };
-    clamp();
-    window.addEventListener('resize', clamp);
-    return () => window.removeEventListener('resize', clamp);
+    const host = panelRef.current?.parentElement;
+    if (!host) return;
+    const update = () => setAvailWidth(host.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(host);
+    return () => ro.disconnect();
   }, [isOpen]);
+  /** 面板上限：可用宽度 − 内容区保底；窗口越宽上限越大（全屏时可达 MAX_PANEL_WIDTH） */
+  const maxPanelWidth = availWidth > 0
+    ? Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, availWidth - CONTENT_MIN_WIDTH))
+    : MAX_PANEL_WIDTH;
+  /**
+   * 实际渲染宽度 = min(用户设定宽度, 上限)。
+   * 做成派生值而不是回写 state：窗口变小时必然跟着收窄（不可能挤压内容区），
+   * 窗口再变大时会恢复用户原本设定的宽度。
+   */
+  const effectivePanelWidth = Math.min(panelWidth, maxPanelWidth);
   // Reload providers when modified via provider modal
   useEffect(() => {
     const handler = () => { loadProviders(); };
@@ -1823,12 +1864,37 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   // 这里用 ref 固定住，包装成永不变化的引用。
   const insertTextRef = useRef(onInsertText);
   const replaceContentRef = useRef(onReplaceContent);
+  const openInEditorRef = useRef(onOpenInEditor);
   useEffect(() => {
     insertTextRef.current = onInsertText;
     replaceContentRef.current = onReplaceContent;
+    openInEditorRef.current = onOpenInEditor;
   });
   const insertTextStable = useCallback((text: string) => insertTextRef.current(text), []);
   const replaceContentStable = useCallback((text: string) => replaceContentRef.current(text), []);
+  /** AI 回复「在编辑器中打开」：从正文首个有效行提炼标题，提炼不出时回退为带时间的通用标题 */
+  const openInEditorStable = useCallback((content: string) => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    const stamp = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+
+    // 首个非空、且不是纯分隔符的行
+    const firstLine = content
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !/^[-*_`>|=+]+$/.test(line)) ?? "";
+    const cleaned = firstLine
+      .replace(/^#{1,6}\s*/, "")                          // 标题井号
+      .replace(/^([-*+]|\d+[.)])\s+/, "")                 // 列表符号 / 有序编号
+      .replace(/^>\s*/, "")                               // 引用符号
+      .replace(/\*\*|__|`|\*/g, "")                       // 加粗 / 斜体 / 行内代码
+      .replace(/^[【\[](.+?)[】\]]$/, "$1")               // 整体被括号包裹
+      .replace(/[。：:，,、；;！!？?~～·]+$/, "")         // 结尾标点
+      .trim();
+
+    const title = cleaned.length > 20 ? `${cleaned.slice(0, 20)}…` : cleaned;
+    openInEditorRef.current(title || `AI 回复 ${stamp}`, content);
+  }, []);
   const copyTextStable = useCallback((text: string) => {
     navigator.clipboard.writeText(text).then(
       () => showToast("已复制", "success"),
@@ -1993,7 +2059,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     const mm = (ev: MouseEvent) => {
       if (!dragRef.current) return;
       // 必须取整：小数宽度会让面板内所有文字落在半个像素上，看起来发虚
-      setPanelWidth(Math.round(Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, window.innerWidth - ev.clientX))));
+      setPanelWidth(Math.round(Math.max(MIN_PANEL_WIDTH, Math.min(maxPanelWidth, window.innerWidth - ev.clientX))));
     };
     const mu = () => {
       dragRef.current = false;
@@ -2006,7 +2072,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     };
     document.addEventListener('mousemove', mm);
     document.addEventListener('mouseup', mu);
-  }, []);
+  }, [maxPanelWidth]);
 
   /* ======================= 派生数据（必须全部在 isOpen 早退之前） =======================
    * React 要求 hooks 每次渲染都以相同顺序调用；这里曾经把 useMemo 放在
@@ -2133,8 +2199,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    *   showCount（≥ 440）：才显示字数，否则让位给按钮
    * 底部操作条本身也做了收缩处理：左侧胶囊可压缩，右侧发送 / 清空固定不被挤出。
    */
-  const compact = panelWidth < 380;
-  const showCount = panelWidth >= 440;
+  const compact = effectivePanelWidth < 380;
+  const showCount = effectivePanelWidth >= 440;
   /** 生成中的用时（秒）：让用户知道它在干活，而不是卡住了。按"整轮"计，工具执行的时间也算在内 */
   const elapsedSec = isSending && turnStartedAtRef.current
     ? Math.max(0, Math.floor((Date.now() - turnStartedAtRef.current) / 1000))
@@ -2167,8 +2233,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
   return (<>
     <aside
+      ref={panelRef}
       className="ai-panel relative flex-shrink-0 border-l border-slate-200/80 bg-white flex flex-col h-full"
-      style={{ width: panelWidth }}
+      style={{ width: effectivePanelWidth }}
     >
       <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary-200/50 active:bg-primary-300/50 transition-colors z-10" onMouseDown={onResize}/>
       {/* 头部：左边是"会话卡片"（标题 + 当前模型），右边是一组图标按钮 */}
@@ -2179,7 +2246,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           title="切换 / 管理对话"
         >
           <span className="ai-session-badge">
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+            <Icon name="ai-chat" className="w-3.5 h-3.5" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12.5px] font-medium text-slate-700">{activeSession?.title || "新对话"}</span>
@@ -2187,21 +2254,21 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
               {activeProvider ? `${activeProvider.name}${activeModel ? ` · ${activeModel}` : " · 未选模型"}` : "未配置服务商"}
             </span>
           </span>
-          <svg className="w-3 h-3 flex-shrink-0 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M19 9l-7 7-7-7" /></svg>
+          <Icon name="ai-chevron-down" className="w-3 h-3 flex-shrink-0 text-slate-300" />
         </button>
 
         <button className="ai-icon-btn" onClick={handleNewSession} title="新建对话">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v16m8-8H4" /></svg>
+          <Icon name="ai-plus-bold" className="w-3.5 h-3.5" />
         </button>
         <button className="ai-icon-btn" onClick={onOpenAiMemory} title="AI 记忆 / 前置提示词">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+          <Icon name="ai-lightbulb-bold" className="w-3.5 h-3.5" />
         </button>
         <button className="ai-icon-btn" onClick={onOpenProviderSettings} title="AI 设置">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+          <Icon name="ai-settings" className="w-3.5 h-3.5" />
         </button>
         {onClose && (
           <button className="ai-icon-btn" title="关闭 AI 对话" onClick={onClose}>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            <Icon name="ai-close" className="w-3.5 h-3.5" />
           </button>
         )}
       </div>
@@ -2223,14 +2290,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         <div ref={scrollContentRef} className="space-y-4">
         {!activeProvider ? (
           <div className="ai-empty">
-            <div className="ai-empty-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg></div>
+            <div className="ai-empty-icon"><Icon name="ai-bolt" className="w-5 h-5" /></div>
             <p className="ai-empty-title">还没有可用的 AI 服务商</p>
             <p className="ai-empty-desc">填一个 API Key 就能用：支持 OpenAI 兼容 / Claude / Gemini 协议。</p>
             <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">去配置服务商</button>
           </div>
         ) : allMsgs.length === 0 ? (
           <div className="ai-empty">
-            <div className="ai-empty-icon"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.9} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg></div>
+            <div className="ai-empty-icon"><Icon name="ai-sparkles" className="w-5 h-5" /></div>
             <p className="ai-empty-title">{activeModel ? "开始对话" : "还没有勾选模型"}</p>
             <p className="ai-empty-desc">
               {activeModel
@@ -2261,6 +2328,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             onInsertText={insertTextStable}
             onReplaceContent={replaceContentStable}
             onCopyText={copyTextStable}
+            onOpenInEditor={openInEditorStable}
           />
         )))}
         {isSending && (
@@ -2317,9 +2385,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           title="回到最新回复"
           aria-label="回到最新回复"
         >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-          </svg>
+          <Icon name="ai-arrow-down" className="w-3.5 h-3.5" />
         </button>
       )}
       </div>
@@ -2387,13 +2453,13 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                     api.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
                   }}
                 >
-                  <svg className={"w-3 h-3 flex-shrink-0 " + (m === activeModel ? "opacity-100" : "opacity-0")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                  <Icon name="ai-check" className={"w-3 h-3 flex-shrink-0 " + (m === activeModel ? "opacity-100" : "opacity-0")} />
                   <span className="truncate">{m}</span>
                 </button>
               ))}
               <div className="composer-menu-sep" />
               <button className="composer-menu-item" onClick={() => { setModelMenuOpen(false); onOpenProviderSettings(); }}>
-                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                <Icon name="ai-settings-bold" className="w-3 h-3 flex-shrink-0" />
                 <span>管理模型 / 服务商…</span>
               </button>
             </div>
@@ -2438,14 +2504,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
               disabled={!activeProvider}
               title={models.length === 0 ? "尚未勾选模型，点开去设置" : `当前模型：${activeModel || "未选"}（点击切换）`}
             >
-              <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+              <Icon name="ai-monitor" className="w-3 h-3 flex-shrink-0" />
               <span className="truncate">{models.length === 0 ? (activeProvider ? "未勾选模型" : "无服务商") : (activeModel || "选择模型")}</span>
-              <svg className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (modelMenuOpen ? "rotate-180" : "")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 15l7-7 7 7" /></svg>
+              <Icon name="ai-chevron-up" className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (modelMenuOpen ? "rotate-180" : "")} />
             </button>
 
             {models.length === 0 && activeProvider && (
               <button className="composer-chip is-warn" onClick={onOpenProviderSettings} title="尚未勾选模型，点击去设置">
-                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16a2 2 0 001.73 3z" /></svg>
+                <Icon name="ai-alert-triangle" className="w-3 h-3 flex-shrink-0" />
                 {!compact && <span>去设置</span>}
               </button>
             )}
@@ -2455,7 +2521,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
               onClick={() => setConfirmMode(!confirmMode)}
               title={confirmMode ? "写操作执行前需要确认（点击改为自动执行）" : "写操作直接执行（点击改为需确认）"}
             >
-              <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+              <Icon name="ai-shield-check" className="w-3 h-3 flex-shrink-0" />
               {!compact && <span>{confirmMode ? "需确认" : "自动"}</span>}
             </button>
 
@@ -2465,7 +2531,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 onClick={() => setAttachNote(v => !v)}
                 title={attachNote ? `已附上当前笔记《${noteTitle || "未命名"}》作为上下文（点击取消）` : "不附上当前笔记（点击改为附上）"}
               >
-                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                <Icon name="ai-file-text" className="w-3 h-3 flex-shrink-0" />
                 {!compact && <span>附笔记</span>}
               </button>
             ) : null}
@@ -2483,12 +2549,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 title="清空当前会话的显示内容"
                 onClick={() => { setMessages([]); resetStreaming(); resetToLatest(); }}
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                <Icon name="ai-trash" className="w-3.5 h-3.5" />
               </button>
             )}
             {isSending ? (
               <button className="composer-send composer-stop" onClick={handleStop} title="停止生成（Esc）" aria-label="停止生成">
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+                <Icon name="ai-stop" className="w-3.5 h-3.5" />
               </button>
             ) : (
               <button
@@ -2498,7 +2564,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 title={!activeModel ? "请先选择模型" : "发送（Enter）"}
                 aria-label="发送"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 19V5m0 0l-6 6m6-6l6 6" /></svg>
+                <Icon name="ai-send" className="w-4 h-4" />
               </button>
             )}
           </div>
@@ -2520,17 +2586,17 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 title="新建对话"
                 onClick={() => { setShowSessionPicker(false); handleNewSession(); }}
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v16m8-8H4" /></svg>
+                <Icon name="ai-plus-bold" className="w-3.5 h-3.5" />
               </button>
               <button className="ai-icon-btn" title="关闭" onClick={() => setShowSessionPicker(false)}>
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                <Icon name="ai-close" className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
 
           <div className="ai-modal-search">
             <div className="relative">
-              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" /></svg>
+              <Icon name="ai-search" className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" />
               <input
                 autoFocus
                 value={sessionQuery}
@@ -2583,7 +2649,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                         title="重命名"
                         onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditTitle(s.title); }}
                       >
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                        <Icon name="ai-edit" className="w-3 h-3" />
                       </button>
                       <button
                         className="ai-icon-btn is-danger !w-6 !h-6"
@@ -2601,7 +2667,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                           } catch { showToast("删除失败", "error"); }
                         }}
                       >
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        <Icon name="ai-trash" className="w-3 h-3" />
                       </button>
                     </div>
                   </div>
@@ -2619,7 +2685,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         <div className="space-y-1.5 mb-4">
           {pendingConfirm.calls.map((c, i) => {
             return (<div key={i} className="flex items-center gap-2 text-xs text-slate-600">
-            <svg className="w-3.5 h-3.5 flex-shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+            <Icon name="ai-warning" className="w-3.5 h-3.5 flex-shrink-0 text-amber-500" />
             <span>{summarizeToolCall(c)}</span>
           </div>);
           })}

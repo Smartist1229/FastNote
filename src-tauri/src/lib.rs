@@ -423,6 +423,708 @@ fn delete_app_setting(key: String, state: State<AppState>) -> Result<(), String>
     Ok(())
 }
 
+/* ---------------- 数据备份与恢复 ----------------
+ * 备份文件是一个 JSON：format 标记 + 各表数据，用于换机迁移或整体还原。
+ * 刻意**不导出 AI 服务商的 api_key**：它是跟着当前机器/用户派生的密文，
+ * 换机后本来就解不开，导出明文则等于把密钥多抄一份出去。
+ */
+
+const BACKUP_FORMAT: &str = "fastnote-backup";
+const BACKUP_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct BackupSummary {
+    pub notes: usize,
+    pub categories: usize,
+    pub providers: usize,
+    pub sessions: usize,
+    pub messages: usize,
+    pub settings: usize,
+    /// 备份文件的导出时间（恢复时从文件里带回，便于界面展示）
+    pub exported_at: Option<String>,
+}
+
+/// 按行查询并映射成 JSON 数组
+fn query_rows<F>(conn: &Connection, sql: &str, mut map: F) -> Result<Vec<Value>, String>
+where
+    F: FnMut(&rusqlite::Row) -> rusqlite::Result<Value>,
+{
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| map(row)).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn json_str(v: &Value, key: &str) -> String {
+    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+fn json_opt_str(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+fn json_i64(v: &Value, key: &str) -> i64 {
+    v.get(key).and_then(|x| x.as_i64()).unwrap_or(0)
+}
+
+fn json_opt_i64(v: &Value, key: &str) -> Option<i64> {
+    v.get(key).and_then(|x| x.as_i64())
+}
+
+fn json_bool(v: &Value, key: &str) -> bool {
+    v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
+}
+
+/// 取数组字段：缺失或类型不对都当空数组，避免一个坏字段让整次恢复失败
+fn json_arr<'a>(data: &'a Value, key: &str) -> &'a [Value] {
+    data.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[])
+}
+
+/// 时间字段缺失时补当前时间（列上有 NOT NULL 约束）
+fn non_empty_or_now(text: String) -> String {
+    if text.trim().is_empty() {
+        Local::now().to_rfc3339()
+    } else {
+        text
+    }
+}
+
+#[tauri::command]
+fn export_backup(state: State<AppState>, path: String, app: AppHandle) -> Result<BackupSummary, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+
+    let categories = query_rows(
+        &conn,
+        "SELECT id, name, created_at FROM categories ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "created_at": row.get::<_, String>(2)?,
+            }))
+        },
+    )?;
+
+    let notes = query_rows(
+        &conn,
+        "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at
+         FROM notes ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "title": row.get::<_, String>(1)?,
+                "content": row.get::<_, String>(2)?,
+                "category_id": row.get::<_, Option<i64>>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+                "updated_at": row.get::<_, String>(5)?,
+                "is_deleted": row.get::<_, i64>(6)? != 0,
+                "deleted_at": row.get::<_, Option<String>>(7)?,
+            }))
+        },
+    )?;
+
+    // api_key 不在查询列里：备份文件从源头上就不含密钥
+    let providers = query_rows(
+        &conn,
+        "SELECT id, name, provider_type, api_base_url, api_path, enabled_model, enabled_models,
+                created_at, updated_at
+         FROM ai_providers ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "provider_type": row.get::<_, String>(2)?,
+                "api_base_url": row.get::<_, String>(3)?,
+                "api_path": row.get::<_, Option<String>>(4)?,
+                "enabled_model": row.get::<_, Option<String>>(5)?,
+                "enabled_models": parse_models_json(row.get::<_, Option<String>>(6)?),
+                "created_at": row.get::<_, String>(7)?,
+                "updated_at": row.get::<_, String>(8)?,
+            }))
+        },
+    )?;
+
+    let sessions = query_rows(
+        &conn,
+        "SELECT id, title, provider_id, model, created_at, updated_at
+         FROM ai_chat_sessions ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "title": row.get::<_, String>(1)?,
+                "provider_id": row.get::<_, i64>(2)?,
+                "model": row.get::<_, String>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+                "updated_at": row.get::<_, String>(5)?,
+            }))
+        },
+    )?;
+
+    let messages = query_rows(
+        &conn,
+        "SELECT id, session_id, role, content, created_at
+         FROM ai_chat_messages ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "session_id": row.get::<_, i64>(1)?,
+                "role": row.get::<_, String>(2)?,
+                "content": row.get::<_, String>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        },
+    )?;
+
+    let settings = query_rows(
+        &conn,
+        "SELECT key, value, updated_at FROM app_settings ORDER BY key",
+        |row| {
+            Ok(json!({
+                "key": row.get::<_, String>(0)?,
+                "value": row.get::<_, String>(1)?,
+                "updated_at": row.get::<_, String>(2)?,
+            }))
+        },
+    )?;
+
+    let exported_at = Local::now().to_rfc3339();
+    let summary = BackupSummary {
+        notes: notes.len(),
+        categories: categories.len(),
+        providers: providers.len(),
+        sessions: sessions.len(),
+        messages: messages.len(),
+        settings: settings.len(),
+        exported_at: Some(exported_at.clone()),
+    };
+
+    let doc = json!({
+        "format": BACKUP_FORMAT,
+        "version": BACKUP_VERSION,
+        "app_version": app.package_info().version.to_string(),
+        "exported_at": exported_at,
+        "data": {
+            "categories": categories,
+            "notes": notes,
+            "providers": providers,
+            "sessions": sessions,
+            "messages": messages,
+            "settings": settings,
+        }
+    });
+
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("写入备份文件失败：{e}"))?;
+    Ok(summary)
+}
+
+#[tauri::command]
+fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("读取备份文件失败：{e}"))?;
+    let doc: Value =
+        serde_json::from_str(&text).map_err(|_| "备份文件不是合法的 JSON".to_string())?;
+    if doc.get("format").and_then(|v| v.as_str()) != Some(BACKUP_FORMAT) {
+        return Err("这不是 FastNote 的备份文件".to_string());
+    }
+    let data = doc
+        .get("data")
+        .ok_or_else(|| "备份文件内容不完整（缺少 data）".to_string())?;
+
+    let categories = json_arr(data, "categories");
+    let notes = json_arr(data, "notes");
+    let providers = json_arr(data, "providers");
+    let sessions = json_arr(data, "sessions");
+    let messages = json_arr(data, "messages");
+    let settings = json_arr(data, "settings");
+
+    let mut conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 备份里没有 api_key：先记下本机现有的 Key，恢复时按「名称+类型+地址」原样接回去。
+    // 同机恢复不会丢已填好的 Key；换机时匹配不到，保持为空由用户重新填。
+    let mut local_keys: std::collections::HashMap<(String, String, String), String> =
+        std::collections::HashMap::new();
+    {
+        let mut stmt = tx
+            .prepare("SELECT name, provider_type, api_base_url, api_key FROM ai_providers")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    (
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows.flatten() {
+            local_keys.insert(row.0, row.1);
+        }
+    }
+
+    // 覆盖式恢复：先清空，再按备份里的 id 原样写回（先删子表再删主表）
+    for sql in [
+        "DELETE FROM ai_chat_messages",
+        "DELETE FROM ai_chat_sessions",
+        "DELETE FROM notes",
+        "DELETE FROM categories",
+        "DELETE FROM ai_providers",
+        "DELETE FROM app_settings",
+    ] {
+        tx.execute(sql, []).map_err(|e| e.to_string())?;
+    }
+
+    for c in categories {
+        tx.execute(
+            "INSERT INTO categories (id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![
+                json_i64(c, "id"),
+                json_str(c, "name"),
+                non_empty_or_now(json_str(c, "created_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for n in notes {
+        tx.execute(
+            "INSERT INTO notes (id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                json_i64(n, "id"),
+                json_str(n, "title"),
+                json_str(n, "content"),
+                json_opt_i64(n, "category_id"),
+                non_empty_or_now(json_str(n, "created_at")),
+                non_empty_or_now(json_str(n, "updated_at")),
+                if json_bool(n, "is_deleted") { 1 } else { 0 },
+                json_opt_str(n, "deleted_at")
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for p in providers {
+        let api_key = local_keys
+            .get(&(
+                json_str(p, "name"),
+                json_str(p, "provider_type"),
+                json_str(p, "api_base_url"),
+            ))
+            .cloned()
+            .unwrap_or_default();
+        let enabled_models = p
+            .get("enabled_models")
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                let models: Vec<&str> = list.iter().filter_map(|m| m.as_str()).collect();
+                serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string())
+            })
+            .unwrap_or_else(|| "[]".to_string());
+        tx.execute(
+            "INSERT INTO ai_providers (id, name, provider_type, api_base_url, api_key, api_path,
+                                       enabled_model, enabled_models, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                json_i64(p, "id"),
+                json_str(p, "name"),
+                json_str(p, "provider_type"),
+                json_str(p, "api_base_url"),
+                api_key,
+                json_opt_str(p, "api_path"),
+                json_opt_str(p, "enabled_model"),
+                enabled_models,
+                non_empty_or_now(json_str(p, "created_at")),
+                non_empty_or_now(json_str(p, "updated_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for s in sessions {
+        tx.execute(
+            "INSERT INTO ai_chat_sessions (id, title, provider_id, model, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                json_i64(s, "id"),
+                json_str(s, "title"),
+                json_i64(s, "provider_id"),
+                json_str(s, "model"),
+                non_empty_or_now(json_str(s, "created_at")),
+                non_empty_or_now(json_str(s, "updated_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for m in messages {
+        tx.execute(
+            "INSERT INTO ai_chat_messages (id, session_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                json_i64(m, "id"),
+                json_i64(m, "session_id"),
+                json_str(m, "role"),
+                json_str(m, "content"),
+                non_empty_or_now(json_str(m, "created_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for s in settings {
+        tx.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            params![
+                json_str(s, "key"),
+                json_str(s, "value"),
+                non_empty_or_now(json_str(s, "updated_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(BackupSummary {
+        notes: notes.len(),
+        categories: categories.len(),
+        providers: providers.len(),
+        sessions: sessions.len(),
+        messages: messages.len(),
+        settings: settings.len(),
+        exported_at: doc
+            .get("exported_at")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    })
+}
+
+/* ---------------- 分组导出（ZIP / 电子书） ----------------
+ * 笔记正文是 Markdown 原文，导出 HTML / EPUB 时用 pulldown-cmark 渲染成网页。
+ * 章节顺序统一为「按创建时间正序」：最早创建的笔记在前；章节名直接用笔记标题。
+ */
+
+#[derive(Debug)]
+struct ZipEntry {
+    name: String,
+    content: String,
+}
+
+/// 按顺序写进 zip；EPUB 要求 mimetype 必须是第一个条目且不压缩，这里按名字特殊处理
+fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), String> {
+    use std::io::Write as _;
+    use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
+
+    let file = std::fs::File::create(path).map_err(|e| format!("创建压缩包失败：{e}"))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    for entry in entries {
+        let options = if entry.name == "mimetype" { stored } else { deflated };
+        zip.start_file(entry.name.as_str(), options)
+            .map_err(|e| format!("写入 {0} 失败：{1}", entry.name, e))?;
+        zip.write_all(entry.content.as_bytes())
+            .map_err(|e| format!("写入 {0} 失败：{1}", entry.name, e))?;
+    }
+
+    zip.finish().map_err(|e| format!("生成压缩包失败：{e}"))?;
+    Ok(())
+}
+
+/// Markdown → HTML 片段
+fn md_to_html(text: &str) -> String {
+    use pulldown_cmark::{html, Options, Parser};
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    let mut out = String::new();
+    html::push_html(&mut out, Parser::new_ext(text, options));
+    out
+}
+
+fn esc_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// 文件名清洗：去掉 Windows 不允许的字符，截断长度，空标题用兜底名
+fn safe_filename(name: &str, fallback: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || r#"\/:*?"<>|"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    // Windows 下结尾的点和空格会被截掉，这里主动去掉
+    let trimmed = cleaned.trim().trim_end_matches(['.', ' ']).trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+/// 分组下未删除的笔记，按创建时间正序（最早在前）
+fn load_category_notes(conn: &Connection, category_id: i64) -> Result<Vec<Note>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at
+             FROM notes
+             WHERE is_deleted = 0 AND category_id = ?1
+             ORDER BY created_at ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![category_id], map_row_to_note)
+        .map_err(|e| e.to_string())?;
+    let mut notes = Vec::new();
+    for row in rows {
+        notes.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(notes)
+}
+
+fn load_category_name(conn: &Connection, category_id: i64) -> Result<String, String> {
+    conn.query_row(
+        "SELECT name FROM categories WHERE id = ?1",
+        params![category_id],
+        |row| row.get::<_, String>(0),
+    )
+    .map_err(|_| "分组不存在".to_string())
+}
+
+/// 单篇笔记的完整 HTML 页面
+fn note_html_page(title: &str, content: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nh1{{border-bottom:1px solid #e2e8f0;padding-bottom:8px}}\n</style>\n</head>\n<body>\n<h1>{}</h1>\n{}\n</body>\n</html>\n",
+        esc_html(title),
+        esc_html(title),
+        md_to_html(content)
+    )
+}
+
+/// 导出分组为压缩包：一篇笔记一个文件，格式可选
+#[tauri::command]
+fn export_category_zip(
+    state: State<AppState>,
+    category_id: i64,
+    path: String,
+    format: String,
+) -> Result<usize, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    let notes = load_category_notes(&conn, category_id)?;
+    if notes.is_empty() {
+        return Err("这个分组下还没有笔记，没什么可导出的".to_string());
+    }
+
+    let ext = match format.as_str() {
+        "txt" => "txt",
+        "html" => "html",
+        "json" => "json",
+        _ => "md",
+    };
+
+    let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut entries = Vec::with_capacity(notes.len());
+    for (i, note) in notes.iter().enumerate() {
+        let base = safe_filename(&note.title, &format!("未命名笔记-{}", i + 1));
+        let count = used.entry(base.to_lowercase()).or_insert(0);
+        *count += 1;
+        let name = if *count > 1 {
+            format!("{base}-{count}.{ext}")
+        } else {
+            format!("{base}.{ext}")
+        };
+
+        let content = match ext {
+            "html" => note_html_page(&note.title, &note.content),
+            "json" => serde_json::to_string_pretty(&json!({
+                "title": note.title,
+                "content": note.content,
+                "created_at": note.created_at,
+                "updated_at": note.updated_at,
+            }))
+            .unwrap_or_default(),
+            // md / txt 都是 Markdown 原文，txt 不带 md 语法高亮能力但内容一致
+            _ => note.content.clone(),
+        };
+
+        entries.push(ZipEntry { name, content });
+    }
+
+    let total = entries.len();
+    write_zip_file(&path, &entries)?;
+    Ok(total)
+}
+
+/// 导出分组为电子书
+#[tauri::command]
+fn export_category_ebook(
+    state: State<AppState>,
+    category_id: i64,
+    path: String,
+    format: String,
+) -> Result<usize, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    let title = load_category_name(&conn, category_id)?;
+    let notes = load_category_notes(&conn, category_id)?;
+    if notes.is_empty() {
+        return Err("这个分组下还没有笔记，没什么可导出的".to_string());
+    }
+
+    match format.as_str() {
+        "html" => {
+            let text = ebook_single_html(&title, &notes);
+            std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
+            Ok(notes.len())
+        }
+        "epub" => {
+            let entries = ebook_epub_entries(&title, &notes);
+            write_zip_file(&path, &entries)?;
+            Ok(notes.len())
+        }
+        _ => {
+            // txt：章节之间用分隔线断开，正文是 Markdown 原文
+            let mut text = String::new();
+            text.push_str(&format!("《{}》\n共 {} 章\n", title, notes.len()));
+            text.push_str(&"=".repeat(40));
+            text.push('\n');
+            for note in notes.iter() {
+                text.push_str(&format!(
+                    "\n{}\n{}\n\n{}\n",
+                    note.title,
+                    "-".repeat(40),
+                    note.content
+                ));
+            }
+            std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
+            Ok(notes.len())
+        }
+    }
+}
+
+/// 单文件 HTML 电子书：目录 + 各章锚点，可直接用浏览器看
+fn ebook_single_html(title: &str, notes: &[Note]) -> String {
+    let mut toc = String::new();
+    let mut body = String::new();
+    for (i, note) in notes.iter().enumerate() {
+        let anchor = format!("chapter-{}", i + 1);
+        toc.push_str(&format!(
+            "<li><a href=\"#{anchor}\">{}</a></li>\n",
+            esc_html(&note.title)
+        ));
+        body.push_str(&format!(
+            "<section id=\"{anchor}\">\n<h2>{}</h2>\n{}\n</section>\n",
+            esc_html(&note.title),
+            md_to_html(&note.content)
+        ));
+    }
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nsection{{margin-top:48px;padding-top:16px;border-top:1px solid #e2e8f0}}\n.toc{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 24px}}\n</style>\n</head>\n<body>\n<h1>{}</h1>\n<nav class=\"toc\">\n<h3>目录</h3>\n<ol>\n{}</ol>\n</nav>\n{}\n</body>\n</html>\n",
+        esc_html(title),
+        esc_html(title),
+        toc,
+        body
+    )
+}
+
+/// EPUB（EPUB 3）：本质是特定结构的 zip
+fn ebook_epub_entries(title: &str, notes: &[Note]) -> Vec<ZipEntry> {
+    let modified = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let book_id = format!("urn:fastnote:{}", chrono::Utc::now().timestamp());
+
+    let mut manifest = String::new();
+    let mut spine = String::new();
+    let mut nav = String::new();
+
+    let mut entries = Vec::with_capacity(notes.len() + 4);
+
+    // mimetype 必须是第一个条目且不压缩（write_zip_file 按名字处理）
+    entries.push(ZipEntry {
+        name: "mimetype".to_string(),
+        content: "application/epub+zip".to_string(),
+    });
+    entries.push(ZipEntry {
+        name: "META-INF/container.xml".to_string(),
+        content: "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n  <rootfiles>\n    <rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>\n  </rootfiles>\n</container>\n".to_string(),
+    });
+
+    for (i, note) in notes.iter().enumerate() {
+        let index = i + 1;
+        let href = format!("chapter-{index}.xhtml");
+        manifest.push_str(&format!(
+            "    <item id=\"chap{index}\" href=\"{href}\" media-type=\"application/xhtml+xml\"/>\n"
+        ));
+        spine.push_str(&format!("    <itemref idref=\"chap{index}\"/>\n"));
+        nav.push_str(&format!(
+            "      <li><a href=\"{href}\">{}</a></li>\n",
+            esc_html(&note.title)
+        ));
+
+        entries.push(ZipEntry {
+            name: format!("OEBPS/{href}"),
+            content: format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"zh-CN\" lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>{}</title>\n</head>\n<body>\n<h1>{}</h1>\n{}\n</body>\n</html>\n",
+                esc_html(&note.title),
+                esc_html(&note.title),
+                md_to_html(&note.content)
+            ),
+        });
+    }
+
+    let nav_doc = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"zh-CN\" lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>目录</title>\n</head>\n<body>\n<nav epub:type=\"toc\" id=\"toc\">\n<h1>目录</h1>\n<ol>\n{nav}</ol>\n</nav>\n</body>\n</html>\n"
+    );
+
+    let opf = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n    <dc:identifier id=\"bookid\">{book_id}</dc:identifier>\n    <dc:title>{title}</dc:title>\n    <dc:language>zh-CN</dc:language>\n    <meta property=\"dcterms:modified\">{modified}</meta>\n  </metadata>\n  <manifest>\n    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n{manifest}  </manifest>\n  <spine>\n{spine}  </spine>\n</package>\n",
+        title = esc_html(title)
+    );
+
+    entries.push(ZipEntry {
+        name: "OEBPS/nav.xhtml".to_string(),
+        content: nav_doc,
+    });
+    entries.push(ZipEntry {
+        name: "OEBPS/content.opf".to_string(),
+        content: opf,
+    });
+
+    entries
+}
+
 #[tauri::command]
 fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
     let conn = state.conn.lock().unwrap();
@@ -1591,6 +2293,10 @@ pub fn run() {
             get_app_settings,
             set_app_setting,
             delete_app_setting,
+            export_backup,
+            import_backup,
+            export_category_zip,
+            export_category_ebook,
         ])
         .setup(|app| {
             let data_dir = match std::env::current_exe() {
