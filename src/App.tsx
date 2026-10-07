@@ -30,6 +30,8 @@ function AppContent() {
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
   /** AI 回复的临时预览：只在编辑器里展示，绝不写入数据库（软件新开时为 null → 正常显示欢迎页） */
   const [tempNote, setTempNote] = useState<{ id: number; title: string; content: string } | null>(null);
+  /** 打开临时预览前的选中笔记：关闭预览（未保存）时恢复 */
+  const prevNoteRef = useRef<Note | null>(null);
   /** 临时预览的负 id 计数器：每次打开都换一个新 id，确保编辑器一定会刷新成新内容 */
   const tempNoteIdRef = useRef(-1);
   /** 临时预览对应的伪笔记：id 为负数哨兵值，落库操作会被 NoteEditor 的 isTemporary 挡掉 */
@@ -41,8 +43,17 @@ function AppContent() {
   /** AI 回复「在编辑器中打开」：退出当前笔记，切到临时预览 */
   const handleOpenInEditor = (title: string, content: string) => {
     tempNoteIdRef.current -= 1;
+    prevNoteRef.current = selectedNote; // 保存当前选中的笔记
     setSelectedNote(null);
     setTempNote({ id: tempNoteIdRef.current, title, content });
+  };
+  /** 关闭 AI 临时预览：如果没另存为笔记，就恢复之前选中的笔记 */
+  const handleCloseTemporary = () => {
+    const prev = prevNoteRef.current;
+    prevNoteRef.current = null;
+    setTempNote(null);
+    if (!prev) return;
+    setSelectedNote(prev);
   };
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<string>("created_at");
@@ -261,6 +272,8 @@ function AppContent() {
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
+      setTempNote(null);       // 清除临时预览，进入真实笔记模式
+      prevNoteRef.current = null; // 已保存，无需恢复
       setSelectedNote(note);
       showToast("已保存为笔记", "success");
       window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
@@ -620,7 +633,7 @@ function AppContent() {
                   <NoteEditor
                     note={editorNote}
                     isTemporary={!selectedNote}
-                    onCloseTemporary={() => setTempNote(null)}
+                    onCloseTemporary={handleCloseTemporary}
                     categories={categories}
                     onSaveToCategory={handleSavePreviewToCategory}
                     onSave={handleSaveNote}

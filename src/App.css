@@ -1282,7 +1282,7 @@ button:focus-visible {
 
 /* 深度思考正文：限高 + 内部滚动，保证"展开/收起"按钮始终留在视野内 */
 .thinking-body {
-  max-height: 42vh;
+  max-height: 400px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -1552,7 +1552,7 @@ button:focus-visible {
 
 /* ========== 编辑器正文字号 ==========
    md-editor-rt 给 .md-editor .cm-editor 写死了 font-size: 14px，偏小。
-   这里改成可调变量：默认 16px，Ctrl/⌘ + 滚轮缩放（逻辑见 NoteEditor.tsx）。 */
+   这里改成可调变量：默认 14px，Ctrl/⌘ + 滚轮缩放（逻辑见 NoteEditor.tsx）。 */
 .md-editor .cm-editor {
-  font-size: var(--md-editor-font-size, 16px) !important;
+  font-size: var(--md-editor-font-size, 14px) !important;
 }

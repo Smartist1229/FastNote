@@ -837,7 +837,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
               <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 text-slate-300 transition-transform " + (open ? "rotate-90" : "")} />
             </button>
             {open && (
-              <pre className="mt-0.5 mb-1 ml-[18px] px-2 py-1.5 rounded-lg bg-slate-50 border border-slate-100 text-[10.5px] leading-relaxed text-slate-500 whitespace-pre-wrap break-all">{`调用 ${JSON.stringify({ name: tool.name, args: tool.args })}　结果 ${
+              <pre className="mt-0.5 mb-1 ml-[18px] px-2 py-1.5 rounded-lg bg-slate-50 border border-slate-100 text-[10.5px] leading-relaxed text-slate-500 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{`调用 ${JSON.stringify({ name: tool.name, args: tool.args })}　结果 ${
                 running ? '（执行中）' : JSON.stringify(tool.result ?? null).slice(0, 400)
               }`}</pre>
             )}

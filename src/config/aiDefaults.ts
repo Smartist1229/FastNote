@@ -32,7 +32,7 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   contextBudget: 14000,
   keepRecent: 8,
   toolResultChars: 1500,
-  retryShallowThinking: true,
+  retryShallowThinking: false,
   autoTitle: true,
   streaming: true,
   confirmByDefault: true,

@@ -91,8 +91,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const [sortMenu, setSortMenu] = useState<{ open: boolean; top: number; left: number; width: number }>({ open: false, top: 0, left: 0, width: 0 });
   const noteContextMenuRef = useRef<Note | null>(null);
+  /** 侧边栏滚动容器 ref：拖动笔记时自动滚动 */
+  const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  /** 自动滚动的动画帧 id，用于清理 */
+  const autoScrollRafRef = useRef<number | null>(null);
+  /** 当前拖动的 Y 坐标，由 onDragOver 更新，由 RAF 循环读取 */
+  const dragYRef = useRef<number | null>(null);
 
   const isSearching = searchQuery.trim().length > 0;
+
+  /** 启动 / 停止自动滚动循环 */
+  const stopAutoScroll = () => {
+    if (autoScrollRafRef.current) {
+      cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+    dragYRef.current = null;
+  };
+
+  const startAutoScroll = (container: HTMLDivElement) => {
+    if (autoScrollRafRef.current) return; // 已在滚动中
+    const loop = () => {
+      const mouseY = dragYRef.current;
+      if (mouseY === null) {
+        autoScrollRafRef.current = null;
+        return;
+      }
+      const rect = container.getBoundingClientRect();
+      const threshold = 60;
+      const edgeDist = Math.min(mouseY - rect.top, rect.bottom - mouseY);
+      if (edgeDist < threshold && rect.height > 0) {
+        const speedRatio = Math.max(0, (threshold - edgeDist) / threshold);
+        const baseSpeed = 1;
+        const maxSpeed = 16;
+        const speed = baseSpeed + speedRatio * (maxSpeed - baseSpeed);
+        const direction = mouseY - rect.top < rect.height / 2 ? -1 : 1;
+        container.scrollTop += speed * direction;
+        // 离边缘越近滚动越快，继续循环
+        autoScrollRafRef.current = requestAnimationFrame(loop);
+      } else {
+        // 不在边缘：停止循环，等待下一次 onDragOver 重新启动
+        autoScrollRafRef.current = null;
+      }
+    };
+    autoScrollRafRef.current = requestAnimationFrame(loop);
+  };
   const query = searchQuery.trim().toLowerCase();
 
   /** 搜索命中判断；搜索模式下结果扁平化展示，不再按分组归类 */
@@ -403,10 +446,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* 搜索模式：忽略分组，扁平展示全部命中笔记；否则展示分组抽屉列表 */}
       <div
+        ref={sidebarScrollRef}
         className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-3 min-h-0 drawer-scroll"
         onDragOver={(e) => {
-          if (e.dataTransfer.types.includes('text/plain')) e.preventDefault();
+          // 允许放置在容器上
+          e.preventDefault();
+          // 记录 Y 坐标用于自动滚动（无论鼠标在容器还是子元素上）
+          dragYRef.current = e.clientY;
+          startAutoScroll(sidebarScrollRef.current!);
         }}
+        onDragLeave={() => stopAutoScroll()}
+        onDrop={() => stopAutoScroll()}
+        onDragEnd={() => stopAutoScroll()}
       >
         {isSearching ? (
           sortedAllNotes.length === 0 ? (
@@ -510,7 +561,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   el.style.borderRadius = '12px';
                 }}
                 onDragLeave={(e) => {
+                  // 只有当拖动真正离开该分组（而非进入子元素时）才清除高亮
                   const el = e.currentTarget as HTMLElement;
+                  const related = e.relatedTarget as HTMLElement | null;
+                  if (related && el.contains(related)) return;
                   el.style.background = '';
                 }}
                 onDrop={async (e) => {
@@ -584,3 +638,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </div>
   );
 };
+
+
+

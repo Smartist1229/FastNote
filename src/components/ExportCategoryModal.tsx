@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Category } from '../types';
+import { Category, Note } from '../types';
 import * as api from '../api';
 import type { CategoryZipFormat, CategoryEbookFormat } from '../api';
 import { Modal } from './Modal';
@@ -45,6 +45,10 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
   const [zipFormat, setZipFormat] = useState<CategoryZipFormat>('md');
   const [ebookFormat, setEbookFormat] = useState<CategoryEbookFormat>('txt');
   const [busy, setBusy] = useState(false);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(false);
+  // 选中的笔记 ID：默认全选，用 Set 方便查找
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   // 每次打开都回到默认选项，避免上次的选择让人困惑
   useEffect(() => {
@@ -53,8 +57,36 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
       setZipFormat('md');
       setEbookFormat('txt');
       setBusy(false);
+      // 加载分组下的所有笔记，默认全选
+      setLoadingNotes(true);
+      api
+        .getNotes(category.id, 'created_at', 'asc')
+        .then((ns) => {
+          setNotes(ns);
+          setSelectedIds(new Set(ns.map((n) => n.id)));
+        })
+        .catch(() => {
+          setNotes([]);
+          setSelectedIds(new Set());
+        })
+        .finally(() => setLoadingNotes(false));
     }
   }, [category]);
+
+  // 全选 / 取消全选
+  const allSelected = notes.length > 0 && notes.every((n) => selectedIds.has(n.id));
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(notes.map((n) => n.id)));
+    }
+  };
+
+  // 当前选中的笔记 ID 列表，按原顺序
+  const selectedNoteIds = notes
+    .filter((n) => selectedIds.has(n.id))
+    .map((n) => n.id);
 
   const isZip = mode === 'zip';
   const formats: FormatOption[] = isZip ? ZIP_FORMATS : EBOOK_FORMATS;
@@ -62,7 +94,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
   const current = formats.find((f) => f.value === format) ?? formats[0];
 
   const handleExport = async () => {
-    if (!category) return;
+    if (!category || selectedNoteIds.length === 0) return;
     try {
       const path = await save({
         // 压缩包模式默认文件名固定为 .zip（不能用内层笔记的扩展名）
@@ -77,8 +109,8 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
 
       setBusy(true);
       const count = isZip
-        ? await api.exportCategoryZip(category.id, path, zipFormat)
-        : await api.exportCategoryEbook(category.id, path, ebookFormat);
+        ? await api.exportNotesZip(selectedNoteIds, path, zipFormat)
+        : await api.exportNotesEbook(selectedNoteIds, path, ebookFormat);
       showToast(`已导出 ${count} 篇笔记`, 'success');
       onDone?.();
       onClose();
@@ -89,7 +121,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
   };
 
   return (
-    <Modal isOpen={!!category} onClose={onClose} title="导出分组">
+    <Modal isOpen={!!category} onClose={onClose} title="导出笔记">
       <div className="space-y-4">
         <p className="text-xs text-slate-500">
           分组：<span className="font-medium text-slate-700">{category?.name}</span>
@@ -152,11 +184,74 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
           </p>
         </div>
 
+        {/* 笔记选择：默认全选，取消不需要的 */}
+        
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs font-medium text-slate-600 flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = notes.length > 0 && !allSelected;
+                }}
+                onChange={toggleAll}
+                className="w-3.5 h-3.5 rounded border-slate-300 text-primary-500 focus:ring-primary-300"
+              />
+              选择笔记 ({selectedIds.size}/{notes.length})
+            </label>
+            <span className="text-[11px] text-slate-400">
+              {selectedNoteIds.length} 个已选中
+            </span>
+          </div>
+
+          {loadingNotes ? (
+            <div className="text-xs text-slate-400 py-4 text-center">加载笔记中...</div>
+          ) : (
+            <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg bg-slate-50">
+              {notes.map((note) => {
+                const checked = selectedIds.has(note.id);
+                return (
+                  <label
+                    key={note.id}
+                    className="flex items-center gap-2 px-2.5 py-1.5 text-xs cursor-pointer hover:bg-slate-100 transition-colors first:rounded-t-lg last:rounded-b-lg"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = new Set(selectedIds);
+                        if (e.target.checked) {
+                          next.add(note.id);
+                        } else {
+                          next.delete(note.id);
+                        }
+                        setSelectedIds(next);
+                      }}
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-primary-500 focus:ring-primary-300"
+                    />
+                    <span
+                      className="truncate min-w-0 flex-1"
+                      title={note.title}
+                    >
+                      {note.title || '无标题笔记'}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         <div className="flex justify-end gap-2 pt-1">
           <button onClick={onClose} className="btn-ghost px-4 py-2 text-sm">
             取消
           </button>
-          <button onClick={handleExport} disabled={busy} className="btn-primary px-4 py-2 text-sm disabled:opacity-50">
+          <button
+            onClick={handleExport}
+            disabled={busy || selectedNoteIds.length === 0}
+            className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+          >
             {busy ? '导出中...' : '导出'}
           </button>
         </div>

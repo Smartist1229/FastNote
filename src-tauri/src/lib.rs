@@ -910,6 +910,30 @@ fn load_category_notes(conn: &Connection, category_id: i64) -> Result<Vec<Note>,
     Ok(notes)
 }
 
+/// 按指定 ID 列表加载未删除的笔记，保持传入顺序
+fn load_notes_by_ids(conn: &Connection, note_ids: &[i64]) -> Result<Vec<Note>, String> {
+    if note_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at
+             FROM notes
+             WHERE is_deleted = 0 AND id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut notes = Vec::with_capacity(note_ids.len());
+    for id in note_ids {
+        let mut rows = stmt
+            .query_map(params![id], map_row_to_note)
+            .map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next() {
+            notes.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(notes)
+}
+
 fn load_category_name(conn: &Connection, category_id: i64) -> Result<String, String> {
     conn.query_row(
         "SELECT name FROM categories WHERE id = ?1",
@@ -1017,6 +1041,111 @@ fn export_category_ebook(
         }
         _ => {
             // txt：章节之间用分隔线断开，正文是 Markdown 原文
+            let mut text = String::new();
+            text.push_str(&format!("《{}》\n共 {} 章\n", title, notes.len()));
+            text.push_str(&"=".repeat(40));
+            text.push('\n');
+            for note in notes.iter() {
+                text.push_str(&format!(
+                    "\n{}\n{}\n\n{}\n",
+                    note.title,
+                    "-".repeat(40),
+                    note.content
+                ));
+            }
+            std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
+            Ok(notes.len())
+        }
+    }
+}
+
+/// 导出指定笔记 ID 列表为压缩包：一篇笔记一个文件，格式可选
+#[tauri::command]
+fn export_notes_zip(
+    state: State<AppState>,
+    note_ids: Vec<i64>,
+    path: String,
+    format: String,
+) -> Result<usize, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    let notes = load_notes_by_ids(&conn, &note_ids)?;
+    if notes.is_empty() {
+        return Err("没有选定笔记，没什么可导出的".to_string());
+    }
+
+    let ext = match format.as_str() {
+        "txt" => "txt",
+        "html" => "html",
+        "json" => "json",
+        _ => "md",
+    };
+
+    let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut entries = Vec::with_capacity(notes.len());
+    for (i, note) in notes.iter().enumerate() {
+        let base = safe_filename(&note.title, &format!("未命名笔记-{}", i + 1));
+        let count = used.entry(base.to_lowercase()).or_insert(0);
+        *count += 1;
+        let name = if *count > 1 {
+            format!("{base}-{count}.{ext}")
+        } else {
+            format!("{base}.{ext}")
+        };
+
+        let content = match ext {
+            "html" => note_html_page(&note.title, &note.content),
+            "json" => serde_json::to_string_pretty(&json!({
+                "title": note.title,
+                "content": note.content,
+                "created_at": note.created_at,
+                "updated_at": note.updated_at,
+            }))
+            .unwrap_or_default(),
+            _ => note.content.clone(),
+        };
+
+        entries.push(ZipEntry { name, content });
+    }
+
+    let total = entries.len();
+    write_zip_file(&path, &entries)?;
+    Ok(total)
+}
+
+/// 导出指定笔记 ID 列表为电子书
+#[tauri::command]
+fn export_notes_ebook(
+    state: State<AppState>,
+    note_ids: Vec<i64>,
+    path: String,
+    format: String,
+) -> Result<usize, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    let notes = load_notes_by_ids(&conn, &note_ids)?;
+    if notes.is_empty() {
+        return Err("没有选定笔记，没什么可导出的".to_string());
+    }
+
+    let title = format!("导出的笔记 ({})", notes.len());
+
+    match format.as_str() {
+        "html" => {
+            let text = ebook_single_html(&title, &notes);
+            std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
+            Ok(notes.len())
+        }
+        "epub" => {
+            let entries = ebook_epub_entries(&title, &notes);
+            write_zip_file(&path, &entries)?;
+            Ok(notes.len())
+        }
+        _ => {
             let mut text = String::new();
             text.push_str(&format!("《{}》\n共 {} 章\n", title, notes.len()));
             text.push_str(&"=".repeat(40));
@@ -2297,6 +2426,8 @@ pub fn run() {
             import_backup,
             export_category_zip,
             export_category_ebook,
+            export_notes_zip,
+            export_notes_ebook,
         ])
         .setup(|app| {
             let data_dir = match std::env::current_exe() {

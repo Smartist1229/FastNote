@@ -92,7 +92,7 @@ const MarkdownEditor = lazy(async () => {
 const EDITOR_FONT_SIZE_KEY = "fastnote-editor-font-size";
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 24;
-const FONT_SIZE_DEFAULT = 16;
+const FONT_SIZE_DEFAULT = 14;
 
 interface NoteEditorProps {
   note: Note | null;
@@ -519,6 +519,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             <span className="px-2 py-0.5 rounded-md bg-slate-100/80 text-slate-400" title="字数">{wordCount} 字</span>
             <span className="px-2 py-0.5 rounded-md bg-slate-100/80 text-slate-400" title="行数">{lineCount} 行</span>
           </div>
+
+          {/* 字体大小显示：点击还原默认 */}
+          <button
+            onClick={() => setEditorFontSize(FONT_SIZE_DEFAULT)}
+            className={`shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
+              editorFontSize === FONT_SIZE_DEFAULT
+                ? "text-slate-300 cursor-default"
+                : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            }`}
+            title="点击还原默认字号"
+          >
+            {editorFontSize} px
+          </button>
         </div>
       </div>
 

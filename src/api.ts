@@ -240,3 +240,21 @@ export const exportCategoryEbook = async (
 ): Promise<number> => {
   return await invoke<number>('export_category_ebook', { categoryId, path, format });
 };
+
+/** 导出指定笔记 ID 列表为压缩包，返回导出的笔记数 */
+export const exportNotesZip = async (
+  noteIds: number[],
+  path: string,
+  format: CategoryZipFormat,
+): Promise<number> => {
+  return await invoke<number>('export_notes_zip', { noteIds, path, format });
+};
+
+/** 导出指定笔记 ID 列表为电子书，参数里的 title 用于电子书标题 */
+export const exportNotesEbook = async (
+  noteIds: number[],
+  path: string,
+  format: CategoryEbookFormat,
+): Promise<number> => {
+  return await invoke<number>('export_notes_ebook', { noteIds, path, format });
+};
