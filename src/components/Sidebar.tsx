@@ -406,7 +406,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
           {sortMenu.open && (
             <>
-              <div className="fixed inset-0 z-50" onClick={() => setSortMenu(m => ({ ...m, open: false }))} />
+              <div className="fixed inset-0 z-50" />
               <div
                 className="pop-menu"
                 style={{ position: "fixed", top: sortMenu.top, left: Math.max(8, sortMenu.left - 40), minWidth: 132 }}

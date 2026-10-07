@@ -2438,7 +2438,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         {/* 模型下拉：向上弹出，不再是突兀的原生 select */}
         {modelMenuOpen && (
           <>
-            <div className="fixed inset-0 z-30" onClick={() => setModelMenuOpen(false)} />
+            <div className="fixed inset-0 z-30" />
             <div className="composer-menu chat-scrollbar">
               {models.length === 0 ? (
                 <div className="px-3 py-2 text-[11.5px] text-slate-400">还没有勾选可用模型</div>
@@ -2576,8 +2576,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       </div>
     </aside>
     {showSessionPicker && (
-      <div className="ai-modal-overlay" onClick={() => setShowSessionPicker(false)}>
-        <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="ai-modal-overlay">
+        <div className="ai-modal">
           <div className="ai-modal-head">
             <span className="ai-modal-title">对话记录</span>
             <div className="flex items-center gap-1">
@@ -2678,9 +2678,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         </div>
       </div>
     )}
-    {pendingConfirm && (<div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => settleConfirm(false)}>
+    {pendingConfirm && (<div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-xl shadow-2xl border border-slate-200 w-80 p-4 animate-fade-in" onClick={e => e.stopPropagation()}>
+      <div className="relative bg-white rounded-xl shadow-2xl border border-slate-200 w-80 p-4 animate-fade-in">
         <h3 className="text-sm font-medium text-slate-700 mb-3">确认操作</h3>
         <div className="space-y-1.5 mb-4">
           {pendingConfirm.calls.map((c, i) => {

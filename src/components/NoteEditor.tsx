@@ -179,18 +179,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [isSavingToCategory, setIsSavingToCategory] = useState(false);
   const saveMenuRef = useRef<HTMLDivElement>(null);
 
-  // 点菜单外部收起
-  useEffect(() => {
-    if (!saveMenuOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (saveMenuRef.current && !saveMenuRef.current.contains(e.target as Node)) {
-        setSaveMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [saveMenuOpen]);
-
   /** 临时预览另存为真实笔记：取编辑器里当前（可能改过）的标题与内容 */
   const handleSaveToCategory = async (categoryId: number | null) => {
     if (!onSaveToCategory || isSavingToCategory) return;

@@ -1556,3 +1556,25 @@ button:focus-visible {
 .md-editor .cm-editor {
   font-size: var(--md-editor-font-size, 14px) !important;
 }
+
+/* ========== 代码块覆盖层修复 ==========
+   md-editor-rt 的代码块头部（语言标签 + 复制按钮）写死了 z-index: 10000，
+   这会让编辑器 / AI 回复正文中的代码块叠在所有 Modal 弹窗之上。
+
+   修复策略：在任何弹窗 / 模态容器内部，把代码块相关元素的 z-index 压下来，
+   这样弹窗内容（以及弹窗自己的遮罩）就能正常遮盖住下方的编辑器。 */
+.modal-overlay .md-editor-code-head,
+.modal-content .md-editor-code-head,
+.ai-modal-overlay .md-editor-code-head,
+.ai-modal .md-editor-code-head,
+.modal-overlay .md-editor-code,
+.modal-content .md-editor-code,
+.ai-modal-overlay .md-editor-code,
+.ai-modal .md-editor-code {
+  z-index: 0 !important;
+}
+/* 全局兜底：任何代码块头部的 z-index 不得超过 20，
+   这样就不会突破所有 Modal（z-index: 50）的遮罩层 */
+.md-editor-code-head {
+  z-index: 20 !important;
+}
