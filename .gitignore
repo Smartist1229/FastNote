@@ -1,5 +1,19 @@
+# ========================================
+# Build output
+# ========================================
+dist/
+build/
+*.local
+
+# ========================================
+# Dependencies
+# ========================================
+node_modules/
+
+# ========================================
 # Logs
-logs
+# ========================================
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,24 +21,64 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-release
-.vscode
-dist-electron
-README.md
-package-lock.json
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# ========================================
+# OS files
+# ========================================
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-out/
+Thumbs.db
+
+# ========================================
+# IDE / Editor
+# ========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ========================================
+# TypeScript / Vite cache
+# ========================================
+.tsbuildinfo
+.vite/
+.svelte-kit/
+.eslintcache
+
+# ========================================
+# Tauri / Rust
+# ========================================
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/gen/*.json
+src-tauri/.dart
+Cargo.lock
+
+# ========================================
+# Database files
+# ========================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ========================================
+# Compiled binaries / libraries
+# ========================================
+*.exe
+*.dll
+*.so
+*.dylib
+*.rlib
+*.rmeta
+*.a
+*.lib
+*.exp
+*.pdb
+
+# ========================================
+# Lock files (uncomment as needed)
+# ========================================
+# pnpm-lock.yaml
+# package-lock.json
+# yarn.lock
