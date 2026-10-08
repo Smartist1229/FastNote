@@ -469,7 +469,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <p className="text-[10px] text-slate-300 mt-1">换个关键词试试</p>
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {sortedAllNotes.map((note) => (
                 <DrawerNoteItem
                   key={note.id}

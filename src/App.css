@@ -97,6 +97,16 @@
 /* ========== 基础样式 ========== */
 * {
   box-sizing: border-box;
+  /* 圆角+边框的抗锯齿优化：让背景在内边距盒内裁剪，
+     避免边框在圆角处出现毛边 */
+  background-clip: padding-box;
+  -webkit-background-clip: padding-box;
+}
+
+/* 选中笔记背景覆盖 border 区域 */
+.note-selected-bg {
+  background-clip: border-box;
+  -webkit-background-clip: border-box;
 }
 
 body {
@@ -299,6 +309,8 @@ button:focus-visible {
   border-radius: 12px;
   transition: background-color var(--transition-fast);
 }
+
+/* ========== 抽屉吸顶已移除，直接在抽屉列表中滚动 ========== */
 
 /* AI 打开笔记时的聚焦高亮 */
 .note-focus-ring {
