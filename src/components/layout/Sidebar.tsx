@@ -1,11 +1,11 @@
-import { useMemo, useRef, useState } from 'react';
-import { Category, Note } from '../types';
-import * as api from '../api';
-import { useToast } from './Toast';
-import { ContextMenu, ContextMenuItem, useContextMenu } from './ContextMenu';
-import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem } from './CategoryDrawer';
-import { AiSparkleIcon } from './icons';
-import { Icon } from './Icon';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Category, Note } from '@/types';
+import * as api from '@/api';
+import { useToast } from '@/components/common/Toast';
+import { ContextMenu, ContextMenuItem, useContextMenu } from '@/components/common/ContextMenu';
+import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem } from '@/components/layout/CategoryDrawer';
+import { AiSparkleIcon } from '@/components/common/icons';
+import { Icon } from '@/components/common/Icon';
 
 /** 虚拟分组 ID：用于承载 category_id 指向已删除分组的笔记 */
 const SORT_OPTIONS = [ { value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' } ];
@@ -36,8 +36,8 @@ interface SidebarProps {
   /** 打开/关闭 AI 对话面板（全局入口，未打开笔记时也可用） */
   onToggleAiPanel?: () => void;
   isAiPanelOpen?: boolean;
-  /** 打开「数据备份与恢复」窗口 */
-  onOpenBackup?: () => void;
+  /** 打开统一的「设置」窗口（含 AI 设置与备份恢复） */
+  onOpenSettings?: () => void;
   /** 右键菜单「导出分组」：把整个分组导出为压缩包或电子书 */
   onExportCategory: (category: Category) => void;
   /** 右键菜单「保存笔记」：等价于编辑器里的 Ctrl+S（导出到文件） */
@@ -49,6 +49,10 @@ interface SidebarProps {
   onMoveToCategory: (note: Note, categoryId: number | null) => void;
   onOpenTrash: () => void;
   onNotesUpdated: () => void;
+  /** 系统文件拖拽经过时命中的分组 id（由主进程拖拽事件驱动的高亮） */
+  hoverDropCategoryId?: number | null;
+  /** 是否有系统文件正拖拽在窗口上方 */
+  isFileDragActive?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -72,7 +76,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isCollapsed = false,
   onToggleAiPanel,
   isAiPanelOpen = false,
-  onOpenBackup,
+  onOpenSettings,
   onExportCategory,
   onSaveNote,
   onCreateCategory,
@@ -82,6 +86,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onMoveToCategory,
   onOpenTrash,
   onNotesUpdated,
+  hoverDropCategoryId = null,
+  isFileDragActive = false,
 }) => {
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
   const { showToast } = useToast();
@@ -97,6 +103,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const autoScrollRafRef = useRef<number | null>(null);
   /** 当前拖动的 Y 坐标，由 onDragOver 更新，由 RAF 循环读取 */
   const dragYRef = useRef<number | null>(null);
+
+  /* ---- 内部「拖笔记到分组」：改用指针事件（系统级 dragDrop 已禁用 HTML5 拖放） ---- */
+  /** 按下时命中的笔记 id（尚未进入拖拽） */
+  const pointerNoteIdRef = useRef<number | null>(null);
+  /** 按下起点，用于判断是否超过拖拽阈值 */
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** 是否已真正进入拖拽（超过阈值） */
+  const isPointerDraggingRef = useRef(false);
+  /** 刚结束一次拖拽：抑制随之而来的 click，避免拖完又顺手打开笔记 */
+  const suppressClickRef = useRef(false);
+  /** 被拖笔记的标题（用于浮层显示） */
+  const pointerTitleRef = useRef('');
+  /** 拖拽浮层（跟随指针显示笔记标题） */
+  const [dragGhost, setDragGhost] = useState<{ x: number; y: number; title: string } | null>(null);
+  /** 指针拖拽当前悬停的分组 id（内部拖拽高亮） */
+  const [dragHoverCategoryId, setDragHoverCategoryId] = useState<number | null>(null);
 
   const isSearching = searchQuery.trim().length > 0;
 
@@ -211,7 +233,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       label: '新建分组',
       icon: (
-        <Icon name="sidebar-plus" className="w-4 h-4" />
+        <Icon name="sidebar-folder-plus" className="w-4 h-4" />
       ),
       onClick: onCreateCategory,
     },
@@ -291,6 +313,82 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  /** 供指针事件回调调用，始终指向最新一次渲染的 handler（避免闭包里的 notes 过期） */
+  const dropToCategoryRef = useRef(handleDropToCategory);
+  dropToCategoryRef.current = handleDropToCategory;
+
+  /** 指针坐标处命中的分组 id（用 elementFromPoint 做落点检测） */
+  const findCategoryIdAt = (x: number, y: number): number | null => {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const catEl = el?.closest('[data-drop-category]') as HTMLElement | null;
+    if (!catEl) return null;
+    const id = Number(catEl.dataset.dropCategory);
+    return Number.isFinite(id) ? id : null;
+  };
+
+  /** 笔记卡片上按下：先记录候选，等移动超过阈值才真正进入拖拽（不影响单击打开） */
+  const handleNotePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button')) return; // 点删除等按钮不算拖拽
+    const noteEl = target.closest('[data-note-id]') as HTMLElement | null;
+    if (!noteEl) return;
+    const id = Number(noteEl.dataset.noteId);
+    if (!Number.isFinite(id)) return;
+    pointerNoteIdRef.current = id;
+    pointerStartRef.current = { x: e.clientX, y: e.clientY };
+    isPointerDraggingRef.current = false;
+    pointerTitleRef.current = noteEl.querySelector('h4')?.textContent || '无标题';
+  };
+
+  // 指针拖拽：window 级监听，超出阈值后显示浮层、自动滚动并高亮落点分组
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const start = pointerStartRef.current;
+      if (pointerNoteIdRef.current === null || !start) return;
+      if (!isPointerDraggingRef.current) {
+        if (Math.abs(e.clientX - start.x) < 5 && Math.abs(e.clientY - start.y) < 5) return;
+        isPointerDraggingRef.current = true;
+        document.body.style.userSelect = 'none'; // 拖拽期间禁止选中文本
+      }
+      e.preventDefault();
+      dragYRef.current = e.clientY;
+      const container = sidebarScrollRef.current;
+      if (container) startAutoScroll(container);
+      setDragGhost({ x: e.clientX, y: e.clientY, title: pointerTitleRef.current });
+      setDragHoverCategoryId(findCategoryIdAt(e.clientX, e.clientY));
+    };
+    const onUp = (e: PointerEvent) => {
+      const noteId = pointerNoteIdRef.current;
+      const wasDragging = isPointerDraggingRef.current;
+      const categoryId = wasDragging ? findCategoryIdAt(e.clientX, e.clientY) : null;
+      pointerNoteIdRef.current = null;
+      pointerStartRef.current = null;
+      isPointerDraggingRef.current = false;
+      document.body.style.userSelect = '';
+      setDragGhost(null);
+      setDragHoverCategoryId(null);
+      stopAutoScroll();
+      if (wasDragging) {
+        // 拖拽结束后紧跟着的 click 要吞掉，避免又打开笔记
+        suppressClickRef.current = true;
+        window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+        if (noteId !== null && categoryId !== null) {
+          void dropToCategoryRef.current(String(noteId), categoryId);
+        }
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const categoryCount = categories.length;
 
   return (
@@ -298,23 +396,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Logo */}
       <div className="px-3.5 pt-3.5 pb-2 flex-shrink-0">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 bg-gradient-to-br from-primary-500 to-primary-700 rounded-lg flex items-center justify-center shadow-sm">
-            <Icon name="sidebar-edit-square" className="w-4 h-4 text-white" />
-          </div>
           <div className="min-w-0 flex-1">
             <h1 className="text-sm font-bold text-slate-800 leading-none">FastNote</h1>
             <p className="text-[10px] text-slate-400 mt-0.5">简洁高效</p>
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
-            {/* 数据备份与恢复：全局入口 */}
-            {onOpenBackup && (
+            {/* 设置：全局入口（含 AI 设置与备份恢复） */}
+            {onOpenSettings && (
               <button
-                onClick={onOpenBackup}
+                onClick={onOpenSettings}
                 className="sidebar-header-btn"
-                title="数据备份与恢复"
-                aria-label="数据备份与恢复"
+                title="设置"
+                aria-label="设置"
               >
-                <Icon name="app-backup" className="w-4 h-4" />
+                <Icon name="ai-settings" className="w-4 h-4" />
               </button>
             )}
             {/* 全局 AI 入口：没有打开笔记编辑页时也能打开 AI 窗口 */}
@@ -406,7 +501,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
           {sortMenu.open && (
             <>
-              <div className="fixed inset-0 z-50" />
+              <div
+                className="fixed inset-0 z-50"
+                onClick={() => setSortMenu((m) => ({ ...m, open: false }))}
+              />
               <div
                 className="pop-menu"
                 style={{ position: "fixed", top: sortMenu.top, left: Math.max(8, sortMenu.left - 40), minWidth: 132 }}
@@ -439,7 +537,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:bg-white/80 hover:text-primary-500 transition-all"
             title="创建分组"
           >
-            <Icon name="sidebar-plus-bold" className="w-3.5 h-3.5" />
+            <Icon name="sidebar-folder-plus" className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -447,17 +545,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* 搜索模式：忽略分组，扁平展示全部命中笔记；否则展示分组抽屉列表 */}
       <div
         ref={sidebarScrollRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-3 min-h-0 drawer-scroll"
-        onDragOver={(e) => {
-          // 允许放置在容器上
-          e.preventDefault();
-          // 记录 Y 坐标用于自动滚动（无论鼠标在容器还是子元素上）
-          dragYRef.current = e.clientY;
-          startAutoScroll(sidebarScrollRef.current!);
+        className={`flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-3 min-h-0 drawer-scroll ${
+          dragGhost !== null || isFileDragActive ? 'drawer-dragging' : ''
+        }`}
+        onPointerDown={handleNotePointerDown}
+        onClickCapture={(e) => {
+          // 拖拽刚结束时吞掉 click，避免"拖到分组"又触发"打开笔记"
+          if (suppressClickRef.current) {
+            e.stopPropagation();
+            e.preventDefault();
+          }
         }}
-        onDragLeave={() => stopAutoScroll()}
-        onDrop={() => stopAutoScroll()}
-        onDragEnd={() => stopAutoScroll()}
       >
         {isSearching ? (
           sortedAllNotes.length === 0 ? (
@@ -550,29 +648,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {categories.map((category) => {
             const ownNotes = categorized.get(category.id) || [];
+            // 两种拖拽来源用不同高亮：系统文件（绿） / 内部拖笔记（靛蓝）
+            const dropClass =
+              hoverDropCategoryId === category.id
+                ? 'drop-target-file'
+                : dragHoverCategoryId === category.id
+                ? 'drop-target-note'
+                : '';
             return (
               <div
                 key={category.id}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  const el = e.currentTarget as HTMLElement;
-                  el.style.background = 'linear-gradient(135deg, var(--color-accent-light) 0%, var(--color-accent-soft) 100%)';
-                  el.style.borderRadius = '12px';
-                }}
-                onDragLeave={(e) => {
-                  // 只有当拖动真正离开该分组（而非进入子元素时）才清除高亮
-                  const el = e.currentTarget as HTMLElement;
-                  const related = e.relatedTarget as HTMLElement | null;
-                  if (related && el.contains(related)) return;
-                  el.style.background = '';
-                }}
-                onDrop={async (e) => {
-                  const el = e.currentTarget as HTMLElement;
-                  el.style.background = '';
-                  e.preventDefault();
-                  await handleDropToCategory(e.dataTransfer.getData('id') || '', category.id);
-                }}
+                data-drop-category={category.id}
+                className={`rounded-xl transition-colors ${dropClass}`}
               >
                 <CategoryDrawer
                   category={category}
@@ -618,6 +705,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 拖拽浮层：跟随指针，pointer-events-none 不影响落点检测 */}
+      {dragGhost && (
+        <div
+          className="note-drag-ghost"
+          style={{ left: dragGhost.x + 12, top: dragGhost.y + 12 }}
+        >
+          {dragGhost.title}
+        </div>
+      )}
 
       {/* 右键菜单 */}
       <ContextMenu

@@ -27,6 +27,7 @@
   --color-danger-light: #fef2f2;
   --color-success: #10b981;
   --color-success-light: #ecfdf5;
+  --color-success-soft: #d1fae5;   /* 成功色浅底：文件拖入落点高亮 */
   --color-warning: #f59e0b;
   --color-warning-light: #fffbeb;
   --color-overlay: rgb(15 23 42 / 0.22);  /* 遮罩层 */
@@ -1589,4 +1590,48 @@ button:focus-visible {
    这样就不会突破所有 Modal（z-index: 50）的遮罩层 */
 .md-editor-code-head {
   z-index: 20 !important;
+}
+
+/* ========== 拖拽落点高亮 / 拖拽浮层 ========== */
+
+/* 分组作为拖拽落点时的整行高亮：两种拖拽来源用不同配色区分 */
+/* 内部拖动笔记 → 分组（强调色/靛蓝系） */
+.drop-target-note {
+  background: linear-gradient(135deg, var(--color-accent-light) 0%, var(--color-accent-soft) 100%);
+  box-shadow: inset 0 0 0 1px var(--color-accent-soft);
+}
+/* 系统文件拖入 → 分组（成功色/绿色系，与笔记拖拽区分） */
+.drop-target-file {
+  background: linear-gradient(135deg, var(--color-success-light) 0%, var(--color-success-soft) 100%);
+  box-shadow: inset 0 0 0 1px var(--color-success-soft);
+}
+
+/* 拖拽期间关掉普通 hover：否则子元素的 hover 底色会盖住落点高亮，且拖到笔记上会误触发 hover */
+.drawer-dragging .drawer-note:hover {
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+}
+.drawer-dragging .drawer-header:hover {
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* 拖动笔记时跟随指针的小浮层 */
+.note-drag-ghost {
+  position: fixed;
+  z-index: 80;
+  pointer-events: none;
+  max-width: 220px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text);
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-accent-soft);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

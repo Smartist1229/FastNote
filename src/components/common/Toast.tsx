@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from "react";
-import { Icon } from "./Icon";
+import { Icon } from "@/components/common/Icon";
 
 type ToastType = "success" | "error" | "info";
 

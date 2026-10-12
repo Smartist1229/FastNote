@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import { ErrorBoundary } from "./components/ErrorBoundary";
+import App from "@/App";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 
 // 禁用 Ctrl+P 原生打印（捕获阶段拦截 + keyup 双重保障）
 const preventPrint = (e: KeyboardEvent) => {

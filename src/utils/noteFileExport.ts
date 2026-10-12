@@ -5,6 +5,7 @@ import { writeTextFile } from '@tauri-apps/plugin-fs';
 const NOTE_FILE_FILTERS = [
   { name: 'Plain Text', extensions: ['txt', 'text'] },
   { name: 'Markdown', extensions: ['md', 'mdx'] },
+  { name: 'Batch File', extensions: ['bat'] },
   { name: 'JSON', extensions: ['json', 'jsonc'] },
   { name: 'HTML', extensions: ['html', 'htm', 'xhtml'] },
   { name: 'Source Code', extensions: ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'scss', 'less'] },

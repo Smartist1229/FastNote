@@ -1,4 +1,4 @@
-import type { AiPromptEntry, AiSettings } from "../types";
+import type { AiPromptEntry, AiSettings } from "@/types";
 
 /* ============================================================================
  * AI 默认配置中心

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, once } from '@tauri-apps/api/event';
-import { AiChatDbMessage, AiChatMessage, AiChatSession, AiProvider, Note, Category } from './types';
+import { AiChatDbMessage, AiChatMessage, AiChatSession, AiProvider, Note, Category, ExternalTextFile } from '@/types';
 
 export const createCategory = async (name: string): Promise<Category> => {
   return await invoke('create_category', { name });
@@ -52,6 +52,18 @@ export const deleteMultipleNotesPermanently = async (ids: number[]): Promise<voi
 
 export const cleanupOldTrash = async (): Promise<void> => {
   return await invoke('cleanup_old_trash');
+};
+
+/* ---------------- 电脑文本文件（拖入/打开） ---------------- */
+
+/** 读取电脑上的文本文件；非文本/过大/读失败会抛错（错误信息已是中文提示） */
+export const readTextFile = async (path: string): Promise<Omit<ExternalTextFile, 'id'>> => {
+  return await invoke<Omit<ExternalTextFile, 'id'>>('read_text_file', { path });
+};
+
+/** 把内容写回电脑上的文本文件（原子替换） */
+export const writeTextFile = async (path: string, content: string): Promise<void> => {
+  return await invoke('write_text_file', { path, content });
 };
 
 export const createAiProvider = async (
@@ -206,12 +218,16 @@ export interface BackupSummary {
   exported_at: string | null;
 }
 
-/** 把全部数据写入指定路径的 JSON 备份文件（不含 AI 服务商的 api_key） */
-export const exportBackup = async (path: string): Promise<BackupSummary> => {
-  return await invoke<BackupSummary>('export_backup', { path });
+/**
+ * 把全部数据写入指定路径的 JSON 备份文件。
+ * `includeApiKeys` 为 true 时，额外导出**解密后的明文** API Key（请妥善保管该文件）；
+ * 为 false 时只保留服务商配置，不含 Key。
+ */
+export const exportBackup = async (path: string, includeApiKeys: boolean): Promise<BackupSummary> => {
+  return await invoke<BackupSummary>('export_backup', { path, includeApiKeys });
 };
 
-/** 用备份文件覆盖当前数据；同机恢复会按「名称+类型+地址」保留已填的 api_key */
+/** 用备份文件覆盖当前数据；备份里带明文 Key 时会重新加密入库，同机恢复会保留已填好的 api_key */
 export const importBackup = async (path: string): Promise<BackupSummary> => {
   return await invoke<BackupSummary>('import_backup', { path });
 };

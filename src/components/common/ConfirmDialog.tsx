@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
-import { Modal } from "./Modal";
+import { Modal } from "@/components/common/Modal";
 
 export interface ConfirmOptions {
   /** 弹窗标题 */

@@ -1,25 +1,26 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
-import "./App.css";
-import { Note, Category, AiProvider, AiPromptEntry, AiSettings, DEFAULT_AI_SETTINGS } from "./types";
-import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "./aiSettingsStore";
-import * as api from "./api";
-import { Sidebar } from "./components/Sidebar";
-import { Modal } from "./components/Modal";
-import { ToastProvider, useToast } from "./components/Toast";
+import "@/App.css";
+import { Note, Category, AiProvider, AiPromptEntry, AiSettings, AppSettings, ExternalTextFile, DEFAULT_AI_SETTINGS, DEFAULT_APP_SETTINGS } from "@/types";
+import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "@/stores/aiSettingsStore";
+import { loadAppSettings, saveAppSetting, resetAppSettings } from "@/stores/appSettingsStore";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import * as api from "@/api";
+import { Sidebar } from "@/components/layout/Sidebar";
+import { Modal } from "@/components/common/Modal";
+import { ToastProvider, useToast } from "@/components/common/Toast";
 
-import { WelcomeDashboard } from "./components/WelcomeDashboard";
-import { AIChatPanel } from "./components/AIChatPanel";
+import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
+import { AIChatPanel } from "@/components/ai/AIChatPanel";
 
-import { AiMemoryModal } from "./components/AiMemoryModal";
-import { AiSettingsModal } from "./components/AiSettingsModal";
-import { BackupModal } from "./components/BackupModal";
-import { ExportCategoryModal } from "./components/ExportCategoryModal";
-import { saveNoteAsFile } from "./utils/noteFileExport";
-import { useConfirm } from "./components/ConfirmDialog";
-import { Icon } from "./components/Icon";
+import { SettingsModal, SettingsSection } from "@/components/settings/SettingsModal";
+import { ExportCategoryModal } from "@/components/data/ExportCategoryModal";
+import { saveNoteAsFile } from "@/utils/noteFileExport";
+import { useConfirm } from "@/components/common/ConfirmDialog";
+import { Icon } from "@/components/common/Icon";
 
 const NoteEditor = lazy(() =>
-  import("./components/NoteEditor").then((module) => ({
+  import("@/components/editor/NoteEditor").then((module) => ({
     default: module.NoteEditor,
   }))
 );
@@ -30,30 +31,50 @@ function AppContent() {
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
   /** AI 回复的临时预览：只在编辑器里展示，绝不写入数据库（软件新开时为 null → 正常显示欢迎页） */
   const [tempNote, setTempNote] = useState<{ id: number; title: string; content: string } | null>(null);
-  /** 打开临时预览前的选中笔记：关闭预览（未保存）时恢复 */
-  const prevNoteRef = useRef<Note | null>(null);
   /** 临时预览的负 id 计数器：每次打开都换一个新 id，确保编辑器一定会刷新成新内容 */
   const tempNoteIdRef = useRef(-1);
+  /**
+   * 正在直接编辑的电脑文本文件：null 表示普通笔记模式。
+   * 内容只留在界面上，改一个字就写回原文件（不落库）。
+   */
+  const [externalFile, setExternalFile] = useState<ExternalTextFile | null>(null);
+  /** 电脑文件的负 id 计数器：与临时预览分区间，避免两边 id 撞车 */
+  const externalFileIdRef = useRef(-1000000);
+  /** 外部文件模式的镜像 ref：供 openNote 之类零依赖回调做判断 */
+  const externalFileRef = useRef<ExternalTextFile | null>(null);
+  /** NoteEditor 注册进来的「立即写回电脑文件」，切换/关闭前先 flush，避免丢掉最后一次编辑 */
+  const flushExternalRef = useRef<(() => void) | null>(null);
+  /** 系统文件拖拽经过时命中的分组 id（用于侧边栏高亮） */
+  const [hoverDropCategoryId, setHoverDropCategoryId] = useState<number | null>(null);
+  /** 是否有系统文件正拖拽在窗口上方（用于显示落点提示） */
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
+  /** 分组列表的镜像 ref：拖拽回调里拿分组名做确认提示，避免频繁重注册监听 */
+  const categoriesRef = useRef<Category[]>([]);
   /** 临时预览对应的伪笔记：id 为负数哨兵值，落库操作会被 NoteEditor 的 isTemporary 挡掉 */
   const tempPreviewNote: Note | null = tempNote
     ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null }
     : null;
-  /** 编辑器当前展示的内容：优先真实笔记，其次 AI 临时预览 */
-  const editorNote = selectedNote ?? tempPreviewNote;
-  /** AI 回复「在编辑器中打开」：退出当前笔记，切到临时预览 */
+  /** 电脑文件对应的伪笔记：标题=文件名、内容=文件内容，同样不落库 */
+  const externalFileNote: Note | null = externalFile
+    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null }
+    : null;
+  /** 编辑器当前展示的内容：三层叠放，最上层优先 —— AI 预览 > 电脑文件 > 真实笔记 */
+  const editorNote = tempPreviewNote ?? externalFileNote ?? selectedNote;
+  /** 是否有叠放层（AI 预览 / 电脑文件）盖在真实笔记之上：此时 AI 面板不引用底层笔记 */
+  const overlayActive = tempNote != null || externalFile != null;
+  /**
+   * AI 回复「在编辑器中打开」：把预览叠到最上层。
+   * 底下的电脑文件 / 笔记保留不动，关闭预览后自然回到上一层。
+   */
   const handleOpenInEditor = (title: string, content: string) => {
+    // 预览会盖住当前层：先把电脑文件的待写入 flush 掉，避免丢最后一次编辑
+    flushExternalRef.current?.();
     tempNoteIdRef.current -= 1;
-    prevNoteRef.current = selectedNote; // 保存当前选中的笔记
-    setSelectedNote(null);
     setTempNote({ id: tempNoteIdRef.current, title, content });
   };
-  /** 关闭 AI 临时预览：如果没另存为笔记，就恢复之前选中的笔记 */
+  /** 关闭 AI 临时预览：露出下面一层（电脑文件或原笔记；都没有则回欢迎页） */
   const handleCloseTemporary = () => {
-    const prev = prevNoteRef.current;
-    prevNoteRef.current = null;
     setTempNote(null);
-    if (!prev) return;
-    setSelectedNote(prev);
   };
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<string>("created_at");
@@ -79,8 +100,14 @@ function AppContent() {
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<number>>(new Set());
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [editorCursorOffset, setEditorCursorOffset] = useState(0);
-  const [showProviderModal, setShowProviderModal] = useState(false);
+  /** 统一设置窗口：null 表示关闭，否则为打开时的分区 */
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  /** AI 服务商列表（统一设置里的服务商分区使用） */
   const [providerModalProviders, setProviderModalProviders] = useState<AiProvider[]>([]);
+  const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
+  /** 软件设置：启动读库，读不到的键回退默认值 */
+  const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   /**
    * AI 记忆 / 前置提示词 + AI 全局设置。
    * 全部持久化在 SQLite 的 app_settings 表里：启动时读库，读不到的键回退默认值；
@@ -90,9 +117,6 @@ function AppContent() {
   const [aiSettings, setAiSettings] = useState<AiSettings>(DEFAULT_AI_SETTINGS);
   /** 设置是否已从数据库读回：读回前不写库，避免用默认值覆盖用户数据 */
   const [aiConfigLoaded, setAiConfigLoaded] = useState(false);
-  const [showAiMemory, setShowAiMemory] = useState(false);
-  /** 数据备份与恢复窗口 */
-  const [showBackup, setShowBackup] = useState(false);
   /** 右键「导出分组」的目标分组，非 null 时打开导出窗口 */
   const [exportCategory, setExportCategory] = useState<Category | null>(null);
   /** NoteEditor 注册进来的「保存笔记到文件」（等价 Ctrl+S），侧边栏右键菜单调用 */
@@ -141,15 +165,105 @@ function AppContent() {
     if (!prev) return;                       // 首次读回不入库
     if (JSON.stringify(prev) !== JSON.stringify(aiPrompts)) savePrompts(aiPrompts);
   }, [aiPrompts, aiConfigLoaded]);
-  const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
   const focusTimerRef = useRef<number | null>(null);
 
+  /* ------------------------------ 软件设置 ------------------------------ */
+
+  /**
+   * 启动时读取软件设置：优先读数据库，读不到的键回退 config/appDefaults.ts 的默认值。
+   * 读取成功后同步到各处的运行时状态；「启动生效」的项（如清理回收站）只在这里执行一次。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    loadAppSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setAppSettings(settings);
+        setSortBy(settings.view.sortBy);
+        setSortOrder(settings.view.sortOrder);
+        setIsSidebarCollapsed(settings.layout.sidebarCollapsed);
+        setAiPanelOpen(settings.layout.aiPanelOpen);
+        if (settings.general.cleanTrashOnStartup) {
+          // 清空回收站：永久删除里面的全部笔记（仅在启动时执行一次）
+          api
+            .getTrashNotes()
+            .then((list) =>
+              list.length > 0 ? api.deleteMultipleNotesPermanently(list.map((n) => n.id)) : undefined,
+            )
+            .catch((e) => console.error("清空回收站失败：", e));
+        }
+      })
+      .catch((e) => console.error("读取软件设置失败，使用默认值：", e));
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * 写入软件设置：更新内存状态并实时持久化到数据库。
+   * 「实时生效」的项在这里额外同步运行时状态；「重启生效」的项（布局）只落库，不动当前界面。
+   */
+  const applyAppSetting = useCallback(
+    (category: keyof AppSettings, field: string, value: boolean | number | string) => {
+      setAppSettings((prev) => ({ ...prev, [category]: { ...prev[category], [field]: value } }));
+      saveAppSetting(category as never, field as never, value as never);
+      // 笔记列表排序需要立刻反映到运行时状态，否则要刷新后才会生效
+      if (category === "view") {
+        if (field === "sortBy") setSortBy(value as string);
+        if (field === "sortOrder") setSortOrder(value as "asc" | "desc");
+      }
+    },
+    [],
+  );
+
+  /** 打开统一设置窗口，并定位到指定分区 */
+  const openSettings = useCallback((section: SettingsSection = "general") => {
+    setSettingsSection(section);
+    setShowSettings(true);
+  }, []);
+
+  /** 恢复软件默认设置：删库里全部 app.config.* 键，运行时状态同步回默认 */
+  const handleResetAppSettings = useCallback(async () => {
+    const ok = await confirm({
+      title: "恢复软件默认设置",
+      message: "将把通用、编辑器、笔记列表、界面布局等软件设置恢复为默认值（AI 设置不受影响）。",
+      confirmText: "恢复默认",
+      danger: true,
+    });
+    if (!ok) return;
+    await resetAppSettings();
+    const d = DEFAULT_APP_SETTINGS;
+    setAppSettings(d);
+    // 排序是实时生效项，立即同步；布局是启动项，只落默认值、下次启动才应用
+    setSortBy(d.view.sortBy);
+    setSortOrder(d.view.sortOrder);
+    showToast("已恢复软件默认设置", "success");
+  }, [confirm, showToast]);
+
+  /* ------------------------- 运行时状态 ↔ 设置同步 ------------------------- */
+
+  /** 排序字段：走 applyAppSetting，内部会同步本地的 sortBy 并触发列表重新拉取 */
+  const handleSortByChange = useCallback(
+    (value: string) => applyAppSetting("view", "sortBy", value),
+    [applyAppSetting],
+  );
+
+  const handleToggleSortOrder = useCallback(
+    () => applyAppSetting("view", "sortOrder", sortOrder === "asc" ? "desc" : "asc"),
+    [sortOrder, applyAppSetting],
+  );
+
   /** 打开笔记：记录当前分组，并让侧边栏展开/聚焦到这条笔记 */
   const openNote = useCallback((note: Note) => {
+    // 打开真实笔记：撤掉上层叠着的电脑文件 / AI 预览（先 flush 未写完的文件内容）
+    if (externalFileRef.current) {
+      flushExternalRef.current?.();
+      externalFileRef.current = null;
+    }
+    setTempNote(null);
+    setExternalFile(null);
     setSelectedNote(note);
     setSelectedCategoryId(note.category_id);
     setExpandedDrawer(note.category_id === null ? 'uncategorized' : note.category_id);
@@ -165,7 +279,7 @@ function AppContent() {
     }, 40);
   }, []);
 
-  /** 展开/收起 AI 对话面板 */
+  /** 展开/收起 AI 对话面板（只改当前界面，不写设置） */
   const toggleAiPanel = useCallback(() => setAiPanelOpen((open) => !open), []);
 
   /** 展开/收起分组抽屉（点击同一分组可收起） */
@@ -227,8 +341,6 @@ function AppContent() {
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => {
     selectedNoteRef.current = selectedNote;
-    // 一旦打开真实笔记就退出临时预览，避免"预览"和"笔记"同时存在
-    if (selectedNote) setTempNote(null);
   }, [selectedNote]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
 
@@ -253,6 +365,13 @@ function AppContent() {
 
   const handleCreateNote = async (categoryId?: number | null) => {
     const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
+    // 新建笔记：撤掉上层叠着的电脑文件 / AI 预览
+    if (externalFileRef.current) {
+      flushExternalRef.current?.();
+      externalFileRef.current = null;
+    }
+    setTempNote(null);
+    setExternalFile(null);
     try {
       const note = await api.createNote("无标题", "", targetCategory);
       setNotes((prev) => [...prev, note]);
@@ -265,15 +384,15 @@ function AppContent() {
     }
   };
 
-  /** 临时预览（AI 回复）另存为真实笔记：写库后打开它，从而自动退出临时预览 */
+  /** 临时预览（AI 回复）另存为真实笔记：写库后打开它，叠放层一并清空 */
   const handleSavePreviewToCategory = async (categoryId: number | null, title: string, content: string) => {
     try {
       const note = await api.createNote(title, content, categoryId);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
-      setTempNote(null);       // 清除临时预览，进入真实笔记模式
-      prevNoteRef.current = null; // 已保存，无需恢复
+      setTempNote(null);
+      setExternalFile(null);
       setSelectedNote(note);
       showToast("已保存为笔记", "success");
       window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
@@ -283,6 +402,146 @@ function AppContent() {
       throw error;
     }
   };
+
+  /* ------------------------- 电脑文件（拖入 / 打开） ------------------------- */
+
+  // 让零依赖回调始终能拿到最新值
+  useEffect(() => { externalFileRef.current = externalFile; }, [externalFile]);
+  useEffect(() => { categoriesRef.current = categories; }, [categories]);
+
+  /** NoteEditor 注册「立即写回」能力：切换 / 关闭文件前调用，避免丢掉最后一次编辑 */
+  const registerFlushExternal = useCallback((fn: (() => void) | null) => {
+    flushExternalRef.current = fn;
+  }, []);
+
+  /** 打开电脑上的文本文件：读失败（非文本/过大）只 toast 报错，不进入外部文件模式 */
+  const openExternalFile = useCallback(async (path: string) => {
+    // 换文件前先把上一份的待写入 flush 掉（此时回调仍指向旧路径）
+    flushExternalRef.current?.();
+    try {
+      const file = await api.readTextFile(path);
+      externalFileIdRef.current -= 1;
+      // 打开文件是最新的用户动作：先收起 AI 预览，笔记作为底层保留
+      setTempNote(null);
+      setExternalFile({ id: externalFileIdRef.current, ...file });
+    } catch (e) {
+      showToast(typeof e === "string" ? e : "打开文件失败", "error");
+    }
+  }, [showToast]);
+
+  /** 关闭电脑文件：先 flush 写入，再露出下面一层（原笔记，或欢迎页） */
+  const handleCloseExternalFile = useCallback(() => {
+    flushExternalRef.current?.();
+    setExternalFile(null);
+  }, []);
+
+  /** 外部文件另存为笔记：写库后切到新笔记，叠放层一并清空 */
+  const handleSaveExternalToNote = async (categoryId: number | null, title: string, content: string) => {
+    // 另存前先把最后一点改动同步回原文件
+    flushExternalRef.current?.();
+    try {
+      const note = await api.createNote(title, content, categoryId);
+      setNotes((prev) => [...prev, note]);
+      setSelectedCategoryId(categoryId);
+      setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
+      setTempNote(null);
+      setExternalFile(null);
+      setSelectedNote(note);
+      showToast("已保存为笔记", "success");
+      window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
+    } catch (error) {
+      console.error("Failed to save external file as note:", error);
+      showToast("保存失败，请重试", "error");
+      throw error;
+    }
+  };
+
+  /** 外部文件写回电脑：由编辑器防抖触发 */
+  const handleWriteExternal = useCallback(async (content: string) => {
+    const target = externalFileRef.current;
+    if (!target) return;
+    await api.writeTextFile(target.path, content);
+  }, []);
+
+  /** 拖文件到分组：确认后把文件内容导入为该分组下的一条笔记 */
+  const handleDropFileToCategory = useCallback(async (path: string, categoryId: number) => {
+    const category = categoriesRef.current.find((c) => c.id === categoryId);
+    const ok = await confirm({
+      title: "导入文件到分组",
+      message: `是否将文件内容导入分组「${category?.name ?? ""}」？`,
+      confirmText: "导入",
+    });
+    if (!ok) return;
+    try {
+      const file = await api.readTextFile(path);
+      await api.createNote(file.name, file.content, categoryId);
+      setSelectedCategoryId(categoryId);
+      setExpandedDrawer(categoryId);
+      showToast("已导入到分组", "success");
+      window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
+    } catch (e) {
+      showToast(typeof e === "string" ? e : "导入失败", "error");
+    }
+  }, [confirm, showToast]);
+
+  /** 欢迎页「打开文本文件」：系统文件选择框 → 打开（规则同拖入） */
+  const handleOpenTextFileDialog = useCallback(async () => {
+    try {
+      const selected = await openFileDialog({ multiple: false, directory: false });
+      if (typeof selected === "string") await openExternalFile(selected);
+    } catch (e) {
+      console.error("打开文件失败:", e);
+      showToast("打开文件失败", "error");
+    }
+  }, [openExternalFile, showToast]);
+
+  /**
+   * 系统级文件拖拽监听：Tauri 替换了 webview 的拖放处理器，
+   * 因此这里能拿到真实文件路径，并自行做落点命中检测。
+   */
+  useEffect(() => {
+    // 纯浏览器预览（无 Tauri 运行时）下没有系统拖拽事件，直接跳过
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    const hitCategory = (clientX: number, clientY: number): number | null => {
+      const el = document.elementFromPoint(clientX, clientY);
+      const catEl = el?.closest("[data-drop-category]") as HTMLElement | null;
+      if (!catEl) return null;
+      const id = Number(catEl.dataset.dropCategory);
+      return Number.isFinite(id) ? id : null;
+    };
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setIsFileDragActive(true);
+          const dpr = window.devicePixelRatio || 1;
+          setHoverDropCategoryId(hitCategory(payload.position.x / dpr, payload.position.y / dpr));
+        } else if (payload.type === "leave") {
+          setIsFileDragActive(false);
+          setHoverDropCategoryId(null);
+        } else if (payload.type === "drop") {
+          setIsFileDragActive(false);
+          setHoverDropCategoryId(null);
+          const path = payload.paths?.[0];
+          if (!path) return;
+          const dpr = window.devicePixelRatio || 1;
+          const categoryId = hitCategory(payload.position.x / dpr, payload.position.y / dpr);
+          if (categoryId !== null) void handleDropFileToCategory(path, categoryId);
+          else void openExternalFile(path);
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch((e) => console.error("注册文件拖拽监听失败:", e));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [openExternalFile, handleDropFileToCategory]);
 
   const handleSaveNote = async (id: number, title: string, content: string, categoryId: number | null) => {
     saveQueueRef.current = saveQueueRef.current.then(async () => {
@@ -540,9 +799,9 @@ function AppContent() {
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             sortBy={sortBy}
-            onSortByChange={setSortBy}
+            onSortByChange={handleSortByChange}
             sortOrder={sortOrder}
-            onToggleSortOrder={() => setSortOrder((order) => (order === "asc" ? "desc" : "asc"))}
+            onToggleSortOrder={handleToggleSortOrder}
             onSelectNote={openNote}
             onToggleDrawer={toggleDrawer}
             onToggleCollapse={() => setIsSidebarCollapsed(true)}
@@ -581,10 +840,12 @@ function AppContent() {
               }
             }}
             onOpenTrash={handleOpenTrash}
-            onOpenBackup={() => setShowBackup(true)}
+            onOpenSettings={() => openSettings("general")}
             onExportCategory={setExportCategory}
             onSaveNote={handleExportNoteFromMenu}
             onNotesUpdated={loadData}
+            hoverDropCategoryId={hoverDropCategoryId}
+            isFileDragActive={isFileDragActive}
           />
         </div>
 
@@ -632,16 +893,23 @@ function AppContent() {
                 <div className="editor-layer">
                   <NoteEditor
                     note={editorNote}
-                    isTemporary={!selectedNote}
+                    isTemporary={tempNote != null}
                     onCloseTemporary={handleCloseTemporary}
                     categories={categories}
                     onSaveToCategory={handleSavePreviewToCategory}
                     onSave={handleSaveNote}
                     onDelete={handleDeleteNote}
                     onCursorOffsetChange={setEditorCursorOffset}
+                    fontSize={appSettings.editor.fontSize}
+                    ctrlScrollZoom={appSettings.editor.ctrlScrollZoom}
                     onToggleAiPanel={toggleAiPanel}
                     isAiPanelOpen={aiPanelOpen}
                     onRegisterExport={registerExportNote}
+                    externalFilePath={tempNote ? null : externalFile?.path ?? null}
+                    onSaveExternal={handleWriteExternal}
+                    onSaveExternalToNote={handleSaveExternalToNote}
+                    onCloseExternal={handleCloseExternalFile}
+                    onRegisterFlushExternal={registerFlushExternal}
                   />
                 </div>
               ) : (
@@ -652,6 +920,7 @@ function AppContent() {
                   recentNotes={[...notes].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())}
                   onCreateNote={() => handleCreateNote()}
                   onOpenTrash={handleOpenTrash}
+                  onOpenTextFile={handleOpenTextFileDialog}
                   onSelectNote={openNote}
                   onToggleAiPanel={toggleAiPanel}
                   isAiPanelOpen={aiPanelOpen}
@@ -663,18 +932,18 @@ function AppContent() {
           <AIChatPanel
             isOpen={aiPanelOpen}
             onClose={() => setAiPanelOpen(false)}
-            noteTitle={selectedNote?.title || ""}
-            noteContent={selectedNote?.content || ""}
-            currentNoteId={selectedNote?.id ?? null}
+            noteTitle={overlayActive ? "" : selectedNote?.title || ""}
+            noteContent={overlayActive ? "" : selectedNote?.content || ""}
+            currentNoteId={overlayActive ? null : selectedNote?.id ?? null}
             aiPrompts={aiPrompts}
             aiSettings={aiSettings}
             onAiSettingsChange={(patch) => setAiSettings((prev) => ({ ...prev, ...patch }))}
-            onOpenAiMemory={() => setShowAiMemory(true)}
+            onOpenAiMemory={() => openSettings("memory")}
             onInsertText={handleAiInsertText}
             onReplaceContent={handleAiReplaceContent}
             onOpenInEditor={handleOpenInEditor}
             onOpenProviderSettings={() => {
-              setShowProviderModal(true);
+              openSettings("provider");
               api.getAiProviders().then((list) => {
                 setProviderModalProviders(list);
                 if (list.length > 0 && !providerModalSelectedId) {
@@ -797,34 +1066,26 @@ function AppContent() {
         </div>
       </Modal>
 
-      {/* 统一的 AI 设置窗口：服务商 / 对话行为 / 上下文 / 记忆入口 都收敛在这里 */}
-      <AiSettingsModal
-        isOpen={showProviderModal}
-        onClose={() => setShowProviderModal(false)}
-        providers={providerModalProviders}
-        selectedProviderId={providerModalSelectedId}
-        onProvidersChange={(list) => {
+      {/* 统一设置窗口：锚点式布局，融合软件设置 / AI 设置 / 记忆 / 备份恢复 */}
+      <SettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        defaultSection={settingsSection}
+        appSettings={appSettings}
+        onAppSettingChange={applyAppSetting}
+        onResetAppSettings={handleResetAppSettings}
+        aiSettings={aiSettings}
+        onAiSettingsChange={setAiSettings}
+        aiProviders={providerModalProviders}
+        aiSelectedProviderId={providerModalSelectedId}
+        onAiProvidersChange={(list) => {
           setProviderModalProviders(list);
           window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
         }}
-        onSelectedProviderChange={setProviderModalSelectedId}
-        settings={aiSettings}
-        onSettingsChange={setAiSettings}
-        promptCount={aiPrompts.length}
-        enabledPromptCount={aiPrompts.filter((p) => p.enabled).length}
-        onOpenMemory={() => setShowAiMemory(true)}
+        onAiSelectedProviderChange={setProviderModalSelectedId}
+        aiPrompts={aiPrompts}
+        onAiPromptsChange={setAiPrompts}
       />
-
-      {/* AI 记忆 / 前置提示词：输入添加、列表展示、可编辑/删除/停用 */}
-      <AiMemoryModal
-        isOpen={showAiMemory}
-        entries={aiPrompts}
-        onChange={setAiPrompts}
-        onClose={() => setShowAiMemory(false)}
-      />
-
-      {/* 数据备份与恢复：导出/导入单个 JSON，用于换机迁移或整体还原 */}
-      <BackupModal isOpen={showBackup} onClose={() => setShowBackup(false)} />
 
       {/* 导出分组：右键分组菜单进入，可导出为压缩包或电子书 */}
       <ExportCategoryModal
@@ -832,6 +1093,13 @@ function AppContent() {
         onClose={() => setExportCategory(null)}
         onDone={loadData}
       />
+
+      {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}
+      {isFileDragActive && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] pointer-events-none px-3.5 py-2 rounded-xl bg-slate-800/90 text-white text-xs shadow-lg">
+          松开即可打开文件 · 拖到某个分组上可导入该分组
+        </div>
+      )}
 
       {/* 通用确认弹窗：替换原生 confirm()，样式跟随主题 */}
       {confirmDialog}

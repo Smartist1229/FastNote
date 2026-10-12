@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Category, Note } from '../types';
-import * as api from '../api';
-import type { CategoryZipFormat, CategoryEbookFormat } from '../api';
-import { Modal } from './Modal';
-import { Icon } from './Icon';
-import { useToast } from './Toast';
+import { Category, Note } from '@/types';
+import * as api from '@/api';
+import type { CategoryZipFormat, CategoryEbookFormat } from '@/api';
+import { Modal } from '@/components/common/Modal';
+import { Icon } from '@/components/common/Icon';
+import { useToast } from '@/components/common/Toast';
 
 interface ExportCategoryModalProps {
   /** 要导出的分组：为 null 时窗口关闭 */

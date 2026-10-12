@@ -425,12 +425,14 @@ fn delete_app_setting(key: String, state: State<AppState>) -> Result<(), String>
 
 /* ---------------- 数据备份与恢复 ----------------
  * 备份文件是一个 JSON：format 标记 + 各表数据，用于换机迁移或整体还原。
- * 刻意**不导出 AI 服务商的 api_key**：它是跟着当前机器/用户派生的密文，
- * 换机后本来就解不开，导出明文则等于把密钥多抄一份出去。
+ * AI 服务商的 api_key 由导出时的 include_api_keys 决定：
+ *   - false（默认）：不写入密钥，换机恢复后需重新填写；
+ *   - true：写入**解密后的明文** Key，方便换机直接恢复（明文文件请妥善保管）。
+ * 导入时若备份里带明文 Key，会重新加密后入库，数据库里始终不落明文。
  */
 
 const BACKUP_FORMAT: &str = "fastnote-backup";
-const BACKUP_VERSION: u32 = 1;
+const BACKUP_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct BackupSummary {
@@ -496,7 +498,12 @@ fn non_empty_or_now(text: String) -> String {
 }
 
 #[tauri::command]
-fn export_backup(state: State<AppState>, path: String, app: AppHandle) -> Result<BackupSummary, String> {
+fn export_backup(
+    state: State<AppState>,
+    path: String,
+    include_api_keys: bool,
+    app: AppHandle,
+) -> Result<BackupSummary, String> {
     let conn = state
         .conn
         .lock()
@@ -532,8 +539,9 @@ fn export_backup(state: State<AppState>, path: String, app: AppHandle) -> Result
         },
     )?;
 
-    // api_key 不在查询列里：备份文件从源头上就不含密钥
-    let providers = query_rows(
+    // 默认不查 api_key 列：备份文件里不含密钥。
+    // 勾选「备份 API Key」时再单独取出并解密，合并成明文写进备份。
+    let mut providers = query_rows(
         &conn,
         "SELECT id, name, provider_type, api_base_url, api_path, enabled_model, enabled_models,
                 created_at, updated_at
@@ -552,6 +560,35 @@ fn export_backup(state: State<AppState>, path: String, app: AppHandle) -> Result
             }))
         },
     )?;
+
+    if include_api_keys {
+        let mut stmt = conn
+            .prepare("SELECT id, api_key FROM ai_providers")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut plain_keys: std::collections::HashMap<i64, String> =
+            std::collections::HashMap::new();
+        for (id, stored) in rows.flatten() {
+            // 解不开（例如换了机器/用户）就留空，不因一条 Key 让整次导出失败
+            let plain = if stored.is_empty() {
+                String::new()
+            } else {
+                decrypt_secret(&conn, &stored).unwrap_or_default()
+            };
+            plain_keys.insert(id, plain);
+        }
+        for p in providers.iter_mut() {
+            if let Some(obj) = p.as_object_mut() {
+                let id = obj.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                obj.insert(
+                    "api_key".to_string(),
+                    json!(plain_keys.get(&id).cloned().unwrap_or_default()),
+                );
+            }
+        }
+    }
 
     let sessions = query_rows(
         &conn,
@@ -652,8 +689,8 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    // 备份里没有 api_key：先记下本机现有的 Key，恢复时按「名称+类型+地址」原样接回去。
-    // 同机恢复不会丢已填好的 Key；换机时匹配不到，保持为空由用户重新填。
+    // 先记下本机现有的 Key 密文，恢复时按「名称+类型+地址」原样接回去：
+    // 备份里没带 Key（未勾选导出）时同机恢复不会丢已填好的 Key；换机匹配不到则留空由用户重填。
     let mut local_keys: std::collections::HashMap<(String, String, String), String> =
         std::collections::HashMap::new();
     {
@@ -720,14 +757,19 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
     }
 
     for p in providers {
-        let api_key = local_keys
-            .get(&(
-                json_str(p, "name"),
-                json_str(p, "provider_type"),
-                json_str(p, "api_base_url"),
-            ))
-            .cloned()
-            .unwrap_or_default();
+        // 备份里带了明文 api_key（导出时勾选了「备份 API Key」）→ 重新加密后入库；
+        // 否则按「名称+类型+地址」沿用本机已有的密文（同机恢复不丢已填好的 Key）。
+        let api_key = match json_opt_str(p, "api_key").filter(|k| !k.is_empty()) {
+            Some(plain) => encrypt_secret(&tx, &plain)?,
+            None => local_keys
+                .get(&(
+                    json_str(p, "name"),
+                    json_str(p, "provider_type"),
+                    json_str(p, "api_base_url"),
+                ))
+                .cloned()
+                .unwrap_or_default(),
+        };
         let enabled_models = p
             .get("enabled_models")
             .and_then(|v| v.as_array())
@@ -2386,6 +2428,70 @@ fn delete_chat_session(session_id: i64, state: State<AppState>) -> Result<(), St
     Ok(())
 }
 
+/* ---------------- 电脑文本文件读写 ----------------
+ * 「拖入/打开电脑文件」功能用：读取时做文本检测（NUL 字节 / UTF-8），
+ * 写入时用同目录临时文件原子替换，避免写一半把原文件写坏。
+ */
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TextFileInfo {
+    pub path: String,
+    pub name: String,
+    pub content: String,
+}
+
+/// 单文件大小上限：超过就不允许打开，避免把超大文件塞进编辑器
+const TEXT_FILE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// 非文本检测的取样长度：只看开头这一段的 NUL 字节
+const TEXT_FILE_SNIFF_BYTES: usize = 8 * 1024;
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<TextFileInfo, String> {
+    let p = std::path::Path::new(&path);
+    if !p.is_file() {
+        return Err("不是可打开的文件".to_string());
+    }
+    let meta = std::fs::metadata(p).map_err(|e| format!("读取文件失败：{}", e))?;
+    if meta.len() > TEXT_FILE_MAX_BYTES {
+        return Err("文件过大，暂不支持打开".to_string());
+    }
+    let bytes = std::fs::read(p).map_err(|e| format!("读取文件失败：{}", e))?;
+    let sniff_len = bytes.len().min(TEXT_FILE_SNIFF_BYTES);
+    if bytes[..sniff_len].contains(&0u8) {
+        return Err("这不是文本文件".to_string());
+    }
+    // 去掉 UTF-8 BOM，避免编辑器里出现多余字符
+    let text_bytes: &[u8] = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        &bytes
+    };
+    let content =
+        String::from_utf8(text_bytes.to_vec()).map_err(|_| "不是 UTF-8 文本文件".to_string())?;
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    Ok(TextFileInfo { path, name, content })
+}
+
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let dir = p.parent().ok_or_else(|| "无效的文件路径".to_string())?;
+    let file_name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| "无效的文件路径".to_string())?;
+    let tmp = dir.join(format!(".{}.fastnote.tmp", file_name));
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("写入失败：{}", e))?;
+    std::fs::rename(&tmp, p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入失败：{}", e)
+    })?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2428,6 +2534,8 @@ pub fn run() {
             export_category_ebook,
             export_notes_zip,
             export_notes_ebook,
+            read_text_file,
+            write_text_file,
         ])
         .setup(|app| {
             let data_dir = match std::env::current_exe() {

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { Category, Note } from '../types';
-import { Icon } from './Icon';
+import { Category, Note } from '@/types';
+import { Icon } from '@/components/common/Icon';
 
 interface CategoryDrawerProps {
   category: Category | null;
@@ -43,11 +43,6 @@ export const DrawerNoteItem: React.FC<{
       data-note-id={note.id}
       onClick={() => onSelectNote(note)}
       onContextMenu={(e) => onContextMenu?.(e, note)}
-      draggable={true}
-      onDragStart={(e) => {
-        e.dataTransfer.setData('id', note.id.toString());
-        e.dataTransfer.effectAllowed = 'move';
-      }}
       className={`drawer-note group/note relative pl-3 pr-2 py-1 rounded-lg cursor-pointer border border-transparent transition-all duration-200 ${
         isSelected
           ? 'bg-gradient-to-r from-primary-500 to-primary-600 note-selected-bg'
@@ -102,7 +97,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   const open = isExpanded;
 
   const headerBase =
-    `relative w-full text-left px-2.5 rounded-lg transition-all duration-200 flex items-center gap-2 group/drawer border ${
+    `drawer-header relative w-full text-left px-2.5 rounded-lg transition-all duration-200 flex items-center gap-2 group/drawer border ${
       isAllNotes ? 'py-1' : 'py-0'
     }`;
   const activeHeader =
@@ -228,7 +223,7 @@ export const UncategorizedDrawer: React.FC<{
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={noteListId}
-        className={`relative w-full text-left px-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-slate-500 hover:bg-white/80 hover:text-slate-800 border-slate-300/70 hover:border-slate-300`}
+        className={`drawer-header relative w-full text-left px-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-slate-500 hover:bg-white/80 hover:text-slate-800 border-slate-300/70 hover:border-slate-300`}
         title={open ? '收起' : '展开'}
       >
         <Icon
@@ -303,7 +298,7 @@ export const ChildNotesDrawer: React.FC<{
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={noteListId}
-        className="w-full text-left pl-6 pr-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-slate-400 hover:bg-white/70 hover:text-slate-600 border-slate-200"
+        className="drawer-header w-full text-left pl-6 pr-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-slate-400 hover:bg-white/70 hover:text-slate-600 border-slate-200"
         title={open ? '收起' : '展开'}
       >
         <Icon

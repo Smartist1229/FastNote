@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from "react";
-import { Icon } from "./Icon";
-import * as api from "../api";
-import { AiChatMessage, AiChatSession, AiProvider, AiPromptEntry, AiSettings } from "../types";
+import { Icon } from "@/components/common/Icon";
+import * as api from "@/api";
+import { AiChatMessage, AiChatSession, AiProvider, AiPromptEntry, AiSettings } from "@/types";
 import {
   buildFinalContent,
   cleanSessionTitle,
@@ -21,8 +21,8 @@ import {
   stripAiTags,
   type ToolCall,
   type ToolTrace,
-} from "../aiChatParse";
-import { useToast } from "./Toast";
+} from "@/lib/aiChatParse";
+import { useToast } from "@/components/common/Toast";
 import { MdPreview } from "md-editor-rt";
 import "md-editor-rt/lib/style.css";
 import {
@@ -43,7 +43,7 @@ import {
   buildThinkRule,
   buildTitlePrompt,
   buildToolResultMessage,
-} from "../config/aiDefaults";
+} from "@/config/aiDefaults";
 
 interface AIChatPanelProps {
   isOpen: boolean;
@@ -2245,9 +2245,6 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           onClick={() => { setShowSessionPicker(true); setEditingSessionId(null); setEditTitle(''); setSessionQuery(''); }}
           title="切换 / 管理对话"
         >
-          <span className="ai-session-badge">
-            <Icon name="ai-chat" className="w-3.5 h-3.5" />
-          </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12.5px] font-medium text-slate-700">{activeSession?.title || "新对话"}</span>
             <span className="block truncate text-[10.5px] text-slate-400">

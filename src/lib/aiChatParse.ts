@@ -10,7 +10,7 @@
  * 纯函数也便于直接用 Node 单测（见 tmp 脚本 / 后续可加正式测试）。
  */
 
-import { buildLocalSummaryFallback } from "./config/aiDefaults.ts";
+import { buildLocalSummaryFallback } from "@/config/aiDefaults";
 
 export interface ToolCall {
   name: string;

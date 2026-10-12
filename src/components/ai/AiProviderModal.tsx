@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as api from "../api";
-import { AiProvider, AiProviderType } from "../types";
-import { Modal } from "./Modal";
-import { useToast } from "./Toast";
-import { Icon } from "./Icon";
+import * as api from "@/api";
+import { AiProvider, AiProviderType } from "@/types";
+import { useToast } from "@/components/common/Toast";
+import { useConfirm } from "@/components/common/ConfirmDialog";
+import { Icon } from "@/components/common/Icon";
 
 const providerDefaults: Record<AiProviderType, { name: string; baseUrl: string; path: string | null }> = {
   openai: {
@@ -87,6 +87,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const { showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
   /** 用户是否手动调过勾选（手动清空后，重新获取模型不应再自动全选） */
   const hasUserPickedModelsRef = useRef(false);
   /** 同步守卫：state 更新是异步的，连点会穿透并写入多条记录 */
@@ -342,17 +343,24 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     }
   };
 
-  const handleDeleteProvider = async () => {
-    const p = draftProvider;
+  const handleDeleteProvider = async (provider: AiProvider) => {
+    const p = provider;
     if (p.id === 0) {
       closeForm();
       return;
     }
+    const ok = await confirm({
+      title: "删除 AI 服务商",
+      message: `确定删除「${p.name}」吗？该配置与本机保存的 API Key 会被移除，无法撤销。`,
+      confirmText: "删除",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteAiProvider(p.id);
       const nextProviders = listProviders.filter((x) => x.id !== p.id);
       publishProviders(nextProviders);
-      if (editingId === selectedProviderId) {
+      if (p.id === selectedProviderId) {
         onSelectedProviderChange(nextProviders.length > 0 ? nextProviders[0].id : 0);
       }
       closeForm();
@@ -397,7 +405,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                 暂无服务商配置，点击上方按钮添加
               </div>
             ) : (
-              <div className="space-y-1.5 max-h-[360px] overflow-y-auto">
+              <div className="space-y-1.5 max-h-[260px] overflow-y-auto chat-scrollbar pr-1 -mr-1">
                 {listProviders.map((p) => (
                   <div
                     key={p.id}
@@ -424,13 +432,20 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                         {p.api_base_url.replace(/^https?:\/\//, "").split("/")[0]}
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openEdit(p); }}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-400 hover:text-primary-500 hover:bg-primary-50 transition-all"
-                      title="编辑"
-                    >
-                      <Icon name="provider-edit" className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex-shrink-0">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEdit(p); }}
+                        className="px-1.5 py-1 text-[11px] text-slate-400 hover:text-primary-500 rounded-md hover:bg-primary-50 transition-colors"
+                      >
+                        编辑
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteProvider(p); }}
+                        className="px-1.5 py-1 text-[11px] text-slate-400 hover:text-red-500 rounded-md hover:bg-red-50 transition-colors"
+                      >
+                        删除
+                      </button>
+                    </div>
                     {p.id === selectedProviderId && (
                       <div className="w-1.5 h-1.5 rounded-full bg-primary-500 flex-shrink-0" />
                     )}
@@ -525,7 +540,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                 {isSaving ? "保存中..." : "保存配置"}
               </button>
               <button
-                onClick={handleDeleteProvider}
+                onClick={() => handleDeleteProvider(draftProvider)}
                 className="px-4 py-2 text-sm rounded-xl text-red-500 bg-slate-100 hover:bg-red-50 transition-colors"
               >
                 删除
@@ -601,16 +616,9 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
             </div>
           </>
         )}
+
+        {/* 删除确认弹窗（列表行与编辑页共用） */}
+        {confirmDialog}
       </div>
   );
 };
-
-/**
- * 统一的「AI 设置」窗口：把服务商配置作为其中一个标签页复用同一个组件，
- * 避免维护两份表单（这也是设置窗口能收敛到一处的前提）。
- */
-export const AiProviderModal: React.FC<AiProviderModalProps> = (props) => (
-  <Modal isOpen={props.isOpen} onClose={props.onClose} title="AI 服务商配置">
-    <AiProviderSettings {...props} />
-  </Modal>
-);

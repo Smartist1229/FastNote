@@ -1,10 +1,10 @@
-import * as api from "./api";
+import * as api from "@/api";
 import {
   AiPromptEntry,
   AiSettings,
   DEFAULT_AI_SETTINGS,
   normalizeAiSettings,
-} from "./types";
+} from "@/types";
 
 /**
  * 设置持久化：**以 SQLite 的 app_settings 表为准**。
