@@ -1081,6 +1081,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [input, setInput] = useState("");
   /** 模型下拉菜单（自定义，替代原生 select） */
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  /** 模型下拉菜单的位置（fixed 定位，点击按钮时计算） */
+  const [modelMenuPos, setModelMenuPos] = useState<{ bottom: number; left: number; width: number } | null>(null);
+  /** 模型下拉菜单触发按钮的 DOM 引用 */
+  const modelChipRef = useRef<HTMLButtonElement>(null);
   /** 是否把当前打开的笔记作为上下文一起发送 */
   const [attachNote, setAttachNote] = useState(true);
   /** 正在拖动输入区上边缘调整高度 */
@@ -1133,6 +1137,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const jumpTargetRef = useRef<number | null>(null);
   const dragRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** 模型下拉菜单的 DOM 引用：用于点击外部时关闭 */
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   /** 已经生成过标题的会话 ID；用 ref 记住具体会话，避免"新对话"标题反复生成 */
   const titleGenRef = useRef<number | null>(null);
   const abortRef = useRef(false);
@@ -1460,6 +1466,21 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   useEffect(() => {
     if (activeProvider && activeModel) persistActiveModel(activeModel);
   }, [activeProvider, activeModel, persistActiveModel]);
+
+  // 点击外部关闭模型下拉菜单
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      // 点击菜单本身或模型 chip 按钮时不关闭
+      if (modelMenuRef.current?.contains(target)) return;
+      const chip = (e.target as HTMLElement)?.closest?.('.composer-chip');
+      if (chip) return;
+      setModelMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [modelMenuOpen]);
 
   const selectedProviderIdRef = useRef(selectedProviderId);
   useEffect(() => { selectedProviderIdRef.current = selectedProviderId; }, [selectedProviderId]);
@@ -2432,35 +2453,41 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           title="上下拖动调整输入框高度（双击恢复自动高度）"
         />
 
-        {/* 模型下拉：向上弹出，不再是突兀的原生 select */}
-        {modelMenuOpen && (
-          <>
-            <div className="fixed inset-0 z-30" />
-            <div className="composer-menu chat-scrollbar">
-              {models.length === 0 ? (
-                <div className="px-3 py-2 text-[11.5px] text-slate-400">还没有勾选可用模型</div>
-              ) : models.map((m) => (
-                <button
-                  key={m}
-                  className={"composer-menu-item" + (m === activeModel ? " is-active" : "")}
-                  onClick={() => {
-                    setModelMenuOpen(false);
-                    if (!activeProvider) return;
-                    const u = { ...activeProvider, enabled_model: m };
-                    api.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
-                  }}
-                >
-                  <Icon name="ai-check" className={"w-3 h-3 flex-shrink-0 " + (m === activeModel ? "opacity-100" : "opacity-0")} />
-                  <span className="truncate">{m}</span>
-                </button>
-              ))}
-              <div className="composer-menu-sep" />
-              <button className="composer-menu-item" onClick={() => { setModelMenuOpen(false); onOpenProviderSettings(); }}>
-                <Icon name="ai-settings-bold" className="w-3 h-3 flex-shrink-0" />
-                <span>管理模型 / 服务商…</span>
+        {/* 模型下拉：fixed 定位，紧贴在模型 chip 按钮上方 */}
+        {modelMenuOpen && modelMenuPos && (
+          <div
+            className="fixed composer-menu chat-scrollbar"
+            ref={modelMenuRef}
+            style={{
+              bottom: modelMenuPos.bottom,
+              left: Math.max(8, modelMenuPos.left),
+              minWidth: modelMenuPos.width,
+              maxWidth: 280,
+            }}
+          >
+            {models.length === 0 ? (
+              <div className="px-3 py-2 text-[11.5px] text-slate-400">还没有勾选可用模型</div>
+            ) : models.map((m) => (
+              <button
+                key={m}
+                className={"composer-menu-item" + (m === activeModel ? " is-active" : "")}
+                onClick={() => {
+                  setModelMenuOpen(false);
+                  if (!activeProvider) return;
+                  const u = { ...activeProvider, enabled_model: m };
+                  api.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
+                }}
+              >
+                <Icon name="ai-check" className={"w-3 h-3 flex-shrink-0 " + (m === activeModel ? "opacity-100" : "opacity-0")} />
+                <span className="truncate">{m}</span>
               </button>
-            </div>
-          </>
+            ))}
+            <div className="composer-menu-sep" />
+            <button className="composer-menu-item" onClick={() => { setModelMenuOpen(false); onOpenProviderSettings(); }}>
+              <Icon name="ai-settings-bold" className="w-3 h-3 flex-shrink-0" />
+              <span>管理模型 / 服务商…</span>
+            </button>
+          </div>
         )}
 
         <div className="composer-card">
@@ -2496,8 +2523,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             {/* 左：模型 + 附加选项。整组可压缩、超出裁掉，绝不把右边的按钮顶出去 */}
             <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden">
             <button
+              ref={modelChipRef}
               className={"composer-chip is-shrinkable" + (modelMenuOpen ? " is-on" : "")}
-              onClick={() => setModelMenuOpen(v => !v)}
+              onClick={() => {
+                if (modelChipRef.current) {
+                  const r = modelChipRef.current.getBoundingClientRect();
+                  setModelMenuPos({ bottom: window.innerHeight - r.top+5, left: r.left-13 , width: r.width });
+                }
+                setModelMenuOpen(v => !v);
+              }}
               disabled={!activeProvider}
               title={models.length === 0 ? "尚未勾选模型，点开去设置" : `当前模型：${activeModel || "未选"}（点击切换）`}
             >

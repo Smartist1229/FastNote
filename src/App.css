@@ -1,4 +1,4 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -915,10 +915,8 @@ button:focus-visible {
   animation: composerMenuIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .composer-menu {
-  position: absolute;
-  left: 12px;
-  bottom: calc(100% - 2px);
-  z-index: 40;
+  position: fixed;
+  z-index: 50;
 }
 /* 排序浮层用 fixed 定位（由 JS 按按钮位置算），窄一点更像原生菜单 */
 .pop-menu {
@@ -968,6 +966,7 @@ button:focus-visible {
   border-radius: 7px;
   font-size: 11px;
   color: var(--color-text-muted);
+  cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 .sort-trigger:hover,
