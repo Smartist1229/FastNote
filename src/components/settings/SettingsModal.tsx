@@ -1,40 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getName, getVersion } from "@tauri-apps/api/app";
-import {
-  AppSettings,
-  AiSettings,
-  AiProvider,
-  AiPromptEntry,
-  DEFAULT_AI_SETTINGS,
-} from "@/types";
+import type { AiSettings } from "@/interface/ai";
+import type { AppSettings } from "@/interface/settings";
+import type { BackupSummary } from "@/interface/backup";
+import type {
+  SectionMeta,
+  Scope,
+  SettingRow,
+  SettingsModalProps,
+  SettingsSection,
+} from "@/interface/settingsModal";
+import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
 import { FONT_SIZE_MIN, FONT_SIZE_MAX } from "@/config/appDefaults";
+import {
+  APP_AUTHOR,
+  APP_NAME_FALLBACK,
+  ICON_SOURCE,
+  OPEN_SOURCE_PROJECTS,
+  shortUrl,
+} from "@/config/about";
 import { AiProviderSettings } from "@/components/ai/AiProviderModal";
 import { Icon } from "@/components/common/Icon";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
-import { exportBackup, importBackup, BackupSummary } from "@/api";
+import { exportBackup, importBackup } from "@/api/backup";
 
 /* ────────────────────────────── 分区定义 ────────────────────────────── */
-
-export type SettingsSection =
-  | "general"
-  | "editor"
-  | "view"
-  | "layout"
-  | "provider"
-  | "chat"
-  | "context"
-  | "memory"
-  | "backup"
-  | "about";
-
-interface SectionMeta {
-  key: SettingsSection;
-  label: string;
-  icon: string;
-  group: "软件" | "AI" | "数据" | "其他";
-}
 
 const SECTIONS: SectionMeta[] = [
   { key: "general", label: "通用", icon: "ai-bolt", group: "软件" },
@@ -45,6 +38,7 @@ const SECTIONS: SectionMeta[] = [
   { key: "chat", label: "对话行为", icon: "settings-chat", group: "AI" },
   { key: "context", label: "上下文", icon: "settings-context", group: "AI" },
   { key: "memory", label: "记忆与提示词", icon: "settings-memory", group: "AI" },
+  { key: "reset", label: "恢复默认", icon: "app-restore", group: "数据" },
   { key: "backup", label: "备份与恢复", icon: "app-backup", group: "数据" },
   { key: "about", label: "关于", icon: "toast-info", group: "其他" },
 ];
@@ -52,43 +46,9 @@ const SECTIONS: SectionMeta[] = [
 const GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
 
 /** 自定义面板分区（不是数据驱动的开关/输入行，但同样参与搜索） */
-const CUSTOM_KEYS: SettingsSection[] = ["provider", "memory", "backup", "about"];
-
-/** 关于页展示的固定信息 */
-const APP_AUTHOR = "Smartist";
-const APP_NAME_FALLBACK = "FastNote";
+const CUSTOM_KEYS: SettingsSection[] = ["provider", "memory", "reset", "backup", "about"];
 
 /* ────────────────────────────── 行模型 ────────────────────────────── */
-
-/** live = 改完立刻生效；startup = 只影响软件初始化阶段 */
-type Scope = "live" | "startup";
-
-interface RowBase {
-  section: SettingsSection;
-  title: string;
-  desc: string;
-  scope: Scope;
-  /** 供搜索命中的额外关键词 */
-  keywords?: string;
-}
-
-type SettingRow =
-  | (RowBase & { kind: "toggle"; value: boolean; onChange: (v: boolean) => void })
-  | (RowBase & {
-      kind: "number";
-      value: number;
-      min: number;
-      max: number;
-      step?: number;
-      unit?: string;
-      onChange: (v: number) => void;
-    })
-  | (RowBase & {
-      kind: "select";
-      value: string;
-      options: { value: string; label: string }[];
-      onChange: (v: string) => void;
-    });
 
 /* ────────────────────────────── 基础控件 ────────────────────────────── */
 
@@ -105,12 +65,19 @@ const ScopeBadge: React.FC<{ scope: Scope }> = ({ scope }) => (
   </span>
 );
 
-const Switch: React.FC<{ value: boolean; onChange: (v: boolean) => void }> = ({ value, onChange }) => (
+const Switch: React.FC<{ value: boolean; disabled?: boolean; onChange: (v: boolean) => void }> = ({
+  value,
+  disabled,
+  onChange,
+}) => (
   <button
-    onClick={() => onChange(!value)}
+    onClick={() => !disabled && onChange(!value)}
     role="switch"
     aria-checked={value}
-    className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${value ? "bg-primary-500" : "bg-slate-300"}`}
+    disabled={disabled}
+    className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${
+      value ? "bg-primary-500" : "bg-slate-300"
+    } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
   >
     <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${value ? "left-[18px]" : "left-0.5"}`} />
   </button>
@@ -166,35 +133,59 @@ const NumberInput: React.FC<{
   );
 };
 
-const SelectInput: React.FC<{
+/**
+ * 枚举设置项：分段按钮组而不是原生 select —— 选项少（2~3 个）时更直观，
+ * 且样式跟随主题，不再是浏览器默认的下拉框。
+ */
+const SegmentedInput: React.FC<{
   value: string;
   options: { value: string; label: string }[];
+  disabled?: boolean;
   onChange: (v: string) => void;
-}> = ({ value, options, onChange }) => (
-  <select
-    value={value}
-    onChange={(e) => onChange(e.target.value)}
-    className="px-2.5 py-1 text-xs input-modern bg-slate-50/60 focus:bg-white cursor-pointer pr-7 text-slate-600"
+}> = ({ value, options, disabled, onChange }) => (
+  <div
+    className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200/70 ${
+      disabled ? "opacity-40" : ""
+    }`}
   >
-    {options.map((o) => (
-      <option key={o.value} value={o.value}>
-        {o.label}
-      </option>
-    ))}
-  </select>
+    {options.map((o) => {
+      const active = o.value === value;
+      return (
+        <button
+          key={o.value}
+          type="button"
+          disabled={disabled}
+          onClick={() => !disabled && !active && onChange(o.value)}
+          className={`px-2.5 py-1 text-[11px] rounded-md transition-colors whitespace-nowrap ${
+            active ? "bg-white text-primary-600 font-medium shadow-sm" : "text-slate-500"
+          } ${disabled ? "cursor-not-allowed" : active ? "" : "hover:text-slate-700"}`}
+        >
+          {o.label}
+        </button>
+      );
+    })}
+  </div>
 );
 
 const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
-  <div className="flex items-start justify-between gap-6 py-3">
+  <div
+    className={`flex items-start justify-between gap-6 py-3 ${
+      row.disabled ? "opacity-55" : ""
+    }`}
+  >
     <div className="min-w-0">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-slate-700">{row.title}</span>
+        <span className={`text-xs font-medium ${row.disabled ? "text-slate-400" : "text-slate-700"}`}>
+          {row.title}
+        </span>
         <ScopeBadge scope={row.scope} />
       </div>
       <p className="text-[11px] text-slate-400 leading-relaxed mt-1">{row.desc}</p>
     </div>
     <div className="flex-shrink-0 pt-0.5">
-      {row.kind === "toggle" && <Switch value={row.value} onChange={row.onChange} />}
+      {row.kind === "toggle" && (
+        <Switch value={row.value} disabled={row.disabled} onChange={row.onChange} />
+      )}
       {row.kind === "number" && (
         <NumberInput
           value={row.value}
@@ -205,8 +196,13 @@ const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
           onChange={row.onChange}
         />
       )}
-      {row.kind === "select" && (
-        <SelectInput value={row.value} options={row.options} onChange={row.onChange} />
+      {row.kind === "segment" && (
+        <SegmentedInput
+          value={row.value}
+          options={row.options}
+          disabled={row.disabled}
+          onChange={row.onChange}
+        />
       )}
     </div>
   </div>
@@ -241,30 +237,6 @@ const errorText = (e: unknown) =>
 const newPromptId = () => `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /* ────────────────────────────── 主组件 ────────────────────────────── */
-
-interface SettingsModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  /** 打开时定位到的分区；不传则定位到第一个分区 */
-  defaultSection?: SettingsSection;
-  appSettings: AppSettings;
-  /** 软件设置变更：实时持久化 + 实时生效，由 App 统一处理 */
-  onAppSettingChange: (
-    category: keyof AppSettings,
-    field: string,
-    value: boolean | number | string,
-  ) => void;
-  /** 恢复软件设置默认值 */
-  onResetAppSettings: () => void;
-  aiSettings: AiSettings;
-  onAiSettingsChange: (next: AiSettings) => void;
-  aiProviders: AiProvider[];
-  aiSelectedProviderId: number;
-  onAiProvidersChange: (list: AiProvider[]) => void;
-  onAiSelectedProviderChange: (id: number) => void;
-  aiPrompts: AiPromptEntry[];
-  onAiPromptsChange: (next: AiPromptEntry[]) => void;
-}
 
 /**
  * 统一的「设置」窗口。
@@ -388,7 +360,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       },
       {
         section: "view",
-        kind: "select",
+        kind: "segment",
         scope: "live",
         title: "默认排序字段",
         desc: "笔记列表默认按照哪个字段排序。",
@@ -403,7 +375,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       },
       {
         section: "view",
-        kind: "select",
+        kind: "segment",
         scope: "live",
         title: "排序方向",
         desc: "升序（由早到晚 / A→Z）或降序。",
@@ -435,6 +407,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.layout.aiPanelOpen,
         onChange: (v) => setApp("layout", "aiPanelOpen", v),
       },
+
+      // ---- 托盘 + 开机自启动（已并入「通用」分区）----
+      {
+        section: "general",
+        kind: "toggle",
+        scope: "live",
+        title: "显示托盘图标",
+        desc: "开启后，关闭窗口时软件将最小化到托盘；托盘图标的右键菜单可直接退出软件。",
+        keywords: "托盘 tray 图标 最小化 通知区",
+        value: appSettings.general.trayEnabled,
+        onChange: (v) => setApp("general", "trayEnabled", v),
+      },
+      {
+        section: "general",
+        kind: "segment",
+        scope: "live",
+        title: "关闭窗口时",
+        desc: appSettings.general.trayEnabled
+          ? "点击窗口关闭按钮时的行为。最小化到托盘：隐藏窗口但保留托盘图标；直接退出：关闭软件。"
+          : "当前未开启托盘图标，点击关闭按钮只会直接退出软件。开启上方「显示托盘图标」后才能选择最小化到托盘。",
+        keywords: "关闭 退出 minimize exit 行为 托盘",
+        disabled: !appSettings.general.trayEnabled,
+        value: appSettings.general.closeBehavior,
+        options: [
+          { value: "minimize", label: "最小化到托盘" },
+          { value: "exit", label: "直接退出" },
+        ],
+        onChange: (v) => setApp("general", "closeBehavior", v),
+      },
+      {
+        section: "general",
+        kind: "toggle",
+        scope: "startup",
+        title: "开机自启动",
+        desc: "计算机启动时自动运行 FastNote。",
+        keywords: "开机 自启动 boot autostart",
+        value: appSettings.general.autostart,
+        onChange: (v) => setApp("general", "autostart", v),
+      },
+      ...(appSettings.general.autostart
+        ? [
+            {
+              section: "general" as const,
+              kind: "toggle" as const,
+              scope: "startup" as const,
+              title: "开机后最小化到托盘",
+              desc: appSettings.general.trayEnabled
+                ? "开启：开机自启动后不弹出主窗口，只在托盘显示图标，点击托盘图标再打开。关闭：开机后正常显示窗口。"
+                : "当前未开启托盘图标，开机后只能正常显示窗口；开启上面「显示托盘图标」后才能选择隐藏到托盘。",
+              keywords: "开机 自启动 最小化 tray 后台",
+              disabled: !appSettings.general.trayEnabled,
+              value: appSettings.general.minimizeToTray,
+              onChange: (v: boolean) => setApp("general", "minimizeToTray", v),
+            },
+          ]
+        : []),
+
+      // ---- chat ----
       {
         section: "chat",
         kind: "number",
@@ -580,8 +610,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         "服务商 模型 api key 密钥 openai google claude 接口 base url http " +
         aiProviders.map((p) => p.name).join(" "),
       memory: "记忆 提示词 prompt 长期记忆 前置 要求 memory",
+      reset: "恢复默认 重置 出厂值 reset default",
       backup: "备份 恢复 导出 导入 数据 json 迁移 backup restore",
-      about: "关于 版本 作者 应用名 about version author name",
+      about:
+        "关于 版本 作者 应用名 图标 开源项目 开源 about version author name iconfont opensource",
     }),
     [aiProviders],
   );
@@ -885,7 +917,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         sectionRefs.current[s.key] = el;
                       }}
                       data-section={s.key}
-                      className="mb-8 last:mb-2"
+                      className="mb-11 last:mb-2 [&>*+*]:pl-8"
                     >
                       <div className="flex items-center gap-2 mb-2 pb-2 border-b border-slate-100">
                         <span className="w-6 h-6 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
@@ -900,30 +932,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {sectionRows.map((row) => (
                             <RowView key={`${row.section}.${row.title}`} row={row} />
                           ))}
-                        </div>
-                      )}
-
-                      {/* 软件默认值 */}
-                      {s.key === "general" && (
-                        <div className="pt-3">
-                          <button
-                            onClick={onResetAppSettings}
-                            className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
-                          >
-                            恢复软件默认设置
-                          </button>
-                        </div>
-                      )}
-
-                      {/* AI 默认值 */}
-                      {s.key === "context" && (
-                        <div className="pt-3">
-                          <button
-                            onClick={() => onAiSettingsChange({ ...DEFAULT_AI_SETTINGS })}
-                            className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
-                          >
-                            恢复 AI 默认设置
-                          </button>
                         </div>
                       )}
 
@@ -1073,6 +1081,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
+                      {/* 恢复默认：软件设置与 AI 设置互相独立，互不影响 */}
+                      {s.key === "reset" && (
+                        <div className="space-y-2.5 pt-1">
+                          <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200 px-3.5 py-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-slate-700">恢复软件默认设置</p>
+                              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                                通用、编辑器、笔记列表、界面布局回到默认值，不影响 AI 设置。
+                              </p>
+                            </div>
+                            <button
+                              onClick={onResetAppSettings}
+                              className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex-shrink-0"
+                            >
+                              恢复
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200 px-3.5 py-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-slate-700">恢复 AI 默认设置</p>
+                              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                                对话行为、上下文等 AI 参数回到默认值，不影响服务商与记忆条目。
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => onAiSettingsChange({ ...DEFAULT_AI_SETTINGS })}
+                              className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex-shrink-0"
+                            >
+                              恢复
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* 备份与恢复 */}
                       {s.key === "backup" && (
                         <div className="space-y-3">
@@ -1166,6 +1209,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-[12px]">
                             <span className="text-slate-400">版本</span>
                             <span className="text-slate-600 font-medium">{appVersion || "—"}</span>
+                          </div>
+
+                          {/* 图标来源 */}
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            <p className="text-[11px] font-medium text-slate-500">部分图标来源</p>
+                            <button
+                              onClick={() => openUrl(ICON_SOURCE.url)}
+                              className="mt-1.5 text-left group"
+                            >
+                              <span className="block text-[11px] text-slate-600 group-hover:text-primary-600 transition-colors">
+                                {ICON_SOURCE.name}
+                              </span>
+                              <span className="block text-[11px] text-slate-400">
+                                {ICON_SOURCE.url}
+                              </span>
+                            </button>
+                          </div>
+
+                          {/* 开源项目：条目较多，用固定高度滚动区承载 */}
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            <p className="text-[11px] font-medium text-slate-500">开源项目</p>
+                            <div className="mt-1.5 max-h-[150px] overflow-y-auto chat-scrollbar pr-1 space-y-0.5">
+                              {OPEN_SOURCE_PROJECTS.map((p) => (
+                                <button
+                                  key={p.name}
+                                  onClick={() => openUrl(p.url)}
+                                  className="w-full flex items-center justify-between gap-3 px-2 py-1.5 rounded-lg text-[11px] text-left hover:bg-slate-50 transition-colors group"
+                                >
+                                  <span className="text-slate-600 group-hover:text-primary-600 transition-colors">
+                                    {p.name}
+                                  </span>
+                                  <span className="text-slate-400 truncate">{shortUrl(p.url)}</span>
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         </div>
                       )}

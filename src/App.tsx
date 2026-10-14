@@ -1,11 +1,19 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
 import "@/App.css";
-import { Note, Category, AiProvider, AiPromptEntry, AiSettings, AppSettings, ExternalTextFile, DEFAULT_AI_SETTINGS, DEFAULT_APP_SETTINGS } from "@/types";
+import type { Category, ExternalTextFile, Note } from "@/interface/note";
+import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
+import type { AppSettings } from "@/interface/settings";
+import type { SettingsSection } from "@/interface/settingsModal";
+import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
+import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
 import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "@/stores/aiSettingsStore";
 import { loadAppSettings, saveAppSetting, resetAppSettings } from "@/stores/appSettingsStore";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import * as api from "@/api";
+import * as notesApi from "@/api/notes";
+import * as categoriesApi from "@/api/categories";
+import * as aiApi from "@/api/ai";
+import * as settingsApi from "@/api/settings";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
 import { ToastProvider, useToast } from "@/components/common/Toast";
@@ -13,7 +21,7 @@ import { ToastProvider, useToast } from "@/components/common/Toast";
 import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
 
-import { SettingsModal, SettingsSection } from "@/components/settings/SettingsModal";
+import { SettingsModal } from "@/components/settings/SettingsModal";
 import { ExportCategoryModal } from "@/components/data/ExportCategoryModal";
 import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
@@ -108,6 +116,8 @@ function AppContent() {
   const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
   /** 软件设置：启动读库，读不到的键回退默认值 */
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
+  /** 软件设置是否已从数据库读回：读回前不碰开机启动快捷方式，避免用默认值覆盖用户设置 */
+  const [appSettingsLoaded, setAppSettingsLoaded] = useState(false);
   /**
    * AI 记忆 / 前置提示词 + AI 全局设置。
    * 全部持久化在 SQLite 的 app_settings 表里：启动时读库，读不到的键回退默认值；
@@ -183,16 +193,17 @@ function AppContent() {
       .then((settings) => {
         if (cancelled) return;
         setAppSettings(settings);
+        setAppSettingsLoaded(true);
         setSortBy(settings.view.sortBy);
         setSortOrder(settings.view.sortOrder);
         setIsSidebarCollapsed(settings.layout.sidebarCollapsed);
         setAiPanelOpen(settings.layout.aiPanelOpen);
         if (settings.general.cleanTrashOnStartup) {
           // 清空回收站：永久删除里面的全部笔记（仅在启动时执行一次）
-          api
+          notesApi
             .getTrashNotes()
             .then((list) =>
-              list.length > 0 ? api.deleteMultipleNotesPermanently(list.map((n) => n.id)) : undefined,
+              list.length > 0 ? notesApi.deleteMultipleNotesPermanently(list.map((n) => n.id)) : undefined,
             )
             .catch((e) => console.error("清空回收站失败：", e));
         }
@@ -214,9 +225,34 @@ function AppContent() {
         if (field === "sortBy") setSortBy(value as string);
         if (field === "sortOrder") setSortOrder(value as "asc" | "desc");
       }
+
+      // 托盘图标变更：交由 Rust 侧创建/移除（托盘生命周期不归 webview 管）
+      if (category === "general" && field === "trayEnabled") {
+        settingsApi.setTrayEnabled(value as boolean).catch((e) => {
+          console.error("切换托盘图标失败：", e);
+        });
+      }
     },
     [],
   );
+
+  // 单实例、托盘、关闭到托盘、开机启动都由 Rust 侧处理（见 src-tauri/src/lib.rs）：
+  // 前端不再持有托盘图标，也不再监听窗口关闭事件，避免窗口隐藏后 JS 失联导致托盘失效。
+
+  /**
+   * 开机自启动：只在「开机自启动」开关真正变化时才创建/删除启动文件夹里的快捷方式。
+   * 首次读回设置时不动手（启动时由 Rust 的 sync_autostart_shortcut 兜底补齐缺失的快捷方式）。
+   * 「开机后最小化到托盘」不进快捷方式，启动时读库决定，所以切它完全不会重写快捷方式。
+   */
+  const prevAutostartRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!appSettingsLoaded) return;
+    const { autostart } = appSettings.general;
+    const prev = prevAutostartRef.current;
+    prevAutostartRef.current = autostart;
+    if (prev === null || prev === autostart) return;
+    settingsApi.setAutostart(autostart);
+  }, [appSettingsLoaded, appSettings.general.autostart]);
 
   /** 打开统一设置窗口，并定位到指定分区 */
   const openSettings = useCallback((section: SettingsSection = "general") => {
@@ -228,7 +264,7 @@ function AppContent() {
   const handleResetAppSettings = useCallback(async () => {
     const ok = await confirm({
       title: "恢复软件默认设置",
-      message: "将把通用、编辑器、笔记列表、界面布局等软件设置恢复为默认值（AI 设置不受影响）。",
+      message: "将把通用（含托盘图标、关闭窗口行为、开机自启动）、编辑器、笔记列表、界面布局等软件设置恢复为默认值（AI 设置不受影响）。",
       confirmText: "恢复默认",
       danger: true,
     });
@@ -308,8 +344,8 @@ function AppContent() {
       // 抽屉视图下所有分组的笔记都从 notes 派生，因此必须始终持有全量笔记，
       // 不能按 selectedCategoryId 过滤，否则打开某个分组会让其它分组瞬间变空。
       const [cats, allNotes] = await Promise.all([
-        api.getCategories(),
-        api.getNotes(null, sortBy, sortOrder),
+        categoriesApi.getCategories(),
+        notesApi.getNotes(null, sortBy, sortOrder),
       ]);
       setCategories(cats);
       setNotes(allNotes);
@@ -373,7 +409,7 @@ function AppContent() {
     setTempNote(null);
     setExternalFile(null);
     try {
-      const note = await api.createNote("无标题", "", targetCategory);
+      const note = await notesApi.createNote("无标题", "", targetCategory);
       setNotes((prev) => [...prev, note]);
       setSelectedNote(note);
       setSelectedCategoryId(targetCategory);
@@ -387,7 +423,7 @@ function AppContent() {
   /** 临时预览（AI 回复）另存为真实笔记：写库后打开它，叠放层一并清空 */
   const handleSavePreviewToCategory = async (categoryId: number | null, title: string, content: string) => {
     try {
-      const note = await api.createNote(title, content, categoryId);
+      const note = await notesApi.createNote(title, content, categoryId);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
@@ -419,7 +455,7 @@ function AppContent() {
     // 换文件前先把上一份的待写入 flush 掉（此时回调仍指向旧路径）
     flushExternalRef.current?.();
     try {
-      const file = await api.readTextFile(path);
+      const file = await notesApi.readTextFile(path);
       externalFileIdRef.current -= 1;
       // 打开文件是最新的用户动作：先收起 AI 预览，笔记作为底层保留
       setTempNote(null);
@@ -440,7 +476,7 @@ function AppContent() {
     // 另存前先把最后一点改动同步回原文件
     flushExternalRef.current?.();
     try {
-      const note = await api.createNote(title, content, categoryId);
+      const note = await notesApi.createNote(title, content, categoryId);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
@@ -460,7 +496,7 @@ function AppContent() {
   const handleWriteExternal = useCallback(async (content: string) => {
     const target = externalFileRef.current;
     if (!target) return;
-    await api.writeTextFile(target.path, content);
+    await notesApi.writeTextFile(target.path, content);
   }, []);
 
   /** 拖文件到分组：确认后把文件内容导入为该分组下的一条笔记 */
@@ -473,8 +509,8 @@ function AppContent() {
     });
     if (!ok) return;
     try {
-      const file = await api.readTextFile(path);
-      await api.createNote(file.name, file.content, categoryId);
+      const file = await notesApi.readTextFile(path);
+      await notesApi.createNote(file.name, file.content, categoryId);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId);
       showToast("已导入到分组", "success");
@@ -546,7 +582,7 @@ function AppContent() {
   const handleSaveNote = async (id: number, title: string, content: string, categoryId: number | null) => {
     saveQueueRef.current = saveQueueRef.current.then(async () => {
       try {
-        await api.updateNote(id, title, content, categoryId);
+        await notesApi.updateNote(id, title, content, categoryId);
         const now = new Date().toISOString();
         setNotes((prev) =>
           prev.map((n) => (n.id === id ? { ...n, title, content, category_id: categoryId, updated_at: now } : n))
@@ -632,7 +668,7 @@ function AppContent() {
     });
     if (!confirmed) return;
     try {
-      await api.moveToTrash(noteId);
+      await notesApi.moveToTrash(noteId);
       await loadData();
       setSelectedNote((current) => (current?.id === noteId ? null : current));
       showToast("删除成功！", "success");
@@ -644,7 +680,7 @@ function AppContent() {
 
   const handleOpenTrash = async () => {
     try {
-      const notes = await api.getTrashNotes();
+      const notes = await notesApi.getTrashNotes();
       setTrashNotes(notes);
       setSelectedTrashIds(new Set());
       setShowTrashModal(true);
@@ -656,7 +692,7 @@ function AppContent() {
 
   const handleRestoreNote = async (id: number) => {
     try {
-      await api.restoreNote(id);
+      await notesApi.restoreNote(id);
       setTrashNotes((prev) => prev.filter((n) => n.id !== id));
       setSelectedTrashIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       await loadData();
@@ -668,7 +704,7 @@ function AppContent() {
 
   const handleDeletePermanent = async (id: number) => {
     try {
-      await api.deleteNotePermanently(id);
+      await notesApi.deleteNotePermanently(id);
       setTrashNotes((prev) => prev.filter((n) => n.id !== id));
       setSelectedTrashIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       showToast("笔记已永久删除", "success");
@@ -687,7 +723,7 @@ function AppContent() {
     });
     if (!confirmed) return;
     try {
-      await api.deleteMultipleNotesPermanently(trashNotes.map((n) => n.id));
+      await notesApi.deleteMultipleNotesPermanently(trashNotes.map((n) => n.id));
       setTrashNotes([]);
       setSelectedTrashIds(new Set());
       await loadData();
@@ -713,7 +749,7 @@ function AppContent() {
     if (!confirmed) return;
     const ids = Array.from(selectedTrashIds);
     try {
-      await api.deleteMultipleNotesPermanently(ids);
+      await notesApi.deleteMultipleNotesPermanently(ids);
       setTrashNotes((prev) => prev.filter((n) => !ids.includes(n.id)));
       setSelectedTrashIds(new Set());
       await loadData();
@@ -754,8 +790,8 @@ function AppContent() {
   const handleSaveCategory = async () => {
     if (!categoryName.trim()) return;
     try {
-      if (editingCategory) { await api.updateCategory(editingCategory.id, categoryName); }
-      else { await api.createCategory(categoryName); }
+      if (editingCategory) { await categoriesApi.updateCategory(editingCategory.id, categoryName); }
+      else { await categoriesApi.createCategory(categoryName); }
       await loadData();
       setShowCategoryModal(false);
     } catch (error) {
@@ -772,7 +808,7 @@ function AppContent() {
   const confirmDeleteCategory = async () => {
     if (!deletingCategory) return;
     try {
-      await api.deleteCategory(deletingCategory.id, deleteCategoryNotes);
+      await categoriesApi.deleteCategory(deletingCategory.id, deleteCategoryNotes);
       if (selectedCategoryId === deletingCategory.id) { setSelectedCategoryId(null); }
       await loadData();
       setShowDeleteCategoryModal(false);
@@ -814,7 +850,7 @@ function AppContent() {
             onCreateNote={handleCreateNote}
             onMoveToCategory={async (note, categoryId) => {
               try {
-                await api.updateNote(note.id, note.title, note.content, categoryId);
+                await notesApi.updateNote(note.id, note.title, note.content, categoryId);
                 await loadData();
                 setSelectedCategoryId(categoryId);
                 showToast("移动成功", "success");
@@ -831,7 +867,7 @@ function AppContent() {
               });
               if (!confirmed) return;
               try {
-                await api.moveToTrash(note.id);
+                await notesApi.moveToTrash(note.id);
                 await loadData();
                 if (selectedNote?.id === note.id) setSelectedNote(null);
                 showToast("删除成功！", "success");
@@ -944,7 +980,7 @@ function AppContent() {
             onOpenInEditor={handleOpenInEditor}
             onOpenProviderSettings={() => {
               openSettings("provider");
-              api.getAiProviders().then((list) => {
+              aiApi.getAiProviders().then((list) => {
                 setProviderModalProviders(list);
                 if (list.length > 0 && !providerModalSelectedId) {
                   setProviderModalSelectedId(list[0].id);

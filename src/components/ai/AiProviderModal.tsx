@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as api from "@/api";
-import { AiProvider, AiProviderType } from "@/types";
+import * as aiApi from "@/api/ai";
+import type { AiProvider, AiProviderType } from "@/interface/ai";
+import type { AiProviderModalProps } from "@/interface/aiProvider";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { Icon } from "@/components/common/Icon";
@@ -63,15 +64,6 @@ const emptyProvider = (type: AiProviderType = "openai"): AiProvider => {
   };
 };
 
-interface AiProviderModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  providers: AiProvider[];
-  selectedProviderId: number;
-  onProvidersChange: (providers: AiProvider[]) => void;
-  onSelectedProviderChange: (id: number) => void;
-}
-
 /** 服务商配置面板本体（不含弹窗外壳，便于嵌进统一设置窗口的标签页） */
 export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   isOpen,
@@ -112,7 +104,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
 
   const reloadProviders = useCallback(async () => {
     try {
-      const list = await api.getAiProviders();
+      const list = await aiApi.getAiProviders();
       setOwnProviders(list);
       setIsListLoaded(true);
       onProvidersChange(list);
@@ -169,7 +161,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     setDraftProvider(nextProvider);
     if (nextProvider.id === 0) return;
     try {
-      await api.updateAiProvider(nextProvider);
+      await aiApi.updateAiProvider(nextProvider);
       publishProviders(listProviders.map((p) => (p.id === nextProvider.id ? nextProvider : p)));
       window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
     } catch {
@@ -223,7 +215,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       let savedId: number;
       if (draftProvider.id === 0) {
         // 新建：把已勾选的模型一起写库，避免"先保存才能获取模型"的顺序问题
-        const created = await api.createAiProvider(
+        const created = await aiApi.createAiProvider(
           draftProvider.name,
           draftProvider.provider_type,
           draftProvider.api_base_url,
@@ -235,7 +227,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         onSelectedProviderChange(created.id);
         showToast("AI 配置已保存", "success");
       } else {
-        await api.updateAiProvider({ ...draftProvider, enabled_models: checked });
+        await aiApi.updateAiProvider({ ...draftProvider, enabled_models: checked });
         savedId = draftProvider.id;
         showToast("AI 配置已更新", "success");
       }
@@ -276,7 +268,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     fetchingRef.current = true;
     setIsFetchingModels(true);
     try {
-      const fetchedModels = await api.fetchAiModels(draftProvider);
+      const fetchedModels = await aiApi.fetchAiModels(draftProvider);
       if (fetchedModels.length === 0) {
         showToast("没有获取到模型，请检查地址与密钥", "error");
         return;
@@ -294,7 +286,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         setDraftProvider(allChecked);
         if (allChecked.id !== 0) {
           try {
-            await api.updateAiProvider(allChecked);
+            await aiApi.updateAiProvider(allChecked);
             publishProviders(listProviders.map((p) => (p.id === allChecked.id ? allChecked : p)));
             window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
           } catch { /* 忽略：保存时仍会写入 */ }
@@ -333,7 +325,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     // 新建未保存的配置：只更新草稿，等保存时一起写库
     if (nextProvider.id === 0) return;
     try {
-      await api.updateAiProvider(nextProvider);
+      await aiApi.updateAiProvider(nextProvider);
       publishProviders(
         listProviders.map((p) => (p.id === nextProvider.id ? nextProvider : p)),
       );
@@ -357,7 +349,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     });
     if (!ok) return;
     try {
-      await api.deleteAiProvider(p.id);
+      await aiApi.deleteAiProvider(p.id);
       const nextProviders = listProviders.filter((x) => x.id !== p.id);
       publishProviders(nextProviders);
       if (p.id === selectedProviderId) {

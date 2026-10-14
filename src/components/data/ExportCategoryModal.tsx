@@ -1,22 +1,13 @@
 import { useEffect, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Category, Note } from '@/types';
-import * as api from '@/api';
-import type { CategoryZipFormat, CategoryEbookFormat } from '@/api';
+import type { Note } from "@/interface/note";
+import type { CategoryEbookFormat, CategoryZipFormat } from "@/interface/backup";
+import type { ExportCategoryModalProps, FormatOption } from "@/interface/exportCategory";
+import * as notesApi from "@/api/notes";
+import * as exportApi from "@/api/export";
 import { Modal } from '@/components/common/Modal';
 import { Icon } from '@/components/common/Icon';
 import { useToast } from '@/components/common/Toast';
-
-interface ExportCategoryModalProps {
-  /** 要导出的分组：为 null 时窗口关闭 */
-  category: Category | null;
-  onClose: () => void;
-  /** 导出结束后通知外部刷新（笔记数可能变化） */
-  onDone?: () => void;
-}
-
-/** 格式选项：value 由各自的 Format 类型约束，这里统一成 string 便于两类共用一份渲染 */
-type FormatOption = { value: string; label: string; ext: string; desc: string };
 
 /** 压缩包内笔记的文件格式 */
 const ZIP_FORMATS: FormatOption[] = [
@@ -59,7 +50,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
       setBusy(false);
       // 加载分组下的所有笔记，默认全选
       setLoadingNotes(true);
-      api
+      notesApi
         .getNotes(category.id, 'created_at', 'asc')
         .then((ns) => {
           setNotes(ns);
@@ -109,8 +100,8 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
 
       setBusy(true);
       const count = isZip
-        ? await api.exportNotesZip(selectedNoteIds, path, zipFormat)
-        : await api.exportNotesEbook(selectedNoteIds, path, ebookFormat);
+        ? await exportApi.exportNotesZip(selectedNoteIds, path, zipFormat)
+        : await exportApi.exportNotesEbook(selectedNoteIds, path, ebookFormat);
       showToast(`已导出 ${count} 篇笔记`, 'success');
       onDone?.();
       onClose();

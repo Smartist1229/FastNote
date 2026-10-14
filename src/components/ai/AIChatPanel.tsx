@@ -1,27 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { Icon } from "@/components/common/Icon";
-import * as api from "@/api";
-import { AiChatMessage, AiChatSession, AiProvider, AiPromptEntry, AiSettings } from "@/types";
-import {
-  buildFinalContent,
-  cleanSessionTitle,
-  compressTranscript,
-  estimateTokens,
-  finalReplyText,
-  firstLine,
-  formatError,
-  hasActionClaim,
-  isThinkingDeepEnough,
-  localSummaryFallback,
-  parseResponse,
-  parseStreamContent,
-  selectContextWindow,
-  shouldRetryForShallowThinking,
-  streamStartsWithThinking,
-  stripAiTags,
-  type ToolCall,
-  type ToolTrace,
-} from "@/lib/aiChatParse";
+import * as notesApi from "@/api/notes";
+import * as categoriesApi from "@/api/categories";
+import * as aiApi from "@/api/ai";
+import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai";
+import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/aiChat";
+import type { ToolCall, ToolTrace } from "@/interface/aiOutput";
+import { finalReplyText, parseResponse, parseStreamContent } from "@/lib/aiParse/parse";
+import { isThinkingDeepEnough, shouldRetryForShallowThinking, streamStartsWithThinking } from "@/lib/aiParse/thinking";
+import { compressTranscript, estimateTokens, localSummaryFallback, selectContextWindow } from "@/lib/aiParse/context";
+import { buildFinalContent, cleanSessionTitle, firstLine, formatError, hasActionClaim, stripAiTags } from "@/lib/aiParse/text";
 import { useToast } from "@/components/common/Toast";
 import { MdPreview } from "md-editor-rt";
 import "md-editor-rt/lib/style.css";
@@ -44,29 +32,6 @@ import {
   buildTitlePrompt,
   buildToolResultMessage,
 } from "@/config/aiDefaults";
-
-interface AIChatPanelProps {
-  isOpen: boolean;
-  noteTitle: string;
-  noteContent: string;
-  /** 当前打开笔记的 ID：AI 用它精确定位"这篇笔记"，避免同名笔记歧义 */
-  currentNoteId?: number | null;
-  onInsertText: (text: string) => void;
-  onReplaceContent: (text: string) => void;
-  /** 把 AI 回复当作临时内容在编辑器里打开（只预览，不写入笔记） */
-  onOpenInEditor: (title: string, content: string) => void;
-  onOpenProviderSettings: () => void;
-  /** 打开「AI 记忆 / 前置提示词」设置 */
-  onOpenAiMemory: () => void;
-  /** 用户自定义的前置提示词与长期记忆（启用中的会追加到系统提示词） */
-  aiPrompts: AiPromptEntry[];
-  /** 统一设置窗口里的 AI 设置 */
-  aiSettings: AiSettings;
-  /** 设置里可改的项通过这个回调回写（例如拖动输入区高度） */
-  onAiSettingsChange?: (patch: Partial<AiSettings>) => void;
-  /** 关闭面板 */
-  onClose?: () => void;
-}
 
 const MIN_PANEL_WIDTH = 350; const MAX_PANEL_WIDTH = 640; const DEFAULT_PANEL_WIDTH = 400;
 /** 内容区保底宽度：面板上限 = 可用宽度(窗口宽 − 侧栏) − 该值，窗口越宽面板越能放宽 */
@@ -313,15 +278,6 @@ const summarizeToolCall = (c: ToolCall): string => {
   }
 };
 
-/**
- * 工具执行上下文：把"当前打开的笔记"等易变状态显式传进来，
- * 而不是让执行器去读模块级可变变量——后者是全局状态，没法隔离也没法测。
- */
-interface ToolContext {
-  /** 用户此刻正在看的笔记 ID（"这篇笔记"的指代对象） */
-  currentNoteId: number | null;
-}
-
 /** 读取服务商在设置中勾选的可用模型（兼容只有单个 enabled_model 的旧数据） */
 const getEnabledModels = (provider: AiProvider): string[] => {
   const list = (provider.enabled_models || []).filter((m) => m && m.trim());
@@ -340,21 +296,21 @@ const activeModelOf = (provider: AiProvider | null, enabled: string[]): string =
 
 /** 按 ID 精确读取单条笔记（同名笔记也不会取错） */
 const fetchNoteById = async (noteId: number) => {
-  const all = await api.getNotes(null, "updated_at", "desc");
+  const all = await notesApi.getNotes(null, "updated_at", "desc");
   return all.find((n: any) => n.id === noteId && !n.is_deleted) || null;
 };
 
 /** 按名称解析分组 ID；未找到时返回 undefined（保持原分组） */
 const resolveCategoryId = async (categoryName: unknown): Promise<number | null | undefined> => {
   if (!categoryName) return undefined;
-  const cats = await api.getCategories();
+  const cats = await categoriesApi.getCategories();
   const hit = cats.find((c: any) => c.name === String(categoryName));
   return hit ? hit.id : undefined;
 };
 
 const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>> = {
   searchNotes: async (args) => {
-    const all = await api.getNotes(null, "updated_at", "desc");
+    const all = await notesApi.getNotes(null, "updated_at", "desc");
     const q = String(args.query || "").trim().toLowerCase();
     const visible = all.filter((n: any) => !n.is_deleted);
     const hay = (n: any) => `${n.title || ""}\n${n.content || ""}`.toLowerCase();
@@ -395,7 +351,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   /** 列出笔记（按更新时间倒序，可限定分组与条数）：回答"我最近记了什么/某个分组里有什么" */
   listNotes: async (args) => {
-    const all = await api.getNotes(null, "updated_at", "desc");
+    const all = await notesApi.getNotes(null, "updated_at", "desc");
     let list = all.filter((n: any) => !n.is_deleted);
     if (args.categoryName) {
       const cid = await resolveCategoryId(args.categoryName);
@@ -403,7 +359,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
       list = list.filter((n: any) => n.category_id === cid);
     }
     const limit = Math.min(Math.max(Number(args.limit) || 15, 1), 50);
-    const categories = await api.getCategories();
+    const categories = await categoriesApi.getCategories();
     const nameOf = (id: number | null) => categories.find(c => c.id === id)?.name || "未分类";
     return {
       total: list.length,
@@ -483,7 +439,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const text = String(args.text ?? "");
     const newLines = text.length > 0 ? text.split("\n") : [];
     lines.splice(from - 1, to - from + 1, ...newLines);
-    await api.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
+    await notesApi.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
     return {
       success: true,
       id: nid,
@@ -503,7 +459,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const newLines = text.length > 0 ? text.split("\n") : [];
     if (newLines.length === 0) return { success: false, error: "插入内容为空" };
     lines.splice(after, 0, ...newLines);
-    await api.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
+    await notesApi.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
     return {
       success: true,
       id: nid,
@@ -521,7 +477,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const from = Math.max(1, Math.floor(Number(args.startLine) || 1));
     const to = Math.min(lines.length, Math.max(from, Math.floor(Number(args.endLine) || from)));
     lines.splice(from - 1, to - from + 1);
-    await api.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
+    await notesApi.updateNote(nid, n.title, lines.join("\n"), n.category_id ?? null);
     return {
       success: true,
       id: nid,
@@ -543,7 +499,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (count === 0) return { success: false, error: `正文里没有找到「${oldText.slice(0, 40)}」，请先读取确认原文` };
     const replaceAll = args.replaceAll === true || args.replaceAll === "true";
     const next = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText);
-    await api.updateNote(nid, n.title, next, n.category_id ?? null);
+    await notesApi.updateNote(nid, n.title, next, n.category_id ?? null);
     const lines = next.split("\n");
     const hitLine = lines.findIndex(l => l.includes(newText || oldText)) + 1;
     return {
@@ -565,12 +521,12 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (!text) return { success: false, error: "追加内容为空" };
     const prev = String(n.content ?? "");
     const sep = prev && !prev.endsWith("\n") ? "\n\n" : "";
-    await api.updateNote(nid, n.title, `${prev}${sep}${text}`, n.category_id ?? null);
+    await notesApi.updateNote(nid, n.title, `${prev}${sep}${text}`, n.category_id ?? null);
     return { success: true, id: nid, title: n.title, appendedLength: text.length };
   },
   /** 查看回收站 */
   listTrash: async () => {
-    const notes: any[] = await api.getTrashNotes();
+    const notes: any[] = await notesApi.getTrashNotes();
     return {
       total: notes.length,
       notes: notes.slice(0, 20).map((n) => ({ id: n.id, title: n.title, deleted_at: n.deleted_at })),
@@ -583,27 +539,27 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     // 从回收站列表里取标题（回收站里的笔记用 get_note_content 不一定可靠）
     let title = "";
     try {
-      const trashed: any[] = await api.getTrashNotes();
+      const trashed: any[] = await notesApi.getTrashNotes();
       title = trashed.find(n => n.id === nid)?.title || "";
     } catch {}
-    await api.restoreNote(nid);
+    await notesApi.restoreNote(nid);
     return { success: true, id: nid, title, restored: true };
   },
   /** 彻底删除回收站中的某篇笔记（不可恢复） */
   deleteFromTrash: async (args) => {
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId" };
-    const trashed: any[] = await api.getTrashNotes();
+    const trashed: any[] = await notesApi.getTrashNotes();
     const target = trashed.find(n => n.id === nid);
     if (!target) return { success: false, error: `回收站里没有 ID 为 ${nid} 的笔记（先用 listTrash 确认）` };
-    await api.deleteNotePermanently(nid);
+    await notesApi.deleteNotePermanently(nid);
     return { success: true, id: nid, title: target.title, permanent: true };
   },
   /** 清空回收站（不可恢复） */
   emptyTrash: async () => {
-    const trashed: any[] = await api.getTrashNotes();
+    const trashed: any[] = await notesApi.getTrashNotes();
     if (trashed.length === 0) return { success: true, deleted: 0, note: "回收站本来就是空的" };
-    await api.deleteMultipleNotesPermanently(trashed.map(n => n.id));
+    await notesApi.deleteMultipleNotesPermanently(trashed.map(n => n.id));
     return { success: true, deleted: trashed.length };
   },
   /** 一次创建多篇笔记（例如把一段内容拆成若干篇） */
@@ -614,20 +570,20 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     for (const item of raw.slice(0, 10)) {
       const it: any = item || {};
       const cid = await resolveCategoryId(it.categoryName);
-      const r = await api.createNote(String(it.title ?? "无标题"), String(it.content ?? ""), cid ?? null);
+      const r = await notesApi.createNote(String(it.title ?? "无标题"), String(it.content ?? ""), cid ?? null);
       created.push({ id: r.id, title: r.title });
     }
     return { success: true, count: created.length, created };
   },
-  getCategories: async () => { const cats = await api.getCategories(); return cats.map((c: any) => ({ id: c.id, name: c.name })); },
-  createNote: async (args) => { const cid = await resolveCategoryId(args.categoryName); const r = await api.createNote(String(args.title || ""), String(args.content || ""), cid ?? null); return { id: r.id, title: r.title }; },
+  getCategories: async () => { const cats = await categoriesApi.getCategories(); return cats.map((c: any) => ({ id: c.id, name: c.name })); },
+  createNote: async (args) => { const cid = await resolveCategoryId(args.categoryName); const r = await notesApi.createNote(String(args.title || ""), String(args.content || ""), cid ?? null); return { id: r.id, title: r.title }; },
   updateNote: async (args) => {
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId，无法定位笔记" };
     const n: any = await fetchNoteById(nid);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     const cid = await resolveCategoryId(args.categoryName);
-    await api.updateNote(nid, String(args.title ?? n.title), String(args.content ?? n.content), cid ?? n.category_id ?? null);
+    await notesApi.updateNote(nid, String(args.title ?? n.title), String(args.content ?? n.content), cid ?? n.category_id ?? null);
     return { success: true, id: nid, title: String(args.title ?? n.title) };
   },
   updateCurrentNote: async (args, ctx) => {
@@ -640,7 +596,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const nextTitle = args.title !== undefined ? String(args.title) : n.title;
     const nextContent = args.content !== undefined ? String(args.content) : n.content;
     const cid = await resolveCategoryId(args.categoryName);
-    await api.updateNote(nid, nextTitle, nextContent, cid ?? n.category_id ?? null);
+    await notesApi.updateNote(nid, nextTitle, nextContent, cid ?? n.category_id ?? null);
     return { success: true, id: nid, title: nextTitle };
   },
   deleteNote: async (args) => {
@@ -648,11 +604,11 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId" };
     // 先取出标题：轨迹里要能显示"删除笔记 #16 · 《XX》"，只有一个 ID 用户看不出删了什么
     const before: any = await fetchNoteById(nid);
-    await api.moveToTrash(nid);
+    await notesApi.moveToTrash(nid);
     return { deleted: true, id: nid, title: before?.title ?? "", toTrash: true };
   },
-  createCategory: async (args) => { const r = await api.createCategory(String(args.name)); return { id: r.id, name: r.name }; },
-  renameCategory: async (args) => { await api.updateCategory(Number(args.categoryId), String(args.name)); return { id: Number(args.categoryId), name: args.name }; },
+  createCategory: async (args) => { const r = await categoriesApi.createCategory(String(args.name)); return { id: r.id, name: r.name }; },
+  renameCategory: async (args) => { await categoriesApi.updateCategory(Number(args.categoryId), String(args.name)); return { id: Number(args.categoryId), name: args.name }; },
   /**
    * 删除分组。deleteNotes=true 时组内笔记会被移入回收站（不是彻底删除，仍可还原）；
    * false（默认）则只解除归类，笔记留在"未分类"里。
@@ -665,13 +621,13 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     let name = "";
     let noteCount = 0;
     try {
-      const cats: any[] = await api.getCategories();
+      const cats: any[] = await categoriesApi.getCategories();
       const hit = cats.find(c => c.id === cid);
       name = hit?.name || "";
       noteCount = Number(hit?.note_count || 0);
       if (!name && !hit) return { success: false, error: `未找到 ID 为 ${cid} 的分组` };
     } catch {}
-    await api.deleteCategory(cid, withNotes);
+    await categoriesApi.deleteCategory(cid, withNotes);
     return {
       deleted: true,
       id: cid,
@@ -685,11 +641,11 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const nid = Number(args.noteId);
     const n: any = await fetchNoteById(nid);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
-    await api.updateNote(nid, n.title, n.content, Number(args.categoryId));
+    await notesApi.updateNote(nid, n.title, n.content, Number(args.categoryId));
     // 带上目标分组名：这样界面上能看到"移动笔记 #29 → 「读书笔记」"，而不是只有一个 ID
     let category = "";
     try {
-      const cats = await api.getCategories();
+      const cats = await categoriesApi.getCategories();
       category = cats.find((c: any) => c.id === Number(args.categoryId))?.name || "";
     } catch {}
     return { moved: true, id: nid, title: n.title, category };
@@ -942,14 +898,6 @@ const AnchorRail = memo(function AnchorRail({
   );
 });
 
-/** 工具执行结果的一条记录 */
-interface ToolResult {
-  name: string;
-  args: Record<string, unknown>;
-  result: unknown;
-  success: boolean;
-}
-
 /** 用户点了"取消"时写进工具结果的固定文案 */
 const CONFIRM_CANCELLED = "用户已取消";
 /** 等待用户确认的超时时间：弹窗被意外关闭/遗忘时按"取消"处理，避免整轮卡死 */
@@ -1187,7 +1135,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (!activeProvider || !model || activeProvider.enabled_model === model) return;
     const next = { ...activeProvider, enabled_model: model };
     setProviders((prev) => prev.map((p) => (p.id === next.id ? next : p)));
-    api.updateAiProvider(next).catch(() => {});
+    aiApi.updateAiProvider(next).catch(() => {});
   }, [activeProvider]);
 
   // 同步"当前打开笔记的 ID"，供 updateCurrentNote 等工具使用
@@ -1287,7 +1235,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       const idx = leftover ? m.findIndex(x => x === leftover) : -1;
       return idx >= 0 ? [...m.slice(0, idx), msg] : [...m, msg];
     });
-    try { await api.saveChatMessage(sid, 'assistant', text); } catch {}
+    try { await aiApi.saveChatMessage(sid, 'assistant', text); } catch {}
   }, []);
 
   /** 重置为"跟随最新回复"状态（切换/新建会话、发送新消息、重新打开面板时调用） */
@@ -1486,7 +1434,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   useEffect(() => { selectedProviderIdRef.current = selectedProviderId; }, [selectedProviderId]);
   const loadProviders = async () => {
     try {
-      const list = await api.getAiProviders();
+      const list = await aiApi.getAiProviders();
       setProviders(list);
       setProvidersError("");
       if (list.length > 0 && !selectedProviderIdRef.current) setSelectedProviderId(list[0].id);
@@ -1496,7 +1444,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       setProvidersError(formatError(error));
     }
   };
-  const loadSessions = async () => { try { setSessions(await api.getChatSessions()); } catch {} };
+  const loadSessions = async () => { try { setSessions(await aiApi.getChatSessions()); } catch {} };
   /**
    * 加载历史消息：只对 assistant 消息做标签解析。
    * 用户消息原样展示——他可能自己粘贴了含 <tool_calls> 字样的文本，不能被剥离；
@@ -1504,7 +1452,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    */
   const loadSessionMessages = async (sid: number) => {
     try {
-      const m = await api.getChatMessages(sid);
+      const m = await aiApi.getChatMessages(sid);
       resetToLatest();
       setMessages(m.map(x => {
         const p = x.role === "assistant" ? parseResponse(x.content) : null;
@@ -1519,9 +1467,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       }));
     } catch {}
   };
-  const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
+  const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
   const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); draftsRef.current[activeSessionId] = input; setActiveSessionId(sid); setInput(draftsRef.current[sid] || ''); resetStreaming(); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
-  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await api.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); titleGenRef.current = null; };
+  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); titleGenRef.current = null; };
   /**
    * 自动生成对话标题。
    * 之前的写法用组件里的 sessions 数组判断"是不是新对话"，但新建会话时那是旧闭包，
@@ -1533,24 +1481,24 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (titleGenRef.current === sid || !activeProvider) return;
     titleGenRef.current = sid;
     try {
-      const list = await api.getChatSessions();
+      const list = await aiApi.getChatSessions();
       const session = list.find(s => s.id === sid);
       if (!session || session.title !== "新对话") return;
       // 送进去的内容也要先去标签：否则整段 <thinking> 推理会被当成"对话内容"喂给标题模型
       const userText = stripAiTags(up).replace(/<[^>]+>/g, "").trim().slice(0, 300);
       const assistantText = stripAiTags(ar).replace(/<[^>]+>/g, "").trim().slice(0, 300);
-      const t = await api.sendAiChat(activeProvider.id, [{ role: "system", content: buildTitlePrompt(userText, assistantText) }, { role: "user", content: TITLE_USER_MESSAGE }], "", "");
+      const t = await aiApi.sendAiChat(activeProvider.id, [{ role: "system", content: buildTitlePrompt(userText, assistantText) }, { role: "user", content: TITLE_USER_MESSAGE }], "", "");
       const ct = cleanSessionTitle(t);
       // 洗不出有效标题就保持原样，下次再试；绝不要把 "thinking用" 这类垃圾写进去
       if (!ct) { titleGenRef.current = null; return; }
-      await api.updateChatSessionTitle(sid, ct);
+      await aiApi.updateChatSessionTitle(sid, ct);
       await loadSessions();
     } catch (error) {
       console.error("生成对话标题失败:", error);
       titleGenRef.current = null; // 失败时允许下次重试
     }
   };
-  const handleRenameSession = async (sid: number) => { const title = editTitle.trim(); if (!title) return; try { await api.updateChatSessionTitle(sid, title); setEditingSessionId(null); setEditTitle(''); await loadSessions(); } catch { showToast('重命名失败', 'error'); } };
+  const handleRenameSession = async (sid: number) => { const title = editTitle.trim(); if (!title) return; try { await aiApi.updateChatSessionTitle(sid, title); setEditingSessionId(null); setEditTitle(''); await loadSessions(); } catch { showToast('重命名失败', 'error'); } };
   const agentLoop = async (sid: number, msgs: AiChatMessage[], prompt: string): Promise<void> => {
     placeholderRef.current = null;
     executedCallKeys.current = new Set();
@@ -1575,7 +1523,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       const needsSummary = dropped.length > 0 && (!summary || dropped.length - covered >= 6);
       if (needsSummary && activeProvider?.id) {
         try {
-          const text = await api.sendAiChat(
+          const text = await aiApi.sendAiChat(
             activeProvider.id,
             [
               { role: "system", content: CONTEXT_SUMMARY_PROMPT },
@@ -1616,7 +1564,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         // 设置里关掉流式时走一次性请求：个别服务商的流式不稳定，这时界面先显示"思考中"，
         // 拿到完整结果再一次性呈现（解析与后续流程完全一致）。
         const full = aiSettings.streaming
-          ? await api.sendAiChatStream(
+          ? await aiApi.sendAiChatStream(
               activeProvider!.id,
               [{ role: 'system', content: systemPrompt }, ...roundMsgs],
               noteTitle || '',
@@ -1629,7 +1577,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
               currentNoteId ?? null,
               aiSettings.maxTokens,
             )
-          : await api.sendAiChat(
+          : await aiApi.sendAiChat(
               activeProvider!.id,
               [{ role: 'system', content: systemPrompt }, ...roundMsgs],
               noteTitle || '',
@@ -1749,7 +1697,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             }
             return [...m, msg as any];
           });
-          try { await api.saveChatMessage(sid, 'assistant', full); } catch {}
+          try { await aiApi.saveChatMessage(sid, 'assistant', full); } catch {}
           // 生成标题只喂清洗后的正文，避免把截断的工具调用 JSON 塞给标题模型
           if (aiSettings.autoTitle) genTitle(sid, prompt, finalReply);
           return;
@@ -2031,7 +1979,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       setActiveAnchor(messages.filter(m => m.role === 'user').length);
       setIsSending(true);
       const sid = await ensureSession();
-      try { await api.saveChatMessage(sid, "user", prompt); } catch {}
+      try { await aiApi.saveChatMessage(sid, "user", prompt); } catch {}
       await agentLoop(sid, [...messages, userMsg], prompt);
       await loadSessions();
       try { window.dispatchEvent(new CustomEvent('fastnote-data-changed')); } catch {}
@@ -2066,7 +2014,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     });
     setIsSending(false);
     resetStreaming();
-    if (activeSessionId) api.saveChatMessage(activeSessionId, 'assistant', '已停止').catch(()=>{});
+    if (activeSessionId) aiApi.saveChatMessage(activeSessionId, 'assistant', '已停止').catch(()=>{});
   };
 
   const onResize = useCallback((e: React.MouseEvent) => {
@@ -2475,7 +2423,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                   setModelMenuOpen(false);
                   if (!activeProvider) return;
                   const u = { ...activeProvider, enabled_model: m };
-                  api.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
+                  aiApi.updateAiProvider(u).then(() => setProviders(p => p.map(x => x.id === u.id ? u : x)));
                 }}
               >
                 <Icon name="ai-check" className={"w-3 h-3 flex-shrink-0 " + (m === activeModel ? "opacity-100" : "opacity-0")} />
@@ -2688,7 +2636,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                         onClick={async (e) => {
                           e.stopPropagation();
                           try {
-                            await api.deleteChatSession(s.id);
+                            await aiApi.deleteChatSession(s.id);
                             setSessions(p => p.filter(x => x.id !== s.id));
                             if (activeSessionId === s.id) {
                               const rest = sessions.filter(x => x.id !== s.id);

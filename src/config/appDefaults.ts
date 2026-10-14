@@ -4,7 +4,7 @@ import type {
   EditorSettings,
   LayoutSettings,
   ViewSettings,
-} from "@/types";
+} from "@/interface/settings";
 
 /**
  * 软件设置的「默认配置文件」。
@@ -25,6 +25,14 @@ export const FONT_SIZE_MAX = 24;
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   /** 启动时清空回收站（只在软件初始化时执行，永久删除、不可恢复） */
   cleanTrashOnStartup: false,
+  /** 是否显示托盘图标 */
+  trayEnabled: true,
+  /** 关闭窗口按钮行为：minimize 到托盘 | exit 直接退出 */
+  closeBehavior: "minimize",
+  /** 是否开机自启动 */
+  autostart: false,
+  /** 开机自启动时是否最小化到托盘 */
+  minimizeToTray: false,
 };
 
 /* ---------- Editor ---------- */

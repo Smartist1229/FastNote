@@ -1,22 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { ContextMenuProps } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
-
-export interface ContextMenuItem {
-  label: string;
-  icon?: React.ReactNode;
-  onClick: () => void;
-  danger?: boolean;
-  divider?: boolean;
-  disabled?: boolean;
-  submenu?: ContextMenuItem[];
-}
-
-interface ContextMenuProps {
-  items: ContextMenuItem[];
-  position: { x: number; y: number } | null;
-  onClose: () => void;
-}
 
 export const ContextMenu: React.FC<ContextMenuProps> = ({ items, position, onClose }) => {
   const menuRef = useRef<HTMLDivElement>(null);

@@ -1,22 +1,15 @@
-import { Component, ErrorInfo, ReactNode } from "react";
-
-interface Props {
-  children: ReactNode;
-}
-
-interface State {
-  error: Error | null;
-}
+import { Component, ErrorInfo } from "react";
+import type { ErrorBoundaryProps, ErrorBoundaryState } from "@/interface/ui";
 
 /**
  * 顶层错误边界。
  * React 在渲染期抛错时会卸载整棵树——表现就是"页面上什么都没了"（#root 变空）。
  * 有了这层兜底，至少能显示错误信息并提供重载/继续入口，而不是黑屏。
  */
-export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { error: null };
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error };
   }
 

@@ -1,18 +1,6 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState } from "react";
+import type { ConfirmOptions } from "@/interface/ui";
 import { Modal } from "@/components/common/Modal";
-
-export interface ConfirmOptions {
-  /** 弹窗标题 */
-  title: string;
-  /** 正文说明 */
-  message: ReactNode;
-  /** 确认按钮文案，默认「确定」 */
-  confirmText?: string;
-  /** 取消按钮文案，默认「取消」 */
-  cancelText?: string;
-  /** 危险操作（删除/清空等不可恢复）：确认按钮用红色 */
-  danger?: boolean;
-}
 
 /** 受控的确认弹窗：样式与「删除分类」弹窗保持一致 */
 const ConfirmDialog: React.FC<{

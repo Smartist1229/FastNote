@@ -1,4 +1,4 @@
-import type { AiPromptEntry, AiSettings } from "@/types";
+import type { AiPromptEntry, AiSettings } from "@/interface/ai";
 
 /* ============================================================================
  * AI 默认配置中心
@@ -236,3 +236,26 @@ export const TRUNCATED_TOOL_CALL_NOTICE =
  * - thinking_reminder：按前端传入的 min_thinking_len 追加的强制检查，
  *   要求 thinking 不低于 N 字符串、需要工具时必须同时输出 <tool_calls>。
  * ------------------------------------------------------------------------- */
+
+/**
+ * 逐项把"数据库里的值"归一化成合法设置：
+ * 类型不对 / 缺键 → 用默认值；数值再做边界收敛，脏数据也不会让行为异常。
+ */
+export const normalizeAiSettings = (raw: Record<string, unknown> | null | undefined): AiSettings => {
+  const merged: AiSettings = { ...DEFAULT_AI_SETTINGS };
+  for (const key of Object.keys(DEFAULT_AI_SETTINGS) as (keyof AiSettings)[]) {
+    const value = (raw || {})[key];
+    if (typeof value === typeof DEFAULT_AI_SETTINGS[key]) {
+      // @ts-expect-error 上面已按字段类型逐项校验
+      merged[key] = value;
+    }
+  }
+  merged.minThinkingLen = Math.min(1000, Math.max(0, Math.round(merged.minThinkingLen)));
+  merged.maxRounds = Math.min(200, Math.max(0, Math.round(merged.maxRounds)));
+  merged.contextBudget = Math.min(200000, Math.max(2000, Math.round(merged.contextBudget)));
+  merged.keepRecent = Math.min(50, Math.max(2, Math.round(merged.keepRecent)));
+  merged.toolResultChars = Math.min(20000, Math.max(200, Math.round(merged.toolResultChars)));
+  merged.composerHeight = Math.min(1200, Math.max(0, Math.round(merged.composerHeight)));
+  merged.maxTokens = Math.min(32000, Math.max(256, Math.round(merged.maxTokens)));
+  return merged;
+};

@@ -1,14 +1,6 @@
 import { useEffect } from 'react';
+import type { ModalProps } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
-
-interface ModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-  /** 宽度档位：默认 lg；设置窗口这类带侧栏的内容用 2xl 才放得下 */
-  size?: "lg" | "xl" | "2xl";
-}
 
 const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
   lg: "max-w-lg",

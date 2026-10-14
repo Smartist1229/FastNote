@@ -1,10 +1,6 @@
-import * as api from "@/api";
-import {
-  AiPromptEntry,
-  AiSettings,
-  DEFAULT_AI_SETTINGS,
-  normalizeAiSettings,
-} from "@/types";
+import * as settingsApi from "@/api/settings";
+import type { AiPromptEntry, AiSettings, LoadedAiConfig } from "@/interface/ai";
+import { DEFAULT_AI_SETTINGS, normalizeAiSettings } from "@/config/aiDefaults";
 
 /**
  * 设置持久化：**以 SQLite 的 app_settings 表为准**。
@@ -27,13 +23,6 @@ const LEGACY_PROMPTS_KEY = "fastnote.aiPrompts";
 
 /** 每个设置项的键名 */
 export const settingKey = (field: keyof AiSettings) => `${KEY_PREFIX}${field}`;
-
-export interface LoadedAiConfig {
-  settings: AiSettings;
-  prompts: AiPromptEntry[];
-  /** 是否已经把老版本的 localStorage 数据迁移进数据库 */
-  migrated: boolean;
-}
 
 const safeParse = (raw: string | undefined): unknown => {
   if (raw === undefined) return undefined;
@@ -64,7 +53,7 @@ const clearLegacy = () => {
 
 /** 从数据库读取设置与记忆；数据库没有的键一律回退默认值 */
 export const loadAiConfig = async (): Promise<LoadedAiConfig> => {
-  const rows = await api.getAppSettings();
+  const rows = await settingsApi.getAppSettings();
   const hasAnySetting = Object.keys(rows).some((k) => k.startsWith(KEY_PREFIX));
   const hasPrompts = typeof rows[PROMPTS_KEY] === "string";
 
@@ -80,9 +69,9 @@ export const loadAiConfig = async (): Promise<LoadedAiConfig> => {
       try {
         for (const field of Object.keys(DEFAULT_AI_SETTINGS) as (keyof AiSettings)[]) {
           const value = legacy[field];
-          if (typeof value !== "undefined") await api.setAppSetting(settingKey(field), JSON.stringify(value));
+          if (typeof value !== "undefined") await settingsApi.setAppSetting(settingKey(field), JSON.stringify(value));
         }
-        if (legacyPrompts.length > 0) await api.setAppSetting(PROMPTS_KEY, JSON.stringify(legacyPrompts));
+        if (legacyPrompts.length > 0) await settingsApi.setAppSetting(PROMPTS_KEY, JSON.stringify(legacyPrompts));
         clearLegacy();
       } catch (e) {
         console.error("迁移旧设置失败（继续用默认值）：", e);
@@ -111,7 +100,7 @@ export const loadAiConfig = async (): Promise<LoadedAiConfig> => {
 /** 保存单个设置项（只写变化的那一项，避免整表重写） */
 export const saveSetting = async <K extends keyof AiSettings>(field: K, value: AiSettings[K]): Promise<void> => {
   try {
-    await api.setAppSetting(settingKey(field), JSON.stringify(value));
+    await settingsApi.setAppSetting(settingKey(field), JSON.stringify(value));
   } catch (e) {
     console.error(`保存设置 ${String(field)} 失败：`, e);
   }
@@ -121,7 +110,7 @@ export const saveSetting = async <K extends keyof AiSettings>(field: K, value: A
 export const saveAllSettings = async (settings: AiSettings): Promise<void> => {
   try {
     for (const field of Object.keys(DEFAULT_AI_SETTINGS) as (keyof AiSettings)[]) {
-      await api.setAppSetting(settingKey(field), JSON.stringify(settings[field]));
+      await settingsApi.setAppSetting(settingKey(field), JSON.stringify(settings[field]));
     }
   } catch (e) {
     console.error("保存设置失败：", e);
@@ -131,7 +120,7 @@ export const saveAllSettings = async (settings: AiSettings): Promise<void> => {
 /** 保存前置提示词/记忆列表 */
 export const savePrompts = async (prompts: AiPromptEntry[]): Promise<void> => {
   try {
-    await api.setAppSetting(PROMPTS_KEY, JSON.stringify(prompts));
+    await settingsApi.setAppSetting(PROMPTS_KEY, JSON.stringify(prompts));
   } catch (e) {
     console.error("保存记忆列表失败：", e);
   }
@@ -142,7 +131,7 @@ export const savePrompts = async (prompts: AiPromptEntry[]): Promise<void> => {
  * 这样"表里没有的键用默认值"与"表里存在的键是用户当前值"始终一致，便于排查。
  */
 export const ensureSettingsSeeded = async (settings: AiSettings): Promise<void> => {
-  const rows = await api.getAppSettings();
+  const rows = await settingsApi.getAppSettings();
   for (const field of Object.keys(DEFAULT_AI_SETTINGS) as (keyof AiSettings)[]) {
     if (typeof rows[settingKey(field)] === "undefined") {
       await saveSetting(field, settings[field]);

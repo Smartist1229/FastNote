@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use chrono::{Local, Duration};
 use sha2::{Digest, Sha256};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -2492,13 +2494,227 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     Ok(())
 }
 
+/* ---------------- 单实例 / 托盘 / 窗口管理 ----------------
+ * 全部由 Rust 侧驱动，不依赖前端 JS（JS 只在设置变化时下发指令）：
+ *   - 单实例：run() 里注册 tauri-plugin-single-instance（命名互斥量，跨进程有效），
+ *     第二个实例启动时会回调这里 → 聚焦已有窗口并自行退出。
+ *   - 托盘：setup() 里用 TrayIconBuilder 创建，生命周期归 Rust 所有；
+ *     即使窗口隐藏、webview 不再执行 JS，托盘依然存在。
+ *   - 关闭行为：on_window_event(CloseRequested) 读库里的设置，
+ *     决定「隐藏到托盘」还是「退出应用」。
+ */
+
+/// 托盘图标 ID
+const TRAY_ID: &str = "fastnote-tray";
+
+/// 读取 app_settings 表里某个键的原始字符串值（值以 JSON 文本存储）
+fn read_setting_raw(app: &AppHandle, key: &str) -> Option<String> {
+    let state = app.try_state::<AppState>()?;
+    let conn = state.conn.lock().ok()?;
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// 读布尔设置；缺失或解析失败时回退 fallback
+fn read_setting_bool(app: &AppHandle, key: &str, fallback: bool) -> bool {
+    read_setting_raw(app, key)
+        .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
+        .unwrap_or(fallback)
+}
+
+/// 读字符串设置；缺失或解析失败时回退 fallback
+fn read_setting_string(app: &AppHandle, key: &str, fallback: &str) -> String {
+    read_setting_raw(app, key)
+        .and_then(|raw| serde_json::from_str::<String>(&raw).ok())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// 显示、取消最小化并聚焦主窗口（第二个实例 / 托盘左键 / 托盘菜单共用）
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// 创建托盘图标（已存在则跳过）
+fn create_tray(app: &AppHandle) -> tauri::Result<()> {
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+
+    let show_item = MenuItem::with_id(app, "show", "显示 FastNote", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("FastNote")
+        .menu(&menu)
+        // 左键只负责呼出窗口，右键才弹菜单
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    // 用应用自带窗口图标：编译期已内嵌为 RGBA，无需 image-png 解码
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder.build(app)?;
+    Ok(())
+}
+
+/// 启用/禁用托盘图标（设置项「显示托盘图标」变化时由前端调用）
+#[tauri::command]
+fn set_tray_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        create_tray(&app).map_err(|e| e.to_string())
+    } else {
+        let _ = app.remove_tray_by_id(TRAY_ID);
+        Ok(())
+    }
+}
+
+/* ---------------- 开机自启动 (Windows 启动文件夹方式) ---------------- */
+
+/// 开机自启动快捷方式路径：
+/// %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\FastNote.lnk
+fn startup_shortcut_path() -> Result<std::path::PathBuf, String> {
+    let appdata = std::env::var("APPDATA").map_err(|_| "无法获取 APPDATA 路径".to_string())?;
+    Ok(std::path::PathBuf::from(appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("Startup")
+        .join("FastNote.lnk"))
+}
+
+/// PowerShell 单引号字符串转义：内容里出现 ' 时写成 ''
+fn ps_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// 本次进程是否由开机自启动拉起：快捷方式固定带 --autostart 参数。
+/// （--minimized 是早期版本的写法，兼容识别，避免老快捷方式失效）
+fn launched_from_autostart() -> bool {
+    std::env::args().any(|arg| arg == "--autostart" || arg == "--minimized")
+}
+
+/// 写入开机启动快捷方式：用 WScript.Shell 生成 .lnk，无需额外依赖。
+/// 参数固定为 --autostart，只负责标记「这次是开机拉起的」；
+/// 拉起后是否隐藏到托盘由库里的「开机后最小化到托盘」设置决定，因此切换该设置不需要动快捷方式。
+fn write_autostart_shortcut(shortcut: &std::path::Path) -> Result<(), String> {
+    if let Some(dir) = shortcut.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建启动文件夹失败：{}", e))?;
+    }
+
+    let exe_path = std::env::current_exe().map_err(|e| format!("获取程序路径失败：{}", e))?;
+    let work_dir = exe_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let exe = exe_path.to_string_lossy().to_string();
+    let lnk = shortcut.to_string_lossy().to_string();
+
+    // 路径统一用单引号包裹（内部单引号已转义），避免双引号被 PowerShell 提前闭合导致脚本解析失败。
+    let script = format!(
+        "$ws = New-Object -ComObject WScript.Shell; \
+         $lnk = $ws.CreateShortcut('{}'); \
+         $lnk.TargetPath = '{}'; \
+         $lnk.WorkingDirectory = '{}'; \
+         $lnk.Arguments = '--autostart'; \
+         $lnk.Save()",
+        ps_escape(&lnk),
+        ps_escape(&exe),
+        ps_escape(&work_dir),
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|e| format!("调用 PowerShell 失败：{}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "创建开机启动快捷方式失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    if !shortcut.exists() {
+        return Err("创建开机启动快捷方式失败：快捷方式未生成".to_string());
+    }
+
+    Ok(())
+}
+
+/// 启用/禁用开机自启：在启动文件夹里创建/删除快捷方式。
+/// 只在「开机自启动」开关真正变化时由前端调用，不做无谓的重写。
+#[tauri::command]
+fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
+    let shortcut = startup_shortcut_path()?;
+    if enabled {
+        write_autostart_shortcut(&shortcut)
+    } else if shortcut.exists() {
+        std::fs::remove_file(&shortcut).map_err(|e| format!("删除开机启动快捷方式失败：{}", e))
+    } else {
+        Ok(())
+    }
+}
+
+/// 启动时对齐一次：只有快捷方式「该在却不在 / 不该在却在」时才动手。
+/// 正常情况下（设置已开启且快捷方式已存在）这里什么都不做，不会每次都跑一遍 PowerShell。
+fn sync_autostart_shortcut(app: &AppHandle) {
+    let Ok(shortcut) = startup_shortcut_path() else { return };
+    if read_setting_bool(app, "app.config.general.autostart", false) {
+        if !shortcut.exists() {
+            if let Err(e) = write_autostart_shortcut(&shortcut) {
+                eprintln!("创建开机启动快捷方式失败：{}", e);
+            }
+        }
+    } else if shortcut.exists() {
+        let _ = std::fs::remove_file(&shortcut);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+
 pub fn run() {
     tauri::Builder::default()
+        // 单实例插件必须最先注册：保证第二实例在任何初始化之前就被挡下
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 已有实例在运行：呼出它的窗口（窗口可能正处于隐藏/最小化状态）
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![
+                .invoke_handler(tauri::generate_handler![
             create_category,
             get_categories,
             update_category,
@@ -2536,6 +2752,8 @@ pub fn run() {
             export_notes_ebook,
             read_text_file,
             write_text_file,
+            set_tray_enabled,
+            set_autostart_enabled,
         ])
         .setup(|app| {
             let data_dir = match std::env::current_exe() {
@@ -2612,8 +2830,48 @@ pub fn run() {
                     }
                 }
             }
-            
+
+            // 开机启动：只在快捷方式与库里的设置不一致时对齐一次，正常启动不会重写
+            sync_autostart_shortcut(app.handle());
+
+            // 托盘图标：按库里的设置决定是否创建（读不到键时默认开启）
+            let tray_on = read_setting_bool(app.handle(), "app.config.general.trayEnabled", true);
+            if tray_on {
+                if let Err(e) = create_tray(app.handle()) {
+                    eprintln!("创建托盘图标失败：{}", e);
+                }
+            }
+
+            // 开机自启动拉起时：只有设置里选了「开机后最小化到托盘」且托盘图标已开启，才隐藏窗口。
+            // 其余情况都正常显示（托盘没开时隐藏会让用户失去找回窗口的入口）。
+            let minimize_to_tray =
+                read_setting_bool(app.handle(), "app.config.general.minimizeToTray", false);
+            if launched_from_autostart() && minimize_to_tray && tray_on {
+                let _ = window.hide();
+            } else {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+
             Ok(())
+        })
+        // 关闭窗口行为：读库里的设置，决定「隐藏到托盘」还是「退出应用」
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                let app = window.app_handle();
+                let behavior =
+                    read_setting_string(app, "app.config.general.closeBehavior", "minimize");
+                let tray_on = read_setting_bool(app, "app.config.general.trayEnabled", true);
+                if behavior == "minimize" && tray_on {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    app.exit(0);
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

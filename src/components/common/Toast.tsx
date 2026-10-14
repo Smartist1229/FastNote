@@ -1,17 +1,6 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import type { Toast, ToastContextType, ToastType } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
-
-type ToastType = "success" | "error" | "info";
-
-interface Toast {
-  id: number;
-  message: string;
-  type: ToastType;
-}
-
-interface ToastContextType {
-  showToast: (message: string, type?: ToastType) => void;
-}
 
 const ToastContext = createContext<ToastContextType>({ showToast: () => {} });
 

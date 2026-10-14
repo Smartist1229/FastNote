@@ -1,21 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { Category, Note } from '@/types';
+import type { Note } from "@/interface/note";
+import type { CategoryDrawerProps } from "@/interface/sidebar";
 import { Icon } from '@/components/common/Icon';
-
-interface CategoryDrawerProps {
-  category: Category | null;
-  notes: Note[];
-  isExpanded: boolean;
-  isAllNotes: boolean;
-  selectedNoteId: number | null;
-  focusNoteId: number | null;
-  onToggle: () => void;
-  onSelectNote: (note: Note) => void;
-  onDeleteNote: (note: Note) => void;
-  onCreateNote: () => void;
-  onContextMenu: (e: React.MouseEvent, category: Category | null) => void;
-  onNoteContextMenu: (e: React.MouseEvent, note: Note) => void;
-}
 
 /** 笔记卡片：抽屉内的单条笔记（搜索模式下也复用它渲染扁平结果列表） */
 export const DrawerNoteItem: React.FC<{
