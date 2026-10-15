@@ -2470,8 +2470,9 @@ fn read_text_file(path: String) -> Result<TextFileInfo, String> {
     };
     let content =
         String::from_utf8(text_bytes.to_vec()).map_err(|_| "不是 UTF-8 文本文件".to_string())?;
+    // 展示用文件名去掉扩展名（如 note.md → note），避免分组/编辑页标题带后缀
     let name = p
-        .file_name()
+        .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
     Ok(TextFileInfo { path, name, content })
