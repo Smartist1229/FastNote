@@ -1,18 +1,31 @@
 # FastNote
 
-vite + vue3 + typescript + electron + SQLite 的一个笔记软件
+一个使用 Tauri 2 + React + TypeScript 开发的跨平台笔记应用，内置可调用工具的 AI 笔记助手。
 
-## Project setup
-```
-npm install
+## 功能
+
+- **AI 笔记助手**：内置查找、写入、按行编辑、删除、移动、回收站等笔记与分组工具，支持深度思考、工具轨迹、上下文压缩与记忆提示词；兼容 OpenAI / Claude / Gemini 三种协议，API Key 加密存储
+- **笔记管理**：创建、编辑、删除，实时自动保存，拖拽归类，搜索与排序
+- **分组管理**：创建、编辑、删除分组，支持未分类
+- **回收站**：删除进回收站可还原，超期自动清理
+- **Markdown 编辑器**：代码块显示行号，笔记可导出为文件
+- **外部文件**：拖入或打开电脑上的文本文件直接编辑，修改实时写回原文件，也可另存为笔记
+- **导出**：分组可导出为 ZIP 压缩包或电子书（TXT / HTML / EPUB）
+- **备份与恢复**：全量备份导入导出，可选是否包含 API Key
+- **欢迎面板**：统计概览（笔记 / 分类 / 回收站）与最近更新列表
+- **系统集成**：统一设置面板（可搜索）、开机自启动、托盘图标、关闭窗口行为
+
+## 构建
+
+```bash
+pnpm install          # 安装依赖
+pnpm tauri:dev         # 开发模式（桌面端）
+pnpm tauri:build       # 打包桌面应用
 ```
 
-### Compiles and hot-reloads for development
-```
-npm run dev
-```
+## 技术栈
 
-### Compiles and minifies for production
-```
-npm run build
-```
+- 前端：React 19 + TypeScript + Vite + Tailwind CSS
+- 桌面端：Tauri 2 (Rust 后端)
+- 编辑器：md-editor-rt
+- 数据库：SQLite（笔记数据 + AI 设置加密存储）
