@@ -325,6 +325,13 @@ function AppContent() {
   /** 展开/收起 AI 对话面板（只改当前界面，不写设置） */
   const toggleAiPanel = useCallback(() => setAiPanelOpen((open) => !open), []);
 
+  // 关闭 AI 面板：当 enableAI 变为 false 时，自动关闭面板
+  useEffect(() => {
+    if (!appSettings.general.enableAI && aiPanelOpen) {
+      setAiPanelOpen(false);
+    }
+  }, [appSettings.general.enableAI, aiPanelOpen]);
+
   /** 展开/收起分组抽屉（点击同一分组可收起） */
   const toggleDrawer = useCallback((key: number | 'all' | 'uncategorized') => {
     setExpandedDrawer((current) => {
@@ -1016,8 +1023,10 @@ function AppContent() {
           </div>
 
           <AIChatPanel
-            isOpen={aiPanelOpen}
-            onClose={() => setAiPanelOpen(false)}
+            isOpen={aiPanelOpen && appSettings.general.enableAI}
+            onClose={() => {
+              setAiPanelOpen(false);
+            }}
             noteTitle={overlayActive ? "" : selectedNote?.title || ""}
             noteContent={overlayActive ? "" : selectedNote?.content || ""}
             currentNoteId={overlayActive ? null : selectedNote?.id ?? null}
