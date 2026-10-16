@@ -20,6 +20,7 @@ pub struct Note {
     pub updated_at: String,
     pub is_deleted: bool,
     pub deleted_at: Option<String>,
+    pub is_pinned: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -137,6 +138,7 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
             updated_at TEXT NOT NULL,
             is_deleted INTEGER DEFAULT 0,
             deleted_at TEXT,
+            is_pinned INTEGER DEFAULT 0,
             FOREIGN KEY (category_id) REFERENCES categories(id)
         )",
         [],
@@ -215,6 +217,11 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
                 params![json, id],
             )?;
         }
+    }
+
+    // ---- 迁移：笔记置顶字段 ----
+    if !has_column(conn, "notes", "is_pinned") {
+        conn.execute("ALTER TABLE notes ADD COLUMN is_pinned INTEGER DEFAULT 0", [])?;
     }
 
     Ok(())
@@ -870,6 +877,13 @@ struct ZipEntry {
     content: String,
 }
 
+/// 压缩包「其他文件格式」下，单篇笔记自选的后缀
+#[derive(Debug, Deserialize)]
+struct NoteFormatSpec {
+    id: i64,
+    ext: String,
+}
+
 /// 按顺序写进 zip；EPUB 要求 mimetype 必须是第一个条目且不压缩，这里按名字特殊处理
 fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), String> {
     use std::io::Write as _;
@@ -931,6 +945,24 @@ fn safe_filename(name: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         trimmed.chars().take(80).collect()
+    }
+}
+
+/// 清洗用户自选的后缀：只留字母数字，避免路径穿越与非法文件名；空值退回 txt。
+/// 白名单在前端维护（src/config/textFileFormats.ts），这里只做文件名安全兜底。
+fn sanitize_ext(ext: &str) -> String {
+    let cleaned: String = ext
+        .trim()
+        .trim_start_matches('.')
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(12)
+        .collect();
+    if cleaned.is_empty() {
+        "txt".to_string()
+    } else {
+        cleaned
     }
 }
 
@@ -1074,7 +1106,7 @@ fn export_category_ebook(
 
     match format.as_str() {
         "html" => {
-            let text = ebook_single_html(&title, &notes);
+            let text = ebook_single_html(&notes);
             std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
             Ok(notes.len())
         }
@@ -1085,31 +1117,22 @@ fn export_category_ebook(
         }
         _ => {
             // txt：章节之间用分隔线断开，正文是 Markdown 原文
-            let mut text = String::new();
-            text.push_str(&format!("《{}》\n共 {} 章\n", title, notes.len()));
-            text.push_str(&"=".repeat(40));
-            text.push('\n');
-            for note in notes.iter() {
-                text.push_str(&format!(
-                    "\n{}\n{}\n\n{}\n",
-                    note.title,
-                    "-".repeat(40),
-                    note.content
-                ));
-            }
+            let text = ebook_plain_text(&notes);
             std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
             Ok(notes.len())
         }
     }
 }
 
-/// 导出指定笔记 ID 列表为压缩包：一篇笔记一个文件，格式可选
+/// 导出指定笔记 ID 列表为压缩包：一篇笔记一个文件。
+/// format 是预设格式；note_formats 非空时表示「其他文件格式」逐篇自选后缀，此时以逐篇后缀为准。
 #[tauri::command]
 fn export_notes_zip(
     state: State<AppState>,
     note_ids: Vec<i64>,
     path: String,
     format: String,
+    note_formats: Option<Vec<NoteFormatSpec>>,
 ) -> Result<usize, String> {
     let conn = state
         .conn
@@ -1120,16 +1143,24 @@ fn export_notes_zip(
         return Err("没有选定笔记，没什么可导出的".to_string());
     }
 
-    let ext = match format.as_str() {
+    let global_ext = match format.as_str() {
         "txt" => "txt",
         "html" => "html",
         "json" => "json",
         _ => "md",
-    };
+    }
+    .to_string();
+    let per_note: std::collections::HashMap<i64, String> = note_formats
+        .unwrap_or_default()
+        .into_iter()
+        .map(|spec| (spec.id, sanitize_ext(&spec.ext)))
+        .collect();
 
     let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut entries = Vec::with_capacity(notes.len());
     for (i, note) in notes.iter().enumerate() {
+        // 逐篇自选的后缀优先，没有就用预设格式
+        let ext = per_note.get(&note.id).cloned().unwrap_or_else(|| global_ext.clone());
         let base = safe_filename(&note.title, &format!("未命名笔记-{}", i + 1));
         let count = used.entry(base.to_lowercase()).or_insert(0);
         *count += 1;
@@ -1139,7 +1170,8 @@ fn export_notes_zip(
             format!("{base}.{ext}")
         };
 
-        let content = match ext {
+        // 后缀决定落盘内容：html / json 有专门形态，其余（含逐篇自选的后缀）都是原文直出
+        let content = match ext.as_str() {
             "html" => note_html_page(&note.title, &note.content),
             "json" => serde_json::to_string_pretty(&json!({
                 "title": note.title,
@@ -1176,11 +1208,16 @@ fn export_notes_ebook(
         return Err("没有选定笔记，没什么可导出的".to_string());
     }
 
-    let title = format!("导出的笔记 ({})", notes.len());
+    // EPUB 的书名走文件元数据：直接用用户填的文件名，不再出现程序生成的标题
+    let title = std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("笔记")
+        .to_string();
 
     match format.as_str() {
         "html" => {
-            let text = ebook_single_html(&title, &notes);
+            let text = ebook_single_html(&notes);
             std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
             Ok(notes.len())
         }
@@ -1190,18 +1227,8 @@ fn export_notes_ebook(
             Ok(notes.len())
         }
         _ => {
-            let mut text = String::new();
-            text.push_str(&format!("《{}》\n共 {} 章\n", title, notes.len()));
-            text.push_str(&"=".repeat(40));
-            text.push('\n');
-            for note in notes.iter() {
-                text.push_str(&format!(
-                    "\n{}\n{}\n\n{}\n",
-                    note.title,
-                    "-".repeat(40),
-                    note.content
-                ));
-            }
+            // txt：章节之间用分隔线断开，正文是 Markdown 原文
+            let text = ebook_plain_text(&notes);
             std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
             Ok(notes.len())
         }
@@ -1209,7 +1236,7 @@ fn export_notes_ebook(
 }
 
 /// 单文件 HTML 电子书：目录 + 各章锚点，可直接用浏览器看
-fn ebook_single_html(title: &str, notes: &[Note]) -> String {
+fn ebook_single_html(notes: &[Note]) -> String {
     let mut toc = String::new();
     let mut body = String::new();
     for (i, note) in notes.iter().enumerate() {
@@ -1224,13 +1251,35 @@ fn ebook_single_html(title: &str, notes: &[Note]) -> String {
             md_to_html(&note.content)
         ));
     }
+    // 沉浸式正文：不出现书名大标题，页面标题取第一章标题
+    let page_title = notes
+        .first()
+        .map(|note| note.title.trim())
+        .filter(|title| !title.is_empty())
+        .unwrap_or("笔记");
     format!(
-        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nsection{{margin-top:48px;padding-top:16px;border-top:1px solid #e2e8f0}}\n.toc{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 24px}}\n</style>\n</head>\n<body>\n<h1>{}</h1>\n<nav class=\"toc\">\n<h3>目录</h3>\n<ol>\n{}</ol>\n</nav>\n{}\n</body>\n</html>\n",
-        esc_html(title),
-        esc_html(title),
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nsection{{margin-top:48px;padding-top:16px;border-top:1px solid #e2e8f0}}\n.toc{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 24px}}\n</style>\n</head>\n<body>\n<nav class=\"toc\">\n<h3>目录</h3>\n<ol>\n{}</ol>\n</nav>\n{}\n</body>\n</html>\n",
+        esc_html(page_title),
         toc,
         body
     )
+}
+
+/// 纯文本电子书：只按章节拼接，不出现书名与章节数，正文是 Markdown 原文
+fn ebook_plain_text(notes: &[Note]) -> String {
+    let mut text = String::new();
+    for (i, note) in notes.iter().enumerate() {
+        if i > 0 {
+            text.push('\n');
+        }
+        text.push_str(&format!(
+            "{}\n{}\n\n{}\n",
+            note.title,
+            "-".repeat(40),
+            note.content
+        ));
+    }
+    text
 }
 
 /// EPUB（EPUB 3）：本质是特定结构的 zip
@@ -1368,14 +1417,14 @@ fn delete_category(id: i64, delete_notes: bool, state: State<AppState>) -> Resul
 fn create_note(title: String, content: String, category_id: Option<i64>, state: State<AppState>) -> Result<Note, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
-    
+
     conn.execute(
-        "INSERT INTO notes (title, content, category_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO notes (title, content, category_id, created_at, updated_at, is_pinned) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
         params![title, content, category_id, now, now],
     ).map_err(|e| e.to_string())?;
-    
+
     let id = conn.last_insert_rowid();
-    
+
     Ok(Note {
         id,
         title,
@@ -1385,10 +1434,16 @@ fn create_note(title: String, content: String, category_id: Option<i64>, state: 
         updated_at: now,
         is_deleted: false,
         deleted_at: None,
+        is_pinned: false,
     })
 }
 
 fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
+    // 使用列名获取，兼容旧数据没有 is_pinned 列的情况
+    let is_pinned: i64 = match row.as_ref().column_index("is_pinned") {
+        Ok(_) => row.get(8)?,
+        Err(_) => 0,
+    };
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -1398,35 +1453,37 @@ fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
         updated_at: row.get(5)?,
         is_deleted: row.get(6)?,
         deleted_at: row.get(7)?,
+        is_pinned: is_pinned != 0,
     })
 }
 
 #[tauri::command]
 fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, state: State<AppState>) -> Result<Vec<Note>, String> {
     let conn = state.conn.lock().unwrap();
-    
+
     let order_direction = if sort_order == "asc" { "ASC" } else { "DESC" };
-    
+
+    // 优先排序：置顶笔记在前，然后按用户选择的排序方式
     let order_clause = match sort_by.as_str() {
-        "created_at" => format!("ORDER BY created_at {}", order_direction),
-        "updated_at" => format!("ORDER BY updated_at {}", order_direction),
-        "title" => format!("ORDER BY title {}", if sort_order == "asc" { "ASC" } else { "DESC" }),
-        _ => format!("ORDER BY updated_at {}", order_direction),
+        "created_at" => format!("ORDER BY is_pinned DESC, created_at {}", order_direction),
+        "updated_at" => format!("ORDER BY is_pinned DESC, updated_at {}", order_direction),
+        "title" => format!("ORDER BY is_pinned DESC, title {}", if sort_order == "asc" { "ASC" } else { "DESC" }),
+        _ => format!("ORDER BY is_pinned DESC, updated_at {}", order_direction),
     };
-    
+
     let sql = if let Some(_cat_id) = category_id {
         format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at 
-             FROM notes 
-             WHERE is_deleted = 0 AND category_id = ?1 
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned
+             FROM notes
+             WHERE is_deleted = 0 AND category_id = ?1
              {}",
             order_clause
         )
     } else {
         format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at 
-             FROM notes 
-             WHERE is_deleted = 0 
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned
+             FROM notes
+             WHERE is_deleted = 0
              {}",
             order_clause
         )
@@ -1449,15 +1506,27 @@ fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, stat
 }
 
 #[tauri::command]
-fn update_note(id: i64, title: String, content: String, category_id: Option<i64>, state: State<AppState>) -> Result<(), String> {
+fn update_note(id: i64, title: String, content: String, category_id: Option<i64>, is_pinned: Option<i64>, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
-    
+
     conn.execute(
-        "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, updated_at = ?4 WHERE id = ?5",
-        params![title, content, category_id, now, id],
+        "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = COALESCE(?4, is_pinned), updated_at = ?5 WHERE id = ?6",
+        params![title, content, category_id, is_pinned, now, id],
     ).map_err(|e| e.to_string())?;
-    
+
+    Ok(())
+}
+
+#[tauri::command]
+fn pin_note(id: i64, pinned: bool, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+
+    conn.execute(
+        "UPDATE notes SET is_pinned = ?1 WHERE id = ?2",
+        params![if pinned { 1 } else { 0 }, id],
+    ).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -2723,6 +2792,7 @@ pub fn run() {
             create_note,
             get_notes,
             update_note,
+            pin_note,
             move_to_trash,
             restore_note,
             get_trash_notes,

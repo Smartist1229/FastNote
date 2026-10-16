@@ -1,20 +1,16 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 
-/** 导出笔记时的可选文件类型（编辑器 Ctrl+S 与侧边栏右键「保存笔记」共用） */
-const NOTE_FILE_FILTERS = [
-  { name: 'Plain Text', extensions: ['txt', 'text'] },
-  { name: 'Markdown', extensions: ['md', 'mdx'] },
-  { name: 'Batch File', extensions: ['bat'] },
-  { name: 'JSON', extensions: ['json', 'jsonc'] },
-  { name: 'HTML', extensions: ['html', 'htm', 'xhtml'] },
-  { name: 'Source Code', extensions: ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'scss', 'less'] },
-  { name: 'Config File', extensions: ['ini', 'yaml', 'yml', 'toml', 'env'] },
-  { name: 'Table Text', extensions: ['csv', 'tsv'] },
-  { name: 'XML', extensions: ['xml', 'svg'] },
-  { name: 'Log File', extensions: ['log'] },
-  { name: 'All Files', extensions: ['*'] },
-];
+import { TEXT_FORMAT_GROUPS } from '@/config/textFileFormats';
+
+/**
+ * 导出笔记时的可选文件类型（编辑器 Ctrl+S 与侧边栏右键「保存笔记」共用）。
+ * 原生保存对话框不支持分组：一个过滤器被选中后只会补它的第一个后缀，
+ * 所以这里把白名单摊平——一种格式一个条目，选 Markdown 就会补 .md。
+ */
+const NOTE_FILE_FILTERS = TEXT_FORMAT_GROUPS.flatMap((group) =>
+  group.formats.map((format) => ({ name: format.name, extensions: [format.ext] }))
+);
 
 /**
  * 弹出保存窗口，把笔记内容写入用户选定的文件。

@@ -1,20 +1,22 @@
 import { useEffect, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { Note } from "@/interface/note";
-import type { CategoryEbookFormat, CategoryZipFormat } from "@/interface/backup";
-import type { ExportCategoryModalProps, FormatOption } from "@/interface/exportCategory";
-import * as notesApi from "@/api/notes";
+import type { CategoryEbookFormat, NoteFormatSpec } from "@/interface/backup";
+import type { ExportCategoryModalProps, FormatOption, ZipFormatChoice } from "@/interface/exportCategory";
 import * as exportApi from "@/api/export";
 import { Modal } from '@/components/common/Modal';
 import { Icon } from '@/components/common/Icon';
 import { useToast } from '@/components/common/Toast';
+import { TextExtPicker } from '@/components/data/TextExtPicker';
+import { DEFAULT_TEXT_EXT } from '@/config/textFileFormats';
 
-/** 压缩包内笔记的文件格式 */
+/** 压缩包内笔记的文件格式：预设四种，或逐篇自选 */
 const ZIP_FORMATS: FormatOption[] = [
   { value: 'md', label: 'Markdown', ext: 'md', desc: '原文直出，保真度最高' },
   { value: 'txt', label: '纯文本', ext: 'txt', desc: '内容同 Markdown 原文' },
   { value: 'html', label: '网页', ext: 'html', desc: '渲染成可直接打开的网页' },
   { value: 'json', label: 'JSON', ext: 'json', desc: '含标题、正文、时间等字段' },
+  { value: 'other', label: '其他文件格式', ext: '', desc: '逐篇自选后缀，仅限纯文本格式' },
 ];
 
 /** 电子书格式 */
@@ -29,40 +31,41 @@ const errorText = (e: unknown) => (typeof e === 'string' ? e : e instanceof Erro
 /**
  * 导出分组：压缩包（一篇笔记一个文件）或电子书（整组一个文件）。
  * 章节顺序为创建时间正序，最早创建的笔记在最前；章节名即笔记标题。
+ * 分组可以是真实分组、默认分组或搜索结果分组，导出内容由 target.notes 决定。
  */
-export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ category, onClose, onDone }) => {
+export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target, onClose, onDone }) => {
   const { showToast } = useToast();
   const [mode, setMode] = useState<'zip' | 'ebook'>('zip');
-  const [zipFormat, setZipFormat] = useState<CategoryZipFormat>('md');
+  const [zipFormat, setZipFormat] = useState<ZipFormatChoice>('md');
   const [ebookFormat, setEbookFormat] = useState<CategoryEbookFormat>('txt');
   const [busy, setBusy] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
-  const [loadingNotes, setLoadingNotes] = useState(false);
+  /** 文件名（不含扩展名）：默认取分组推导出的名称，可手动改 */
+  const [fileName, setFileName] = useState('');
   // 选中的笔记 ID：默认全选，用 Set 方便查找
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  /** 「其他文件格式」模式下每篇笔记自己的后缀，没改过的用 DEFAULT_TEXT_EXT */
+  const [otherExts, setOtherExts] = useState<Record<number, string>>({});
+  /** 正在挑后缀的笔记，以及浮层贴着的位置 */
+  const [pickerFor, setPickerFor] = useState<{ noteId: number; anchor: DOMRect } | null>(null);
 
   // 每次打开都回到默认选项，避免上次的选择让人困惑
   useEffect(() => {
-    if (category) {
-      setMode('zip');
-      setZipFormat('md');
-      setEbookFormat('txt');
-      setBusy(false);
-      // 加载分组下的所有笔记，默认全选
-      setLoadingNotes(true);
-      notesApi
-        .getNotes(category.id, 'created_at', 'asc')
-        .then((ns) => {
-          setNotes(ns);
-          setSelectedIds(new Set(ns.map((n) => n.id)));
-        })
-        .catch(() => {
-          setNotes([]);
-          setSelectedIds(new Set());
-        })
-        .finally(() => setLoadingNotes(false));
-    }
-  }, [category]);
+    if (!target) return;
+    setMode('zip');
+    setZipFormat('md');
+    setEbookFormat('txt');
+    setBusy(false);
+    setFileName(target.defaultFileName);
+    setOtherExts({});
+    setPickerFor(null);
+    // 章节顺序按创建时间正序，时间相同再按 id 兜底
+    const sorted = [...target.notes].sort(
+      (a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id
+    );
+    setNotes(sorted);
+    setSelectedIds(new Set(sorted.map((n) => n.id)));
+  }, [target]);
 
   // 全选 / 取消全选
   const allSelected = notes.length > 0 && notes.every((n) => selectedIds.has(n.id));
@@ -80,16 +83,21 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
     .map((n) => n.id);
 
   const isZip = mode === 'zip';
+  /** 压缩包逐篇自选后缀：每篇笔记可能不一样 */
+  const isOtherExt = isZip && zipFormat === 'other';
+  const noteExt = (id: number) => otherExts[id] ?? DEFAULT_TEXT_EXT;
   const formats: FormatOption[] = isZip ? ZIP_FORMATS : EBOOK_FORMATS;
   const format = isZip ? zipFormat : ebookFormat;
   const current = formats.find((f) => f.value === format) ?? formats[0];
 
   const handleExport = async () => {
-    if (!category || selectedNoteIds.length === 0) return;
+    if (!target || selectedNoteIds.length === 0) return;
+    // 文件名留空时退回默认名，去掉路径分隔符等非法字符
+    const baseName = (fileName.trim() || target.defaultFileName).replace(/[\\/:*?"<>|]/g, '_');
     try {
       const path = await save({
         // 压缩包模式默认文件名固定为 .zip（不能用内层笔记的扩展名）
-        defaultPath: isZip ? `${category.name}.zip` : `${category.name}.${current.ext}`,
+        defaultPath: isZip ? `${baseName}.zip` : `${baseName}.${current.ext}`,
         filters: [
           isZip
             ? { name: 'ZIP 压缩包', extensions: ['zip'] }
@@ -100,7 +108,14 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
 
       setBusy(true);
       const count = isZip
-        ? await exportApi.exportNotesZip(selectedNoteIds, path, zipFormat)
+        ? await exportApi.exportNotesZip(
+            selectedNoteIds,
+            path,
+            zipFormat === 'other' ? DEFAULT_TEXT_EXT : zipFormat,
+            isOtherExt
+              ? selectedNoteIds.map<NoteFormatSpec>((id) => ({ id, ext: noteExt(id) }))
+              : undefined,
+          )
         : await exportApi.exportNotesEbook(selectedNoteIds, path, ebookFormat);
       showToast(`已导出 ${count} 篇笔记`, 'success');
       onDone?.();
@@ -112,12 +127,39 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
   };
 
   return (
-    <Modal isOpen={!!category} onClose={onClose} title="导出笔记">
+    <Modal isOpen={!!target} onClose={onClose} title="导出笔记">
       <div className="space-y-4">
         <p className="text-xs text-slate-500">
-          分组：<span className="font-medium text-slate-700">{category?.name}</span>
+          分组：<span className="font-medium text-slate-700">{target?.name}</span>
           <span className="ml-2 text-slate-400">章节按创建时间正序，最早创建的笔记在最前面</span>
         </p>
+
+        {/* 文件名：默认填好分组对应的名称，可改，也可一键填回默认 */}
+        <div>
+          <p className="text-xs font-medium text-slate-600 mb-2">文件名</p>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 min-w-0">
+              <input
+                type="text"
+                value={fileName}
+                onChange={(e) => setFileName(e.target.value)}
+                placeholder={target?.defaultFileName ?? ''}
+                className="w-full pl-3 pr-14 py-1.5 text-xs input-modern"
+              />
+              {/* 压缩包始终是 .zip，后缀不随内部笔记格式变化；电子书才是所选格式 */}
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-300 pointer-events-none">
+                .{isZip ? 'zip' : current.ext}
+              </span>
+            </div>
+            <button
+              onClick={() => setFileName(target?.defaultFileName ?? '')}
+              className="btn-ghost px-3 py-1.5 text-xs flex-shrink-0"
+              title="把文件名填回该分组对应的默认名称"
+            >
+              填充默认分组名
+            </button>
+          </div>
+        </div>
 
         {/* 导出类型 */}
         <div>
@@ -157,7 +199,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
             {formats.map((f) => (
               <button
                 key={f.value}
-                onClick={() => (isZip ? setZipFormat(f.value as CategoryZipFormat) : setEbookFormat(f.value as CategoryEbookFormat))}
+                onClick={() => (isZip ? setZipFormat(f.value as ZipFormatChoice) : setEbookFormat(f.value as CategoryEbookFormat))}
                 title={f.desc}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
                   format === f.value
@@ -170,13 +212,15 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
             ))}
           </div>
           <p className="text-[11px] text-slate-400 mt-2">
-            {isZip ? `压缩包里每篇笔记一个 .${current.ext} 文件` : `整组导出为单个 .${current.ext} 文件`}
-            {isZip ? '' : '，章节名就是笔记标题'}
+            {!isZip
+              ? `整组导出为单个 .${current.ext} 文件，章节名就是笔记标题`
+              : isOtherExt
+              ? '压缩包里每篇笔记一个文件，后缀按每篇笔记各自的选择（仅限纯文本格式）'
+              : `压缩包里每篇笔记一个 .${current.ext} 文件`}
           </p>
         </div>
 
         {/* 笔记选择：默认全选，取消不需要的 */}
-        
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs font-medium text-slate-600 flex items-center gap-1.5">
@@ -196,17 +240,15 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
             </span>
           </div>
 
-          {loadingNotes ? (
-            <div className="text-xs text-slate-400 py-4 text-center">加载笔记中...</div>
-          ) : (
-            <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg bg-slate-50">
-              {notes.map((note) => {
-                const checked = selectedIds.has(note.id);
-                return (
-                  <label
-                    key={note.id}
-                    className="flex items-center gap-2 px-2.5 py-1.5 text-xs cursor-pointer hover:bg-slate-100 transition-colors first:rounded-t-lg last:rounded-b-lg"
-                  >
+          <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg bg-slate-50">
+            {notes.map((note) => {
+              const checked = selectedIds.has(note.id);
+              return (
+                <div
+                  key={note.id}
+                  className="flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-slate-100 transition-colors first:rounded-t-lg last:rounded-b-lg"
+                >
+                  <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={checked}
@@ -221,17 +263,33 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
                       }}
                       className="w-3.5 h-3.5 rounded border-slate-300 text-primary-500 focus:ring-primary-300"
                     />
-                    <span
-                      className="truncate min-w-0 flex-1"
-                      title={note.title}
-                    >
+                    <span className="truncate min-w-0 flex-1" title={note.title}>
                       {note.title || '无标题笔记'}
                     </span>
                   </label>
-                );
-              })}
-            </div>
-          )}
+                  {/* 压缩包里每篇笔记是独立文件，标注落盘后缀；电子书整组一个文件，无需后缀 */}
+                  {isZip &&
+                    (isOtherExt ? (
+                      <button
+                        onClick={(e) =>
+                          setPickerFor({ noteId: note.id, anchor: e.currentTarget.getBoundingClientRect() })
+                        }
+                        className={`flex-shrink-0 px-1.5 py-0.5 rounded-md border text-[11px] transition-colors ${
+                          pickerFor?.noteId === note.id
+                            ? 'border-primary-300 bg-primary-50 text-primary-600'
+                            : 'border-slate-200 bg-white text-slate-500 hover:border-primary-300 hover:text-primary-600'
+                        }`}
+                        title="选择这篇笔记的文件后缀"
+                      >
+                        .{noteExt(note.id)}
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-slate-400 flex-shrink-0">.{current.ext}</span>
+                    ))}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="flex justify-end gap-2 pt-1">
@@ -247,6 +305,18 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ catego
           </button>
         </div>
       </div>
+
+      {pickerFor && (
+        <TextExtPicker
+          anchor={pickerFor.anchor}
+          value={noteExt(pickerFor.noteId)}
+          onPick={(ext) => {
+            setOtherExts((prev) => ({ ...prev, [pickerFor.noteId]: ext }));
+            setPickerFor(null);
+          }}
+          onClose={() => setPickerFor(null)}
+        />
+      )}
     </Modal>
   );
 };

@@ -17,6 +17,8 @@ export interface GeneralSettings {
   autostart: boolean;
   /** 开机自启动时是否最小化到托盘 */
   minimizeToTray: boolean;
+  /** 是否开启 AI 能力（关闭后隐藏所有 AI 相关入口和设置） */
+  enableAI: boolean;
 }
 
 /** 编辑器外观与交互 */

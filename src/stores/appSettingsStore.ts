@@ -11,6 +11,7 @@ import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
  *   - app.config.general.closeBehavior
  *   - app.config.general.autostart
  *   - app.config.general.minimizeToTray
+ *   - app.config.general.enableAI
  *   - app.config.editor.fontSize
  *   - app.config.editor.ctrlScrollZoom
  *   - app.config.layout.sidebarCollapsed
@@ -59,6 +60,9 @@ export const loadAppSettings = async (): Promise<AppSettings> => {
 
   const minimizeToTray = safeParse<boolean>(rows[configKey("general", "minimizeToTray")], "boolean");
   if (minimizeToTray !== undefined) general.minimizeToTray = minimizeToTray;
+
+  const enableAI = safeParse<boolean>(rows[configKey("general", "enableAI")], "boolean");
+  if (enableAI !== undefined) general.enableAI = enableAI;
 
   // ---- editor ----
   const editor = { ...DEFAULT_APP_SETTINGS.editor };

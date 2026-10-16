@@ -9,6 +9,8 @@ export interface Note {
   updated_at: string;
   is_deleted: boolean;
   deleted_at: string | null;
+  /** 是否置顶/收藏：置顶笔记在所在分组顶部显示，收藏视图中也会显示 */
+  is_pinned: boolean;
 }
 
 export interface Category {

@@ -23,6 +23,10 @@ export interface AIChatPanelProps {
   onAiSettingsChange?: (patch: Partial<AiSettings>) => void;
   /** 关闭面板 */
   onClose?: () => void;
+  /** 是否开启 AI 能力：关闭时不显示 AI 功能相关的提示 */
+  enableAI?: boolean;
+  /** 是否为外部文件模式（正在编辑电脑文件）：启用 AI 时显示提示 */
+  isExternalFile?: boolean;
 }
 
 /**

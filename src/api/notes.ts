@@ -16,6 +16,11 @@ export const updateNote = async (id: number, title: string, content: string, cat
   return await invoke('update_note', { id, title, content, categoryId });
 };
 
+/** 切换收藏（置顶）状态：收藏的笔记在所在分组内置顶，并出现在收藏视图 */
+export const pinNote = async (id: number, pinned: boolean): Promise<void> => {
+  return await invoke('pin_note', { id, pinned });
+};
+
 export const moveToTrash = async (id: number): Promise<void> => {
   return await invoke('move_to_trash', { id });
 };

@@ -3,7 +3,9 @@ import "@/App.css";
 import type { Category, ExternalTextFile, Note } from "@/interface/note";
 import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
 import type { AppSettings } from "@/interface/settings";
+import type { ExportTarget } from "@/interface/exportCategory";
 import type { SettingsSection } from "@/interface/settingsModal";
+import type { PropertiesTarget } from "@/interface/ui";
 import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
 import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
 import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "@/stores/aiSettingsStore";
@@ -16,6 +18,7 @@ import * as aiApi from "@/api/ai";
 import * as settingsApi from "@/api/settings";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
+import { PropertiesModal } from "@/components/common/PropertiesModal";
 import { ToastProvider, useToast } from "@/components/common/Toast";
 
 import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
@@ -60,11 +63,11 @@ function AppContent() {
   const categoriesRef = useRef<Category[]>([]);
   /** 临时预览对应的伪笔记：id 为负数哨兵值，落库操作会被 NoteEditor 的 isTemporary 挡掉 */
   const tempPreviewNote: Note | null = tempNote
-    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null }
+    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false }
     : null;
   /** 电脑文件对应的伪笔记：标题=文件名、内容=文件内容，同样不落库 */
   const externalFileNote: Note | null = externalFile
-    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null }
+    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false }
     : null;
   /** 编辑器当前展示的内容：三层叠放，最上层优先 —— AI 预览 > 电脑文件 > 真实笔记 */
   const editorNote = tempPreviewNote ?? externalFileNote ?? selectedNote;
@@ -91,6 +94,10 @@ function AppContent() {
   const [searchQuery, setSearchQuery] = useState("");
   /** 抽屉展开状态：'all' | 分组ID | 'uncategorized' | null（全部收起） */
   const [expandedDrawer, setExpandedDrawer] = useState<number | 'all' | 'uncategorized' | null>(null);
+  /** 侧边栏视图：'groups' 分组视图 / 'favorites' 收藏聚合视图 */
+  const [sidebarView, setSidebarView] = useState<'groups' | 'favorites'>('groups');
+  /** 右键「属性」查看的对象：null 表示弹窗关闭 */
+  const [propertiesTarget, setPropertiesTarget] = useState<PropertiesTarget | null>(null);
   /** AI 打开笔记时用于聚焦高亮的笔记 ID（变化即触发一次动画） */
   const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
   /** 分组侧边栏是否折叠（腾出宽度给编辑器/AI 面板） */
@@ -127,8 +134,8 @@ function AppContent() {
   const [aiSettings, setAiSettings] = useState<AiSettings>(DEFAULT_AI_SETTINGS);
   /** 设置是否已从数据库读回：读回前不写库，避免用默认值覆盖用户数据 */
   const [aiConfigLoaded, setAiConfigLoaded] = useState(false);
-  /** 右键「导出分组」的目标分组，非 null 时打开导出窗口 */
-  const [exportCategory, setExportCategory] = useState<Category | null>(null);
+  /** 右键「导出分组」的目标（真实分组 / 默认分组 / 搜索分组归一成同一结构），非 null 时打开导出窗口 */
+  const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
   /** NoteEditor 注册进来的「保存笔记到文件」（等价 Ctrl+S），侧边栏右键菜单调用 */
   const exportNoteRef = useRef<(() => void) | null>(null);
 
@@ -805,6 +812,41 @@ function AppContent() {
     setShowDeleteCategoryModal(true);
   };
 
+  /** 重命名分组（属性弹窗内联编辑调用） */
+  const handleRenameCategory = async (category: Category, name: string) => {
+    try {
+      await categoriesApi.updateCategory(category.id, name);
+      await loadData();
+      showToast("已更新分组名称", "success");
+    } catch {
+      showToast("更新失败", "error");
+    }
+  };
+
+  /** 切换收藏（置顶）：收藏的笔记在分组内置顶，并出现在收藏视图 */
+  const handleTogglePin = async (note: Note) => {
+    try {
+      await notesApi.pinNote(note.id, !note.is_pinned);
+      await loadData();
+      showToast(note.is_pinned ? "已取消收藏" : "已收藏", "success");
+    } catch {
+      showToast("操作失败", "error");
+    }
+  };
+
+  /** 把笔记移动到指定分组（null = 未分类） */
+  const handleMoveNoteToCategory = async (note: Note, categoryId: number | null) => {
+    if (note.category_id === categoryId) return;
+    try {
+      await notesApi.updateNote(note.id, note.title, note.content, categoryId);
+      await loadData();
+      setSelectedCategoryId(categoryId);
+      showToast("移动成功", "success");
+    } catch {
+      showToast("移动失败", "error");
+    }
+  };
+
   const confirmDeleteCategory = async () => {
     if (!deletingCategory) return;
     try {
@@ -818,6 +860,16 @@ function AppContent() {
       showToast("删除失败: " + error, "error");
     }
   };
+
+  /** 属性弹窗展示的对象：用最新的 notes / categories 覆盖打开时的快照，弹窗内编辑后能立即反映新值 */
+  const propertiesTargetLive: PropertiesTarget | null =
+    propertiesTarget === null
+      ? null
+      : propertiesTarget.kind === "note"
+        ? { kind: "note", note: notes.find((n) => n.id === propertiesTarget.note.id) ?? propertiesTarget.note }
+        : propertiesTarget.kind === "category"
+          ? { kind: "category", category: categories.find((c) => c.id === propertiesTarget.category.id) ?? propertiesTarget.category }
+          : propertiesTarget;
 
   return (
     <div className="h-screen flex flex-col bg-slate-50">
@@ -842,22 +894,13 @@ function AppContent() {
             onToggleDrawer={toggleDrawer}
             onToggleCollapse={() => setIsSidebarCollapsed(true)}
             isCollapsed={isSidebarCollapsed}
-            onToggleAiPanel={toggleAiPanel}
-            isAiPanelOpen={aiPanelOpen}
+            onToggleAiPanel={appSettings.general.enableAI ? toggleAiPanel : undefined}
+            isAiPanelOpen={appSettings.general.enableAI && aiPanelOpen}
             onCreateCategory={handleCreateCategory}
             onEditCategory={handleEditCategory}
             onDeleteCategory={handleDeleteCategory}
             onCreateNote={handleCreateNote}
-            onMoveToCategory={async (note, categoryId) => {
-              try {
-                await notesApi.updateNote(note.id, note.title, note.content, categoryId);
-                await loadData();
-                setSelectedCategoryId(categoryId);
-                showToast("移动成功", "success");
-              } catch {
-                showToast("移动失败", "error");
-              }
-            }}
+            onMoveToCategory={handleMoveNoteToCategory}
             onDeleteNote={async (note) => {
               const confirmed = await confirm({
                 title: "删除笔记",
@@ -874,14 +917,20 @@ function AppContent() {
               } catch {
                 showToast("删除失败", "error");
               }
-            }}
+            } }
             onOpenTrash={handleOpenTrash}
+            onShowNoteProperties={(note) => setPropertiesTarget({ kind: "note", note })}
+            onShowCategoryProperties={(category) => setPropertiesTarget({ kind: "category", category })}
+            onShowGroupProperties={(name, noteCount) => setPropertiesTarget({ kind: "group", name, noteCount })}
             onOpenSettings={() => openSettings("general")}
-            onExportCategory={setExportCategory}
+            onExportGroup={setExportTarget}
             onSaveNote={handleExportNoteFromMenu}
             onNotesUpdated={loadData}
             hoverDropCategoryId={hoverDropCategoryId}
             isFileDragActive={isFileDragActive}
+            view={sidebarView}
+            onViewChange={setSidebarView}
+            onTogglePin={handleTogglePin}
           />
         </div>
 
@@ -938,14 +987,15 @@ function AppContent() {
                     onCursorOffsetChange={setEditorCursorOffset}
                     fontSize={appSettings.editor.fontSize}
                     ctrlScrollZoom={appSettings.editor.ctrlScrollZoom}
-                    onToggleAiPanel={toggleAiPanel}
-                    isAiPanelOpen={aiPanelOpen}
+                    onToggleAiPanel={appSettings.general.enableAI ? toggleAiPanel : undefined}
+                    isAiPanelOpen={appSettings.general.enableAI && aiPanelOpen}
                     onRegisterExport={registerExportNote}
                     externalFilePath={tempNote ? null : externalFile?.path ?? null}
                     onSaveExternal={handleWriteExternal}
                     onSaveExternalToNote={handleSaveExternalToNote}
                     onCloseExternal={handleCloseExternalFile}
                     onRegisterFlushExternal={registerFlushExternal}
+                    enableAI={appSettings.general.enableAI}
                   />
                 </div>
               ) : (
@@ -958,8 +1008,8 @@ function AppContent() {
                   onOpenTrash={handleOpenTrash}
                   onOpenTextFile={handleOpenTextFileDialog}
                   onSelectNote={openNote}
-                  onToggleAiPanel={toggleAiPanel}
-                  isAiPanelOpen={aiPanelOpen}
+                  onToggleAiPanel={appSettings.general.enableAI ? toggleAiPanel : undefined}
+                  isAiPanelOpen={appSettings.general.enableAI && aiPanelOpen}
                 />
               )}
             </Suspense>
@@ -987,6 +1037,8 @@ function AppContent() {
                 }
               });
             }}
+            enableAI={appSettings.general.enableAI}
+            isExternalFile={!!externalFile && !overlayActive}
           />
         </div>
       </div>
@@ -1125,9 +1177,23 @@ function AppContent() {
 
       {/* 导出分组：右键分组菜单进入，可导出为压缩包或电子书 */}
       <ExportCategoryModal
-        category={exportCategory}
-        onClose={() => setExportCategory(null)}
+        target={exportTarget}
+        onClose={() => setExportTarget(null)}
         onDone={loadData}
+      />
+
+      {/* 属性弹窗：右键「笔记属性 / 分组属性」进入，可修改字段带行内编辑 */}
+      <PropertiesModal
+        target={propertiesTargetLive}
+        categories={categories}
+        onClose={() => setPropertiesTarget(null)}
+        onRenameNote={async (note, title) => {
+          await handleSaveNote(note.id, title, note.content, note.category_id);
+          showToast("已更新笔记标题", "success");
+        }}
+        onMoveNote={handleMoveNoteToCategory}
+        onTogglePin={handleTogglePin}
+        onRenameCategory={handleRenameCategory}
       />
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}

@@ -1,4 +1,4 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -610,9 +610,9 @@ button:focus-visible {
   background: var(--color-surface);
 }
 .title-input:focus {
-  border-color: var(--color-accent);
-  background: var(--color-surface);
-  box-shadow: 0 0 0 3px var(--color-accent-light);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
   outline: none;
 }
 

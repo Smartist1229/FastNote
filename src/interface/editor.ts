@@ -34,6 +34,8 @@ export interface NoteEditorProps {
   onCloseExternal?: () => void;
   /** 把「立即写回电脑文件」的能力暴露给外部（切换/关闭文件前先 flush） */
   onRegisterFlushExternal?: (flush: (() => void) | null) => void;
+  /** 是否开启 AI 能力：关闭时，外部文件模式下显示提示 */
+  enableAI?: boolean;
 }
 
 /** 按需加载的 md-editor-rt 模块类型 */

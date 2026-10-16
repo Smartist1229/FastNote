@@ -29,6 +29,9 @@ import { exportBackup, importBackup } from "@/api/backup";
 
 /* ────────────────────────────── 分区定义 ────────────────────────────── */
 
+/** AI 相关的 sections key 列表，当 enableAI 为 false 时这些 sections 会被过滤 */
+const AI_SECTION_KEYS: SettingsSection[] = ["provider", "chat", "context", "memory"];
+
 const SECTIONS: SectionMeta[] = [
   { key: "general", label: "通用", icon: "ai-bolt", group: "软件" },
   { key: "editor", label: "编辑器", icon: "ai-edit", group: "软件" },
@@ -43,7 +46,12 @@ const SECTIONS: SectionMeta[] = [
   { key: "about", label: "关于", icon: "toast-info", group: "其他" },
 ];
 
-const GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
+/** 所有分组标签 */
+const ALL_GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
+
+/** 根据 enableAI 状态返回可用的分组列表 */
+const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
+  enableAI ? ALL_GROUPS : ["软件", "数据", "其他"];
 
 /** 自定义面板分区（不是数据驱动的开关/输入行，但同样参与搜索） */
 const CUSTOM_KEYS: SettingsSection[] = ["provider", "memory", "reset", "backup", "about"];
@@ -336,6 +344,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         onChange: (v) => setApp("general", "cleanTrashOnStartup", v),
       },
       {
+        section: "general",
+        kind: "toggle",
+        scope: "live",
+        title: "开启 AI 能力",
+        desc: "开启后可为软件开启 AI 能力，但本软件默认不联网，如果开启需要联网与 AI 进行通信，AI 可能会读取所有笔记内容。请注意个人隐私与笔记安全。",
+        keywords: "AI 能力 开关 enable",
+        value: appSettings.general.enableAI,
+        onChange: (v) => setApp("general", "enableAI", v),
+      },
+      {
         section: "editor",
         kind: "number",
         scope: "live",
@@ -397,16 +415,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.layout.sidebarCollapsed,
         onChange: (v) => setApp("layout", "sidebarCollapsed", v),
       },
-      {
-        section: "layout",
-        kind: "toggle",
-        scope: "startup",
-        title: "启动时打开 AI 对话面板",
-        desc: "只是启动时的布局状态，不跟随运行时的开关操作；下次打开软件才会生效。",
-        keywords: "ai 面板 对话 布局 panel 启动",
-        value: appSettings.layout.aiPanelOpen,
-        onChange: (v) => setApp("layout", "aiPanelOpen", v),
-      },
+      // AI 相关设置：仅在 enableAI 为 true 时显示
+      ...(appSettings.general.enableAI
+        ? [
+            {
+              section: "layout" as const,
+              kind: "toggle" as const,
+              scope: "startup" as const,
+              title: "启动时打开 AI 对话面板",
+              desc: "只是启动时的布局状态，不跟随运行时的开关操作；下次打开软件才会生效。",
+              keywords: "ai 面板 对话 布局 panel 启动",
+              value: appSettings.layout.aiPanelOpen,
+              onChange: (v: boolean) => setApp("layout", "aiPanelOpen", v),
+            },
+          ]
+        : []),
 
       // ---- 托盘 + 开机自启动（已并入「通用」分区）----
       {
@@ -621,6 +644,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const visibleSections = useMemo(
     () =>
       SECTIONS.filter((s) => {
+        // 根据 enableAI 过滤 AI sections
+        if (!appSettings.general.enableAI && AI_SECTION_KEYS.includes(s.key)) {
+          return false;
+        }
         if (!q) return true;
         if (CUSTOM_KEYS.includes(s.key)) {
           return `${s.label} ${customSearch[s.key] ?? ""}`.toLowerCase().includes(q);
@@ -629,7 +656,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           (r) => r.section === s.key && `${r.title} ${r.desc} ${r.keywords ?? ""}`.toLowerCase().includes(q),
         );
       }),
-    [q, rows, customSearch],
+    [q, rows, customSearch, appSettings.general.enableAI],
   );
 
   const visibleRowsOf = useCallback(
@@ -858,7 +885,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
               <nav className="flex-1 overflow-y-auto chat-scrollbar px-2 pb-3">
-                {GROUPS.map((group) => {
+                {getVisibleGroups(appSettings.general.enableAI).map((group) => {
                   const items = visibleSections.filter((s) => s.group === group);
                   if (items.length === 0) return null;
                   return (

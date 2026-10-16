@@ -2,7 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
-import type { CategoryEbookFormat, CategoryZipFormat } from '@/interface/backup';
+import type { CategoryEbookFormat, CategoryZipFormat, NoteFormatSpec } from '@/interface/backup';
 
 /** 把整个分组导出成压缩包（一篇笔记一个文件），返回导出的笔记数 */
 export const exportCategoryZip = async (
@@ -22,13 +22,17 @@ export const exportCategoryEbook = async (
   return await invoke<number>('export_category_ebook', { categoryId, path, format });
 };
 
-/** 导出指定笔记 ID 列表为压缩包，返回导出的笔记数 */
+/**
+ * 导出指定笔记 ID 列表为压缩包，返回导出的笔记数。
+ * noteFormats 用于「其他文件格式」逐篇自选后缀；传了它时后端按笔记取后缀，忽略 format。
+ */
 export const exportNotesZip = async (
   noteIds: number[],
   path: string,
   format: CategoryZipFormat,
+  noteFormats?: NoteFormatSpec[],
 ): Promise<number> => {
-  return await invoke<number>('export_notes_zip', { noteIds, path, format });
+  return await invoke<number>('export_notes_zip', { noteIds, path, format, noteFormats: noteFormats ?? [] });
 };
 
 /** 导出指定笔记 ID 列表为电子书，参数里的 title 用于电子书标题 */

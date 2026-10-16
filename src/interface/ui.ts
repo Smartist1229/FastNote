@@ -2,6 +2,8 @@
 
 import type * as React from "react";
 
+import type { Category, Note } from "./note";
+
 export type ToastType = "success" | "error" | "info";
 
 export interface Toast {
@@ -60,3 +62,9 @@ export interface ErrorBoundaryProps {
 export interface ErrorBoundaryState {
   error: Error | null;
 }
+
+/** 右键菜单「属性」查看的对象：笔记、真实分组，或默认分组 / 搜索视图分组这类虚拟分组 */
+export type PropertiesTarget =
+  | { kind: "note"; note: Note }
+  | { kind: "category"; category: Category }
+  | { kind: "group"; name: string; noteCount: number };

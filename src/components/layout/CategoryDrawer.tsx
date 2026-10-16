@@ -10,8 +10,12 @@ export const DrawerNoteItem: React.FC<{
   isFocused: boolean;
   onSelectNote: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
+  /** 切换收藏（置顶）状态 */
+  onTogglePin?: (note: Note) => void;
+  /** 收藏聚合视图：在标题前显示星标图标 */
+  showIcon?: boolean;
   onContextMenu?: (e: React.MouseEvent, note: Note) => void;
-}> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onContextMenu }) => {
+}> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onTogglePin, showIcon = false, onContextMenu }) => {
   const itemRef = useRef<HTMLDivElement>(null);
 
   // AI 打开笔记时聚焦高亮：滚动到可视区域
@@ -29,13 +33,21 @@ export const DrawerNoteItem: React.FC<{
       data-note-id={note.id}
       onClick={() => onSelectNote(note)}
       onContextMenu={(e) => onContextMenu?.(e, note)}
-      className={`drawer-note group/note relative pl-3 pr-2 py-1 rounded-lg cursor-pointer border border-transparent transition-all duration-200 ${
+      className={`drawer-note group/note relative pl-3 pr-2 py-1 rounded-lg cursor-pointer border transition-all duration-200 ${
         isSelected
-          ? 'bg-gradient-to-r from-primary-500 to-primary-600 note-selected-bg'
-          : 'hover:bg-white/80 hover:border-slate-200/60'
+          ? 'bg-gradient-to-r from-primary-500 to-primary-600 note-selected-bg border-transparent'
+          : note.is_pinned
+            ? 'bg-primary-50/70 hover:bg-primary-50 border-primary-100'
+            : 'border-transparent hover:bg-white/80 hover:border-slate-200/60'
       } ${isFocused && !isSelected ? 'note-focus-ring' : ''}`}
     >
       <div className="flex items-center gap-1.5">
+        {showIcon && (
+          <Icon
+            name="sidebar-note"
+            className={`w-3 h-3 flex-shrink-0 ${isSelected ? 'text-white' : 'text-primary-400'}`}
+          />
+        )}
         <div className="flex-1 min-w-0">
           <h4
             className={`text-[12.5px] font-medium truncate leading-snug ${
@@ -59,6 +71,26 @@ export const DrawerNoteItem: React.FC<{
         >
           <Icon name="sidebar-trash" className="w-3 h-3" />
         </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin?.(note);
+          }}
+          className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center transition-all ${
+            note.is_pinned
+              ? isSelected
+                ? 'text-white hover:bg-white/20'
+                : 'text-primary-500 hover:bg-primary-100'
+              : `opacity-0 group-hover/note:opacity-100 ${
+                  isSelected
+                    ? 'text-white/70 hover:bg-white/20 hover:text-white'
+                    : 'text-slate-300 hover:bg-primary-50 hover:text-primary-500'
+                }`
+          }`}
+          title={note.is_pinned ? '取消收藏' : '收藏'}
+        >
+          <Icon name={note.is_pinned ? 'sidebar-star-filled' : 'sidebar-star'} className="w-3 h-3" />
+        </button>
       </div>
     </div>
   );
@@ -75,11 +107,15 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   onToggle,
   onSelectNote,
   onDeleteNote,
+  onTogglePin,
   onCreateNote,
   onContextMenu,
   onNoteContextMenu,
+  headerTitle,
+  headerIcon,
 }) => {
-  const noteListId = `drawer-notes-${category ? category.id : 'all'}`;
+  // 搜索视图存在多个 category 为 null 的虚拟分组，用 headerIcon 保证 list id 唯一
+  const noteListId = `drawer-notes-${category ? category.id : headerIcon ?? 'all'}`;
   const open = isExpanded;
 
   const headerBase =
@@ -92,9 +128,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   return (
     <div
       className="drawer-item"
-      onContextMenu={(e) => {
-        if (!isAllNotes) onContextMenu(e, category);
-      }}
+      onContextMenu={(e) => onContextMenu(e, category)}
     >
       <button
         type="button"
@@ -121,12 +155,12 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         />
 
         <Icon
-          name={isAllNotes ? "sidebar-archive" : "sidebar-folder"}
+          name={headerIcon ?? (isAllNotes ? "sidebar-archive" : "sidebar-folder")}
           className="w-4 h-4 flex-shrink-0 text-slate-400"
         />
 
         <span className="text-[13px] leading-tight flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
-          {isAllNotes ? '全部笔记' : category?.name}
+          {headerTitle ?? (isAllNotes ? '全部笔记' : category?.name)}
         </span>
 
         {/* 悬停操作按钮（仅分组） */}
@@ -167,6 +201,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
                     isFocused={focusNoteId === note.id}
                     onSelectNote={onSelectNote}
                     onDeleteNote={onDeleteNote}
+                    onTogglePin={onTogglePin}
                     onContextMenu={onNoteContextMenu}
                   />
                 ))}
@@ -188,7 +223,10 @@ export const UncategorizedDrawer: React.FC<{
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
+  onTogglePin?: (note: Note) => void;
   onNoteContextMenu?: (e: React.MouseEvent, note: Note) => void;
+  /** 分组右键菜单（未分类属于默认分组，同样有菜单） */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }> = ({
   notes,
   isExpanded,
@@ -197,12 +235,14 @@ export const UncategorizedDrawer: React.FC<{
   onToggle,
   onSelectNote,
   onDeleteNote,
+  onTogglePin,
   onNoteContextMenu,
+  onContextMenu,
 }) => {
   const noteListId = 'drawer-notes-uncategorized';
   const open = isExpanded;
   return (
-    <div className="drawer-item">
+    <div className="drawer-item" onContextMenu={(e) => onContextMenu?.(e)}>
       {/* 不做 disabled：与普通分组行为一致，空时也能展开看到"暂无笔记" */}
       <button
         type="button"
@@ -243,6 +283,7 @@ export const UncategorizedDrawer: React.FC<{
                     isFocused={focusNoteId === note.id}
                     onSelectNote={onSelectNote}
                     onDeleteNote={onDeleteNote}
+                    onTogglePin={onTogglePin}
                     onContextMenu={onNoteContextMenu}
                   />
                 ))}
@@ -264,6 +305,7 @@ export const ChildNotesDrawer: React.FC<{
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
+  onTogglePin?: (note: Note) => void;
   onNoteContextMenu?: (e: React.MouseEvent, note: Note) => void;
 }> = ({
   notes,
@@ -273,6 +315,7 @@ export const ChildNotesDrawer: React.FC<{
   onToggle,
   onSelectNote,
   onDeleteNote,
+  onTogglePin,
   onNoteContextMenu,
 }) => {
   const noteListId = 'drawer-notes-children';
@@ -307,6 +350,7 @@ export const ChildNotesDrawer: React.FC<{
                   isFocused={focusNoteId === note.id}
                   onSelectNote={onSelectNote}
                   onDeleteNote={onDeleteNote}
+                  onTogglePin={onTogglePin}
                   onContextMenu={onNoteContextMenu}
                 />
               ))}

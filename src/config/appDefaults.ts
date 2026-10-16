@@ -33,6 +33,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   autostart: false,
   /** 开机自启动时是否最小化到托盘 */
   minimizeToTray: false,
+  /** 是否开启 AI 能力（关闭后隐藏所有 AI 相关入口和设置，开启后可为软件开启 AI 能力） */
+  enableAI: false,
 };
 
 /* ---------- Editor ---------- */

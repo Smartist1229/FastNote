@@ -110,6 +110,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onSaveExternalToNote,
   onCloseExternal,
   onRegisterFlushExternal,
+  enableAI,
 }) => {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -444,26 +445,31 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       )}
       {/* 电脑文件提示条：说明正在编辑本机文件、编辑会实时写回 */}
       {isExternal && (
-        <div className="px-4 py-2 bg-sky-50/70 border-b border-sky-100 flex items-center justify-between gap-3 flex-shrink-0">
-          <div className="flex items-center gap-1.5 min-w-0">
+        <div className="px-4 py-2 bg-sky-50/70 border-b border-sky-100 flex items-center justify-between gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1 min-w-0">
             <Icon name="ai-file-text" className="w-3.5 h-3.5 text-sky-600 flex-shrink-0" />
             <span className="text-[11px] text-sky-700 truncate" title={externalFilePath ?? undefined}>
-              正在编辑电脑中的文件 · {title || externalFilePath}
+              正在编辑电脑文件
             </span>
             {externalStatus && (
               <span className={`text-[11px] flex-shrink-0 ${externalStatus.cls}`}>· {externalStatus.text}</span>
             )}
+            {enableAI && (
+              <span className="text-[11px] text-slate-400 truncate" title="AI 无法读取内容，请保存到分组">
+                AI 无法读取该内容，请先保存到分组。
+              </span>
+            )}
           </div>
           <button
             onClick={onCloseExternal}
-            className="text-[11px] px-2 py-0.5 rounded-md text-sky-700 hover:bg-sky-100 transition-colors"
+            className="text-[11px] px-1.5 py-0.5 rounded-md text-sky-700 hover:bg-sky-100 transition-colors"
           >
             关闭
           </button>
         </div>
       )}
       {/* 标题栏 */}
-      <div className="px-4 py-3 border-b border-slate-100 flex-shrink-0">
+      <div className="px-4 py-3 flex-shrink-0">
         <div className="flex items-center gap-2">
           <input
             ref={titleInputRef}
@@ -475,9 +481,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             readOnly={isExternal}
             placeholder="输入笔记标题..."
             title={isExternal ? "标题即电脑上的文件名，不可修改" : undefined}
-            className={`title-input flex-1 px-4 py-2.5 text-base font-semibold text-slate-800 placeholder:text-slate-300 ${
-              isExternal ? "cursor-default select-text" : ""
-            }`}
+            className="title-input flex-1 px-4 py-2.5 text-lg font-semibold text-slate-800 placeholder:text-slate-400 bg-transparent"
           />
           {!isTemporary && !isExternal && (
             <button
@@ -546,21 +550,22 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             ) : null}
           </div>
 
-          <div className="divider" />
-
-          {/* AI 对话 */}
+          {/* AI 对话：关闭 AI 能力时连同前面的分隔线一起隐藏，避免留下一条多余的竖线 */}
           {onToggleAiPanel && (
-            <button
-              onClick={onToggleAiPanel}
-              className={`toolbar-btn relative ${isAiPanelOpen ? "!bg-primary-50 !text-primary-500" : ""}`}
-              title={isAiPanelOpen ? "关闭 AI 对话" : "打开 AI 对话"}
-              aria-pressed={isAiPanelOpen}
-            >
-              <AiSparkleIcon className="w-3.5 h-3.5" />
-              {isAiPanelOpen && (
-                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary-500" />
-              )}
-            </button>
+            <>
+              <div className="divider" />
+              <button
+                onClick={onToggleAiPanel}
+                className={`toolbar-btn relative ${isAiPanelOpen ? "!bg-primary-50 !text-primary-500" : ""}`}
+                title={isAiPanelOpen ? "关闭 AI 对话" : "打开 AI 对话"}
+                aria-pressed={isAiPanelOpen}
+              >
+                <AiSparkleIcon className="w-3.5 h-3.5" />
+                {isAiPanelOpen && (
+                  <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary-500" />
+                )}
+              </button>
+            </>
           )}
 
           <div className="divider" />

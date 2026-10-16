@@ -1018,7 +1018,7 @@ const formatMessageTime = (at?: number): string => {
   return `${d.getFullYear()}-${md} ${hh}:${mm}`;
 };
 
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, onClose }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, onClose, enableAI, isExternalFile }) => {
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
   const [sessions, setSessions] = useState<AiChatSession[]>([]);
@@ -2260,6 +2260,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             <p className="ai-empty-title">还没有可用的 AI 服务商</p>
             <p className="ai-empty-desc">填一个 API Key 就能用：支持 OpenAI 兼容 / Claude / Gemini 协议。</p>
             <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">去配置服务商</button>
+          </div>
+        ) : enableAI && isExternalFile ? (
+          <div className="ai-empty">
+            <div className="ai-empty-icon"><Icon name="ai-file-text" className="w-5 h-5" /></div>
+            <p className="ai-empty-title">AI 无法读取内容</p>
+            <p className="ai-empty-desc">
+              请先保存该文件到分组，再使用 AI 功能。
+            </p>
           </div>
         ) : allMsgs.length === 0 ? (
           <div className="ai-empty">
