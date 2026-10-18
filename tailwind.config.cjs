@@ -1,4 +1,17 @@
 /** @type {import('tailwindcss').Config} */
+
+/**
+ * 颜色全部来自 CSS 变量（App.css 的 :root / [data-theme="dark"] / 运行时内联样式）。
+ *
+ * 约定：组件里只允许出现「语义色名」——bg-surface / text-body / border-line / bg-danger-soft，
+ * 不允许出现 slate-500、indigo-600 这类具体色板名。这样换主题、开暗色只需要改变量值，
+ * 组件代码零改动。变量格式是 "r g b" 三通道，所以 /60 这类透明度修饰符照常可用。
+ *
+ * 命名与 interface/theme.ts 的 ThemeTokens 一一对应，改名字要三处同步：
+ * ThemeTokens 字段 → 这里 --c-* 的取值 → lib/theme.ts 的 buildThemeVars。
+ */
+const c = (name) => `rgb(var(--c-${name}) / <alpha-value>)`;
+
 module.exports = {
   content: [
     "./index.html",
@@ -7,33 +20,92 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        primary: {
-          50: '#eef2ff',
-          100: '#e0e7ff',
-          200: '#c7d2fe',
-          300: '#a5b4fc',
-          400: '#818cf8',
-          500: '#6366f1',
-          600: '#4f46e5',
-          700: '#4338ca',
-          800: '#3730a3',
-          900: '#312e81',
-        },
+        /* 页面与表面 */
+        app: c("app"),
         surface: {
-          50: '#fafafa',
-          100: '#f5f5f5',
-          200: '#e5e5e5',
-          300: '#d4d4d4',
+          DEFAULT: c("surface"),
+          alt: c("surface-alt"),
+          strong: c("surface-strong"),
         },
+        /* 文字：ink 标题 → body 正文 → muted 次要 → faint 弱化 → faint-soft 极弱 */
+        ink: c("ink"),
+        body: c("body"),
+        muted: c("muted"),
+        faint: {
+          DEFAULT: c("faint"),
+          soft: c("faint-soft"),
+        },
+        /* 边框与分隔线 */
+        line: {
+          DEFAULT: c("line"),
+          soft: c("line-soft"),
+          strong: c("line-strong"),
+        },
+        /* 主题色 */
+        primary: {
+          50: c("primary-50"),
+          100: c("primary-100"),
+          200: c("primary-200"),
+          300: c("primary-300"),
+          400: c("primary-400"),
+          500: c("primary-500"),
+          600: c("primary-600"),
+          700: c("primary-700"),
+          800: c("primary-800"),
+          900: c("primary-900"),
+        },
+        /* 语义色：每一档都有浅底(soft) / 描边(line) / 本体 / 强调(strong) */
+        danger: {
+          DEFAULT: c("danger-500"),
+          soft: c("danger-50"),
+          line: c("danger-200"),
+          strong: c("danger-600"),
+          deep: c("danger-700"),
+        },
+        warning: {
+          DEFAULT: c("warning-500"),
+          soft: c("warning-50"),
+          line: c("warning-200"),
+          strong: c("warning-600"),
+          deep: c("warning-700"),
+        },
+        success: {
+          DEFAULT: c("success-500"),
+          soft: c("success-50"),
+          line: c("success-200"),
+          strong: c("success-600"),
+          deep: c("success-700"),
+        },
+        info: {
+          DEFAULT: c("info-500"),
+          soft: c("info-50"),
+          line: c("info-200"),
+          strong: c("info-600"),
+          deep: c("info-700"),
+        },
+        /* 深色浮层气泡与强调色上的文字 */
+        tooltip: c("tooltip"),
+        "on-accent": c("on-accent"),
       },
       fontFamily: {
         sans: ['"MiSans VF"', '"Segoe UI Variable Text"', '"Segoe UI"', 'system-ui', '-apple-system', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei UI"', '"Microsoft YaHei"', 'sans-serif'],
       },
+      // 圆角由主题的「圆角基准」统一换算（见 lib/theme.ts），视觉密度可整体调节
+      borderRadius: {
+        sm: "var(--radius-sm)",
+        DEFAULT: "var(--radius-md)",
+        md: "var(--radius-md)",
+        lg: "var(--radius-lg)",
+        xl: "var(--radius-xl)",
+        "2xl": "var(--radius-2xl)",
+        "3xl": "var(--radius-3xl)",
+      },
       boxShadow: {
-        'card': '0 1px 3px 0 rgb(0 0 0 / 0.04), 0 1px 2px -1px rgb(0 0 0 / 0.04)',
-        'card-hover': '0 4px 12px -2px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.04)',
-        'elevated': '0 8px 24px -4px rgb(0 0 0 / 0.1), 0 4px 8px -4px rgb(0 0 0 / 0.06)',
-        'glow': '0 0 20px -4px rgb(99 102 241 / 0.15)',
+        // 阴影用颜色变量，暗色下不会出现"浅色投影"这种发灰的光晕
+        'card': '0 1px 3px 0 rgb(var(--c-shadow) / 0.08), 0 1px 2px -1px rgb(var(--c-shadow) / 0.06)',
+        'card-hover': '0 4px 12px -2px rgb(var(--c-shadow) / 0.14), 0 2px 4px -2px rgb(var(--c-shadow) / 0.08)',
+        'elevated': '0 8px 24px -4px rgb(var(--c-shadow) / 0.18), 0 4px 8px -4px rgb(var(--c-shadow) / 0.1)',
+        'glow': '0 0 20px -4px rgb(var(--c-primary-500) / 0.22)',
       },
       transitionTimingFunction: {
         // iOS 风格"快起慢收"：末段几乎无加速度
@@ -41,11 +113,6 @@ module.exports = {
         fluid: 'cubic-bezier(0.22, 1, 0.36, 1)',
         // 带轻微过冲的弹簧，用于图标旋转等小元素
         spring: 'cubic-bezier(0.34, 1.35, 0.5, 1)',
-      },
-      borderRadius: {
-        'xl': '0.875rem',
-        '2xl': '1rem',
-        '3xl': '1.25rem',
       },
       animation: {
         // fill-mode 用 backwards 而不是 both：动画结束态就等于元素的静态样式，

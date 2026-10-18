@@ -1,30 +1,35 @@
 import type { AiPromptEntry, AiSettings } from "@/interface/ai";
 
-/* ============================================================================
- * AI 默认配置中心
- * ----------------------------------------------------------------------------
- * 这里集中存放：
- *   1. 发给模型的提示词（系统提示词 / 各种纠错与摘要文案）
- *   2. 工具声明（TOOL_DEFS）
- *   3. AI 默认设置（DEFAULT_AI_SETTINGS）与运行时常量
- * 修改提示词、新增工具、调整默认值都只改这个文件即可。
- * 注意：Rust 端（src-tauri/src/lib.rs）还有一段独立的提示词，见文件末尾说明。
- * ========================================================================== */
+/**
+ * AI 默认配置中心：提示词、工具声明、默认设置与运行时常量。
+ *
+ * 约定：改提示词、加工具、调默认值都只改本文件，界面与请求链路不重复写死这些内容。
+ * 分工：本文件是前端拼装、部分可被用户设置覆盖的提示词；Rust 端另有一层
+ * 强制追加的提示词（见文件末尾说明），两层同时生效、互不替代。
+ * 注意：提示词模板会原文发给模型，改一个字就是改模型行为，调整前先确认影响面。
+ */
 
-/* ---------------------------- 运行时常量与默认值 ---------------------------- */
+/* ---------- 运行时常量与默认值 ---------- */
 
-/** 交给 Rust 端提示词的最小思考字数（同时用于"思考太浅"的判定） */
+/** 思考字数门槛的默认值（字符）：DEFAULT_AI_SETTINGS.minThinkingLen 以此为基准，也用于"思考太浅"提示 */
 export const MIN_THINKING_LEN = 120;
-/** 触发"重新思考"纠正的门槛：只处理"基本没思考"的情况，避免为几字之差丢弃整段回答 */
+/**
+ * 触发"重新思考"纠正的门槛（字符）：低于此值才重试。
+ * 取 24 是为了只拦住"基本没思考"的情况，避免为几字之差丢弃整段完整回答。
+ */
 export const THINKING_RETRY_MIN_LEN = 24;
-/** maxRounds=0（不限制轮数）时的死循环保险上限 */
+/** maxRounds=0（不限制轮数）时的死循环保险上限（轮） */
 export const UNLIMITED_ROUND_SAFETY = 500;
-/** 每轮最多注入上下文多长的工具结果（超出截断） */
+/** 每条工具结果注入上下文的最大字符数，超出即截断，防止单次结果挤爆上下文预算 */
 export const TOOL_RESULT_MAX_CHARS = 1500;
 
 /**
- * AI 全局设置默认值。
- * 每一项都真实作用于请求或界面行为，不做"摆设开关"。
+ * AI 全局设置默认值，键与 AiSettings 一一对应。
+ *
+ * 只影响新装用户与库中缺键时的回退；已存库的值一律先过 normalizeAiSettings。
+ * 单位：minThinkingLen 为字符，maxRounds 为轮，contextBudget / maxTokens 为 token，
+ * keepRecent 为消息条数，toolResultChars 为字符，composerHeight 为 px（0 = 自动长高）。
+ * minThinkingLen 默认与 MIN_THINKING_LEN 保持一致，两者改动需同步。
  */
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   minThinkingLen: 120,
@@ -39,13 +44,19 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   showToolTrace: true,
   maxTokens: 8192,
   composerHeight: 0,
+  aiAccessEnabled: true,
 };
 
-/* -------------------------------- 工具声明 -------------------------------- */
+/* ---------- 工具声明 ---------- */
 
-/** 工具清单：needsConfirm=true 的写操作执行前需要用户确认 */
+/**
+ * 工具清单，一处声明、多处消费：
+ * - desc / args：给模型看的参数说明（desc 用中文短句，args 的值是类型说明）
+ * - needsConfirm=true：会改动数据的写操作，执行前必须经用户确认；
+ *   AIChatPanel 正是按这个字段把每轮调用分成"只读直接执行"与"待确认"两组。
+ */
 export const TOOL_DEFS = [
-  { name: "searchNotes", desc: "搜索笔记标题", args: { query: "搜索关键词" }, needsConfirm: false },
+  { name: "searchNotes", desc: "搜索笔记（标题 + 正文）", args: { query: "搜索关键词" }, needsConfirm: false },
   { name: "listNotes", desc: "列出笔记（可按分组/数量）", args: { categoryName: "分组名(可选)", limit: "条数(可选)" }, needsConfirm: false },
   { name: "getNoteContent", desc: "获取笔记正文（默认前200行，可指定行范围）", args: { noteId: "笔记ID", startLine: "起始行(可选)", lineCount: "行数(可选)" }, needsConfirm: false },
   { name: "getCurrentNote", desc: "读取当前打开的笔记", args: {}, needsConfirm: false },
@@ -73,9 +84,14 @@ export const TOOL_DEFS = [
   { name: "selectNote", desc: "选择并打开指定笔记", args: { noteId: "笔记ID" }, needsConfirm: false },
 ];
 
-/* ------------------------------- 系统提示词 ------------------------------- */
+/* ---------- 系统提示词 ---------- */
 
-/** 主系统提示词：角色 + 工具列表 + 核心约束 + 输出格式（精简版，尽力保留语义） */
+/**
+ * 主系统提示词：角色、工具清单、选工具策略、长文行号工作流、输出格式、防编造与回复风格。
+ *
+ * 工具清单在这里以自然语言再写一遍（并非由 TOOL_DEFS 生成），因此增删或改名工具时
+ * TOOL_DEFS 与本段必须同步修改，否则模型会看到不存在或缺失的工具。
+ */
 export const AI_SYSTEM_PROMPT = `You are the FastNote smart note assistant. You operate on notes and categories through tools.
 
 ## Tools (all parameters are JSON objects)
@@ -123,7 +139,7 @@ Reads return a **numbered window** (e.g. 12| body…); line numbers are locators
 5. Only a very short note (a few dozen lines) with an explicit full-rewrite request may be overwritten with updateNote/updateCurrentNote.
 
 ## Output format (strict)
-Start every reply with <thinking>...</thinking> (genuine English reasoning; length requirement below), then pick one:
+Start every reply with <thinking>...</thinking> (genuine reasoning; length requirement below), then pick one:
 A) Operations needed → output **only** thinking + tool calls this round, no body text:
 <tool_calls>[{"name":"工具名","args":{"参数名":"参数值"}}]</tool_calls>
 B) No operation needed, or tools already finished and results are enough → write only the body text, no <tool_calls>.
@@ -161,11 +177,30 @@ Round 2 (IDs known, still no body text): selectNote #16 + getNoteContent #16 + s
 Round 3: selectNote #17.
 Round 4 (all tools done): write the summary and note that the current note switched to 《浏览器是如何渲染页面的？》.`;
 
-/** 深度思考要求（随设置变化）：思考用英文，正文用中文 */
-export const buildThinkRule = (minThinkingLen: number): string =>
-  `## Deep thinking (required)\n- Start every reply with <thinking>, **always written in English**, with at least about ${Math.round(minThinkingLen * 0.6)} English words of genuine reasoning (do not restate the user's message).\n- The body text shown to the user must always be in Chinese.`;
+/**
+ * 深度思考规则，每次请求追加。
+ *
+ * 字数门槛直接取 minThinkingLen（字符），与「思考太浅」重试提示、Rust 端
+ * thinking_reminder 用的是同一个数字；设为 0 表示不限长度，此时不写这一句。
+ * 它与 THINKING_RETRY_MIN_LEN（24）分工不同：后者只用来判定"是否值得重来"。
+ */
+export const buildThinkRule = (minThinkingLen: number): string => {
+  const minChars = Math.max(0, Math.round(minThinkingLen));
+  const lengthRule = minChars > 0
+    ? `, at least about ${minChars} characters of genuine reasoning`
+    : "";
+  return [
+    "## Deep thinking (required)",
+    `- Start every reply with <thinking>${lengthRule} (do not restate the user's message).`,
+    "- Think and answer in the same language the user writes in; never switch language just for the reasoning.",
+  ].join("\n");
+};
 
-/** 用户自定义前置提示词/长期记忆拼成的追加段（只取启用中的） */
+/**
+ * 用户自定义提示词 / 长期记忆拼成的追加段：只取 enabled 且文本非空的条目。
+ * 放在主提示词之后，并显式声明优先级高于默认风格，用户要求才能覆盖默认行为。
+ * 全部未启用时返回空串，调用方据此决定是否追加（不留空段落）。
+ */
 export const buildMemoryBlock = (entries: AiPromptEntry[] | undefined): string => {
   const active = (entries || []).filter((e) => e.enabled && e.text.trim());
   if (active.length === 0) return "";
@@ -175,71 +210,125 @@ export const buildMemoryBlock = (entries: AiPromptEntry[] | undefined): string =
   ].join("\n");
 };
 
-/* ------------------------------ 辅助调用提示词 ------------------------------ */
+/* ---------- 辅助调用提示词 ---------- */
 
-/** 自动生成会话标题的系统提示词 */
+/**
+ * 生成会话标题的系统提示词：限定标题语言、长度（10 字以内）、禁用标点与标签。
+ * 约束来自侧边栏单行展示的宽度，超长会被截断成省略号。
+ */
 export const buildTitlePrompt = (userText: string, assistantText: string): string =>
   `I will give you some dialogue content in the <content> block.\nYou need to summarize the conversation between user and assistant into a short title.\n1. The title language should be consistent with the user's primary language\n2. Do not use punctuation or other special symbols\n3. Reply directly with the title\n4. The title should not exceed 10 characters\n5. Do not include any JSON, tags, or technical details\n6. Do not output <thinking> or any reasoning process, and never mention words like "thinking" — reply with the title only\n\n<content>\nUser: ${userText}\nAssistant: ${assistantText}\n</content>`;
 
-/** 生成标题时的用户消息 */
+/** 生成标题时的用户消息：内容全在系统提示词里，这条只作为触发指令 */
 export const TITLE_USER_MESSAGE = "Generate title";
 
-/** 上下文压缩（摘要）的系统提示词 */
+/**
+ * 上下文压缩（摘要）的系统提示词。
+ * 明确要求保住长期偏好、已确认结论、出现过的笔记 ID 与标题、未完成事项；
+ * 400 字上限是为了让摘要本身不至于又占满预算。
+ */
 export const CONTEXT_SUMMARY_PROMPT =
   "You are a conversation-compression assistant. Compress the given conversation into key points, and be sure to preserve: the user's long-term preferences and hard requirements, confirmed conclusions, note IDs and titles that appeared, and unfinished items. Do not exchange pleasantries and do not output any tags; give the key points directly, within 400 characters.";
 
-/** 上下文压缩（摘要）的用户消息 */
+/**
+ * 上下文压缩（摘要）的用户消息。
+ * 已有摘要会拼在待压缩对话之前，形成增量压缩，避免多轮压缩后早期结论被丢掉。
+ */
 export const buildSummaryUserMessage = (summary: string, transcript: string): string =>
   `${summary ? `Known summary: ${summary}\n\n` : ""}Conversation to be compressed:\n${transcript}`;
 
-/** 摘要注入历史时的标签前缀 */
+/**
+ * 摘要注入历史时的标签前缀。
+ * 带方括号是为了和用户原话区分，模型不会把它当成用户输入的一部分。
+ */
 export const SUMMARY_INJECT_PREFIX = "[Key points from earlier conversation]";
 
-/** 摘要失效时的本地兜底：至少让模型知道"前面还有一些对话" */
+/**
+ * 摘要失效（生成失败或被跳过）时的本地兜底：至少让模型知道"前面还有一些对话"，
+ * 并提示可以重新调用工具读取笔记，避免它凭空回答。
+ */
 export const buildLocalSummaryFallback = (droppedCount: number, firstUser: string): string =>
   `(${droppedCount} earlier messages were omitted because of the length limit${firstUser ? `; the first topic was "${firstUser}…"` : ""}. When you need details, read the notes again with the tools.)`;
 
-/** 日志/上下文中工具结果消息的起始前缀（压缩逻辑依赖它识别工具结果消息） */
+/**
+ * 工具结果消息的统一前缀（日志与上下文都用它）。
+ * 压缩逻辑依赖此前缀识别"这条不是用户发言"，改文案会直接破坏识别。
+ */
 export const TOOL_RESULT_PREFIX = "Tool execution results: ";
 
-/** 每轮回传给模型的工具结果消息 */
+/**
+ * 回传给模型的工具结果消息：前缀 + 结果摘要 + 续跑指令。
+ * 明确要求不要重复本轮已写的正文，避免同段说明在界面里出现两次。
+ */
 export const buildToolResultMessage = (resultSummary: string): string =>
-  `${TOOL_RESULT_PREFIX}${resultSummary}\nContinue based on the results, or give the user a final reply (still start with <thinking> in English; the user-facing body is in Chinese). Do not repeat body text already written this round — just explain what happened after the tools ran.`;
+  `${TOOL_RESULT_PREFIX}${resultSummary}\nContinue based on the results, or give the user a final reply (still start with <thinking>). Do not repeat body text already written this round — just explain what happened after the tools ran.`;
 
-/* -------------------------------- 纠错提示词 -------------------------------- */
+/* ---------- 访问受限说明 ----------
+ * 只在真的存在限制时追加：让模型知道"搜不到是设置导致的"，
+ * 否则它会以为检索失败、反复换关键词重试。
+ */
 
-/** 思考过浅：要求重新思考 */
+/** 部分笔记/分组未对 AI 开放 */
+export const AI_ACCESS_RESTRICTED_PROMPT = `## Access restrictions
+Some notes and categories are hidden from you: listNotes, searchNotes and getCategories never return them, and retrying with different keywords will not help. If the user refers to a note you cannot see, say plainly that its content is not shared with AI. Never guess or fabricate its content.`;
+
+/** 只读档：能读不能改，别让模型反复尝试写入 */
+export const AI_READ_ONLY_PROMPT = `## Read-only notes
+Some notes (including possibly the current one) are read-only for you: reading is allowed, but every write tool — updateNote, updateCurrentNote, appendToNote, replaceLines, insertLines, deleteLines, replaceInNote, deleteNote, moveNote — will be rejected. When that happens, don't retry with another tool: give the user the result you produced and tell them the note must be edited by hand, or the AI access level changed to "full".`;
+
+/** 总开关关闭：AI 完全看不到笔记 */
+export const AI_ACCESS_DENIED_PROMPT = `## Access restrictions
+The user has turned off note access for AI. You cannot read, search, create or modify any note, and every note tool will fail. Do not call them. Answer ordinary questions only, and tell the user the access setting is off when it matters.`;
+
+/* ---------- 纠错提示词 ----------
+ * 模型输出不合格时，作为额外的 system 消息追加在上一轮回复之后，只作用于本次重试轮次；
+ * 基础系统提示词不被改写，正常请求不会带上这些内容。
+ */
+
+/**
+ * 思考过浅：要求重新思考。
+ * actualLen 由调用方传入已剔除空白字符的长度；minLen 取当前设置 minThinkingLen
+ * （未配置时回退 MIN_THINKING_LEN），与 buildThinkRule 里的要求保持一致。
+ */
 export const buildShallowThinkingNotice = (actualLen: number, minLen: number): string =>
   `Your <thinking> is too brief (currently ${actualLen} characters; at least ${minLen} characters are required). This reply is invalid. ` +
   "Think more deeply again: analyze the user's true intent, what information is missing, which tool to call and where its parameters come from, and whether there is any destructive risk, then output a complete reply again.";
 
-/** 声称"已完成"却没有任何工具调用 */
+/**
+ * 声称"已完成"却没有任何工具调用。
+ * 编造执行结果是最需要拦截的错误，因此给出两条明确出路：补调用，或改成如实回答。
+ */
 export const CLAIM_WITHOUT_TOOLS_NOTICE =
   'Your reply claims that some operation has been completed (e.g. "已打开/已创建/已修改/已删除"), but this round contains no <tool_calls>, ' +
   "so those operations never actually happened. Choose one of the two:\n" +
   "1. If an operation really is needed: output <thinking> and <tool_calls> together (the user does not know the IDs, so look them up first with searchNotes / listNotes or getCategories);\n" +
   '2. If no operation is needed: remove wording like "已完成" and just answer honestly.';
 
-/** 工具调用被截断 / JSON 非法 */
+/**
+ * 工具调用被截断或 JSON 非法。
+ * 常见成因是正文过长导致输出提前结束，所以提示里同时给出"精简内容"和"拆成多步"两条修法。
+ */
 export const TRUNCATED_TOOL_CALL_NOTICE =
   "The tool-call format in your previous reply is invalid: <tool_calls> is missing its opening tag, is not closed, or the JSON inside cannot be parsed (it gets truncated when the content is too long). This reply is invalid and no tool was executed. " +
   'Please output again: it must be written as <tool_calls>[{"name":"工具名","args":{...}}]</tool_calls>, with both tags present and complete JSON, and do not wrap it in a code block; ' +
   "if the content is too long, trim it down, or split it into several steps done in separate calls.";
 
-/* ---------------------------------------------------------------------------
- * Rust 端提示词说明（本文件不负责，修改请去 src-tauri/src/lib.rs）
- * ---------------------------------------------------------------------------
- * - DEEP_THINKING_PROMPT：每次请求都由 Rust 强制追加的"深度思考"要求，
- *   独立于前端提示词，保证后端对任何调用方都要求先推理再回答。
- * - base_prompt：在 send_ai_chat / send_ai_chat_stream 中拼装，
- *   注入当前笔记的 ID/标题/正文，并声明"内置笔记助手"角色。
- * - thinking_reminder：按前端传入的 min_thinking_len 追加的强制检查，
- *   要求 thinking 不低于 N 字符串、需要工具时必须同时输出 <tool_calls>。
- * ------------------------------------------------------------------------- */
+/* ---------- Rust 端提示词（本文件不负责，修改去 src-tauri/src/lib.rs） ----------
+ * DEEP_THINKING_PROMPT：每次请求都由 Rust 强制追加，保证后端对任何调用方都先推理再回答。
+ * base_prompt：send_ai_chat / send_ai_chat_stream 中拼装，注入当前笔记的 ID/标题/正文，
+ *   并声明"内置笔记助手"角色。
+ * thinking_reminder：按前端传入的 min_thinking_len 做强制检查，要求 thinking 达到字数，
+ *   且需要工具时必须同时给出 <tool_calls>。
+ */
 
 /**
- * 逐项把"数据库里的值"归一化成合法设置：
- * 类型不对 / 缺键 → 用默认值；数值再做边界收敛，脏数据也不会让行为异常。
+ * 把库里的原始值归一化成合法设置：类型不符或缺键回退默认值，再逐项收敛边界，
+ * 保证手改数据库、旧版本残留等脏数据不会让请求参数越界。
+ *
+ * 边界（前端与 Rust 都按此区间取值）：
+ * - minThinkingLen 0–1000 字符 / maxRounds 0–200 轮 / contextBudget 2000–200000 token
+ * - keepRecent 2–50 条 / toolResultChars 200–20000 字符
+ * - composerHeight 0–1200 px / maxTokens 256–32000 token
  */
 export const normalizeAiSettings = (raw: Record<string, unknown> | null | undefined): AiSettings => {
   const merged: AiSettings = { ...DEFAULT_AI_SETTINGS };

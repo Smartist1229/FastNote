@@ -1,6 +1,10 @@
-/* 纯文本文件格式白名单：压缩包「其他文件格式」逐篇选后缀 与 Ctrl+S 保存笔记 共用同一份清单。
-   只收录纯文本格式——内容本身就是文本，改后缀即可直接打开；
-   二进制格式（docx / xlsx / pdf 等）不在其中，因为它们需要真正的格式转换，直接写文本会打不开。 */
+/**
+ * 纯文本文件格式白名单，两处共用：压缩包「其他文件格式」逐篇选后缀、笔记保存对话框的格式过滤器。
+ *
+ * 只收录纯文本格式——内容本身就是文本，改后缀即可直接打开；
+ * docx / xlsx / pdf 等二进制格式不在其中，它们需要真正的格式转换，直接写文本会得到打不开的文件。
+ * 新增格式只需往分组里加一条，白名单与下拉、过滤器会自动跟着生效。
+ */
 
 export interface TextFormatOption {
   /** 后缀（小写，不带点） */
@@ -12,6 +16,7 @@ export interface TextFormatOption {
 }
 
 export interface TextFormatGroup {
+  /** 分组标题，展示在后缀选择列表里 */
   name: string;
   formats: TextFormatOption[];
 }
@@ -80,7 +85,7 @@ export const TEXT_FORMAT_GROUPS: TextFormatGroup[] = [
   },
 ];
 
-/** 全部允许的后缀（小写、不含点） */
+/** 全部允许的后缀（小写、不含点）：由分组拍平而来，是白名单判定的唯一数据源 */
 export const TEXT_FORMAT_EXTS: string[] = TEXT_FORMAT_GROUPS.flatMap((group) =>
   group.formats.map((format) => format.ext)
 );
@@ -90,7 +95,11 @@ const TEXT_FORMAT_EXT_SET = new Set(TEXT_FORMAT_EXTS);
 /** 逐篇自选后缀时，用户还没改过的笔记使用的默认值 */
 export const DEFAULT_TEXT_EXT = "txt";
 
-/** 规范化用户输入：去掉前导点、转小写、只保留字母数字 */
+/**
+ * 规范化用户输入：去掉前导点、转小写、只保留字母数字。
+ * 用户常写成 ".TXT" 或 " .md "，先归一化再比对，避免大小写与点号造成误判；
+ * 反过来也意味着含符号的后缀（如 .tar.gz）过不了白名单。
+ */
 export const normalizeTextExt = (raw: string): string =>
   raw
     .trim()
@@ -98,6 +107,6 @@ export const normalizeTextExt = (raw: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 
-/** 用户输入或选择的后缀是否在白名单内 */
+/** 用户输入或选择的后缀是否在白名单内（入参先走 normalizeTextExt，不区分大小写与点号） */
 export const isSupportedTextExt = (raw: string): boolean =>
   TEXT_FORMAT_EXT_SET.has(normalizeTextExt(raw));

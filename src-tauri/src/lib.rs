@@ -21,6 +21,9 @@ pub struct Note {
     pub is_deleted: bool,
     pub deleted_at: Option<String>,
     pub is_pinned: bool,
+    /// AI 访问档位（0=禁止 / 1=只读 / 2=完全）。
+    /// 笔记与所属分组各存一档，生效值取更严格的那个（见前端 lib/aiAccess.ts）。
+    pub ai_access: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -29,6 +32,8 @@ pub struct Category {
     pub name: String,
     pub created_at: String,
     pub note_count: i32,
+    /// AI 访问档位（0=禁止 / 1=只读 / 2=完全），作为组内笔记的上限
+    pub ai_access: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -123,7 +128,8 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            ai_access INTEGER NOT NULL DEFAULT 2
         )",
         [],
     )?;
@@ -139,6 +145,7 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
             is_deleted INTEGER DEFAULT 0,
             deleted_at TEXT,
             is_pinned INTEGER DEFAULT 0,
+            ai_access INTEGER NOT NULL DEFAULT 2,
             FOREIGN KEY (category_id) REFERENCES categories(id)
         )",
         [],
@@ -222,6 +229,47 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
     // ---- 迁移：笔记置顶字段 ----
     if !has_column(conn, "notes", "is_pinned") {
         conn.execute("ALTER TABLE notes ADD COLUMN is_pinned INTEGER DEFAULT 0", [])?;
+    }
+
+    // ---- 迁移：AI 访问档位（0=禁止 / 1=只读 / 2=完全）----
+    // 老库默认全开，行为与升级前一致；档位分「分组」和「笔记」两级，实际生效取更严格的。
+    if !has_column(conn, "notes", "ai_access") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN ai_access INTEGER NOT NULL DEFAULT 2",
+            [],
+        )?;
+    }
+    if !has_column(conn, "categories", "ai_access") {
+        conn.execute(
+            "ALTER TABLE categories ADD COLUMN ai_access INTEGER NOT NULL DEFAULT 2",
+            [],
+        )?;
+    }
+
+    // 一次性数据迁移：早期版本把 ai_access 当布尔用（1=开放），
+    // 三档之后 1 表示"只读"。若不迁移，升级会把开放过的笔记静默降级成只读。
+    // 用 schema_migrations 记住"已迁移"，否则每次启动都会把用户手动设的只读改成完全。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE name = 'ai_access_levels_v2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if done == 0 {
+        conn.execute("UPDATE notes SET ai_access = 2 WHERE ai_access = 1", [])?;
+        conn.execute("UPDATE categories SET ai_access = 2 WHERE ai_access = 1", [])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES ('ai_access_levels_v2', ?1)",
+            params![Local::now().to_rfc3339()],
+        )?;
     }
 
     Ok(())
@@ -388,6 +436,7 @@ fn create_category(name: String, state: State<AppState>) -> Result<Category, Str
         name,
         created_at: now,
         note_count: 0,
+        ai_access: 2,
     })
 }
 
@@ -489,6 +538,27 @@ fn json_bool(v: &Value, key: &str) -> bool {
     v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
 }
 
+/// 取布尔字段，缺失时用指定默认值（旧备份缺新字段时保持升级前的行为）
+fn json_bool_or(v: &Value, key: &str, fallback: bool) -> bool {
+    v.get(key).and_then(|x| x.as_bool()).unwrap_or(fallback)
+}
+
+/// 取 AI 访问档位（0/1/2）。
+/// 兼容三种历史写法：数字档位、旧的布尔（true=完全 / false=禁止）、字段缺失（用默认值）。
+fn json_level(v: &Value, key: &str, fallback: i64) -> i64 {
+    match v.get(key) {
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(fallback).clamp(0, 2),
+        Some(Value::Bool(b)) => {
+            if *b {
+                2
+            } else {
+                0
+            }
+        }
+        _ => fallback,
+    }
+}
+
 /// 取数组字段：缺失或类型不对都当空数组，避免一个坏字段让整次恢复失败
 fn json_arr<'a>(data: &'a Value, key: &str) -> &'a [Value] {
     data.get(key)
@@ -520,19 +590,21 @@ fn export_backup(
 
     let categories = query_rows(
         &conn,
-        "SELECT id, name, created_at FROM categories ORDER BY id",
+        "SELECT id, name, created_at, ai_access FROM categories ORDER BY id",
         |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
                 "created_at": row.get::<_, String>(2)?,
+                "ai_access": row.get::<_, i64>(3)?.clamp(0, 2),
             }))
         },
     )?;
 
     let notes = query_rows(
         &conn,
-        "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at
+        "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
+                is_pinned, ai_access
          FROM notes ORDER BY id",
         |row| {
             Ok(json!({
@@ -544,6 +616,8 @@ fn export_backup(
                 "updated_at": row.get::<_, String>(5)?,
                 "is_deleted": row.get::<_, i64>(6)? != 0,
                 "deleted_at": row.get::<_, Option<String>>(7)?,
+                "is_pinned": row.get::<_, i64>(8)? != 0,
+                "ai_access": row.get::<_, i64>(9)?.clamp(0, 2),
             }))
         },
     )?;
@@ -737,11 +811,13 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
 
     for c in categories {
         tx.execute(
-            "INSERT INTO categories (id, name, created_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO categories (id, name, created_at, ai_access) VALUES (?1, ?2, ?3, ?4)",
             params![
                 json_i64(c, "id"),
                 json_str(c, "name"),
-                non_empty_or_now(json_str(c, "created_at"))
+                non_empty_or_now(json_str(c, "created_at")),
+                // 旧备份可能没有这个字段，或是布尔（true=完全 / false=禁止）：统一归一化
+                json_level(c, "ai_access", 2)
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -749,8 +825,9 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
 
     for n in notes {
         tx.execute(
-            "INSERT INTO notes (id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO notes (id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
+                                is_pinned, ai_access)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 json_i64(n, "id"),
                 json_str(n, "title"),
@@ -759,7 +836,10 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
                 non_empty_or_now(json_str(n, "created_at")),
                 non_empty_or_now(json_str(n, "updated_at")),
                 if json_bool(n, "is_deleted") { 1 } else { 0 },
-                json_opt_str(n, "deleted_at")
+                json_opt_str(n, "deleted_at"),
+                // 旧备份没有这两个字段：置顶 / AI 访问都按默认值兜底
+                if json_bool_or(n, "is_pinned", false) { 1 } else { 0 },
+                json_level(n, "ai_access", 2)
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -970,7 +1050,8 @@ fn sanitize_ext(ext: &str) -> String {
 fn load_category_notes(conn: &Connection, category_id: i64) -> Result<Vec<Note>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
+                    is_pinned, ai_access
              FROM notes
              WHERE is_deleted = 0 AND category_id = ?1
              ORDER BY created_at ASC, id ASC",
@@ -993,7 +1074,8 @@ fn load_notes_by_ids(conn: &Connection, note_ids: &[i64]) -> Result<Vec<Note>, S
     }
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
+                    is_pinned, ai_access
              FROM notes
              WHERE is_deleted = 0 AND id = ?1",
         )
@@ -1352,10 +1434,10 @@ fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
     let conn = state.conn.lock().unwrap();
     
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.created_at, COUNT(n.id) as note_count
+        "SELECT c.id, c.name, c.created_at, COUNT(n.id) as note_count, c.ai_access
          FROM categories c
          LEFT JOIN notes n ON c.id = n.category_id AND n.is_deleted = 0
-         GROUP BY c.id, c.name, c.created_at
+         GROUP BY c.id, c.name, c.created_at, c.ai_access
          ORDER BY c.created_at DESC"
     ).map_err(|e| e.to_string())?;
     
@@ -1365,6 +1447,7 @@ fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
             name: row.get(1)?,
             created_at: row.get(2)?,
             note_count: row.get(3)?,
+            ai_access: row.get::<_, i64>(4)?.clamp(0, 2),
         })
     }).map_err(|e| e.to_string())?;
     
@@ -1435,15 +1518,20 @@ fn create_note(title: String, content: String, category_id: Option<i64>, state: 
         is_deleted: false,
         deleted_at: None,
         is_pinned: false,
+        // 新建笔记默认"完全访问"；需要收紧时调用方创建后立即 set_note_ai_access
+        ai_access: 2,
     })
 }
 
 fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
     // 使用列名获取，兼容旧数据没有 is_pinned 列的情况
     let is_pinned: i64 = match row.as_ref().column_index("is_pinned") {
-        Ok(_) => row.get(8)?,
+        Ok(_) => row.get("is_pinned")?,
         Err(_) => 0,
     };
+    // ai_access 一律按列名读取：所有 note 查询都必须带上这一列，漏了会直接报错，
+    // 而不是悄悄把受保护的笔记当成"对 AI 开放"
+    let ai_access: i64 = row.get::<_, i64>("ai_access")?.clamp(0, 2);
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -1454,6 +1542,7 @@ fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
         is_deleted: row.get(6)?,
         deleted_at: row.get(7)?,
         is_pinned: is_pinned != 0,
+        ai_access,
     })
 }
 
@@ -1473,7 +1562,7 @@ fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, stat
 
     let sql = if let Some(_cat_id) = category_id {
         format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
              FROM notes
              WHERE is_deleted = 0 AND category_id = ?1
              {}",
@@ -1481,7 +1570,7 @@ fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, stat
         )
     } else {
         format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
              FROM notes
              WHERE is_deleted = 0
              {}",
@@ -1515,6 +1604,42 @@ fn update_note(id: i64, title: String, content: String, category_id: Option<i64>
         params![title, content, category_id, is_pinned, now, id],
     ).map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+/// 设置单篇笔记的 AI 访问档位（0=禁止 / 1=只读 / 2=完全）。
+/// 只写标志位：真正的拦截在前端工具链（读、写、检索、选择都会先过这一关），
+/// 所以这里不做级联，也不改动 content。
+#[tauri::command]
+fn set_note_ai_access(id: i64, level: i64, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE notes SET ai_access = ?1 WHERE id = ?2",
+            params![level.clamp(0, 2), id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("未找到 ID 为 {} 的笔记", id));
+    }
+    Ok(())
+}
+
+/// 设置分组的 AI 访问档位（0=禁止 / 1=只读 / 2=完全）。
+/// 分组的档位是组内笔记的上限，但不改写笔记自身字段——
+/// 重新放开分组后，之前单独收紧过的笔记仍然保持自己的档位。
+#[tauri::command]
+fn set_category_ai_access(id: i64, level: i64, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE categories SET ai_access = ?1 WHERE id = ?2",
+            params![level.clamp(0, 2), id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("未找到 ID 为 {} 的分组", id));
+    }
     Ok(())
 }
 
@@ -1560,7 +1685,8 @@ fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
     let conn = state.conn.lock().unwrap();
     
     let mut stmt = conn.prepare(
-        "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at 
+        "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, 
+                is_pinned, ai_access
          FROM notes 
          WHERE is_deleted = 1 
          ORDER BY deleted_at DESC"
@@ -2792,6 +2918,8 @@ pub fn run() {
             create_note,
             get_notes,
             update_note,
+            set_note_ai_access,
+            set_category_ai_access,
             pin_note,
             move_to_trash,
             restore_note,

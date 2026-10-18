@@ -1,6 +1,6 @@
 /**
- * AI 解析层回归测试 —— 直接跑 src/aiChatParse.ts 的真实代码。
- * 运行：node scripts/ai-parse.test.mjs   （Node ≥ 22.6 原生支持剥离 TS 类型）
+ * AI 解析层回归测试 —— 直接跑 src/lib/aiParse/* 的真实代码。
+ * 运行：npm run test:parse（内部用 esbuild 打包后再执行，见 scripts/run-parse-test.mjs）
  *
  * 这些用例覆盖了历史上真实出现过的故障形态，改动解析逻辑前后都应跑一遍：
  *   1. 工具调用漏写开标签 / 漏写闭标签 / 写到一半
@@ -10,22 +10,24 @@
  *   5. 会话标题被污染（"thinking用"）
  *   6. 谎报操作（声称已完成但没执行）
  */
+import { finalReplyText, parseAssistantText, parseStreamContent } from "../src/lib/aiParse/parse.ts";
 import {
   buildFinalContent,
-  stripQuotedText,
   cleanSessionTitle,
+  hasActionClaim,
+  stripQuotedText,
+} from "../src/lib/aiParse/text.ts";
+import {
   compressTranscript,
   estimateTokens,
-  finalReplyText,
-  hasActionClaim,
   localSummaryFallback,
-  parseAssistantText,
-  parseStreamContent,
   selectContextWindow,
   shrinkMessage,
+} from "../src/lib/aiParse/context.ts";
+import {
   shouldRetryForShallowThinking,
   streamStartsWithThinking,
-} from "../src/aiChatParse.ts";
+} from "../src/lib/aiParse/thinking.ts";
 
 let pass = 0;
 let fail = 0;

@@ -1,3 +1,17 @@
+/**
+ * 统一设置窗口。
+ *
+ * 职责：渲染左侧分区目录与右侧设置项，收集改动后上抛，不直接写库。
+ * 落库路径：软件设置由 onAppSettingChange 交给 App 的 applyAppSetting 立即写单键；
+ * AI 设置交给 App 的 effect 逐项 diff 后写库。两者都落在 SQLite 的 app_settings 表。
+ *
+ * 数据流：
+ *   1. 打开时清空搜索、定位到 defaultSection，并向 Tauri 取应用名与版本；
+ *   2. 设置项 = rows（通用/编辑器/列表/对话/上下文）+ 5 个自定义面板；
+ *   3. 搜索同时匹配 rows 的 title/desc/keywords 与自定义面板的关键词表；
+ *   4. scope=live 立即生效，scope=startup 只影响下次启动时的初始状态。
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -13,7 +27,7 @@ import type {
   SettingsSection,
 } from "@/interface/settingsModal";
 import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
-import { FONT_SIZE_MIN, FONT_SIZE_MAX } from "@/config/appDefaults";
+import { EDITOR_SETTING_SPECS } from "@/config/editorSettingSpecs";
 import {
   APP_AUTHOR,
   APP_NAME_FALLBACK,
@@ -22,50 +36,59 @@ import {
   shortUrl,
 } from "@/config/about";
 import { AiProviderSettings } from "@/components/ai/AiProviderModal";
+import { ThemePanel } from "@/components/settings/ThemePanel";
 import { Icon } from "@/components/common/Icon";
+import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
+import type { AiAccessLevel } from "@/interface/aiAccess";
+import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { exportBackup, importBackup } from "@/api/backup";
 
-/* ────────────────────────────── 分区定义 ────────────────────────────── */
+/* ---------- 分区定义 ---------- */
 
-/** AI 相关的 sections key 列表，当 enableAI 为 false 时这些 sections 会被过滤 */
-const AI_SECTION_KEYS: SettingsSection[] = ["provider", "chat", "context", "memory"];
+/** AI 专属分区：enableAI 为 false 时整组隐藏，避免出现点了没反应的入口 */
+const AI_SECTION_KEYS: SettingsSection[] = ["provider", "chat", "context", "memory", "access"];
 
+/** 分区元数据：key 与 SettingsSection 一一对应，group 决定左侧目录归到哪一栏 */
 const SECTIONS: SectionMeta[] = [
   { key: "general", label: "通用", icon: "ai-bolt", group: "软件" },
   { key: "editor", label: "编辑器", icon: "ai-edit", group: "软件" },
   { key: "view", label: "笔记列表", icon: "sidebar-list", group: "软件" },
   { key: "layout", label: "界面布局", icon: "sidebar-edit-square", group: "软件" },
+  { key: "theme", label: "主题", icon: "settings-theme", group: "软件" },
   { key: "provider", label: "AI 服务商", icon: "settings-provider", group: "AI" },
   { key: "chat", label: "对话行为", icon: "settings-chat", group: "AI" },
   { key: "context", label: "上下文", icon: "settings-context", group: "AI" },
   { key: "memory", label: "记忆与提示词", icon: "settings-memory", group: "AI" },
+  { key: "access", label: "AI 访问权限", icon: "ai-shield-check", group: "AI" },
   { key: "reset", label: "恢复默认", icon: "app-restore", group: "数据" },
   { key: "backup", label: "备份与恢复", icon: "app-backup", group: "数据" },
   { key: "about", label: "关于", icon: "toast-info", group: "其他" },
 ];
 
-/** 所有分组标签 */
+/** 目录分组顺序：与 SECTIONS 里的 group 对应，空分组在渲染时自动跳过 */
 const ALL_GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
 
-/** 根据 enableAI 状态返回可用的分组列表 */
+/** 关闭 AI 能力时，「AI」分组整体不渲染 */
 const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
   enableAI ? ALL_GROUPS : ["软件", "数据", "其他"];
 
-/** 自定义面板分区（不是数据驱动的开关/输入行，但同样参与搜索） */
-const CUSTOM_KEYS: SettingsSection[] = ["provider", "memory", "reset", "backup", "about"];
+/** 「AI 访问权限」里"未分类"这一组的伪 key（真实分组 id 从 1 开始，用 -1 不会撞） */
+const UNCATEGORIZED_KEY = -1;
 
-/* ────────────────────────────── 行模型 ────────────────────────────── */
+/** 自定义面板分区：内容不是数据驱动的行，但同样参与搜索 */
+const CUSTOM_KEYS: SettingsSection[] = ["theme", "provider", "memory", "access", "reset", "backup", "about"];
 
-/* ────────────────────────────── 基础控件 ────────────────────────────── */
+/* ---------- 基础控件 ---------- */
 
+/** 作用范围徽标：live 改完即生效，startup 需下次启动才生效 */
 const ScopeBadge: React.FC<{ scope: Scope }> = ({ scope }) => (
   <span
     className={`px-1.5 py-[1px] rounded text-[10px] font-medium border flex-shrink-0 ${
       scope === "live"
-        ? "bg-emerald-50 text-emerald-600 border-emerald-200/60"
-        : "bg-amber-50 text-amber-600 border-amber-200/60"
+        ? "bg-success-soft text-success border-success-line/60"
+        : "bg-warning-soft text-warning border-warning-line/60"
     }`}
     title={scope === "live" ? "修改后立即生效" : "在软件下次启动时生效"}
   >
@@ -84,10 +107,10 @@ const Switch: React.FC<{ value: boolean; disabled?: boolean; onChange: (v: boole
     aria-checked={value}
     disabled={disabled}
     className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${
-      value ? "bg-primary-500" : "bg-slate-300"
+      value ? "bg-primary-500" : "bg-surface-strong"
     } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
   >
-    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${value ? "left-[18px]" : "left-0.5"}`} />
+    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-surface shadow transition-all ${value ? "left-[18px]" : "left-0.5"}`} />
   </button>
 );
 
@@ -105,7 +128,7 @@ const NumberInput: React.FC<{
 }> = ({ value, min, max, step, unit, onChange }) => {
   const [text, setText] = useState(String(value));
 
-  // 外部值变化（恢复默认、滚轮缩放等）时同步显示，但不会打断正在输入的文本
+  // 外部值变化（恢复默认、滚轮缩放）时同步到输入框；本地输入期间 value 不变，不会被回写覆盖
   useEffect(() => {
     setText(String(value));
   }, [value]);
@@ -116,7 +139,9 @@ const NumberInput: React.FC<{
       setText(String(value));
       return;
     }
-    const next = Math.min(max, Math.max(min, Math.round(n)));
+    // step < 1 的项（行高、间距、分栏比例…）要留住小数位，否则 1.8 会被四舍五入成 2
+    const decimals = step > 0 && step < 1 ? (String(step).split(".")[1]?.length ?? 1) : 0;
+    const next = Number(Math.min(max, Math.max(min, n)).toFixed(decimals));
     setText(String(next));
     if (next !== value) onChange(next);
   };
@@ -134,9 +159,9 @@ const NumberInput: React.FC<{
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
         }}
-        className="w-20 px-2 py-1 text-xs text-right input-modern bg-slate-50/60 focus:bg-white transition-colors"
+        className="w-20 px-2 py-1 text-xs text-right input-modern bg-app/60 focus:bg-surface transition-colors"
       />
-      {unit ? <span className="text-[11px] text-slate-400 w-8">{unit}</span> : null}
+      {unit ? <span className="text-[11px] text-faint w-8">{unit}</span> : null}
     </div>
   );
 };
@@ -152,7 +177,7 @@ const SegmentedInput: React.FC<{
   onChange: (v: string) => void;
 }> = ({ value, options, disabled, onChange }) => (
   <div
-    className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200/70 ${
+    className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-alt border border-line/70 ${
       disabled ? "opacity-40" : ""
     }`}
   >
@@ -165,8 +190,8 @@ const SegmentedInput: React.FC<{
           disabled={disabled}
           onClick={() => !disabled && !active && onChange(o.value)}
           className={`px-2.5 py-1 text-[11px] rounded-md transition-colors whitespace-nowrap ${
-            active ? "bg-white text-primary-600 font-medium shadow-sm" : "text-slate-500"
-          } ${disabled ? "cursor-not-allowed" : active ? "" : "hover:text-slate-700"}`}
+            active ? "bg-surface text-primary-600 font-medium shadow-sm" : "text-muted"
+          } ${disabled ? "cursor-not-allowed" : active ? "" : "hover:text-body"}`}
         >
           {o.label}
         </button>
@@ -175,6 +200,10 @@ const SegmentedInput: React.FC<{
   </div>
 );
 
+/**
+ * 行的统一渲染：左标题 + 说明 + 作用范围徽标，右侧按 kind 派发到具体控件。
+ * disabled 时整行降低透明度，开关与分段控件忽略点击；行保留在原位，避免布局跳动。
+ */
 const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
   <div
     className={`flex items-start justify-between gap-6 py-3 ${
@@ -183,12 +212,12 @@ const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
   >
     <div className="min-w-0">
       <div className="flex items-center gap-2">
-        <span className={`text-xs font-medium ${row.disabled ? "text-slate-400" : "text-slate-700"}`}>
+        <span className={`text-xs font-medium ${row.disabled ? "text-faint" : "text-body"}`}>
           {row.title}
         </span>
         <ScopeBadge scope={row.scope} />
       </div>
-      <p className="text-[11px] text-slate-400 leading-relaxed mt-1">{row.desc}</p>
+      <p className="text-[11px] text-faint leading-relaxed mt-1">{row.desc}</p>
     </div>
     <div className="flex-shrink-0 pt-0.5">
       {row.kind === "toggle" && (
@@ -216,7 +245,22 @@ const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
   </div>
 );
 
-/* ────────────────────────────── 备份工具函数 ────────────────────────────── */
+/**
+ * 按 group 切段：相邻同组行归为一段，段前带一个小标题。
+ * 没有 group 的行（通用 / 列表 / 布局…）整段落在同一个无名分组里，渲染结果与原来一致。
+ */
+const chunkByGroup = (rows: SettingRow[]): { group: string | null; items: SettingRow[] }[] => {
+  const chunks: { group: string | null; items: SettingRow[] }[] = [];
+  for (const row of rows) {
+    const group = row.group ?? null;
+    const last = chunks[chunks.length - 1];
+    if (last && last.group === group) last.items.push(row);
+    else chunks.push({ group, items: [row] });
+  }
+  return chunks;
+};
+
+/* ---------- 备份工具函数 ---------- */
 
 /** 备份文件名里的时间戳：20261006-1930 */
 const fileStamp = () => {
@@ -225,34 +269,35 @@ const fileStamp = () => {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 };
 
-/** ISO 时间去秒，展示成 2026-10-06 19:30 */
+/** ISO 时间去秒，展示成 2026-10-06 19:30；缺值或非法日期显示「未知」 */
 const prettyTime = (iso: string | null) => {
   if (!iso) return "未知";
-  try {
-    const d = new Date(iso);
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  } catch {
-    return iso;
-  }
+  const d = new Date(iso);
+  // new Date 对非法字符串不抛错，只会得到 Invalid Date，必须显式判断
+  if (Number.isNaN(d.getTime())) return "未知";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+/** 取路径最后一段文件名：兼容 Windows 反斜杠与 POSIX 斜杠 */
 const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
+/** 把 Tauri 抛出的错误（字符串 / Error / 其他）压成一行提示文案 */
 const errorText = (e: unknown) =>
   typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 
+/** 生成提示词条目的唯一 id：时间戳 + 随机后缀，避免同一毫秒内连续添加时撞号 */
 const newPromptId = () => `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-/* ────────────────────────────── 主组件 ────────────────────────────── */
+/* ---------- 主组件 ---------- */
 
 /**
  * 统一的「设置」窗口。
  *
  * - 锚点式布局：左侧目录（跟随滚动高亮）+ 右侧设置项，点击目录平滑滚动。
- * - 固定宽高；顶部搜索可过滤设置项，无命中的分区自动隐藏。
+ * - 固定宽高（860×600，小屏按视口收缩）；顶部搜索可过滤设置项，无命中的分区自动隐藏。
  * - 设置项区分「实时生效」与「重启生效」两种作用范围。
- * - AI 服务商、AI 记忆、备份与恢复都融合在这里，而不是简单拼接旧弹窗。
+ * - AI 服务商、AI 记忆、备份与恢复、恢复默认、关于都是内嵌面板，共用同一套目录与搜索。
  */
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
@@ -269,35 +314,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onAiSelectedProviderChange,
   aiPrompts,
   onAiPromptsChange,
+  categories = [],
+  notes = [],
+  onSetCategoryAiAccess,
+  onSetNoteAiAccess,
+  theme,
+  onThemeChange,
 }) => {
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
 
+  /** 搜索关键词：非空时只渲染命中的分区与行 */
   const [query, setQuery] = useState("");
+  /** 「AI 访问权限」里展开了哪些分组（key 为分组 id，未分类用 UNCATEGORIZED_KEY） */
+  const [expandedCategories, setExpandedCategories] = useState<Set<number>>(new Set());
+  const toggleCategory = (key: number) =>
+    setExpandedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  /** 左侧目录当前高亮的分区；滚动时由 handleScroll 反查更新 */
   const [active, setActive] = useState<SettingsSection>(defaultSection ?? "general");
   /** 关于页：软件名与版本（版本由 Tauri 自动获取） */
   const [appName, setAppName] = useState(APP_NAME_FALLBACK);
   const [appVersion, setAppVersion] = useState("");
 
+  /** 右侧滚动容器：锚点定位与滚动反查高亮都以它为参照 */
   const contentRef = useRef<HTMLDivElement>(null);
+  /** 各分区节点，供「点击目录滚动」与「滚动反查」读取 offsetTop */
   const sectionRefs = useRef<Partial<Record<SettingsSection, HTMLElement | null>>>({});
   /** 点击目录后短暂锁定高亮，避免平滑滚动过程里高亮一路跳变 */
   const lockRef = useRef(false);
   const lockTimerRef = useRef<number | null>(null);
+  /** 滚动事件的 rAF 句柄：一帧只反查一次，避免高频 setState */
   const scrollRafRef = useRef<number | null>(null);
 
-  /* ── 记忆编辑的内部状态 ── */
+  /* 记忆编辑的本地草稿：未点「添加」前不写库 */
   const [memoryDraft, setMemoryDraft] = useState("");
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
   const [editingPromptText, setEditingPromptText] = useState("");
 
-  /* ── 备份的内部状态 ── */
+  /* 备份操作的进行中状态：非 null 时禁用导出/导入按钮，防止并发 */
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(null);
   const [lastExport, setLastExport] = useState<{ summary: BackupSummary; path: string } | null>(null);
   /** 导出备份时是否一并写入（解密后的）AI 服务商 API Key */
   const [backupIncludeApiKey, setBackupIncludeApiKey] = useState(false);
 
-  /* ── 顶部「已保存」提示：平时隐藏，发生修改后才短暂出现 ── */
+  /* 顶部「已保存」提示：平时隐藏，发生修改后短暂出现 */
   const [savedFlash, setSavedFlash] = useState(false);
   const savedTimerRef = useRef<number | null>(null);
   const flashSaved = useCallback(() => {
@@ -310,6 +375,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }, 2000);
   }, []);
 
+  /** 写软件设置：改动立即上抛（App 侧同步运行时状态并落库），并闪一下「已保存」 */
   const setApp = useCallback(
     <K extends keyof AppSettings>(
       category: K,
@@ -322,6 +388,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [onAppSettingChange, flashSaved],
   );
 
+  /** 写 AI 设置：整个对象上抛，App 侧 diff 出真正变化的字段再落库 */
   const setAi = useCallback(
     <K extends keyof AiSettings>(field: K, value: AiSettings[K]) => {
       onAiSettingsChange({ ...aiSettings, [field]: value });
@@ -330,9 +397,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [aiSettings, onAiSettingsChange, flashSaved],
   );
 
-  /* ── 数据驱动的设置行 ── */
-  const rows: SettingRow[] = useMemo(
-    () => [
+  /**
+   * 数据驱动的设置行：文案、搜索关键词、当前值与写回回调集中声明。
+   * 依赖其他开关的行（AI 面板、开机后最小化）用展开运算符条件插入；
+   * 依赖数组是设置值本身，任一改动都会重建数组，行数很少，成本可忽略。
+   *
+   * 「编辑器」分区的行不在这里逐条写：全部由 config/editorSettingSpecs.ts 的规格表生成，
+   * 新增一项只改那张表，弹窗与落库同时生效。
+   */
+  const rows: SettingRow[] = useMemo(() => {
+    const editor = appSettings.editor;
+    /** 规格 → 设置行：按 kind 取对应类型的值，写回统一走 setApp */
+    const editorRows: SettingRow[] = EDITOR_SETTING_SPECS.map((spec) => {
+      const base = {
+        section: "editor" as const,
+        group: spec.group,
+        title: spec.title,
+        desc: spec.desc,
+        keywords: spec.keywords,
+        scope: "live" as const,
+        disabled: spec.disabledWhen?.(editor),
+      };
+      if (spec.kind === "toggle") {
+        return {
+          ...base,
+          kind: "toggle",
+          value: editor[spec.field] as boolean,
+          onChange: (v: boolean) => setApp("editor", spec.field, v),
+        };
+      }
+      if (spec.kind === "number") {
+        return {
+          ...base,
+          kind: "number",
+          value: editor[spec.field] as number,
+          min: spec.min,
+          max: spec.max,
+          step: spec.step,
+          unit: spec.unit,
+          onChange: (v: number) => setApp("editor", spec.field, v),
+        };
+      }
+      return {
+        ...base,
+        kind: "segment",
+        value: editor[spec.field] as string,
+        options: spec.options,
+        onChange: (v: string) => setApp("editor", spec.field, v),
+      };
+    });
+
+    return [
       {
         section: "general",
         kind: "toggle",
@@ -353,29 +468,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.general.enableAI,
         onChange: (v) => setApp("general", "enableAI", v),
       },
-      {
-        section: "editor",
-        kind: "number",
-        scope: "live",
-        title: "默认字号",
-        desc: "编辑器打开时的默认正文字号；按住 Ctrl/⌘ 滚轮可临时缩放，点工具栏上的字号即可还原到这里设置的值。",
-        keywords: "字体 字号 font size 默认",
-        value: appSettings.editor.fontSize,
-        min: FONT_SIZE_MIN,
-        max: FONT_SIZE_MAX,
-        unit: "px",
-        onChange: (v) => setApp("editor", "fontSize", v),
-      },
-      {
-        section: "editor",
-        kind: "toggle",
-        scope: "live",
-        title: "Ctrl/⌘ + 滚轮缩放字号",
-        desc: "在编辑器区域内按住 Ctrl/⌘ 滚动鼠标，可临时放大或缩小正文字号。",
-        keywords: "滚轮 zoom wheel 缩放",
-        value: appSettings.editor.ctrlScrollZoom,
-        onChange: (v) => setApp("editor", "ctrlScrollZoom", v),
-      },
+      ...editorRows,
       {
         section: "view",
         kind: "segment",
@@ -415,7 +508,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.layout.sidebarCollapsed,
         onChange: (v) => setApp("layout", "sidebarCollapsed", v),
       },
-      // AI 相关设置：仅在 enableAI 为 true 时显示
+      // 依赖 enableAI：关闭 AI 能力时不出现这个「启动时打开面板」的开关
       ...(appSettings.general.enableAI
         ? [
             {
@@ -431,7 +524,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ]
         : []),
 
-      // ---- 托盘 + 开机自启动（已并入「通用」分区）----
+      // ---- 托盘与开机自启动：归属「通用」分区 ----
       {
         section: "general",
         kind: "toggle",
@@ -487,7 +580,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ]
         : []),
 
-      // ---- chat ----
+      // ---- chat：对话行为与请求参数 ----
       {
         section: "chat",
         kind: "number",
@@ -579,6 +672,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: aiSettings.showToolTrace,
         onChange: (v) => setAi("showToolTrace", v),
       },
+      // ---- context：上下文压缩与裁剪 ----
       {
         section: "context",
         kind: "number",
@@ -620,19 +714,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         unit: "字",
         onChange: (v) => setAi("toolResultChars", v),
       },
-    ],
-    [appSettings, aiSettings, setApp, setAi],
-  );
+      {
+        section: "access",
+        kind: "toggle",
+        scope: "live",
+        title: "允许 AI 访问笔记",
+        desc: "总开关。关闭后 AI 完全看不到笔记内容：不发送当前笔记、所有笔记工具直接被拒，对话仍可正常进行。",
+        keywords: "ai 访问 权限 隐私 限制 开关 access privacy permission",
+        value: aiSettings.aiAccessEnabled,
+        onChange: (v) => setAi("aiAccessEnabled", v),
+      },
+    ];
+  }, [appSettings, aiSettings, setApp, setAi]);
 
-  /* ── 搜索过滤 ── */
+  /** 未分类笔记：没有分组可继承，只能逐篇设 */
+  const uncategorized = useMemo(() => notes.filter((n) => !n.is_deleted && n.category_id === null), [notes]);
+
+  /* 搜索过滤：q 为归一化后的关键词，空串表示不过滤 */
   const q = query.trim().toLowerCase();
 
+  /**
+   * 自定义面板的可搜索文案：这些面板的内容不是 SettingRow，取不到行级关键词，
+   * 因此按分区手写词表；服务商名称随 aiProviders 变化，所以放进 useMemo。
+   */
   const customSearch = useMemo<Record<string, string>>(
     () => ({
       provider:
         "服务商 模型 api key 密钥 openai google claude 接口 base url http " +
         aiProviders.map((p) => p.name).join(" "),
+      theme:
+        "主题 配色 颜色 取色 色盘 暗黑 暗色 深色 浅色 夜间 预设 自定义 圆角 外观 theme color palette dark light appearance radius preset",
       memory: "记忆 提示词 prompt 长期记忆 前置 要求 memory",
+      access: "访问 权限 分组 笔记 ai 隐私 限制 禁止 只读 完全 三档 access permission privacy readonly category note",
       reset: "恢复默认 重置 出厂值 reset default",
       backup: "备份 恢复 导出 导入 数据 json 迁移 backup restore",
       about:
@@ -641,10 +754,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [aiProviders],
   );
 
+  /**
+   * 可见分区：先按 enableAI 剔除 AI 分区，再按搜索词过滤。
+   * 自定义面板匹配「分区名 + 关键词表」，普通分区只要任一子行命中就整段保留。
+   */
   const visibleSections = useMemo(
     () =>
       SECTIONS.filter((s) => {
-        // 根据 enableAI 过滤 AI sections
         if (!appSettings.general.enableAI && AI_SECTION_KEYS.includes(s.key)) {
           return false;
         }
@@ -659,6 +775,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [q, rows, customSearch, appSettings.general.enableAI],
   );
 
+  /** 某分区下命中搜索的行；没有关键词时返回该分区全部行 */
   const visibleRowsOf = useCallback(
     (section: SettingsSection) =>
       rows.filter(
@@ -669,7 +786,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [rows, q],
   );
 
-  /* ── 打开时：重置状态并定位到目标分区 ── */
+  /* 打开时：重置状态并定位到目标分区 */
   useEffect(() => {
     if (!isOpen) return;
     setQuery("");
@@ -685,7 +802,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     return () => cancelAnimationFrame(raf);
   }, [isOpen, defaultSection]);
 
-  /* ── 关于页：打开设置时读取应用名与版本号 ── */
+  /* 关于页：打开设置时读取应用名与版本号 */
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
@@ -701,7 +818,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
   }, [isOpen]);
 
-  /* ── 搜索变化后，把高亮收回到首个可见分区 ── */
+  /* 搜索变化后，把高亮收回到首个可见分区 */
   useEffect(() => {
     if (!isOpen) return;
     if (visibleSections.length === 0) return;
@@ -710,7 +827,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [visibleSections, isOpen, active]);
 
-  /* ── 滚动监听：左侧目录跟随高亮 ── */
+  /* 滚动监听：左侧目录跟随高亮 */
   const handleScroll = useCallback(() => {
     if (lockRef.current) return;
     if (scrollRafRef.current !== null) return;
@@ -732,6 +849,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   }, [visibleSections]);
 
+  /**
+   * 点击目录跳转：先锁高亮约 460ms（略长于平滑滚动耗时），
+   * 否则滚动过程中的 handleScroll 反查会把高亮改回中间经过的分区。
+   */
   const scrollToSection = useCallback((key: SettingsSection) => {
     const container = contentRef.current;
     const el = sectionRefs.current[key];
@@ -746,6 +867,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     container.scrollTo({ top: Math.max(0, el.offsetTop - 8), behavior: "smooth" });
   }, []);
 
+  /* 卸载时清掉挂起的 timer 与 rAF，避免回调打到已卸载的组件上 */
   useEffect(() => {
     return () => {
       if (lockTimerRef.current !== null) window.clearTimeout(lockTimerRef.current);
@@ -754,7 +876,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
   }, []);
 
-  /* ── 记忆：增删改 ── */
+  /* 记忆：增删改都立即上抛新数组，写库与生效由 App 负责 */
   const addPrompt = () => {
     const text = memoryDraft.trim();
     if (!text) return;
@@ -784,7 +906,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     flashSaved();
   };
 
-  /* ── 备份：导出 / 导入 ── */
+  /** 导出：先让用户选保存路径（取消则返回），再交给后端写文件；失败只弹提示 */
   const handleExport = async () => {
     try {
       const path = await save({
@@ -806,6 +928,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  /**
+   * 导入：覆盖式恢复，必须先二次确认（数据不可撤销）；
+   * 成功后延迟 800ms 再整页 reload，一是让提示能被看到，二是让各 store 重新从库里读。
+   */
   const handleImport = async () => {
     try {
       const selected = await open({
@@ -833,8 +959,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  // 所有 hook 都已执行完，关闭时直接不渲染（保留组件状态，下次打开不闪）
   if (!isOpen) return null;
 
+  /** 底部统计用：启用中的记忆/提示词条数 */
   const enabledPromptCount = aiPrompts.filter((p) => p.enabled).length;
 
   return (
@@ -843,37 +971,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         className="modal-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
         style={{ background: "var(--color-overlay)" }}
       >
-        <div className="modal-content bg-white rounded-2xl shadow-2xl w-[860px] h-[600px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden">
-          {/* 头部 */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 flex-shrink-0">
+        <div className="modal-content bg-surface rounded-2xl shadow-2xl w-[860px] h-[600px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden">
+          {/* 头部：标题 + 自动保存提示（aria-live 供读屏播报）+ 关闭 */}
+          <div className="flex items-center justify-between px-5 py-3.5 border-b border-line-soft flex-shrink-0">
             <div className="flex items-center gap-2">
               <Icon name="ai-settings-bold" className="w-4 h-4 text-primary-500" />
-              <h3 className="text-base font-semibold text-slate-800">设置</h3>
+              <h3 className="text-base font-semibold text-ink">设置</h3>
             </div>
             <div className="flex items-center gap-3">
               <span
                 aria-live="polite"
-                className={`hidden sm:flex items-center gap-1.5 text-[11px] text-slate-400 transition-opacity duration-500 ${
+                className={`hidden sm:flex items-center gap-1.5 text-[11px] text-faint transition-opacity duration-500 ${
                   savedFlash ? "opacity-100" : "opacity-0"
                 }`}
               >
-                <Icon name="editor-check" className="w-3 h-3 text-emerald-500" />
+                <Icon name="editor-check" className="w-3 h-3 text-success" />
                 更改已自动保存
               </span>
-              <button onClick={onClose} className="toolbar-btn hover:!bg-slate-100" title="关闭设置">
+              <button onClick={onClose} className="toolbar-btn hover:!bg-surface-alt" title="关闭设置">
                 <Icon name="modal-close" className="w-4 h-4" />
               </button>
             </div>
           </div>
 
           <div className="flex flex-1 min-h-0">
-            {/* 左侧目录 */}
-            <div className="w-[186px] flex-shrink-0 border-r border-slate-100 flex flex-col bg-slate-50/40">
+            {/* 左侧目录：搜索框 + 分组导航，空分组不渲染 */}
+            <div className="w-[186px] flex-shrink-0 border-r border-line-soft flex flex-col bg-app/40">
               <div className="p-2.5 flex-shrink-0">
                 <div className="relative">
                   <Icon
                     name="sidebar-search"
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 pointer-events-none"
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-faint-soft pointer-events-none"
                   />
                   <input
                     type="text"
@@ -890,7 +1018,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   if (items.length === 0) return null;
                   return (
                     <div key={group} className="mb-1">
-                      <div className="px-2.5 pt-2.5 pb-1 text-[10px] font-semibold text-slate-300 uppercase tracking-wider">
+                      <div className="px-2.5 pt-2.5 pb-1 text-[10px] font-semibold text-faint-soft uppercase tracking-wider">
                         {group}
                       </div>
                       {items.map((s) => (
@@ -900,7 +1028,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg text-xs font-medium transition-colors ${
                             active === s.key
                               ? "bg-primary-50 text-primary-600"
-                              : "text-slate-500 hover:bg-slate-100/70"
+                              : "text-muted hover:bg-surface-alt/70"
                           }`}
                         >
                           <Icon
@@ -917,22 +1045,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   );
                 })}
                 {visibleSections.length === 0 && (
-                  <p className="px-3 py-6 text-center text-[11px] text-slate-400">没有匹配的设置项</p>
+                  <p className="px-3 py-6 text-center text-[11px] text-faint">没有匹配的设置项</p>
                 )}
               </nav>
             </div>
 
-            {/* 右侧设置项 */}
+            {/* 右侧内容：滚动容器，onScroll 驱动左侧高亮；搜索无结果时显示空态 */}
             <div
               ref={contentRef}
               onScroll={handleScroll}
               className="relative flex-1 min-w-0 overflow-y-auto chat-scrollbar px-6 py-5"
             >
               {visibleSections.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center gap-2 text-slate-400">
-                  <Icon name="sidebar-search" className="w-8 h-8 text-slate-200" />
+                <div className="h-full flex flex-col items-center justify-center gap-2 text-faint">
+                  <Icon name="sidebar-search" className="w-8 h-8 text-faint-soft" />
                   <p className="text-sm">没有找到相关设置</p>
-                  <p className="text-[11px] text-slate-300">换个关键词试试</p>
+                  <p className="text-[11px] text-faint-soft">换个关键词试试</p>
                 </div>
               ) : (
                 visibleSections.map((s) => {
@@ -946,25 +1074,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       data-section={s.key}
                       className="mb-11 last:mb-2 [&>*+*]:pl-8"
                     >
-                      <div className="flex items-center gap-2 mb-2 pb-2 border-b border-slate-100">
+                      <div className="flex items-center gap-2 mb-2 pb-2 border-b border-line-soft">
                         <span className="w-6 h-6 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
                           <Icon name={s.icon} className="w-3.5 h-3.5 text-primary-500" />
                         </span>
-                        <h4 className="text-sm font-semibold text-slate-700">{s.label}</h4>
+                        <h4 className="text-sm font-semibold text-body">{s.label}</h4>
                       </div>
 
-                      {/* 数据驱动的行 */}
+                      {/* 数据驱动的行：统一交给 RowView 按 kind 渲染；带 group 的分区按组分段 */}
                       {sectionRows.length > 0 && (
-                        <div className="divide-y divide-slate-100">
-                          {sectionRows.map((row) => (
-                            <RowView key={`${row.section}.${row.title}`} row={row} />
+                        <div className="space-y-1">
+                          {chunkByGroup(sectionRows).map((chunk) => (
+                            <div key={chunk.group ?? "_"} className="divide-y divide-line-soft">
+                              {chunk.group && (
+                                <p className="pt-3 pb-1 text-[11px] font-semibold text-muted">
+                                  {chunk.group}
+                                </p>
+                              )}
+                              {chunk.items.map((row) => (
+                                <RowView key={`${row.section}.${row.title}`} row={row} />
+                              ))}
+                            </div>
                           ))}
                         </div>
                       )}
 
-                      {/* AI 服务商 */}
+                      {/* 主题：明暗模式 + 预设 + 自定义取色 + 已保存主题 */}
+                      {s.key === "theme" && <ThemePanel theme={theme} onChange={onThemeChange} />}
+
+                      {/* AI 服务商：复用 AiProviderModal 里的面板，共用本窗口的开关状态 */}
                       {s.key === "provider" && (
-                        <div className="rounded-xl border border-slate-200 p-3.5">
+                        <div className="rounded-xl border border-line p-3.5">
                           <AiProviderSettings
                             isOpen={isOpen}
                             onClose={onClose}
@@ -976,15 +1116,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
-                      {/* AI 记忆 / 前置提示词 */}
+                      {/* AI 记忆 / 前置提示词：启用项由 buildMemoryBlock 拼进每次请求的系统提示词 */}
                       {s.key === "memory" && (
                         <div className="space-y-3">
-                          <p className="text-[11px] text-slate-400 leading-relaxed">
-                            启用中的每一条都会加在<strong className="text-slate-500">每次请求</strong>的系统提示词末尾，
+                          <p className="text-[11px] text-faint leading-relaxed">
+                            启用中的每一条都会加在<strong className="text-muted">每次请求</strong>的系统提示词末尾，
                             既可作默认要求（如「回答先给结论」），也可当作长期记忆。
                           </p>
 
                           <div className="space-y-2">
+                            {/* 中文输入法组字期间的回车是选词，isComposing / keyCode 229 时不能当提交 */}
                             <textarea
                               value={memoryDraft}
                               onChange={(e) => setMemoryDraft(e.target.value)}
@@ -997,14 +1138,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               }}
                               rows={2}
                               placeholder="输入一条要求或记忆，回车添加（Shift+回车换行）"
-                              className="w-full resize-none px-3 py-2 text-xs input-modern bg-slate-50/50 focus:bg-white transition-colors"
+                              className="w-full resize-none px-3 py-2 text-xs input-modern bg-app/50 focus:bg-surface transition-colors"
                             />
                             <div className="flex items-center justify-between">
-                              <span className="text-[11px] text-slate-400">回车即可添加</span>
+                              <span className="text-[11px] text-faint">回车即可添加</span>
                               <button
                                 onClick={addPrompt}
                                 disabled={!memoryDraft.trim()}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-500 rounded-lg hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                className="px-3 py-1.5 text-xs font-medium text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                               >
                                 添加
                               </button>
@@ -1014,7 +1155,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {/* 条目多了就内部滚动，避免把整页设置撑得特别长 */}
                           <div className="space-y-2 max-h-[260px] overflow-y-auto chat-scrollbar pr-1 -mr-1">
                             {aiPrompts.length === 0 && (
-                              <div className="py-6 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                              <div className="py-6 text-center text-xs text-faint border border-dashed border-line rounded-xl">
                                 还没有内容。添加一条试试，例如「回答尽量简短，先给结论」。
                               </div>
                             )}
@@ -1022,7 +1163,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <div
                                 key={entry.id}
                                 className={`group rounded-xl border px-3 py-2 transition-colors ${
-                                  entry.enabled ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50/60"
+                                  entry.enabled ? "border-line bg-surface" : "border-line-soft bg-app/60"
                                 }`}
                               >
                                 {editingPromptId === entry.id ? (
@@ -1040,18 +1181,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       }}
                                       rows={2}
                                       autoFocus
-                                      className="w-full resize-none px-2.5 py-1.5 text-xs input-modern bg-white"
+                                      className="w-full resize-none px-2.5 py-1.5 text-xs input-modern bg-surface"
                                     />
                                     <div className="flex justify-end gap-1.5">
                                       <button
                                         onClick={() => setEditingPromptId(null)}
-                                        className="px-2.5 py-1 text-[11px] text-slate-500 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+                                        className="px-2.5 py-1 text-[11px] text-muted bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors"
                                       >
                                         取消
                                       </button>
                                       <button
                                         onClick={savePromptEdit}
-                                        className="px-2.5 py-1 text-[11px] text-white bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
+                                        className="px-2.5 py-1 text-[11px] text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
                                       >
                                         保存
                                       </button>
@@ -1065,15 +1206,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       aria-pressed={entry.enabled}
                                       className={`mt-0.5 w-4 h-4 flex-shrink-0 rounded border flex items-center justify-center transition-colors ${
                                         entry.enabled
-                                          ? "bg-primary-500 border-primary-500 text-white"
-                                          : "bg-white border-slate-300"
+                                          ? "bg-primary-500 border-primary-500 text-on-accent"
+                                          : "bg-surface border-line-strong"
                                       }`}
                                     >
                                       {entry.enabled && <Icon name="memory-check" className="w-3 h-3" />}
                                     </button>
                                     <p
                                       className={`flex-1 min-w-0 text-xs leading-relaxed whitespace-pre-wrap break-words ${
-                                        entry.enabled ? "text-slate-700" : "text-slate-400"
+                                        entry.enabled ? "text-body" : "text-faint"
                                       }`}
                                     >
                                       {entry.text}
@@ -1084,13 +1225,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                           setEditingPromptId(entry.id);
                                           setEditingPromptText(entry.text);
                                         }}
-                                        className="px-1.5 py-1 text-[11px] text-slate-400 hover:text-primary-500 rounded-md hover:bg-primary-50 transition-colors"
+                                        className="px-1.5 py-1 text-[11px] text-faint hover:text-primary-500 rounded-md hover:bg-primary-50 transition-colors"
                                       >
                                         编辑
                                       </button>
                                       <button
                                         onClick={() => removePrompt(entry.id)}
-                                        className="px-1.5 py-1 text-[11px] text-slate-400 hover:text-red-500 rounded-md hover:bg-red-50 transition-colors"
+                                        className="px-1.5 py-1 text-[11px] text-faint hover:text-danger rounded-md hover:bg-danger-soft transition-colors"
                                       >
                                         删除
                                       </button>
@@ -1101,41 +1242,182 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             ))}
                           </div>
 
-                          <p className="text-[11px] text-slate-400">
+                          <p className="text-[11px] text-faint">
                             共 {aiPrompts.length} 条，其中{" "}
-                            <strong className="text-slate-600">{enabledPromptCount}</strong> 条已启用
+                            <strong className="text-body">{enabledPromptCount}</strong> 条已启用
                           </p>
+                        </div>
+                      )}
+
+                      {/* AI 访问权限：总开关在数据行里，这里是分组 + 组内笔记的档位 */}
+                      {s.key === "access" && (
+                        <div className="space-y-3">
+                          <p className="text-[11px] text-faint leading-relaxed">
+                            三档权限：<strong className="text-muted">禁止</strong>（AI 完全看不到）、
+                            <strong className="text-muted">只读</strong>（能读能总结，不能改）、
+                            <strong className="text-muted">完全</strong>（读写都可以）。
+                            分组定的是组内上限，展开分组可以给单篇笔记单独设；两层取更严格的那一档。
+                          </p>
+
+                          {!aiSettings.aiAccessEnabled && (
+                            <div className="flex items-start gap-2 rounded-xl border border-warning-line bg-warning-soft/70 px-3 py-2.5">
+                              <Icon name="ai-warning" className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-warning" />
+                              <p className="text-[11px] leading-relaxed text-warning-deep">
+                                总开关已关闭，下面的设置暂时不起作用；AI 无法读取任何笔记。
+                              </p>
+                            </div>
+                          )}
+
+                          <div className="rounded-xl border border-line divide-y divide-line-soft">
+                            {categories.map((c) => {
+                              const rows = notes.filter((n) => !n.is_deleted && n.category_id === c.id);
+                              const capped = rows.filter((n) => n.ai_access > c.ai_access).length;
+                              const expanded = expandedCategories.has(c.id);
+                              return (
+                                <div key={c.id}>
+                                  <div className="flex items-center gap-2 px-3 py-2.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleCategory(c.id)}
+                                      disabled={rows.length === 0}
+                                      className={`flex-shrink-0 w-4 h-4 rounded flex items-center justify-center transition-colors ${
+                                        rows.length === 0
+                                          ? "text-faint-soft cursor-default"
+                                          : "text-faint hover:bg-surface-alt hover:text-body"
+                                      }`}
+                                      title={rows.length === 0 ? "该分组还没有笔记" : expanded ? "收起笔记" : "展开设置单篇笔记"}
+                                      aria-expanded={expanded}
+                                    >
+                                      <Icon
+                                        name="sidebar-chevron-down"
+                                        className={`w-2.5 h-2.5 transition-transform ${expanded ? "" : "-rotate-90"}`}
+                                      />
+                                    </button>
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-xs font-medium text-body truncate" title={c.name}>
+                                        {c.name}
+                                      </p>
+                                      <p className="text-[10.5px] text-faint">
+                                        {c.note_count} 篇
+                                        {capped > 0 ? ` · ${capped} 篇被分组限制在更低档` : ""}
+                                      </p>
+                                    </div>
+                                    <AiAccessLevelSelect
+                                      value={c.ai_access}
+                                      disabled={!onSetCategoryAiAccess}
+                                      onChange={(level) => void onSetCategoryAiAccess?.(c, level)}
+                                    />
+                                  </div>
+
+                                  {expanded && (
+                                    <div className="bg-app/70 px-3 pb-2.5 pl-9 space-y-1">
+                                      {rows.map((n) => {
+                                        const effective = Math.min(n.ai_access, c.ai_access) as AiAccessLevel;
+                                        return (
+                                          <div key={n.id} className="flex items-center gap-2 py-1">
+                                            <span className="min-w-0 flex-1 truncate text-[11.5px] text-body" title={n.title}>
+                                              {n.title || "无标题"}
+                                            </span>
+                                            {effective !== n.ai_access && (
+                                              <span className="flex-shrink-0 text-[10px] text-warning">
+                                                实际{AI_ACCESS_LABELS[effective]}
+                                              </span>
+                                            )}
+                                            <AiAccessLevelSelect
+                                              value={n.ai_access}
+                                              size="xs"
+                                              disabled={!onSetNoteAiAccess}
+                                              onChange={(level) => void onSetNoteAiAccess?.(n, level)}
+                                            />
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {/* 未分类笔记没有分组可继承，只能逐篇设 */}
+                            {uncategorized.length > 0 && (
+                              <div>
+                                <div className="flex items-center gap-2 px-3 py-2.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleCategory(UNCATEGORIZED_KEY)}
+                                    className="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center text-faint hover:bg-surface-alt hover:text-body transition-colors"
+                                    aria-expanded={expandedCategories.has(UNCATEGORIZED_KEY)}
+                                    title="展开设置单篇笔记"
+                                  >
+                                    <Icon
+                                      name="sidebar-chevron-down"
+                                      className={`w-2.5 h-2.5 transition-transform ${
+                                        expandedCategories.has(UNCATEGORIZED_KEY) ? "" : "-rotate-90"
+                                      }`}
+                                    />
+                                  </button>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-medium text-body">未分类</p>
+                                    <p className="text-[10.5px] text-faint">{uncategorized.length} 篇 · 逐篇设置</p>
+                                  </div>
+                                </div>
+                                {expandedCategories.has(UNCATEGORIZED_KEY) && (
+                                  <div className="bg-app/70 px-3 pb-2.5 pl-9 space-y-1">
+                                    {uncategorized.map((n) => (
+                                      <div key={n.id} className="flex items-center gap-2 py-1">
+                                        <span className="min-w-0 flex-1 truncate text-[11.5px] text-body" title={n.title}>
+                                          {n.title || "无标题"}
+                                        </span>
+                                        <AiAccessLevelSelect
+                                          value={n.ai_access}
+                                          size="xs"
+                                          disabled={!onSetNoteAiAccess}
+                                          onChange={(level) => void onSetNoteAiAccess?.(n, level)}
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {categories.length === 0 && uncategorized.length === 0 && (
+                            <p className="rounded-xl border border-line px-3.5 py-3 text-[11px] text-faint">
+                              还没有任何笔记或分组。
+                            </p>
+                          )}
                         </div>
                       )}
 
                       {/* 恢复默认：软件设置与 AI 设置互相独立，互不影响 */}
                       {s.key === "reset" && (
                         <div className="space-y-2.5 pt-1">
-                          <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200 px-3.5 py-3">
+                          <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-slate-700">恢复软件默认设置</p>
-                              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                              <p className="text-xs font-medium text-body">恢复软件默认设置</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
                                 通用、编辑器、笔记列表、界面布局回到默认值，不影响 AI 设置。
                               </p>
                             </div>
                             <button
                               onClick={onResetAppSettings}
-                              className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex-shrink-0"
+                              className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
                             >
                               恢复
                             </button>
                           </div>
 
-                          <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200 px-3.5 py-3">
+                          <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-slate-700">恢复 AI 默认设置</p>
-                              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                              <p className="text-xs font-medium text-body">恢复 AI 默认设置</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
                                 对话行为、上下文等 AI 参数回到默认值，不影响服务商与记忆条目。
                               </p>
                             </div>
                             <button
                               onClick={() => onAiSettingsChange({ ...DEFAULT_AI_SETTINGS })}
-                              className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex-shrink-0"
+                              className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
                             >
                               恢复
                             </button>
@@ -1143,20 +1425,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
-                      {/* 备份与恢复 */}
+                      {/* 备份与恢复：导出为 JSON 文件 / 用备份文件覆盖当前数据 */}
                       {s.key === "backup" && (
                         <div className="space-y-3">
-                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                          <p className="text-[11px] text-faint leading-relaxed">
                             备份内容包含笔记、分组、回收站、AI 对话记录与设置；可选择是否一并备份
                             AI 服务商的 API Key。
                           </p>
 
-                          <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                          {/* API Key 会以明文写入备份文件，默认关闭，避免密钥被误带到网盘 */}
+                          <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
                             <div className="min-w-0">
-                              <span className="text-xs font-medium text-slate-700">备份 API Key</span>
-                              <p className="text-[11px] text-slate-400 leading-relaxed mt-1">
+                              <span className="text-xs font-medium text-body">备份 API Key</span>
+                              <p className="text-[11px] text-faint leading-relaxed mt-1">
                                 勾选后会把服务商的 API Key 解密成
-                                <b className="text-slate-500">明文</b>
+                                <b className="text-muted">明文</b>
                                 写入备份文件（请妥善保管）；不勾选则只保留服务商配置、不含 Key。
                               </p>
                             </div>
@@ -1165,17 +1448,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
+                          <div className="flex items-center gap-3 p-3 rounded-xl bg-app border border-line-soft">
                             <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
                               <Icon name="app-backup" className="w-4 h-4 text-primary-500" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-slate-700">导出备份</p>
-                              <p className="text-[11px] text-slate-400 mt-0.5">
+                              <p className="text-sm font-medium text-body">导出备份</p>
+                              <p className="text-[11px] text-faint mt-0.5">
                                 保存为一个 JSON 文件，可放到网盘或 U 盘带走。
                               </p>
                               {lastExport && (
-                                <p className="text-[11px] text-emerald-600 mt-1 truncate" title={lastExport.path}>
+                                <p className="text-[11px] text-success mt-1 truncate" title={lastExport.path}>
                                   已导出：{baseName(lastExport.path)} · {lastExport.summary.notes} 篇笔记 ·{" "}
                                   {lastExport.summary.messages} 条对话消息
                                 </p>
@@ -1190,27 +1473,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </button>
                           </div>
 
-                          <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
-                            <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
-                              <Icon name="app-restore" className="w-4 h-4 text-amber-500" />
+                          <div className="flex items-center gap-3 p-3 rounded-xl bg-app border border-line-soft">
+                            <div className="w-8 h-8 rounded-lg bg-warning-soft flex items-center justify-center flex-shrink-0">
+                              <Icon name="app-restore" className="w-4 h-4 text-warning" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-slate-700">从备份恢复</p>
-                              <p className="text-[11px] text-slate-400 mt-0.5">
+                              <p className="text-sm font-medium text-body">从备份恢复</p>
+                              <p className="text-[11px] text-faint mt-0.5">
                                 选择备份文件后覆盖当前数据；备份里带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。
                               </p>
                             </div>
                             <button
                               onClick={handleImport}
                               disabled={backupBusy !== null}
-                              className="px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-100 rounded-xl hover:bg-amber-200 transition-colors flex-shrink-0 disabled:opacity-50"
+                              className="px-3 py-1.5 text-xs font-medium text-warning-deep bg-warning-soft rounded-xl hover:bg-warning-line transition-colors flex-shrink-0 disabled:opacity-50"
                             >
                               {backupBusy === "import" ? "恢复中..." : "选择文件"}
                             </button>
                           </div>
 
                           {lastExport?.summary.exported_at && (
-                            <p className="text-[11px] text-slate-400">
+                            <p className="text-[11px] text-faint">
                               本次导出时间：{prettyTime(lastExport.summary.exported_at)}
                             </p>
                           )}
@@ -1219,7 +1502,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                       {/* 关于：软件名 / 作者 / 版本 */}
                       {s.key === "about" && (
-                        <div className="rounded-xl border border-slate-200 p-4">
+                        <div className="rounded-xl border border-line p-4">
                           <div className="flex items-center gap-3">
                             <img
                               src="/icons/app-logo.png"
@@ -1229,45 +1512,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               style={{ width: 30, height: 30 }}
                             />
                             <div className="min-w-0">
-                              <p className="text-sm font-semibold text-slate-800">{appName}</p>
-                              <p className="text-[11px] text-slate-400 mt-0.5">作者：{APP_AUTHOR}</p>
+                              <p className="text-sm font-semibold text-ink">{appName}</p>
+                              <p className="text-[11px] text-faint mt-0.5">作者：{APP_AUTHOR}</p>
                             </div>
                           </div>
-                          <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-[12px]">
-                            <span className="text-slate-400">版本</span>
-                            <span className="text-slate-600 font-medium">{appVersion || "—"}</span>
+                          <div className="mt-3 pt-3 border-t border-line-soft flex items-center justify-between text-[12px]">
+                            <span className="text-faint">版本</span>
+                            <span className="text-body font-medium">{appVersion || "—"}</span>
                           </div>
 
                           {/* 图标来源 */}
-                          <div className="mt-3 pt-3 border-t border-slate-100">
-                            <p className="text-[11px] font-medium text-slate-500">部分图标来源</p>
+                          <div className="mt-3 pt-3 border-t border-line-soft">
+                            <p className="text-[11px] font-medium text-muted">部分图标来源</p>
                             <button
                               onClick={() => openUrl(ICON_SOURCE.url)}
                               className="mt-1.5 text-left group"
                             >
-                              <span className="block text-[11px] text-slate-600 group-hover:text-primary-600 transition-colors">
+                              <span className="block text-[11px] text-body group-hover:text-primary-600 transition-colors">
                                 {ICON_SOURCE.name}
                               </span>
-                              <span className="block text-[11px] text-slate-400">
+                              <span className="block text-[11px] text-faint">
                                 {ICON_SOURCE.url}
                               </span>
                             </button>
                           </div>
 
                           {/* 开源项目：条目较多，用固定高度滚动区承载 */}
-                          <div className="mt-3 pt-3 border-t border-slate-100">
-                            <p className="text-[11px] font-medium text-slate-500">开源项目</p>
+                          <div className="mt-3 pt-3 border-t border-line-soft">
+                            <p className="text-[11px] font-medium text-muted">开源项目</p>
                             <div className="mt-1.5 max-h-[150px] overflow-y-auto chat-scrollbar pr-1 space-y-0.5">
                               {OPEN_SOURCE_PROJECTS.map((p) => (
                                 <button
                                   key={p.name}
                                   onClick={() => openUrl(p.url)}
-                                  className="w-full flex items-center justify-between gap-3 px-2 py-1.5 rounded-lg text-[11px] text-left hover:bg-slate-50 transition-colors group"
+                                  className="w-full flex items-center justify-between gap-3 px-2 py-1.5 rounded-lg text-[11px] text-left hover:bg-app transition-colors group"
                                 >
-                                  <span className="text-slate-600 group-hover:text-primary-600 transition-colors">
+                                  <span className="text-body group-hover:text-primary-600 transition-colors">
                                     {p.name}
                                   </span>
-                                  <span className="text-slate-400 truncate">{shortUrl(p.url)}</span>
+                                  <span className="text-faint truncate">{shortUrl(p.url)}</span>
                                 </button>
                               ))}
                             </div>

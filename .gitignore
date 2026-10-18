@@ -33,6 +33,7 @@ Thumbs.db
 .vscode/
 .idea/
 .trae/
+.workbuddy/
 *.swp
 *.swo
 *~
@@ -83,3 +84,8 @@ Cargo.lock
 # pnpm-lock.yaml
 # package-lock.json
 # yarn.lock
+
+# ========================================
+# User files
+# ========================================
+demo/

@@ -1,3 +1,14 @@
+/**
+ * 侧边栏：主窗口最左侧的导航区（宽度与折叠由外层 .sidebar-shell 控制）。
+ *
+ * 数据全部由 App 传入，且 categories / notes 必须是全量——抽屉里各分组的笔记都由 notes 派生，
+ * 按选中分组过滤会让其它分组瞬间变空。本组件只做本地派生：分组 map、搜索命中、收藏聚合。
+ *
+ * 交互约束：
+ * - expandedDrawer 由 App 持有，同一时刻只展开一个抽屉（手风琴）。
+ * - searchQuery 非空时忽略 view，扁平展示三组搜索结果。
+ * - 副作用：内部拖拽落点直接调 notesApi.updateNote 写 category_id，成功后 onNotesUpdated() 刷新全局。
+ */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Category, Note } from "@/interface/note";
 import type { SidebarProps } from "@/interface/sidebar";
@@ -10,9 +21,11 @@ import { AiSparkleIcon } from '@/components/common/icons';
 import { Icon } from '@/components/common/Icon';
 import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/contextMenus';
 import type { GroupMenuKind } from '@/config/contextMenus';
-/** 虚拟分组 ID：用于承载 category_id 指向已删除分组的笔记 */
+/** 排序选项：value 直接作为后端排序字段使用 */
 const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' }];
-const ORPHAN_GROUP_ID = -1;
+/** 排序浮层宽度（px）：定位时用它把浮层夹在视口内 */
+const SORT_MENU_WIDTH = 132;
+const ORPHAN_GROUP_ID = -1; // 虚拟分组 ID：承载 category_id 指向已删除分组的遗留笔记
 /** 搜索视图三个虚拟分组 → 展开状态 key */
 const SEARCH_GROUP_KEY: Record<string, 'all' | 'title' | 'content'> = {
   'search-all': 'all',
@@ -23,6 +36,14 @@ const SEARCH_GROUP_KEY: Record<string, 'all' | 'title' | 'content'> = {
 type GroupMenuTarget =
   | { kind: 'category'; category: Category; notes: Note[] }
   | { kind: Exclude<GroupMenuKind, 'category'>; name: string; notes: Note[] };
+/**
+ * 侧边栏主体。
+ *
+ * 关键 props：
+ * - selectedNoteId / focusNoteId：前者是当前打开项，后者只在 AI 打开笔记时短暂置位（用于滚动定位）。
+ * - hoverDropCategoryId / isFileDragActive：由 App 的系统级文件拖拽事件驱动，与内部指针拖拽互不干扰。
+ * - onExportGroup / onSaveNote / onMoveToCategory 等均透传给右键菜单，本组件不直接改笔记内容。
+ */
 export const Sidebar: React.FC<SidebarProps> = ({
   categories,
   notes,
@@ -65,17 +86,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
   const { showToast } = useToast();
-  /** 排序下拉浮层：open + 位置（用 fixed 定位，避免被列表滚动容器裁掉） */
+  /** 排序下拉浮层：位置在点击时按按钮 rect 算出，用 fixed 定位避免被列表滚动容器裁掉 */
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const [sortMenu, setSortMenu] = useState<{ open: boolean; top: number; left: number; width: number }>({ open: false, top: 0, left: 0, width: 0 });
+  /** 当前右键命中的笔记；与 groupMenuRef 二选一，两者都有值时优先按分组菜单渲染 */
   const noteContextMenuRef = useRef<Note | null>(null);
   /** 侧边栏滚动容器 ref：拖动笔记时自动滚动 */
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
   /** 自动滚动的动画帧 id，用于清理 */
   const autoScrollRafRef = useRef<number | null>(null);
-  /** 当前拖动的 Y 坐标，由 onDragOver 更新，由 RAF 循环读取 */
+  /** 当前指针 Y 坐标：由 pointermove 写入，由自动滚动的 rAF 循环读取 */
   const dragYRef = useRef<number | null>(null);
-  /* ---- 内部「拖笔记到分组」：改用指针事件（系统级 dragDrop 已禁用 HTML5 拖放） ---- */
+  /* ---------- 内部拖拽：笔记 → 分组（指针事件） ---------- */
+  // Tauri 已禁用系统级 HTML5 拖放，因此用 pointerdown/move/up 自行实现；
+  // 落点用 document.elementFromPoint 命中 [data-drop-category]，不依赖 dragover 事件。
   /** 按下时命中的笔记 id（尚未进入拖拽） */
   const pointerNoteIdRef = useRef<number | null>(null);
   /** 按下起点，用于判断是否超过拖拽阈值 */
@@ -91,7 +115,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   /** 指针拖拽当前悬停的分组 id（内部拖拽高亮） */
   const [dragHoverCategoryId, setDragHoverCategoryId] = useState<number | null>(null);
   const isSearching = searchQuery.trim().length > 0;
-  /** 启动 / 停止自动滚动循环 */
+  /** 停止自动滚动并清空指针坐标 */
   const stopAutoScroll = () => {
     if (autoScrollRafRef.current) {
       cancelAnimationFrame(autoScrollRafRef.current);
@@ -99,6 +123,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     dragYRef.current = null;
   };
+  /**
+   * 指针靠近容器上下边缘 60px 时自动滚动。
+   * 用 rAF 而不是在 pointermove 里滚动：指针停在边缘不动时也要持续滚，且逐帧推进更平滑。
+   * 速度随贴近程度线性增长（1 → 16px/帧），离开边缘即退出循环，等下一次 pointermove 重新拉起。
+   */
   const startAutoScroll = (container: HTMLDivElement) => {
     if (autoScrollRafRef.current) return; // 已在滚动中
     const loop = () => {
@@ -127,6 +156,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     autoScrollRafRef.current = requestAnimationFrame(loop);
   };
   const query = searchQuery.trim().toLowerCase();
+  /** 分组 id → 笔记列表；额外的一桶（ORPHAN_GROUP_ID）收留分组已删除的孤儿笔记 */
   const categorized = useMemo(() => {
     const map = new Map<number, Note[]>();
     for (const category of categories) {
@@ -237,6 +267,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onDeleteNote: () => onDeleteNote(note),
       onShowProperties: () => onShowNoteProperties(note),
     });
+  /**
+   * 拖拽落点写库：侧边栏里唯一直接改数据的地方。
+   * 落点与笔记当前分组相同时直接返回——否则会白白触发一次 update + 全量刷新，列表还会闪一下。
+   */
   const handleDropToCategory = async (noteIdStr: string, categoryId: number | null) => {
     const noteId = parseInt(noteIdStr, 10);
     if (isNaN(noteId)) return;
@@ -275,7 +309,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     isPointerDraggingRef.current = false;
     pointerTitleRef.current = noteEl.querySelector('h4')?.textContent || '无标题';
   };
-  // 指针拖拽：window 级监听，超出阈值后显示浮层、自动滚动并高亮落点分组
+  // 指针拖拽：window 级监听只绑定一次（空依赖数组），可变状态全放 ref，避免反复解绑重绑。
+  // 位移不足 5px 视为点击，保证单击打开笔记不受影响。
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const start = pointerStartRef.current;
@@ -324,7 +359,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, []);
   const categoryCount = categories.length;
   return (
-    <div className="h-full sidebar-bg border-r border-slate-200/80 flex flex-col overflow-hidden">
+    <div className="h-full sidebar-bg border-r border-line/80 flex flex-col overflow-hidden">
       {/* Logo + 头部按钮 */}
       <div className="px-3.5 pt-3.5 pb-2 flex-shrink-0">
         <div className="relative flex items-center justify-between">
@@ -374,7 +409,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="relative flex-1 min-w-0">
             <Icon
               name="sidebar-search"
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 pointer-events-none"
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-faint-soft pointer-events-none"
             />
             <input
               type="text"
@@ -386,7 +421,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {isSearching && (
               <button
                 onClick={() => onSearchQueryChange('')}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-md text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-md text-faint-soft hover:text-muted hover:bg-surface-alt transition-colors"
                 title="清空搜索"
               >
                 <Icon name="sidebar-close" className="w-3.5 h-3.5" />
@@ -408,11 +443,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* 视图切换（分组 / 收藏）+ 排序 */}
       <div className="flex items-center justify-between px-3.5 py-1.5 flex-shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <div className="flex items-center rounded-lg bg-white/70 border border-slate-200/70 p-0.5">
+          <div className="flex items-center rounded-lg bg-surface/70 border border-line/70 p-0.5">
             <button
               onClick={() => onViewChange('groups')}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
-                view === 'groups' ? 'bg-primary-500 text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                view === 'groups' ? 'bg-primary-500 text-on-accent shadow-sm' : 'text-faint hover:text-body'
               }`}
               title="分组视图"
             >
@@ -422,7 +457,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={() => onViewChange('favorites')}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
-                view === 'favorites' ? 'bg-primary-500 text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                view === 'favorites' ? 'bg-primary-500 text-on-accent shadow-sm' : 'text-faint hover:text-body'
               }`}
               title="收藏视图"
             >
@@ -432,7 +467,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
         <div className="flex items-center gap-0.5">
-          {/* 排序方式：自定义浮层，替代原生 select（原生下拉在深色/浅色主题下都很突兀） */}
+          {/* 排序方式：自定义浮层（原生 select 在深/浅主题下样式突兀），fixed 定位避免被滚动容器裁切 */}
           <button
             ref={sortBtnRef}
             className={"sort-trigger" + (sortMenu.open ? " is-open" : "")}
@@ -453,7 +488,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               />
               <div
                 className="pop-menu"
-                style={{ position: "fixed", top: sortMenu.top, left: Math.max(8, sortMenu.left - 40), minWidth: 132 }}
+                style={{
+                  position: "fixed",
+                  top: sortMenu.top,
+                  // 与按钮左对齐后往回收 40px 让菜单视觉居中，左右都要夹在视口内（窄窗口右侧不出界）
+                  left: Math.min(
+                    Math.max(8, sortMenu.left - 40),
+                    Math.max(8, window.innerWidth - SORT_MENU_WIDTH - 8),
+                  ),
+                  minWidth: SORT_MENU_WIDTH,
+                }}
               >
                 {SORT_OPTIONS.map((o) => (
                   <button
@@ -470,7 +514,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
           <button
             onClick={onToggleSortOrder}
-            className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:bg-white/80 hover:text-primary-500 transition-all"
+            className="w-5 h-5 flex items-center justify-center rounded-md text-faint hover:bg-surface/80 hover:text-primary-500 transition-all"
             title={sortOrder === 'asc' ? '切换为降序' : '切换为升序'}
           >
             <Icon
@@ -480,7 +524,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
           <button
             onClick={onCreateCategory}
-            className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:bg-white/80 hover:text-primary-500 transition-all"
+            className="w-5 h-5 flex items-center justify-center rounded-md text-faint hover:bg-surface/80 hover:text-primary-500 transition-all"
             title="创建分组"
           >
             <Icon name="sidebar-folder-plus" className="w-4 h-4" />
@@ -504,11 +548,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {isSearching ? (
           searchMatches.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 px-4">
-              <div className="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
-                <Icon name="sidebar-search" className="w-5 h-5 text-slate-300" />
+              <div className="w-10 h-10 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
+                <Icon name="sidebar-search" className="w-5 h-5 text-faint-soft" />
               </div>
-              <p className="text-xs text-slate-400">无匹配笔记</p>
-              <p className="text-[10px] text-slate-300 mt-1">换个关键词试试</p>
+              <p className="text-xs text-faint">无匹配笔记</p>
+              <p className="text-[10px] text-faint-soft mt-1">换个关键词试试</p>
             </div>
           ) : (
             <div className="space-y-0.5">
@@ -578,11 +622,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : view === 'favorites' ? (
           favoriteNotes.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 px-4">
-              <div className="w-10 h-10 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
-                <Icon name="sidebar-star" className="w-5 h-5 text-slate-300" />
+              <div className="w-10 h-10 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
+                <Icon name="sidebar-star" className="w-5 h-5 text-faint-soft" />
               </div>
-              <p className="text-xs text-slate-400">暂无收藏</p>
-              <p className="text-[10px] text-slate-300 mt-1">点击笔记右侧的星标即可收藏</p>
+              <p className="text-xs text-faint">暂无收藏</p>
+              <p className="text-[10px] text-faint-soft mt-1">点击笔记右侧的星标即可收藏</p>
             </div>
           ) : (
             <div className="space-y-0.5">
@@ -654,9 +698,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="h-1" />
             {categories.length === 0 && (
               <div className="px-3 py-5 text-center">
-                <Icon name="sidebar-folder-thin" className="w-8 h-8 text-slate-200 mx-auto mb-2" />
-                <p className="text-xs text-slate-400">暂无分组</p>
-                <p className="text-[10px] text-slate-300 mt-0.5">点击上方 + 创建分组</p>
+                <Icon name="sidebar-folder-thin" className="w-8 h-8 text-faint-soft mx-auto mb-2" />
+                <p className="text-xs text-faint">暂无分组</p>
+                <p className="text-[10px] text-faint-soft mt-0.5">点击上方 + 创建分组</p>
               </div>
             )}
             {categories.map((category) => {
@@ -699,14 +743,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
       {/* 底部统计 + 刷新界面：打包后没有浏览器的右键"刷新"，这里给一个常驻入口 */}
-      <div className="px-4 py-2 border-t border-slate-200/60 flex-shrink-0">
-        <div className="flex items-center justify-between text-[11px] text-slate-400">
+      <div className="px-4 py-2 border-t border-line/60 flex-shrink-0">
+        <div className="flex items-center justify-between text-[11px] text-faint">
           <span>{categoryCount} 个分组</span>
           <div className="flex items-center gap-1.5">
             <span>{allNotesCount} 篇笔记</span>
             <button
               onClick={() => window.location.reload()}
-              className="p-1 -mr-1 rounded-md text-slate-300 hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-90"
+              className="p-1 -mr-1 rounded-md text-faint-soft hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-90"
               title="刷新界面"
               aria-label="刷新界面"
             >

@@ -2,14 +2,19 @@
  * 一致性审计：确认工具定义在 7 个位置完全对齐、且没有死码/无用导入。
  * 运行：node scripts/audit.mjs
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
-const PANEL = "src/components/AIChatPanel.tsx";
-const PARSE = "src/aiChatParse.ts";
+const PANEL = "src/components/ai/AIChatPanel.tsx";
+const PARSE = "src/lib/aiParse/parse.ts";
+const TEXT = "src/lib/aiParse/text.ts";
 const CONFIG = "src/config/aiDefaults.ts";
-const src = readFileSync(PANEL, "utf8");
-const parseSrc = readFileSync(PARSE, "utf8");
-const cfgSrc = readFileSync(CONFIG, "utf8");
+/** 统一换行符：仓库里部分文件是 CRLF，正则按 \n 写，不归一化会静默匹配失败 */
+const read = (file) => readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+const src = read(PANEL);
+const parseSrc = read(PARSE);
+const textSrc = read(TEXT);
+const cfgSrc = read(CONFIG);
 
 let problems = 0;
 const bad = (msg) => { problems++; console.log(`  ❌ ${msg}`); };
@@ -56,7 +61,7 @@ const execs = [...grab(src, /const TOOL_EXECUTORS:[\s\S]*?= \{([\s\S]*?)\n\};/).
 const promptTools = [...grab(cfgSrc, /## Tools \(all parameters are JSON objects\)([\s\S]*?)\n## Choosing tools/).matchAll(/^- (\w+):/gm)].map((m) => m[1]);
 const details = [...grab(src, /const toolDetail =[\s\S]*?switch \(name\) \{([\s\S]*?)\n  \}/).matchAll(/case "(\w+)"/g)].map((m) => m[1]);
 const summaries = [...grab(src, /const summarizeToolCall[\s\S]*?switch \(c\.name\) \{([\s\S]*?)\n    default:/).matchAll(/case "(\w+)"/g)].map((m) => m[1]);
-const claimTools = [...grab(parseSrc, /const ACTION_CLAIM_RULES[\s\S]*?= \[([\s\S]*?)\n\];/).matchAll(/tools:\s*\[([^\]]*)\]/g)]
+const claimTools = [...grab(textSrc, /const ACTION_CLAIM_RULES[\s\S]*?= \[([\s\S]*?)\n\];/).matchAll(/tools:\s*\[([^\]]*)\]/g)]
   .flatMap((m) => [...m[1].matchAll(/"(\w+)"/g)].map((x) => x[1]));
 
 console.log(`  工具总数：${defs.length}`);
@@ -123,6 +128,70 @@ console.log("\n=== 6) Rules of Hooks：hooks 必须全部在条件早退之前 =
       ok(`全部 ${hookLines.length} 个顶层 hook 都在早退（第 ${start + earlyReturn + 1} 行）之前`);
     }
   }
+}
+
+/**
+ * 7) 主题化检查。
+ *
+ * 颜色只允许走语义色（bg-surface / text-body / border-line / bg-danger-soft …），
+ * 这些名字由 tailwind.config.cjs 映射到 CSS 变量，因此换主题、切暗色只改变量值即可。
+ * 写错的名字 Tailwind 会**静默丢弃**（类名不生成 → 该处没有颜色），编译也不报错，
+ * 只能靠这里扫出来；同时禁止再出现 slate-500 / indigo-600 这类写死的色板名。
+ */
+console.log("\n=== 7) 主题化：语义色名有效、无写死色板 ===");
+{
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const colors = require(join(process.cwd(), "tailwind.config.cjs")).theme.extend.colors;
+
+  const valid = new Set();
+  for (const [k, v] of Object.entries(colors)) {
+    if (typeof v === "string") { valid.add(k); continue; }
+    for (const sub of Object.keys(v)) valid.add(sub === "DEFAULT" ? k : `${k}-${sub}`);
+  }
+
+  const files = [];
+  (function walk(dir) {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(tsx|ts)$/.test(f)) files.push(p);
+    }
+  })("src");
+
+  const ROOTS = "(app|surface|surface-alt|surface-strong|ink|body|muted|faint|faint-soft|line|line-soft|line-strong|on-accent|primary|danger|warning|success|info|tooltip)";
+  const PREFIX = "(?:bg|text|border|ring|divide|from|to|via|fill|stroke|decoration|outline|placeholder|caret|accent)";
+  const semanticRe = new RegExp(`^${PREFIX}-${ROOTS}(-[a-z0-9]+)?(/\\d+)?$`);
+  const paletteRe = new RegExp(`^${PREFIX}-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\\d{2,3}(/\\d+)?$`);
+  const variantRe = /^(?:hover|focus|focus-within|active|group-hover|dark|disabled|first|last|even|odd|aria-[a-z]+|sm|md|lg|xl):/;
+
+  const invalid = new Map();
+  const palette = new Map();
+  for (const f of files) {
+    const text = read(f);
+    for (const m of text.matchAll(/["'`]([^"`']*?)["'`]/g)) {
+      for (const raw of m[1].split(/\s+/)) {
+        let c = raw;
+        while (variantRe.test(c)) c = c.replace(variantRe, "");
+        if (!c || c.includes("{") || c.includes("$")) continue;
+        if (paletteRe.test(c)) palette.set(`${f}: ${c}`, true);
+        else if (semanticRe.test(c)) {
+          const key = c.match(semanticRe)[1] + (c.match(semanticRe)[2] || "");
+          if (!valid.has(key)) invalid.set(key, (invalid.get(key) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  if (invalid.size) {
+    bad(`${invalid.size} 个语义色名 Tailwind 里没有定义（类名会被静默丢弃 → 该处无颜色）:`);
+    for (const [k, n] of invalid) console.log(`      ${k} (x${n})`);
+  } else ok("使用到的语义色名都在 tailwind 配置中有定义");
+
+  if (palette.size) {
+    bad(`${palette.size} 处写死了具体色板（换主题/暗色不会跟随）:`);
+    for (const k of [...palette.keys()].slice(0, 20)) console.log(`      ${k}`);
+  } else ok("没有写死的具体色板名（slate-500 / indigo-600 之类）");
 }
 
 console.log(`\n审计结果：${problems === 0 ? "全部通过 ✅" : problems + " 处问题 ❌"}`);

@@ -29,9 +29,14 @@ const EBOOK_FORMATS: FormatOption[] = [
 const errorText = (e: unknown) => (typeof e === 'string' ? e : e instanceof Error ? e.message : String(e));
 
 /**
- * 导出分组：压缩包（一篇笔记一个文件）或电子书（整组一个文件）。
- * 章节顺序为创建时间正序，最早创建的笔记在最前；章节名即笔记标题。
- * 分组可以是真实分组、默认分组或搜索结果分组，导出内容由 target.notes 决定。
+ * 分组导出弹窗：把 target.notes 导出为「压缩包」（一篇笔记一个文件）
+ * 或「电子书」（整组合成一个文件）。章节顺序为创建时间正序，章节名即笔记标题。
+ *
+ * - target：真实分组 / 默认分组 / 搜索结果分组都归一成同一结构，为 null 时不展示内容
+ * - onDone：导出成功后通知外部刷新；随后 onClose 关闭弹窗
+ * - 副作用：调 Tauri dialog 的 save 选路径、调 exportApi 写盘、Toast 提示结果
+ *
+ * 「其他文件格式」只在压缩包模式下出现，逐篇后缀受纯文本白名单约束。
  */
 export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target, onClose, onDone }) => {
   const { showToast } = useToast();
@@ -42,7 +47,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
   const [notes, setNotes] = useState<Note[]>([]);
   /** 文件名（不含扩展名）：默认取分组推导出的名称，可手动改 */
   const [fileName, setFileName] = useState('');
-  // 选中的笔记 ID：默认全选，用 Set 方便查找
+  // 选中的笔记用 Set 存 id，逐篇勾选时判断 O(1)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   /** 「其他文件格式」模式下每篇笔记自己的后缀，没改过的用 DEFAULT_TEXT_EXT */
   const [otherExts, setOtherExts] = useState<Record<number, string>>({});
@@ -67,7 +72,6 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
     setSelectedIds(new Set(sorted.map((n) => n.id)));
   }, [target]);
 
-  // 全选 / 取消全选
   const allSelected = notes.length > 0 && notes.every((n) => selectedIds.has(n.id));
   const toggleAll = () => {
     if (allSelected) {
@@ -77,7 +81,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
     }
   };
 
-  // 当前选中的笔记 ID 列表，按原顺序
+  // 过滤后仍是创建时间正序：这个顺序就是压缩包/电子书里的章节顺序
   const selectedNoteIds = notes
     .filter((n) => selectedIds.has(n.id))
     .map((n) => n.id);
@@ -90,6 +94,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
   const format = isZip ? zipFormat : ebookFormat;
   const current = formats.find((f) => f.value === format) ?? formats[0];
 
+  /** 选路径 → 调 exportApi 写盘 → 提示篇数并关闭；失败保留弹窗、复位 busy 便于重试 */
   const handleExport = async () => {
     if (!target || selectedNoteIds.length === 0) return;
     // 文件名留空时退回默认名，去掉路径分隔符等非法字符
@@ -129,14 +134,14 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
   return (
     <Modal isOpen={!!target} onClose={onClose} title="导出笔记">
       <div className="space-y-4">
-        <p className="text-xs text-slate-500">
-          分组：<span className="font-medium text-slate-700">{target?.name}</span>
-          <span className="ml-2 text-slate-400">章节按创建时间正序，最早创建的笔记在最前面</span>
+        <p className="text-xs text-muted">
+          分组：<span className="font-medium text-body">{target?.name}</span>
+          <span className="ml-2 text-faint">章节按创建时间正序，最早创建的笔记在最前面</span>
         </p>
 
         {/* 文件名：默认填好分组对应的名称，可改，也可一键填回默认 */}
         <div>
-          <p className="text-xs font-medium text-slate-600 mb-2">文件名</p>
+          <p className="text-xs font-medium text-body mb-2">文件名</p>
           <div className="flex items-center gap-2">
             <div className="relative flex-1 min-w-0">
               <input
@@ -147,7 +152,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                 className="w-full pl-3 pr-14 py-1.5 text-xs input-modern"
               />
               {/* 压缩包始终是 .zip，后缀不随内部笔记格式变化；电子书才是所选格式 */}
-              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-300 pointer-events-none">
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-faint-soft pointer-events-none">
                 .{isZip ? 'zip' : current.ext}
               </span>
             </div>
@@ -163,30 +168,30 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
 
         {/* 导出类型 */}
         <div>
-          <p className="text-xs font-medium text-slate-600 mb-2">导出为</p>
+          <p className="text-xs font-medium text-body mb-2">导出为</p>
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => setMode('zip')}
               className={`flex items-start gap-2.5 p-3 rounded-xl border text-left transition-colors ${
-                isZip ? 'border-primary-300 bg-primary-50' : 'border-slate-200 hover:bg-slate-50'
+                isZip ? 'border-primary-300 bg-primary-50' : 'border-line hover:bg-app'
               }`}
             >
-              <Icon name="app-backup" className={`w-4 h-4 mt-0.5 flex-shrink-0 ${isZip ? 'text-primary-500' : 'text-slate-400'}`} />
+              <Icon name="app-backup" className={`w-4 h-4 mt-0.5 flex-shrink-0 ${isZip ? 'text-primary-500' : 'text-faint'}`} />
               <span className="min-w-0">
-                <span className={`block text-sm font-medium ${isZip ? 'text-primary-600' : 'text-slate-600'}`}>压缩包</span>
-                <span className="block text-[11px] text-slate-400 mt-0.5">一篇笔记一个文件</span>
+                <span className={`block text-sm font-medium ${isZip ? 'text-primary-600' : 'text-body'}`}>压缩包</span>
+                <span className="block text-[11px] text-faint mt-0.5">一篇笔记一个文件</span>
               </span>
             </button>
             <button
               onClick={() => setMode('ebook')}
               className={`flex items-start gap-2.5 p-3 rounded-xl border text-left transition-colors ${
-                !isZip ? 'border-primary-300 bg-primary-50' : 'border-slate-200 hover:bg-slate-50'
+                !isZip ? 'border-primary-300 bg-primary-50' : 'border-line hover:bg-app'
               }`}
             >
-              <Icon name="editor-export" className={`w-4 h-4 mt-0.5 flex-shrink-0 ${!isZip ? 'text-primary-500' : 'text-slate-400'}`} />
+              <Icon name="editor-export" className={`w-4 h-4 mt-0.5 flex-shrink-0 ${!isZip ? 'text-primary-500' : 'text-faint'}`} />
               <span className="min-w-0">
-                <span className={`block text-sm font-medium ${!isZip ? 'text-primary-600' : 'text-slate-600'}`}>电子书</span>
-                <span className="block text-[11px] text-slate-400 mt-0.5">整组合成一本书</span>
+                <span className={`block text-sm font-medium ${!isZip ? 'text-primary-600' : 'text-body'}`}>电子书</span>
+                <span className="block text-[11px] text-faint mt-0.5">整组合成一本书</span>
               </span>
             </button>
           </div>
@@ -194,7 +199,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
 
         {/* 文件格式 */}
         <div>
-          <p className="text-xs font-medium text-slate-600 mb-2">文件格式</p>
+          <p className="text-xs font-medium text-body mb-2">文件格式</p>
           <div className="flex flex-wrap gap-1.5">
             {formats.map((f) => (
               <button
@@ -204,14 +209,14 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
                   format === f.value
                     ? 'border-primary-300 bg-primary-50 text-primary-600'
-                    : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                    : 'border-line text-muted hover:bg-app'
                 }`}
               >
                 {f.label}
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-slate-400 mt-2">
+          <p className="text-[11px] text-faint mt-2">
             {!isZip
               ? `整组导出为单个 .${current.ext} 文件，章节名就是笔记标题`
               : isOtherExt
@@ -223,7 +228,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
         {/* 笔记选择：默认全选，取消不需要的 */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-slate-600 flex items-center gap-1.5">
+            <label className="text-xs font-medium text-body flex items-center gap-1.5">
               <input
                 type="checkbox"
                 checked={allSelected}
@@ -231,22 +236,22 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                   if (el) el.indeterminate = notes.length > 0 && !allSelected;
                 }}
                 onChange={toggleAll}
-                className="w-3.5 h-3.5 rounded border-slate-300 text-primary-500 focus:ring-primary-300"
+                className="w-3.5 h-3.5 rounded border-line-strong text-primary-500 focus:ring-primary-300"
               />
               选择笔记 ({selectedIds.size}/{notes.length})
             </label>
-            <span className="text-[11px] text-slate-400">
+            <span className="text-[11px] text-faint">
               {selectedNoteIds.length} 个已选中
             </span>
           </div>
 
-          <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg bg-slate-50">
+          <div className="max-h-48 overflow-y-auto border border-line rounded-lg bg-app">
             {notes.map((note) => {
               const checked = selectedIds.has(note.id);
               return (
                 <div
                   key={note.id}
-                  className="flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-slate-100 transition-colors first:rounded-t-lg last:rounded-b-lg"
+                  className="flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-surface-alt transition-colors first:rounded-t-lg last:rounded-b-lg"
                 >
                   <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
                     <input
@@ -261,7 +266,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                         }
                         setSelectedIds(next);
                       }}
-                      className="w-3.5 h-3.5 rounded border-slate-300 text-primary-500 focus:ring-primary-300"
+                      className="w-3.5 h-3.5 rounded border-line-strong text-primary-500 focus:ring-primary-300"
                     />
                     <span className="truncate min-w-0 flex-1" title={note.title}>
                       {note.title || '无标题笔记'}
@@ -277,14 +282,14 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                         className={`flex-shrink-0 px-1.5 py-0.5 rounded-md border text-[11px] transition-colors ${
                           pickerFor?.noteId === note.id
                             ? 'border-primary-300 bg-primary-50 text-primary-600'
-                            : 'border-slate-200 bg-white text-slate-500 hover:border-primary-300 hover:text-primary-600'
+                            : 'border-line bg-surface text-muted hover:border-primary-300 hover:text-primary-600'
                         }`}
                         title="选择这篇笔记的文件后缀"
                       >
                         .{noteExt(note.id)}
                       </button>
                     ) : (
-                      <span className="text-[11px] text-slate-400 flex-shrink-0">.{current.ext}</span>
+                      <span className="text-[11px] text-faint flex-shrink-0">.{current.ext}</span>
                     ))}
                 </div>
               );

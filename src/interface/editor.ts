@@ -1,17 +1,26 @@
-/* 笔记编辑器的 Props 与按需加载的 Markdown 编辑器模块类型。 */
+/* 笔记编辑器的组件层类型：Props。 */
 
 import type { Category, Note } from "./note";
+import type { EditorSettings } from "./settings";
 
+/**
+ * 笔记编辑器 Props。
+ * 除常规的笔记读改写外，还承载两种特殊模式：
+ * - isTemporary：AI 回复的临时预览，只渲染不落库；
+ * - externalFilePath 非空：直接编辑电脑上的文本文件，保存时写回原文件。
+ */
 export interface NoteEditorProps {
+  /** 当前笔记；null = 没有打开任何笔记（显示欢迎页） */
   note: Note | null;
   onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
   onDelete: () => void;
+  /** 上报正文末尾偏移（AI 插入文本时的定位基准） */
   onCursorOffsetChange?: (offset: number) => void;
-  /** 编辑器默认正文字号（来自软件设置）：滚轮缩放后点击工具栏字号可还原到该值 */
-  fontSize?: number;
-  /** 是否允许 Ctrl/⌘ + 滚轮缩放字号（来自软件设置） */
-  ctrlScrollZoom?: boolean;
-  /** 打开/关闭 AI 对话面板 */
+  /**
+   * 编辑器设置（来自软件设置的「编辑器」分区）。
+   * 字号、滚轮缩放、默认视图、工具栏与行号等开关都从这里读，改动即时生效。
+   */
+  editorSettings?: EditorSettings;
   onToggleAiPanel?: () => void;
   isAiPanelOpen?: boolean;
   /** 临时预览模式（AI 回复）：只在界面上展示，绝不写入数据库 */
@@ -37,6 +46,3 @@ export interface NoteEditorProps {
   /** 是否开启 AI 能力：关闭时，外部文件模式下显示提示 */
   enableAI?: boolean;
 }
-
-/** 按需加载的 md-editor-rt 模块类型 */
-export type MarkdownEditorModule = typeof import("md-editor-rt");

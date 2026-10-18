@@ -1,20 +1,22 @@
-/* 思考深度/重试判定，以及流式"抢答"抑制的判定。 */
+/**
+ * 回复质量门槛：思考深度、浅思考重试、流式抢答抑制。
+ * 只做布尔判定，不解析文本；输入来自 parse.ts 或流式原文，
+ * 输出由 AIChatPanel 决定是否丢弃当前这版回复重新请求。纯函数，无副作用。
+ */
 
-/** thinking 是否达到"深度思考"的最低要求 */
+/** 去掉所有空白后按字符数计（中文一字算一个），阈值通常取 aiSettings.minThinkingLen */
 export const isThinkingDeepEnough = (thinking: string, minLen: number): boolean =>
   thinking.replace(/\s/g, "").length >= minLen;
 
 /**
- * 是否需要对这一轮做"思考太浅，重新思考"的纠正。
- *
- * 硬约束：**只有本轮正文没有显示给用户时才能重来**。
- * 曾经只看思考字数，于是模型第 1 轮直接给出的回答（例如"扩写"的结果）会被第 2 轮
- * 重来的思考顶掉——用户看到"回答一次 → 所有文字瞬间消失 → 又出一个回答"，
- * 而且两版内容还不一样。所以：
- *   - 正文已经显示过（replyShown）→ 不再重来，直接采纳；
- *   - 本轮有工具调用 → 不再重来（动作优先，别耽误执行）。
- * 正文被"按住"没显示过的那些轮（模型没写思考直接抢答）则可以重来，
- * 用户全程看不到被丢弃的那一版。
+ * 是否需要「思考太浅，重新思考」的纠正。四个条件同时成立才重试：
+ *   - 本轮还没纠正过（correctionUsed），避免死循环；
+ *   - 正文没有显示给用户（replyShown），这是硬约束：
+ *     否则用户会看到「回答 → 消失 → 另一个回答」；
+ *   - 本轮没有工具调用，动作优先执行；
+ *   - 思考字数不足 minLen。
+ * replyShown 由调用方综合原生 reasoning、是否以 <thinking> 开头、模型是否写过思考来判定；
+ * 被按住未显示的轮次可以安全重来，用户看不到被丢弃的那一版。
  */
 export const shouldRetryForShallowThinking = (params: {
   correctionUsed: boolean;
@@ -30,8 +32,8 @@ export const shouldRetryForShallowThinking = (params: {
   !isThinkingDeepEnough(params.thinking, params.minLen);
 
 /**
- * 本轮流式内容是否"以思考开头"（协议要求的形态）。
- * 不是的话，正文先按住不显示：模型可能先抢答一整段再补思考、甚至被重来覆盖，
- * 显示出来就是"闪一下又消失"。被按住的那一版用户永远看不到。
+ * 本轮流式文本是否「以 <thinking> 开头」（允许前导空白），即协议要求的形态。
+ * 返回 false 时调用方会先按住正文不显示：模型可能先抢答一整段再补思考，
+ * 那段内容随后会被覆盖或重来，提前显示就是「闪一下又消失」。
  */
 export const streamStartsWithThinking = (text: string): boolean => /^\s*<thinking>/.test(text);

@@ -15,13 +15,16 @@ interface TextExtPickerProps {
 }
 
 const CARD_WIDTH = 236;
-/** 估算高度，用于判断向下展示还向上展示 */
+/** 估算高度：只用于翻转判断，不需要精确匹配实际渲染高度 */
 const CARD_HEIGHT = 300;
 const MARGIN = 8;
 
 /**
  * 纯文本后缀选择浮层：搜索 + 分组列表 + 自定义输入。
- * 列表来自纯文本白名单，自定义输入也会校验，避免写出打不开的二进制文件。
+ *
+ * 用 portal 挂到 body 并以 fixed 定位贴在 anchor 下方（下方放不下就翻到上方），
+ * 这样不受导出弹窗的 overflow 裁剪，也不会把点击冒泡回去误关弹窗。
+ * 列表与自定义输入都走纯文本白名单，避免给文本内容配二进制后缀、导出后打不开。
  */
 export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onPick, onClose }) => {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -48,6 +51,7 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
     };
   }, [onClose]);
 
+  // 搜索只匹配后缀与说明文字；空分组直接丢掉，免得留下光秃秃的分组标题
   const query = keyword.trim().toLowerCase();
   const groups = useMemo(
     () =>
@@ -60,16 +64,18 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
     [query]
   );
 
-  // 优先展示在按钮下方，空间不够就翻到上方
+  // 水平方向先贴住按钮，再夹到视口内，避免窄窗口下右边被裁掉
   const left = Math.min(
     Math.max(MARGIN, anchor.left),
     Math.max(MARGIN, window.innerWidth - CARD_WIDTH - MARGIN)
   );
+  // 优先向下展开，下方空间不足则整体翻到按钮上方
   const top =
     anchor.bottom + 4 + CARD_HEIGHT > window.innerHeight - MARGIN
       ? Math.max(MARGIN, anchor.top - CARD_HEIGHT - 4)
       : anchor.bottom + 4;
 
+  // 自定义输入先规范化（去前导点、转小写、只留字母数字）再校验白名单
   const customExt = normalizeTextExt(custom);
   const applyCustom = () => {
     if (!customExt) return;
@@ -86,14 +92,14 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
       ref={cardRef}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
-      className="fixed z-[60] animate-scaleIn bg-white rounded-xl shadow-elevated border border-slate-200/80 overflow-hidden"
+      className="fixed z-[60] animate-scaleIn bg-surface rounded-xl shadow-elevated border border-line/80 overflow-hidden"
       style={{ left, top, width: CARD_WIDTH }}
     >
-      <div className="p-2 border-b border-slate-100">
+      <div className="p-2 border-b border-line-soft">
         <div className="relative">
           <Icon
             name="sidebar-search"
-            className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2"
+            className="w-3.5 h-3.5 text-faint absolute left-2.5 top-1/2 -translate-y-1/2"
           />
           <input
             autoFocus
@@ -107,11 +113,11 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
 
       <div className="max-h-48 overflow-y-auto py-1">
         {groups.length === 0 ? (
-          <p className="px-3 py-4 text-center text-[11px] text-slate-300">没有匹配的格式</p>
+          <p className="px-3 py-4 text-center text-[11px] text-faint-soft">没有匹配的格式</p>
         ) : (
           groups.map((group) => (
             <div key={group.name}>
-              <p className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-slate-400">{group.name}</p>
+              <p className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-faint">{group.name}</p>
               {group.formats.map((format) => (
                 <button
                   key={format.ext}
@@ -119,11 +125,11 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
                   className={`w-full flex items-center gap-2 px-3 py-1 text-left text-xs transition-colors ${
                     format.ext === value
                       ? 'text-primary-600 bg-primary-50'
-                      : 'text-slate-600 hover:bg-slate-50'
+                      : 'text-body hover:bg-app'
                   }`}
                 >
                   <span className="font-medium w-16 flex-shrink-0">.{format.ext}</span>
-                  <span className="truncate min-w-0 flex-1 text-[11px] text-slate-400">{format.label}</span>
+                  <span className="truncate min-w-0 flex-1 text-[11px] text-faint">{format.label}</span>
                   {format.ext === value && <Icon name="toast-check" className="w-3.5 h-3.5 flex-shrink-0" />}
                 </button>
               ))}
@@ -132,7 +138,7 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
         )}
       </div>
 
-      <div className="p-2 border-t border-slate-100">
+      <div className="p-2 border-t border-line-soft">
         <div className="flex items-center gap-1.5">
           <input
             value={custom}
@@ -155,9 +161,9 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
           </button>
         </div>
         {error ? (
-          <p className="mt-1 text-[10px] text-red-500">{error}</p>
+          <p className="mt-1 text-[10px] text-danger">{error}</p>
         ) : (
-          <p className="mt-1 text-[10px] text-slate-400">仅限纯文本格式，二进制格式会打不开</p>
+          <p className="mt-1 text-[10px] text-faint">仅限纯文本格式，二进制格式会打不开</p>
         )}
       </div>
     </div>,

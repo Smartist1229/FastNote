@@ -1,12 +1,10 @@
 /**
- * 统一图标组件。
+ * 统一图标组件：图标资源在 public/icons/<name>.svg，name 就是文件名（不含 .svg）。
  *
- * 图标本体放在 public/icons/<name>.svg（文件里只保留形状，颜色无关紧要），
- * 这里用 CSS mask 把它"挖"出来、再以 currentColor 填色 ——
- * 因此 hover / 选中 / 禁用态的变色行为与原来的内联 SVG 完全一致，
- * 而页面里只剩一行 <Icon name="copy" />，不再有几十行 path 数据。
+ * 用 CSS mask 把 svg 当镂空模板、backgroundColor 取 currentColor 填充，
+ * 颜色因此完全跟随文字色，hover / 选中 / 禁用态都不必额外处理；尺寸由 className 控制（默认 w-4 h-4）。
  *
- * 新增图标：把 svg 丢进 public/icons/，name 直接用文件名（不含 .svg）。
+ * 传了 title 时它既是视觉提示也是无障碍名称；不传则 aria-hidden，避免纯装饰图标被读屏念出来。
  */
 export const Icon: React.FC<{ name: string; className?: string; title?: string }> = ({
   name,

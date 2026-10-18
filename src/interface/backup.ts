@@ -1,24 +1,35 @@
-/* 数据备份与分组导出相关的类型。 */
+/**
+ * 数据备份与分组导出的类型。
+ *
+ * 两者都不落库：备份是整库导出的 JSON 文件（format / version / exported_at / data），
+ * 分组导出是 zip 或电子书。字段名与 Rust 侧 BackupSummary、NoteFormatSpec 对齐。
+ */
 
-/** 备份内容统计（导出/恢复后用于提示用户） */
+/** export_backup / import_backup 的返回值：各类数据的行数与备份时间 */
 export interface BackupSummary {
+  /** notes 表行数（含回收站里 is_deleted = 1 的笔记） */
   notes: number;
   categories: number;
   providers: number;
   sessions: number;
   messages: number;
+  /** app_settings 的键数 */
   settings: number;
-  /** 备份文件的导出时间（ISO 字符串） */
+  /** 备份文件的导出时间（ISO 字符串）；导入旧文件缺失时为 null */
   exported_at: string | null;
 }
 
-/** 压缩包里单篇笔记的文件格式（预设） */
+/**
+ * 压缩包里单篇笔记的文件格式（预设）：
+ * md = 原文直出，txt = 纯文本，html = 渲染后的网页，json = 含标题/正文/时间等字段。
+ */
 export type CategoryZipFormat = "md" | "txt" | "html" | "json";
-/** 电子书格式 */
+/** 电子书格式：txt / html 为单文件，epub 为标准电子书（mimetype 必须是首个且不压缩的条目） */
 export type CategoryEbookFormat = "txt" | "html" | "epub";
 
-/** 压缩包「其他文件格式」：逐篇笔记自选的后缀（ext 不含点，限纯文本白名单） */
+/** export_notes_zip 的 noteFormats 元素：按笔记 id 逐篇指定压缩包内的后缀 */
 export interface NoteFormatSpec {
   id: number;
+  /** 后缀，不含点；限纯文本白名单 */
   ext: string;
 }

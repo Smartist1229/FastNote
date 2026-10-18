@@ -7,17 +7,18 @@ import type {
 } from "@/interface/settings";
 
 /**
- * 软件设置的「默认配置文件」。
+ * 软件设置的「默认配置文件」：所有分类的默认值与字号区间。
  *
- * 数据库里查不到的键一律回退到这里；新增/调整设置项只改本文件，无需迁移脚本。
+ * 数据库里查不到的键一律回退到这里；新增或调整设置项只改本文件，无需迁移脚本。
  * 键名与数据库一一对应：app.config.<分类>.<字段>
  *   app.config.general.<字段>  → GeneralSettings
  *   app.config.editor.<字段>   → EditorSettings
  *   app.config.layout.<字段>   → LayoutSettings
  *   app.config.view.<字段>     → ViewSettings
+ * 消费方：appSettingsStore 负责读库合并，App 用它初始化 state，SettingsModal 渲染表单项。
  */
 
-/** 编辑器字号可选范围（px） */
+/** 编辑器字号可选范围（px）：Ctrl/⌘ + 滚轮缩放与设置面板的滑杆共用这一区间 */
 export const FONT_SIZE_MIN = 12;
 export const FONT_SIZE_MAX = 24;
 
@@ -38,11 +39,199 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
 };
 
 /* ---------- Editor ---------- */
+/**
+ * 编辑器默认值：自研编辑器全部可配项的出厂值。
+ *
+ * 字段与 config/editorSettingSpecs.ts 一一对应（那里还声明了区间与控件类型），
+ * 取值必须与那里的 min/max、options 自洽，否则读库时会被夹到边界上。
+ * 首次启动会把这里每一项写进数据库（app.config.editor.<字段>），缺键时同样回退到这里。
+ */
 export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
+  /* 视图 */
+  /** 打开笔记时的默认视图：源码（只写 Markdown） */
+  defaultMode: "code",
+  /** 工具栏显示「分栏 / 源码 / 阅读」切换 */
+  showModeSwitch: true,
+  /** 分栏时源码区占比 */
+  splitRatio: 0.5,
+  /** 分栏分隔条可拖动 */
+  splitResizable: true,
+  /** 分栏两栏同步滚动 */
+  syncScroll: true,
+  /** 同步滚动按源码行锚点对齐 */
+  syncScrollMode: "anchor",
+
+  /* 源码编辑 */
   /** 编辑器默认正文字号（px）：Ctrl/⌘ + 滚轮可在 12–24 之间临时缩放，工具栏字号按钮恢复到这个值 */
   fontSize: 14,
   /** Ctrl/Cmd + 滚轮是否调整编辑器字号 */
   ctrlScrollZoom: true,
+  /** 源码行高 */
+  sourceLineHeight: 1.75,
+  /** 源码区行号 */
+  lineNumbers: true,
+  /** 点击行号选中整行 */
+  gutterClickSelectsLine: true,
+  /** 源码自动换行 */
+  wrap: true,
+  /** Tab 宽度（同时用作列表缩进） */
+  tabSize: 2,
+  /** Tab 键缩进整行 */
+  tabKey: "indent",
+  /** 回车自动续写列表 / 引用 / 任务项 */
+  continueMarkdownOnEnter: true,
+  /** 自动配对括号 */
+  autoPairBrackets: true,
+  /** 自动配对引号（中文输入法下容易多出半边引号，默认关） */
+  autoPairQuotes: false,
+  /** 自动配对反引号 */
+  autoPairBackticks: true,
+  /** 浏览器拼写检查 */
+  spellCheck: false,
+  /** 撤销栈上限 */
+  historyLimit: 200,
+
+  /* 预览 */
+  /** 输入到渲染的防抖（ms） */
+  previewDebounce: 120,
+  /** 代码高亮 */
+  highlight: true,
+  /** 代码块行号 */
+  codeLineNumbers: true,
+  /** 代码块语言标签 */
+  showCodeLanguage: true,
+  /** 代码块可折叠 */
+  codeCollapsible: true,
+  /** 长代码块初次渲染时不自动收起 */
+  codeCollapseDefault: false,
+  /** 超过 14 行才出现折叠控件 */
+  codeCollapseThreshold: 14,
+  /** 折叠后高度 */
+  codeCollapseHeight: 260,
+  /** 围栏行高亮（```py {1-3}） */
+  codeHighlightLines: true,
+  /** 代码块复制按钮 */
+  codeCopyButton: true,
+  /** 代码块换行按钮 */
+  codeWrapButton: false,
+  /** `???` 折叠提示块可折叠 */
+  calloutCollapsible: true,
+  /** KaTeX 公式 */
+  math: true,
+  /** Mermaid 流程图 */
+  mermaid: true,
+  /** Mermaid 主题 */
+  mermaidTheme: "default",
+  /** 预览里任务项可勾选 */
+  taskInteractive: true,
+  /** 允许 HTML 标签 */
+  allowHtml: true,
+  /** 渲染前净化 HTML */
+  sanitizeHtml: true,
+  /** 链接交给应用侧用系统浏览器打开 */
+  linkTarget: "_self",
+  /** 显示 front matter 属性卡 */
+  showFrontmatter: true,
+  /** 显示脚注区 */
+  showFootnotes: true,
+  /** 表格斑马纹 */
+  tableStriped: true,
+  /** 表格边框 */
+  tableBordered: false,
+  /** 表格紧凑 */
+  tableCompact: false,
+  /** 表格撑满宽度 */
+  tableFullWidth: true,
+
+  /* 排版 */
+  /** 预览行高 */
+  previewLineHeight: 1.8,
+  /** 段落间距（em） */
+  paragraphSpacing: 0.9,
+  /** 标题上方间距（em） */
+  headingTopSpacing: 1.4,
+  /** 标题下方间距（em） */
+  headingBottomSpacing: 0.6,
+  /** 正文最大宽度（px） */
+  previewMaxWidth: 820,
+  /** 正文左对齐 */
+  textAlign: "left",
+  /** 标题字重 */
+  headingWeight: 650,
+
+  /* 工具栏 */
+  /** 顶部工具栏 */
+  showToolbar: true,
+  /** 工具栏不吸顶（编辑器自己就是内部滚动容器） */
+  toolbarSticky: false,
+  /** 工具栏紧凑（笔记区宽度有限） */
+  toolbarCompact: true,
+  /** 按钮只显示图标 */
+  toolbarLabels: false,
+  /** 悬停提示 */
+  toolbarTooltip: true,
+  /** 悬停展开下拉菜单 */
+  toolbarOpenOnHover: true,
+  /** 悬停展开延迟（ms） */
+  toolbarHoverOpenDelay: 140,
+  /** 移出关闭延迟（ms） */
+  toolbarHoverCloseDelay: 220,
+  /** 滚轮横向滚动工具栏 */
+  toolbarScrollWheel: true,
+
+  /* 状态栏 */
+  /** 状态栏默认关闭，把空间留给正文 */
+  showStatusBar: false,
+  /** 字数 */
+  statusWords: true,
+  /** 字符数 */
+  statusChars: false,
+  /** 行数 */
+  statusLines: true,
+  /** 光标位置 */
+  statusCursor: false,
+  /** 阅读时长 */
+  statusReadingTime: false,
+  /** 当前视图 */
+  statusMode: true,
+  /** 阅读速度（字/分钟） */
+  statusReadingSpeed: 400,
+
+  /* 大纲 */
+  /** 默认不展开大纲 */
+  showOutline: false,
+  /** 大纲停靠右侧 */
+  outlinePosition: "right",
+  /** 大纲宽度 */
+  outlineWidth: 220,
+  /** 大纲列到三级标题 */
+  outlineMaxDepth: 3,
+  /** 大纲层级缩进 */
+  outlineIndent: true,
+
+  /* 查找替换 */
+  /** 启用查找框 */
+  searchEnabled: true,
+  /** 打开即展开替换行 */
+  searchShowReplace: true,
+  /** 默认不区分大小写 */
+  searchCaseSensitive: false,
+  /** 默认不用正则 */
+  searchRegex: false,
+  /** 高亮全部命中 */
+  searchHighlightAll: true,
+  /** 查找循环 */
+  searchLoop: true,
+  /** 选中文字带入查找框 */
+  searchSeedFromSelection: true,
+  /** 最大命中数 */
+  searchMaxMatches: 2000,
+
+  /* 主题与其他 */
+  /** 代码块配色预设 */
+  codeTheme: "github",
+  /** 启用快捷键 */
+  shortcuts: true,
 };
 
 /* ---------- Layout ---------- */
@@ -55,13 +244,14 @@ export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
 
 /* ---------- View ---------- */
 export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
-  /** 排序字段 */
+  /** 排序字段：updated_at（更新时间）| created_at（创建时间）| title（标题），直接作为后端排序参数 */
   sortBy: "created_at",
   /** 排序方向 */
   sortOrder: "asc",
 };
 
 /* ---------- 合并后的完整默认值 ---------- */
+/** 四个分类的完整默认值：App 初始化 state 与各 store 缺键回退都以它为准 */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   general: DEFAULT_GENERAL_SETTINGS,
   editor: DEFAULT_EDITOR_SETTINGS,

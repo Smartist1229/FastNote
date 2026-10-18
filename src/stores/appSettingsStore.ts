@@ -1,34 +1,49 @@
 import * as settingsApi from "@/api/settings";
-import type { AppSettings } from "@/interface/settings";
+import type { AppSettings, EditorSettings } from "@/interface/settings";
 import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
+import { EDITOR_SPEC_BY_FIELD } from "@/config/editorSettingSpecs";
+import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
 
 /**
- * 软件设置持久化：**以 SQLite 的 app_settings 表为准**（与 AI 设置同一张表，只是键前缀不同）。
+ * 软件设置的持久化层（模块内无 React 状态）。
  *
- * 键名规则：app.config.<分类>.<字段>
- *   - app.config.general.cleanTrashOnStartup
- *   - app.config.general.trayEnabled
- *   - app.config.general.closeBehavior
- *   - app.config.general.autostart
- *   - app.config.general.minimizeToTray
- *   - app.config.general.enableAI
- *   - app.config.editor.fontSize
- *   - app.config.editor.ctrlScrollZoom
- *   - app.config.layout.sidebarCollapsed
- *   - app.config.layout.aiPanelOpen
- *   - app.config.view.sortBy
- *   - app.config.view.sortOrder
+ * 数据源是 SQLite 的 app_settings 表，与 AI 设置同表、只靠前缀区分：
+ *   app.config.<分类>.<字段>
+ *     general：cleanTrashOnStartup / trayEnabled / closeBehavior / autostart /
+ *              minimizeToTray / enableAI
+ *     editor： 见 interface/settings.ts 的 EditorSettings（config/editorSettingSpecs.ts 里的规格表）
+ *     layout： sidebarCollapsed / aiPanelOpen
+ *     view：   sortBy / sortOrder
  *
- * 读取流程：一次取回整表 → 逐项解析 → 类型不对 / 缺键一律回退到 DEFAULT_APP_SETTINGS。
- * 写入流程：修改单个字段只写那一个键；「恢复默认值」删掉全部 app.config.* 键，下次启动回退默认。
+ * 默认值统一来自 config/appDefaults.ts，本文件不重复写数字。
+ * 读取：一次取回整表 → 逐字段校验 → 缺键 / 类型不符 / 越界都回退默认值，
+ *       并把这些键的默认值补写回库 —— 首次启动即等于把整套默认设置写进数据库，
+ *       后续新增设置项也会在下次启动时自动补上。
+ * 写入：只写被改的那一个键，由 App.tsx 在用户操作时立即调用。
+ * 重置：删除全部 app.config.* 键（下次启动重新回退并补写默认），不碰 AI 设置的键。
  */
 
 const PREFIX = "app.config.";
 
-/** 把分类 + 字段名拼成完整的键名 */
+/** 分类 + 字段名 → 完整键名；读写与删除都经由它，避免手拼字符串 */
 const configKey = (category: string, field: string) => `${PREFIX}${category}.${field}`;
 
-/** 安全解析 JSON 值；解析失败或类型不匹配就返回 undefined（调用方回退默认） */
+/** 四个分类的遍历顺序：与 AppSettings 的键一致 */
+const CATEGORIES = ["general", "editor", "layout", "view"] as const;
+
+/**
+ * 非编辑器分类里需要白名单校验的字段。
+ * typeof 只挡类型，挡不住手工改库写进来的非法字符串；编辑器分类的约束在规格表里。
+ */
+const ENUM_BY_KEY: Record<string, readonly string[]> = {
+  "general.closeBehavior": ["minimize", "exit"],
+  "view.sortOrder": ["asc", "desc"],
+};
+
+/**
+ * 安全解析 JSON 值：解析失败或类型与 expected 不符都返回 undefined，
+ * 调用方据此决定是否采用，脏数据不会顶掉默认值。
+ */
 const safeParse = <T>(raw: string | undefined, expected: "number" | "string" | "boolean"): T | undefined => {
   if (raw === undefined) return undefined;
   try {
@@ -40,55 +55,67 @@ const safeParse = <T>(raw: string | undefined, expected: "number" | "string" | "
   }
 };
 
-/** 从数据库读取全部软件设置，读不到的键回退默认值，返回完整的 AppSettings */
-export const loadAppSettings = async (): Promise<AppSettings> => {
-  const rows: Record<string, string> = await settingsApi.getAppSettings().catch(() => ({}));
-
-  // ---- general ----
-  const general = { ...DEFAULT_APP_SETTINGS.general };
-  const cleanTrashOnStartup = safeParse<boolean>(rows[configKey("general", "cleanTrashOnStartup")], "boolean");
-  if (cleanTrashOnStartup !== undefined) general.cleanTrashOnStartup = cleanTrashOnStartup;
-
-  const trayEnabled = safeParse<boolean>(rows[configKey("general", "trayEnabled")], "boolean");
-  if (trayEnabled !== undefined) general.trayEnabled = trayEnabled;
-
-  const closeBehavior = safeParse<string>(rows[configKey("general", "closeBehavior")], "string");
-  if (closeBehavior === "minimize" || closeBehavior === "exit") general.closeBehavior = closeBehavior;
-
-  const autostart = safeParse<boolean>(rows[configKey("general", "autostart")], "boolean");
-  if (autostart !== undefined) general.autostart = autostart;
-
-  const minimizeToTray = safeParse<boolean>(rows[configKey("general", "minimizeToTray")], "boolean");
-  if (minimizeToTray !== undefined) general.minimizeToTray = minimizeToTray;
-
-  const enableAI = safeParse<boolean>(rows[configKey("general", "enableAI")], "boolean");
-  if (enableAI !== undefined) general.enableAI = enableAI;
-
-  // ---- editor ----
-  const editor = { ...DEFAULT_APP_SETTINGS.editor };
-  const fontSize = safeParse<number>(rows[configKey("editor", "fontSize")], "number");
-  if (fontSize !== undefined) editor.fontSize = fontSize;
-  const ctrlScrollZoom = safeParse<boolean>(rows[configKey("editor", "ctrlScrollZoom")], "boolean");
-  if (ctrlScrollZoom !== undefined) editor.ctrlScrollZoom = ctrlScrollZoom;
-
-  // ---- layout ----
-  const layout = { ...DEFAULT_APP_SETTINGS.layout };
-  const sidebarCollapsed = safeParse<boolean>(rows[configKey("layout", "sidebarCollapsed")], "boolean");
-  if (sidebarCollapsed !== undefined) layout.sidebarCollapsed = sidebarCollapsed;
-  const aiPanelOpen = safeParse<boolean>(rows[configKey("layout", "aiPanelOpen")], "boolean");
-  if (aiPanelOpen !== undefined) layout.aiPanelOpen = aiPanelOpen;
-
-  // ---- view ----
-  const view = { ...DEFAULT_APP_SETTINGS.view };
-  const sortBy = safeParse<string>(rows[configKey("view", "sortBy")], "string");
-  if (sortBy !== undefined) view.sortBy = sortBy;
-  const sortOrder = safeParse<string>(rows[configKey("view", "sortOrder")], "string");
-  if (sortOrder === "asc" || sortOrder === "desc") view.sortOrder = sortOrder;
-
-  return { general, editor, layout, view };
+/**
+ * 按规格收敛一个值：不合规返回 undefined（调用方回退默认值并补写库）。
+ * 枚举走白名单，数值夹到 [min, max]，没有规格的（普通布尔 / 自由字符串）按类型已校验过直接用。
+ */
+const normalizeValue = (
+  value: unknown,
+  spec: EditorSettingSpec | undefined,
+  whitelist: readonly string[] | undefined,
+): unknown => {
+  if (whitelist) return typeof value === "string" && whitelist.includes(value) ? value : undefined;
+  if (!spec) return value;
+  if (spec.kind === "toggle") return typeof value === "boolean" ? value : undefined;
+  if (spec.kind === "number") {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    return Math.min(spec.max, Math.max(spec.min, value));
+  }
+  return typeof value === "string" && spec.options.some((o) => o.value === value) ? value : undefined;
 };
 
-/** 保存单个设置字段到数据库（值统一 JSON 序列化） */
+/**
+ * 读取全部软件设置。
+ *
+ * 每个分类先展开默认值，再用库里通过校验的字段覆盖，因此返回值永远是完整对象；
+ * 底层 getAppSettings 已把读失败吞成空对象，这里的 catch 是第二层兜底。
+ * 缺键 / 脏数据的补写是 fire-and-forget：不阻塞首屏，单次写失败只记日志。
+ */
+export const loadAppSettings = async (): Promise<AppSettings> => {
+  const rows: Record<string, string> = await settingsApi.getAppSettings().catch(() => ({}));
+  const out = {} as Record<(typeof CATEGORIES)[number], Record<string, unknown>>;
+  const pending: Promise<void>[] = [];
+
+  for (const category of CATEGORIES) {
+    const defaults = DEFAULT_APP_SETTINGS[category] as unknown as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...defaults };
+
+    for (const [field, fallback] of Object.entries(defaults)) {
+      const key = configKey(category, field);
+      const parsed = safeParse<unknown>(rows[key], typeof fallback as "number" | "string" | "boolean");
+      const spec =
+        category === "editor"
+          ? EDITOR_SPEC_BY_FIELD[field as keyof EditorSettings]
+          : undefined;
+      const value = parsed === undefined ? undefined : normalizeValue(parsed, spec, ENUM_BY_KEY[key]);
+
+      if (value === undefined) {
+        // 库里没有或值不可信：用默认值，并把这个键补写回库
+        merged[field] = fallback;
+        pending.push(saveAppSetting(category, field as never, fallback as never));
+      } else {
+        merged[field] = value;
+      }
+    }
+
+    out[category] = merged;
+  }
+
+  if (pending.length > 0) void Promise.all(pending);
+  return out as unknown as AppSettings;
+};
+
+/** 保存单个字段：值统一 JSON 序列化；失败只记日志，不向 UI 抛错 */
 export const saveAppSetting = async <K extends keyof AppSettings>(
   category: K,
   field: keyof AppSettings[K],
@@ -102,7 +129,11 @@ export const saveAppSetting = async <K extends keyof AppSettings>(
   }
 };
 
-/** 批量写入整份设置（用于「恢复默认值」后补齐） */
+/**
+ * 把整份设置逐分类写回数据库。
+ * 每次调用 saveAppSetting，单个键失败只影响自己；适合「把内存值全量刷库」的场景
+ * （如恢复默认后立刻把默认值写回去）。
+ */
 export const saveAllAppSettings = async (settings: AppSettings): Promise<void> => {
   for (const [category, fields] of Object.entries(settings) as [keyof AppSettings, Record<string, unknown>][]) {
     for (const [field, value] of Object.entries(fields)) {
@@ -111,7 +142,11 @@ export const saveAllAppSettings = async (settings: AppSettings): Promise<void> =
   }
 };
 
-/** 删除全部软件设置键，下次启动时自动回退到默认值 */
+/**
+ * 删除全部 app.config.* 键，下次启动自动回退默认值。
+ * 存储层只有单键删除接口，所以先取整表再按前缀筛选；
+ * 只匹配本前缀，AI 设置（ai.setting.* / ai.prompts）不受影响。
+ */
 export const resetAppSettings = async (): Promise<void> => {
   const rows: Record<string, string> = await settingsApi.getAppSettings().catch(() => ({}));
   for (const key of Object.keys(rows)) {

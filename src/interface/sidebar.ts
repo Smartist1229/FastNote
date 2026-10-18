@@ -1,16 +1,23 @@
-/* 侧边栏与分组抽屉的 Props。 */
+/* 侧边栏与分组抽屉的组件层 Props：只描述界面数据与回调，状态由 App 持有。 */
 
 import type * as React from "react";
 
 import type { Category, Note } from "./note";
 import type { ExportTarget } from "./exportCategory";
 
+/**
+ * 单个可展开抽屉（一个分组 / 全部笔记 / 未分类）的 Props。
+ * 搜索视图会复用本组件渲染「标题命中 / 正文命中」两个虚拟分组。
+ */
 export interface CategoryDrawerProps {
+  /** 抽屉对应的真实分组；「全部笔记」「未分类」等虚拟抽屉为 null */
   category: Category | null;
   notes: Note[];
   isExpanded: boolean;
+  /** 是否为「全部笔记」抽屉（标题、图标与计数都不同） */
   isAllNotes: boolean;
   selectedNoteId: number | null;
+  /** 需要高亮并滚动到可视区的笔记（由 AI 打开笔记等操作触发） */
   focusNoteId: number | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
@@ -26,9 +33,11 @@ export interface CategoryDrawerProps {
   headerIcon?: string;
 }
 
+/** 侧边栏 Props：分组列表 + 收藏视图 + 搜索/排序状态 + 各类右键菜单回调 */
 export interface SidebarProps {
   categories: Category[];
   notes: Note[];
+  /** 全部笔记（含未分类）的篇数，显示在「全部笔记」入口 */
   allNotesCount: number;
   selectedCategoryId: number | null;
   selectedNoteId: number | null;
@@ -38,8 +47,10 @@ export interface SidebarProps {
   focusNoteId: number | null;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
+  /** 排序字段（透传 ViewSettings.sortBy：updated_at / created_at / title） */
   sortBy: string;
   onSortByChange: (value: string) => void;
+  /** 排序方向（asc / desc，类型在此放宽为 string） */
   sortOrder: string;
   onToggleSortOrder: () => void;
   onSelectNote: (note: Note) => void;
@@ -58,7 +69,7 @@ export interface SidebarProps {
   isAiPanelOpen?: boolean;
   /** 打开统一的「设置」窗口（含 AI 设置与备份恢复） */
   onOpenSettings?: () => void;
-  /** 右键菜单「导出分组」：把整个分组导出为压缩包或电子书（真实分组、默认分组、搜索分组统一走这里） */
+  /** 右键菜单「导出分组」：真实分组、默认分组、搜索分组统一走这里 */
   onExportGroup: (target: ExportTarget) => void;
   /** 右键菜单「保存笔记」：等价于编辑器里的 Ctrl+S（导出到文件） */
   onSaveNote: (note: Note) => void;

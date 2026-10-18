@@ -1,9 +1,21 @@
+/**
+ * 分组抽屉：标题行（箭头 / 图标 / 名称 / 计数）+ 可折叠的笔记列表。
+ * 三种抽屉共用同一套骨架，差别只在数据来源与可用的分组操作：
+ * - CategoryDrawer：真实分组、「全部笔记」、搜索视图虚拟分组（用 headerTitle / headerIcon 覆盖文案与图标）
+ * - UncategorizedDrawer：category_id === null 的笔记
+ * - ChildNotesDrawer：category_id 指向已删除分组的遗留笔记
+ * 折叠动画走 .drawer-notes-grid 的 grid-template-rows 0fr → 1fr，所以列表节点始终挂载。
+ * DrawerNoteItem 上的 data-note-id 是 Sidebar 指针拖拽的锚点，不能去掉。
+ */
 import { useEffect, useRef } from 'react';
 import type { Note } from "@/interface/note";
 import type { CategoryDrawerProps } from "@/interface/sidebar";
 import { Icon } from '@/components/common/Icon';
 
-/** 笔记卡片：抽屉内的单条笔记（搜索模式下也复用它渲染扁平结果列表） */
+/**
+ * 抽屉内的单条笔记卡片；收藏视图也用它渲染扁平列表（此时 showIcon 为 true）。
+ * 删除 / 收藏按钮都要 stopPropagation——否则会连带触发整行的"打开笔记"。
+ */
 export const DrawerNoteItem: React.FC<{
   note: Note;
   isSelected: boolean;
@@ -18,7 +30,7 @@ export const DrawerNoteItem: React.FC<{
 }> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onTogglePin, showIcon = false, onContextMenu }) => {
   const itemRef = useRef<HTMLDivElement>(null);
 
-  // AI 打开笔记时聚焦高亮：滚动到可视区域
+  // AI 打开笔记时聚焦高亮：延迟 60ms 再滚动，等抽屉展开动画把元素位置定下来，否则会滚偏
   useEffect(() => {
     if (!isFocused) return;
     const timer = window.setTimeout(() => {
@@ -38,20 +50,20 @@ export const DrawerNoteItem: React.FC<{
           ? 'bg-gradient-to-r from-primary-500 to-primary-600 note-selected-bg border-transparent'
           : note.is_pinned
             ? 'bg-primary-50/70 hover:bg-primary-50 border-primary-100'
-            : 'border-transparent hover:bg-white/80 hover:border-slate-200/60'
+            : 'border-transparent hover:bg-surface/80 hover:border-line/60'
       } ${isFocused && !isSelected ? 'note-focus-ring' : ''}`}
     >
       <div className="flex items-center gap-1.5">
         {showIcon && (
           <Icon
             name="sidebar-note"
-            className={`w-3 h-3 flex-shrink-0 ${isSelected ? 'text-white' : 'text-primary-400'}`}
+            className={`w-3 h-3 flex-shrink-0 ${isSelected ? 'text-on-accent' : 'text-primary-400'}`}
           />
         )}
         <div className="flex-1 min-w-0">
           <h4
             className={`text-[12.5px] font-medium truncate leading-snug ${
-              isSelected ? 'text-white' : 'text-slate-700'
+              isSelected ? 'text-on-accent' : 'text-body'
             }`}
           >
             {note.title || '无标题'}
@@ -64,10 +76,10 @@ export const DrawerNoteItem: React.FC<{
           }}
           className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center opacity-0 group-hover/note:opacity-100 transition-all ${
             isSelected
-              ? 'text-white/70 hover:bg-white/20 hover:text-white'
-              : 'text-slate-300 hover:bg-red-50 hover:text-red-500'
+              ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
+              : 'text-faint-soft hover:bg-danger-soft hover:text-danger'
           }`}
-          title="移到回放站"
+          title="移到回收站"
         >
           <Icon name="sidebar-trash" className="w-3 h-3" />
         </button>
@@ -79,12 +91,12 @@ export const DrawerNoteItem: React.FC<{
           className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center transition-all ${
             note.is_pinned
               ? isSelected
-                ? 'text-white hover:bg-white/20'
+                ? 'text-on-accent hover:bg-surface/20'
                 : 'text-primary-500 hover:bg-primary-100'
               : `opacity-0 group-hover/note:opacity-100 ${
                   isSelected
-                    ? 'text-white/70 hover:bg-white/20 hover:text-white'
-                    : 'text-slate-300 hover:bg-primary-50 hover:text-primary-500'
+                    ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
+                    : 'text-faint-soft hover:bg-primary-50 hover:text-primary-500'
                 }`
           }`}
           title={note.is_pinned ? '取消收藏' : '收藏'}
@@ -96,7 +108,10 @@ export const DrawerNoteItem: React.FC<{
   );
 };
 
-/** 抽屉：分组标题 + 展开后的笔记列表 */
+/**
+ * 分组抽屉：真实分组、全部笔记、搜索视图虚拟分组共用。
+ * category 为 null 时是虚拟分组，标题与图标必须由 headerTitle / headerIcon 指定。
+ */
 export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   category,
   notes,
@@ -123,13 +138,14 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
       isAllNotes ? 'py-1' : 'py-0'
     }`;
   const activeHeader =
-    'text-slate-600 hover:bg-white/80 hover:text-slate-900 border-transparent hover:border-slate-200/60';
+    'text-body hover:bg-surface/80 hover:text-ink border-transparent hover:border-line/60';
 
   return (
     <div
       className="drawer-item"
       onContextMenu={(e) => onContextMenu(e, category)}
     >
+      {/* 分组右键：笔记自己的右键会先 stopPropagation，冒泡到这里的只有标题区与空白处 */}
       <button
         type="button"
         onClick={(e) => {
@@ -149,14 +165,14 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         {/* 展开箭头 */}
         <Icon
           name="sidebar-chevron-right-bold"
-          className={`w-3 h-3 flex-shrink-0 text-slate-400 transition-transform duration-300 ease-spring ${
+          className={`w-3 h-3 flex-shrink-0 text-faint transition-transform duration-300 ease-spring ${
             open ? 'rotate-90' : ''
           }`}
         />
 
         <Icon
           name={headerIcon ?? (isAllNotes ? "sidebar-archive" : "sidebar-folder")}
-          className="w-4 h-4 flex-shrink-0 text-slate-400"
+          className="w-4 h-4 flex-shrink-0 text-faint"
         />
 
         <span className="text-[13px] leading-tight flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
@@ -165,10 +181,10 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
 
         {/* 悬停操作按钮（仅分组） */}
         {!isAllNotes && category && (
-          <span className="flex items-center gap-0.5 opacity-0 group-hover/drawer:opacity-100 transition-opacity flex-shrink-0 text-slate-400">
+          <span className="flex items-center gap-0.5 opacity-0 group-hover/drawer:opacity-100 transition-opacity flex-shrink-0 text-faint">
             <span
               data-drawer-action="create-note"
-              className="p-1 rounded-md transition-colors hover:bg-slate-100"
+              className="p-1 rounded-md transition-colors hover:bg-surface-alt"
               title="在此分组新建笔记"
             >
               <Icon name="sidebar-plus-bold" className="w-3 h-3 pointer-events-none" />
@@ -176,7 +192,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
           </span>
         )}
 
-        <span className="badge text-[10px] flex-shrink-0 bg-slate-100 text-slate-500">
+        <span className="badge text-[10px] flex-shrink-0 bg-surface-alt text-muted">
           {notes.length}
         </span>
       </button>
@@ -188,9 +204,9 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         aria-hidden={!open}
       >
         <div className="overflow-hidden">
-          <div className="pt-0 pb-0.5 pl-2 pr-0.5 ml-3.5 border-l border-slate-200/70">
+          <div className="pt-0 pb-0.5 pl-2 pr-0.5 ml-3.5 border-l border-line/70">
             {notes.length === 0 ? (
-              <p className="text-[11px] text-slate-300 py-0.5 pl-2">暂无笔记</p>
+              <p className="text-[11px] text-faint-soft py-0.5 pl-2">暂无笔记</p>
             ) : (
               <div className="space-y-0.5 pl-1.5">
                 {notes.map((note) => (
@@ -214,7 +230,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   );
 };
 
-/** 未分类笔记抽屉（Notes with category_id === null） */
+/** 「未分类」抽屉：只收纳 category_id === null 的笔记，用虚线边框与真实分组区分 */
 export const UncategorizedDrawer: React.FC<{
   notes: Note[];
   isExpanded: boolean;
@@ -249,30 +265,30 @@ export const UncategorizedDrawer: React.FC<{
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={noteListId}
-        className={`drawer-header relative w-full text-left px-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-slate-500 hover:bg-white/80 hover:text-slate-800 border-slate-300/70 hover:border-slate-300`}
+        className={`drawer-header relative w-full text-left px-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-muted hover:bg-surface/80 hover:text-ink border-line-strong/70 hover:border-line-strong`}
         title={open ? '收起' : '展开'}
       >
         <Icon
           name="sidebar-chevron-right-bold"
-          className={`w-3 h-3 flex-shrink-0 text-slate-400 transition-transform duration-300 ease-spring ${
+          className={`w-3 h-3 flex-shrink-0 text-faint transition-transform duration-300 ease-spring ${
             open ? 'rotate-90' : ''
           }`}
         />
         <Icon
           name="sidebar-list"
-          className="w-4 h-4 flex-shrink-0 text-slate-400"
+          className="w-4 h-4 flex-shrink-0 text-faint"
         />
         <span className="text-[13px] leading-tight flex-1 truncate font-medium">未分类</span>
-        <span className="badge text-[10px] flex-shrink-0 bg-slate-100 text-slate-500">
+        <span className="badge text-[10px] flex-shrink-0 bg-surface-alt text-muted">
           {notes.length}
         </span>
       </button>
 
       <div id={noteListId} className={`drawer-notes-grid ${open ? 'is-open' : ''} mt-0.5`} aria-hidden={!open}>
         <div className="overflow-hidden">
-          <div className="pt-0 pb-0.5 pl-2 pr-0.5 ml-3.5 border-l border-slate-200/70">
+          <div className="pt-0 pb-0.5 pl-2 pr-0.5 ml-3.5 border-l border-line/70">
             {notes.length === 0 ? (
-              <p className="text-[11px] text-slate-300 py-0.5 pl-2">暂无笔记</p>
+              <p className="text-[11px] text-faint-soft py-0.5 pl-2">暂无笔记</p>
             ) : (
               <div className="space-y-0.5 pl-1.5">
                 {notes.map((note) => (
@@ -296,7 +312,10 @@ export const UncategorizedDrawer: React.FC<{
   );
 };
 
-/** 历史遗留数据抽屉：category_id 指向已删除分组的笔记 */
+/**
+ * 「未归类」抽屉：收纳 category_id 指向已删除分组的遗留笔记，
+ * 仅在确有此类数据时才由 Sidebar 渲染；它没有分组右键菜单（无处可挂）。
+ */
 export const ChildNotesDrawer: React.FC<{
   notes: Note[];
   isExpanded: boolean;
@@ -327,20 +346,20 @@ export const ChildNotesDrawer: React.FC<{
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={noteListId}
-        className="drawer-header w-full text-left pl-6 pr-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-slate-400 hover:bg-white/70 hover:text-slate-600 border-slate-200"
+        className="drawer-header w-full text-left pl-6 pr-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-faint hover:bg-surface/70 hover:text-body border-line"
         title={open ? '收起' : '展开'}
       >
         <Icon
           name="sidebar-chevron-right-bold"
-          className={`w-3 h-3 flex-shrink-0 text-slate-400 transition-transform duration-300 ease-spring ${open ? 'rotate-90' : ''}`}
+          className={`w-3 h-3 flex-shrink-0 text-faint transition-transform duration-300 ease-spring ${open ? 'rotate-90' : ''}`}
         />
         <span className="text-[11.5px] flex-1 truncate">未归类</span>
-        <span className="badge text-[10px] flex-shrink-0 bg-white/70 text-slate-500">{notes.length}</span>
+        <span className="badge text-[10px] flex-shrink-0 bg-surface/70 text-muted">{notes.length}</span>
       </button>
 
       <div id={noteListId} className={`drawer-notes-grid ${open ? 'is-open' : ''} mt-0.5`} aria-hidden={!open}>
         <div className="overflow-hidden">
-          <div className="pt-0.5 pb-0.5 pl-2 pr-0.5 ml-6 border-l border-slate-200/70">
+          <div className="pt-0.5 pb-0.5 pl-2 pr-0.5 ml-6 border-l border-line/70">
             <div className="space-y-0.5 pl-1.5">
               {notes.map((note) => (
                 <DrawerNoteItem

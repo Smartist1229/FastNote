@@ -1,0 +1,173 @@
+/**
+ * 代码块渲染：语言标签、行号、复制、自动换行、Mermaid 分流。
+ *
+ * 行号用「每行一个 grid 行」而不是独立的行号列：这样长代码行自动换行时，
+ * 行号与逻辑行仍然一一对齐，不会出现行号错位（独立列方案在这种场景必错）。
+ *
+ * Mermaid 渲染是异步的，失败时退回普通代码块，不让一句写错的图语句把整篇预览拖崩。
+ */
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { BlockNode, MarkdownEditorConfig } from "../types";
+import { MdeIcon } from "../icons";
+import { parseCodeMeta } from "./codeMeta";
+import { highlightCode, renderMermaid, splitHighlightedLines } from "./highlight";
+
+type CodeNode = Extract<BlockNode, { type: "code" }>;
+
+interface CodeBlockProps {
+  node: CodeNode;
+  config: MarkdownEditorConfig;
+  labels: Record<string, string>;
+}
+
+/** 内核：语法高亮 + 行号 + 复制 + 折叠 */
+const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
+  const [lines, setLines] = useState<string[]>(() => [node.code]);
+  const [copied, setCopied] = useState(false);
+  const [wrap, setWrap] = useState(false);
+  const timer = useRef<number | null>(null);
+
+  const lineCount = node.code ? node.code.split("\n").length : 0;
+  const meta = parseCodeMeta(node.meta);
+  const overThreshold = lineCount > config.preview.codeCollapseThreshold;
+  const canCollapse = config.preview.codeCollapsible && !meta.foldDisabled && (meta.collapse || meta.expand || overThreshold);
+  const [collapsed, setCollapsed] = useState(
+    () => canCollapse && (meta.collapse || (config.preview.codeCollapseDefault && !meta.expand)),
+  );
+  const highlightLines = new Set(config.preview.codeHighlightLines ? meta.highlight : []);
+  // 行号显隐统一由配置决定（可用 lines / nolines 按块覆盖），
+  // 不再因写了行高亮就强制开行号——否则同一篇文档里的代码块会出现两套观感
+  const showNumbers = meta.lineNumbers ?? config.preview.showCodeLineNumbers;
+
+  useEffect(() => {
+    let alive = true;
+    highlightCode(node.code, node.lang, config.preview.highlight).then((html) => {
+      if (alive) setLines(splitHighlightedLines(html));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [node.code, node.lang, config.preview.highlight]);
+
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(node.code);
+      setCopied(true);
+      if (timer.current) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }, [node.code]);
+
+  return (
+    <div className={`mde-code${wrap ? " is-wrapped" : ""}`} data-lang={node.lang}>
+      <div className="mde-code-head">
+        <span className="mde-code-lang">
+          {config.preview.showCodeLanguage ? node.lang || labels.code : ""}
+        </span>
+        <span className="mde-code-tools">
+          {canCollapse && (
+            <button
+              type="button"
+              className={`mde-code-tool mde-code-fold${collapsed ? " is-collapsed" : ""}`}
+              onClick={() => setCollapsed((value) => !value)}
+              title={collapsed ? labels.expandCode : labels.collapseCode}
+              aria-label={collapsed ? labels.expandCode : labels.collapseCode}
+              aria-expanded={!collapsed}
+            >
+              <MdeIcon name="chevron" size={13} />
+            </button>
+          )}
+          {config.preview.codeActions.wrap && (
+            <button
+              type="button"
+              className={`mde-code-tool${wrap ? " is-active" : ""}`}
+              onClick={() => setWrap((v) => !v)}
+              title={wrap ? "取消自动换行" : "自动换行"}
+              aria-label={wrap ? "取消自动换行" : "自动换行"}
+            >
+              <MdeIcon name="wrap" size={13} />
+            </button>
+          )}
+          {config.preview.codeActions.copy && (
+            <button
+              type="button"
+              className="mde-code-tool"
+              onClick={copy}
+              title={copied ? labels.copySuccess : labels.copy}
+              aria-label={labels.copy}
+            >
+              <MdeIcon name={copied ? "check" : "copy"} size={13} />
+            </button>
+          )}
+        </span>
+      </div>
+      <div className={`mde-code-body${collapsed ? " is-collapsed" : ""}`}>
+        <div className={`mde-code-lines${showNumbers ? " with-numbers" : ""}`}>
+          {lines.map((line, index) => (
+            <div
+              className={`mde-code-line${highlightLines.has(index + 1) ? " is-highlighted" : ""}`}
+              key={index}
+            >
+              {showNumbers && <span className="mde-code-ln">{index + 1}</span>}
+              <span className="mde-code-text" dangerouslySetInnerHTML={{ __html: line || " " }} />
+            </div>
+          ))}
+        </div>
+        {collapsed && (
+          <button type="button" className="mde-code-expand" onClick={() => setCollapsed(false)}>
+            {labels.expandCodeLines} · {lineCount}
+            <MdeIcon name="chevron" size={11} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/** Mermaid 图：渲染失败自动回退为代码块 */
+const MermaidBlock: React.FC<CodeBlockProps> = (props) => {
+  const { node, config } = props;
+  const [svg, setSvg] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setFailed(false);
+    setSvg(null);
+    renderMermaid(node.code, config.preview.mermaidTheme).then((result) => {
+      if (!alive) return;
+      if (result) setSvg(result);
+      else setFailed(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [node.code, config.preview.mermaidTheme]);
+
+  if (failed) return <PlainCodeBlock {...props} />;
+
+  if (!svg) {
+    return (
+      <div className="mde-mermaid mde-mermaid-loading" aria-busy="true">
+        <span className="mde-mermaid-skeleton" />
+      </div>
+    );
+  }
+
+  return <div className="mde-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />;
+};
+
+export const CodeBlock: React.FC<CodeBlockProps> = (props) => {
+  const { node, config } = props;
+  if (node.lang === "mermaid" && config.preview.mermaid) return <MermaidBlock {...props} />;
+  return <PlainCodeBlock {...props} />;
+};

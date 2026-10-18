@@ -47,26 +47,11 @@ export default defineConfig(async () => ({
           if (path.includes("/@tauri-apps/")) {
             return "vendor-tauri";
           }
-          if (path.includes("/md-editor-rt/")) {
-            return "editor-markdown";
-          }
           if (path.includes("/mermaid/") || path.includes("/cytoscape") || path.includes("/dagre")) {
             return "markdown-diagrams";
           }
           if (path.includes("/katex/")) {
             return "markdown-math";
-          }
-          if (path.includes("/highlight.js/")) {
-            return "markdown-highlight";
-          }
-          if (path.includes("/prettier/")) {
-            return "markdown-format";
-          }
-          if (path.includes("/echarts/") || path.includes("/zrender/")) {
-            return "markdown-charts";
-          }
-          if (path.includes("/cropperjs/") || path.includes("/screenfull/")) {
-            return "markdown-tools";
           }
 
           return undefined;

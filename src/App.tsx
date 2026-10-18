@@ -1,3 +1,24 @@
+/**
+ * FastNote 应用根组件：整体布局、笔记/分组数据流、AI 面板与设置联动的汇聚点。
+ *
+ * 状态归属：
+ * - 笔记、分组、当前选中项、弹窗开关等 UI 状态由本组件持有；
+ * - appSettings / aiSettings 同样在本组件，但持久化全权交给 stores
+ *   （SQLite 的 app_settings 表），这里只做启动读取与逐项 diff 写库；
+ * - 编辑器内部状态（光标、未保存内容、防抖计时器）下沉到 NoteEditor，
+ *   通过回调与 ref 桥接。
+ *
+ * 主链路：
+ * 挂载 → 并行恢复软件设置 / AI 设置并拉取全量笔记与分组 → 渲染叠放层
+ * → 用户交互写库 → 派发 `fastnote-data-changed` 触发统一重载。
+ *
+ * 关键约束：
+ * - notes 始终是全量列表：分组抽屉、收藏视图、搜索都从它派生，切分组不重新请求；
+ * - 设置必须先读回再允许写库（appSettingsLoaded / aiConfigLoaded），
+ *   否则默认值会在用户数据尚未到达时覆盖数据库；
+ * - AI 预览与电脑文件是叠放层，使用负 id 哨兵且永不落库；
+ *   切层/关闭前先触发一次外部文件写回，避免丢掉最后一次编辑。
+ */
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
 import "@/App.css";
 import type { Category, ExternalTextFile, Note } from "@/interface/note";
@@ -5,11 +26,23 @@ import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
 import type { AppSettings } from "@/interface/settings";
 import type { ExportTarget } from "@/interface/exportCategory";
 import type { SettingsSection } from "@/interface/settingsModal";
+import type { AiAccessLevel } from "@/interface/aiAccess";
+import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
+import type { ThemeSettings } from "@/interface/theme";
+import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
+import { applyTheme, cacheTheme, readCachedTheme } from "@/lib/theme";
+import { setResolvedThemeMode } from "@/lib/themeRuntime";
+import { flushThemeSettings, loadThemeSettings, saveThemeSettings } from "@/stores/themeStore";
 import type { PropertiesTarget } from "@/interface/ui";
 import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
 import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
 import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "@/stores/aiSettingsStore";
-import { loadAppSettings, saveAppSetting, resetAppSettings } from "@/stores/appSettingsStore";
+import {
+  loadAppSettings,
+  saveAllAppSettings,
+  saveAppSetting,
+  resetAppSettings,
+} from "@/stores/appSettingsStore";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import * as notesApi from "@/api/notes";
@@ -30,6 +63,7 @@ import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { Icon } from "@/components/common/Icon";
 
+/** 编辑器依赖 CodeMirror，体积较大：懒加载让首屏先出侧栏与欢迎页，Suspense 负责占位 */
 const NoteEditor = lazy(() =>
   import("@/components/editor/NoteEditor").then((module) => ({
     default: module.NoteEditor,
@@ -37,16 +71,19 @@ const NoteEditor = lazy(() =>
 );
 
 function AppContent() {
+  /** 全量笔记：分组抽屉、收藏视图、搜索都从它派生，因此不按当前分组裁剪 */
   const [notes, setNotes] = useState<Note[]>([]);
+  /** 分组列表：loadData 统一刷新，AI 侧改库后依靠事件重新拉取 */
   const [categories, setCategories] = useState<Category[]>([]);
+  /** 真实笔记的选中项；null 时编辑器回落到叠放层，仍为空则显示欢迎页 */
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
-  /** AI 回复的临时预览：只在编辑器里展示，绝不写入数据库（软件新开时为 null → 正常显示欢迎页） */
+  /** AI 回复的临时预览：只在编辑器展示、绝不写库；null 时露出下一层或欢迎页 */
   const [tempNote, setTempNote] = useState<{ id: number; title: string; content: string } | null>(null);
   /** 临时预览的负 id 计数器：每次打开都换一个新 id，确保编辑器一定会刷新成新内容 */
   const tempNoteIdRef = useRef(-1);
   /**
    * 正在直接编辑的电脑文本文件：null 表示普通笔记模式。
-   * 内容只留在界面上，改一个字就写回原文件（不落库）。
+   * 内容只存在于界面，编辑器防抖后写回原文件，不落库。
    */
   const [externalFile, setExternalFile] = useState<ExternalTextFile | null>(null);
   /** 电脑文件的负 id 计数器：与临时预览分区间，避免两边 id 撞车 */
@@ -61,13 +98,13 @@ function AppContent() {
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   /** 分组列表的镜像 ref：拖拽回调里拿分组名做确认提示，避免频繁重注册监听 */
   const categoriesRef = useRef<Category[]>([]);
-  /** 临时预览对应的伪笔记：id 为负数哨兵值，落库操作会被 NoteEditor 的 isTemporary 挡掉 */
+  /** 临时预览的伪笔记：负 id 哨兵，NoteEditor 据 isTemporary 拦截所有落库操作 */
   const tempPreviewNote: Note | null = tempNote
-    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false }
+    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2 }
     : null;
   /** 电脑文件对应的伪笔记：标题=文件名、内容=文件内容，同样不落库 */
   const externalFileNote: Note | null = externalFile
-    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false }
+    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2 }
     : null;
   /** 编辑器当前展示的内容：三层叠放，最上层优先 —— AI 预览 > 电脑文件 > 真实笔记 */
   const editorNote = tempPreviewNote ?? externalFileNote ?? selectedNote;
@@ -87,10 +124,14 @@ function AppContent() {
   const handleCloseTemporary = () => {
     setTempNote(null);
   };
+  /** 新建笔记的默认归属分组：null 表示未分类（「全部」视图同样落到未分类） */
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  /** 排序状态：与 appSettings.view 同步，改动经 handleSortByChange 落库并触发重载 */
   const [sortBy, setSortBy] = useState<string>("created_at");
   const [sortOrder, setSortOrder] = useState<string>("asc");
+  /** 「全部笔记」计数，与 notes 同源，仅供侧边栏展示 */
   const [allNotesCount, setAllNotesCount] = useState<number>(0);
+  /** 搜索关键词：纯前端过滤，不写库也不重新请求 */
   const [searchQuery, setSearchQuery] = useState("");
   /** 抽屉展开状态：'all' | 分组ID | 'uncategorized' | null（全部收起） */
   const [expandedDrawer, setExpandedDrawer] = useState<number | 'all' | 'uncategorized' | null>(null);
@@ -104,27 +145,36 @@ function AppContent() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   /** 折叠后鼠标贴近左边缘时浮现唤出把手 */
   const [isRevealHandleVisible, setIsRevealHandleVisible] = useState(false);
+  /** 分组新建/编辑共用弹窗：editingCategory 为 null 即新建 */
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [categoryName, setCategoryName] = useState("");
   const [showDeleteCategoryModal, setShowDeleteCategoryModal] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
   const [deleteCategoryNotes, setDeleteCategoryNotes] = useState(false);
+  /** 回收站：列表 + 多选集合；trashNotes 只在回收站操作时更新，欢迎页计数也取自它 */
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [trashNotes, setTrashNotes] = useState<Note[]>([]);
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<number>>(new Set());
+  /** AI 面板是否展开：仅启动时从 layout 恢复，切换本身不写设置 */
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  /** 编辑器光标偏移：AI「插入」以此为插入点，避免总是追加到文末 */
   const [editorCursorOffset, setEditorCursorOffset] = useState(0);
   /** 统一设置窗口：null 表示关闭，否则为打开时的分区 */
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
-  /** AI 服务商列表（统一设置里的服务商分区使用） */
+  /** 服务商列表与当前选中项：由本组件代持，设置弹窗只做展示与回调 */
   const [providerModalProviders, setProviderModalProviders] = useState<AiProvider[]>([]);
   const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
   /** 软件设置：启动读库，读不到的键回退默认值 */
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   /** 软件设置是否已从数据库读回：读回前不碰开机启动快捷方式，避免用默认值覆盖用户设置 */
   const [appSettingsLoaded, setAppSettingsLoaded] = useState(false);
+  /**
+   * 主题设置：初值取 localStorage 的快照（首帧不闪），随后被数据库的值覆盖。
+   * 落库在 app.config.theme.settings 一个键里，见 stores/themeStore.ts。
+   */
+  const [theme, setTheme] = useState<ThemeSettings>(() => readCachedTheme() ?? DEFAULT_THEME_SETTINGS);
   /**
    * AI 记忆 / 前置提示词 + AI 全局设置。
    * 全部持久化在 SQLite 的 app_settings 表里：启动时读库，读不到的键回退默认值；
@@ -139,6 +189,11 @@ function AppContent() {
   /** NoteEditor 注册进来的「保存笔记到文件」（等价 Ctrl+S），侧边栏右键菜单调用 */
   const exportNoteRef = useRef<(() => void) | null>(null);
 
+  /**
+   * 启动即恢复 AI 设置与记忆：读库、缺键回退默认、老版本 localStorage 首次迁移。
+   * cancelled 避免 StrictMode 双执行或卸载后 setState；失败也要置 loaded，
+   * 否则「读回前不写库」的保护会让设置永远无法保存。
+   */
   useEffect(() => {
     let cancelled = false;
     loadAiConfig()
@@ -164,7 +219,7 @@ function AppContent() {
     const prev = prevSettingsRef.current;
     prevSettingsRef.current = aiSettings;
     if (!prev) {
-      // 第一次拿到设置：与默认值不同的项补齐写入，保证库里始终有一份完整记录
+      // 第一次拿到设置：整份写入，保证库里每个键都有一行记录
       saveAllSettings(aiSettings);
       return;
     }
@@ -184,15 +239,18 @@ function AppContent() {
   }, [aiPrompts, aiConfigLoaded]);
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
+  /** 最新选中项 / 笔记列表的镜像：供零依赖回调与事件处理器读取，避免闭包过期 */
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
+  /** 侧边栏高亮计时器：40ms 后点亮、2.6s 后熄灭；重复打开前先清掉旧计时器 */
   const focusTimerRef = useRef<number | null>(null);
 
-  /* ------------------------------ 软件设置 ------------------------------ */
+  /* ---------- 软件设置 ---------- */
 
   /**
-   * 启动时读取软件设置：优先读数据库，读不到的键回退 config/appDefaults.ts 的默认值。
-   * 读取成功后同步到各处的运行时状态；「启动生效」的项（如清理回收站）只在这里执行一次。
+   * 启动读软件设置：优先读库，缺键回退 config/appDefaults.ts 的默认值。
+   * 读回后一次性对齐排序、侧栏折叠、AI 面板等运行时状态；
+   * 「启动时清空回收站」属于启动动作，只在这里执行一次。
    */
   useEffect(() => {
     let cancelled = false;
@@ -217,6 +275,36 @@ function AppContent() {
       })
       .catch((e) => console.error("读取软件设置失败，使用默认值：", e));
     return () => { cancelled = true; };
+  }, []);
+
+  /** 主题读库：启动时异步补上，读回后覆盖缓存快照 */
+  useEffect(() => {
+    let cancelled = false;
+    loadThemeSettings()
+      .then((loaded) => {
+        if (!cancelled) setTheme(loaded);
+      })
+      .catch((e) => console.error("读取主题设置失败，使用默认主题：", e));
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * 应用主题：把令牌写进 <html> 的 CSS 变量，并同步给需要按明暗分支的组件。
+   * 依赖 theme 本身，因此任何一次取色都会立刻反映到整个界面（含设置窗口）。
+   * cacheTheme 写的是首帧快照，只为下次启动时不闪白。
+   */
+  useEffect(() => {
+    setResolvedThemeMode(applyTheme(theme));
+    cacheTheme(theme);
+  }, [theme]);
+
+  /** 兜底：组件卸载时把还没落库的主题改动冲下去 */
+  useEffect(() => () => { void flushThemeSettings(); }, []);
+
+  /** 主题整对象回写：立即生效（上面的 effect）并落库 */
+  const handleThemeChange = useCallback((next: ThemeSettings) => {
+    setTheme(next);
+    void saveThemeSettings(next);
   }, []);
 
   /**
@@ -244,12 +332,12 @@ function AppContent() {
   );
 
   // 单实例、托盘、关闭到托盘、开机启动都由 Rust 侧处理（见 src-tauri/src/lib.rs）：
-  // 前端不再持有托盘图标，也不再监听窗口关闭事件，避免窗口隐藏后 JS 失联导致托盘失效。
+  // 前端不持有托盘图标、不监听窗口关闭事件，窗口隐藏后即使 JS 失联也不影响托盘。
 
   /**
-   * 开机自启动：只在「开机自启动」开关真正变化时才创建/删除启动文件夹里的快捷方式。
-   * 首次读回设置时不动手（启动时由 Rust 的 sync_autostart_shortcut 兜底补齐缺失的快捷方式）。
-   * 「开机后最小化到托盘」不进快捷方式，启动时读库决定，所以切它完全不会重写快捷方式。
+   * 开机自启动：只有开关真正翻转时才创建/删除启动文件夹快捷方式。
+   * 首次读回不写（Rust 的 sync_autostart_shortcut 会补齐缺失项）；
+   * 「开机后最小化到托盘」不进快捷方式，因此切换它不会重写快捷方式。
    */
   const prevAutostartRef = useRef<boolean | null>(null);
   useEffect(() => {
@@ -271,7 +359,7 @@ function AppContent() {
   const handleResetAppSettings = useCallback(async () => {
     const ok = await confirm({
       title: "恢复软件默认设置",
-      message: "将把通用（含托盘图标、关闭窗口行为、开机自启动）、编辑器、笔记列表、界面布局等软件设置恢复为默认值（AI 设置不受影响）。",
+      message: "将把通用（含托盘图标、关闭窗口行为、开机自启动）、编辑器、笔记列表、界面布局、主题等软件设置恢复为默认值（AI 设置不受影响）。",
       confirmText: "恢复默认",
       danger: true,
     });
@@ -279,13 +367,17 @@ function AppContent() {
     await resetAppSettings();
     const d = DEFAULT_APP_SETTINGS;
     setAppSettings(d);
+    // 默认值也写回库：库里始终保有一份完整设置，读库时不必每次都补写
+    await saveAllAppSettings(d);
+    // 主题也存在 app.config.* 前缀下，已被 resetAppSettings 删掉，运行时同步回默认
+    setTheme(DEFAULT_THEME_SETTINGS);
     // 排序是实时生效项，立即同步；布局是启动项，只落默认值、下次启动才应用
     setSortBy(d.view.sortBy);
     setSortOrder(d.view.sortOrder);
     showToast("已恢复软件默认设置", "success");
-  }, [confirm, showToast]);
+  }, [confirm, showToast, saveAllAppSettings]);
 
-  /* ------------------------- 运行时状态 ↔ 设置同步 ------------------------- */
+  /* ---------- 运行时状态 ↔ 设置同步 ---------- */
 
   /** 排序字段：走 applyAppSetting，内部会同步本地的 sortBy 并触发列表重新拉取 */
   const handleSortByChange = useCallback(
@@ -298,9 +390,12 @@ function AppContent() {
     [sortOrder, applyAppSetting],
   );
 
-  /** 打开笔记：记录当前分组，并让侧边栏展开/聚焦到这条笔记 */
+  /**
+   * 打开真实笔记：撤掉上层叠放（先触发外部文件写回），切到它所属分组并展开抽屉，
+   * 再用一次短延时把 focusNoteId 送进侧边栏做高亮。
+   */
   const openNote = useCallback((note: Note) => {
-    // 打开真实笔记：撤掉上层叠着的电脑文件 / AI 预览（先 flush 未写完的文件内容）
+    // 打开真实笔记：撤掉上层叠着的电脑文件 / AI 预览（先触发一次文件写回）
     if (externalFileRef.current) {
       flushExternalRef.current?.();
       externalFileRef.current = null;
@@ -325,7 +420,7 @@ function AppContent() {
   /** 展开/收起 AI 对话面板（只改当前界面，不写设置） */
   const toggleAiPanel = useCallback(() => setAiPanelOpen((open) => !open), []);
 
-  // 关闭 AI 面板：当 enableAI 变为 false 时，自动关闭面板
+  // 关闭 AI 面板：AI 总开关关闭时立即收起，设置项本身由 applyAppSetting 负责落库
   useEffect(() => {
     if (!appSettings.general.enableAI && aiPanelOpen) {
       setAiPanelOpen(false);
@@ -343,6 +438,7 @@ function AppContent() {
     });
   }, []);
 
+  // 生产环境屏蔽原生右键菜单；开发环境保留，方便审查元素
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
       if (import.meta.env.PROD) {
@@ -353,6 +449,11 @@ function AppContent() {
     return () => document.removeEventListener("contextmenu", handleContextMenu);
   }, []);
 
+  /**
+   * 笔记/分组的统一刷新入口：并行拉取后整体替换内存列表。
+   * 依赖 sortBy/sortOrder，排序变化会自动重载；AI 侧改库后经
+   * `fastnote-data-changed` 也走到这里。选中笔记不在新列表里时清空（已被删除）。
+   */
   const loadData = useCallback(async () => {
     try {
       // 抽屉视图下所有分组的笔记都从 notes 派生，因此必须始终持有全量笔记，
@@ -364,9 +465,8 @@ function AppContent() {
       setCategories(cats);
       setNotes(allNotes);
       setAllNotesCount(allNotes.length);
-      // 分组可能被"别处"删掉（例如 AI 调用了 deleteCategory 工具，走不到删除分组弹窗里
-      // 那句重置逻辑）。这里统一校验一次，避免 selectedCategoryId 悬空，
-      // 否则之后"新建笔记"会带着一个已不存在的分组 ID。
+      // 分组可能在别处被删（如 AI 调用 deleteCategory），这里统一校验，避免
+      // selectedCategoryId 悬空，否则之后「新建笔记」会带上一个已不存在的分组 ID。
       setSelectedCategoryId((prev) => (prev !== null && !cats.some((c) => c.id === prev) ? null : prev));
       const currentSelectedNote = selectedNoteRef.current;
       if (currentSelectedNote) {
@@ -382,12 +482,14 @@ function AppContent() {
     }
   }, [sortBy, sortOrder]);
 
+  // 订阅数据变更广播：包一层丢弃 Event 参数，统一触发重载
   useEffect(() => {
     const handler = () => loadData();
     window.addEventListener("fastnote-data-changed", handler);
     return () => window.removeEventListener("fastnote-data-changed", handler);
   }, [loadData]);
 
+  // 首次挂载与排序变化时加载；其余刷新由上面的广播触发
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => {
     selectedNoteRef.current = selectedNote;
@@ -411,8 +513,10 @@ function AppContent() {
     };
   }, []);
 
+  /** 保存串行队列：连续保存串成 Promise 链，避免写库乱序让旧内容覆盖新内容 */
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
+  /** 新建「无标题」笔记并选中；省略 categoryId 用当前分组，成功后广播 data-changed */
   const handleCreateNote = async (categoryId?: number | null) => {
     const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
     // 新建笔记：撤掉上层叠着的电脑文件 / AI 预览
@@ -453,7 +557,7 @@ function AppContent() {
     }
   };
 
-  /* ------------------------- 电脑文件（拖入 / 打开） ------------------------- */
+  /* ---------- 电脑文件（拖入 / 打开） ---------- */
 
   // 让零依赖回调始终能拿到最新值
   useEffect(() => { externalFileRef.current = externalFile; }, [externalFile]);
@@ -487,7 +591,7 @@ function AppContent() {
 
   /** 外部文件另存为笔记：写库后切到新笔记，叠放层一并清空 */
   const handleSaveExternalToNote = async (categoryId: number | null, title: string, content: string) => {
-    // 另存前先把最后一点改动同步回原文件
+    // 另存前先触发一次写回，把最后一点改动交给原文件（不等待完成）
     flushExternalRef.current?.();
     try {
       const note = await notesApi.createNote(title, content, categoryId);
@@ -506,7 +610,7 @@ function AppContent() {
     }
   };
 
-  /** 外部文件写回电脑：由编辑器防抖触发 */
+  /** 写回磁盘：编辑器 500ms 防抖后调用；失败由 NoteEditor 捕获并显示保存错误 */
   const handleWriteExternal = useCallback(async (content: string) => {
     const target = externalFileRef.current;
     if (!target) return;
@@ -534,7 +638,7 @@ function AppContent() {
     }
   }, [confirm, showToast]);
 
-  /** 欢迎页「打开文本文件」：系统文件选择框 → 打开（规则同拖入） */
+  /** 欢迎页「打开文本文件」：系统文件选择框 → 按外部文件模式打开 */
   const handleOpenTextFileDialog = useCallback(async () => {
     try {
       const selected = await openFileDialog({ multiple: false, directory: false });
@@ -546,8 +650,9 @@ function AppContent() {
   }, [openExternalFile, showToast]);
 
   /**
-   * 系统级文件拖拽监听：Tauri 替换了 webview 的拖放处理器，
+   * 系统级文件拖拽监听：Tauri 接管了 webview 的拖放处理器，
    * 因此这里能拿到真实文件路径，并自行做落点命中检测。
+   * 坐标是物理像素，需除以 devicePixelRatio 后再交给 elementFromPoint。
    */
   useEffect(() => {
     // 纯浏览器预览（无 Tauri 运行时）下没有系统拖拽事件，直接跳过
@@ -593,6 +698,10 @@ function AppContent() {
     };
   }, [openExternalFile, handleDropFileToCategory]);
 
+  /**
+   * 笔记落库：所有保存排进同一队列串行执行，保证写入顺序与编辑顺序一致。
+   * 成功后同步 notes 与 selectedNote 的 updated_at，只更新仍处于选中态的那条。
+   */
   const handleSaveNote = async (id: number, title: string, content: string, categoryId: number | null) => {
     saveQueueRef.current = saveQueueRef.current.then(async () => {
       try {
@@ -613,12 +722,12 @@ function AppContent() {
     await saveQueueRef.current;
   };
 
-  /** 侧边栏笔记右键「保存笔记」，等价于 Ctrl+S。
-   *  打开着的笔记用编辑器里的实时内容（可能还没落库）；没打开的笔记直接导出库里存的内容。 */
+  /** 注册编辑器导出的回调，侧边栏右键菜单通过 exportNoteRef 调用；卸载时传 null 注销 */
   const registerExportNote = useCallback((fn: (() => void) | null) => {
     exportNoteRef.current = fn;
   }, []);
 
+  /** 侧边栏右键「保存笔记」：打开中的笔记交给编辑器（内容最新），其余直接导出库里内容 */
   const handleExportNoteFromMenu = async (note: Note) => {
     if (selectedNote?.id === note.id && exportNoteRef.current) {
       exportNoteRef.current();
@@ -634,6 +743,10 @@ function AppContent() {
     }
   };
 
+  /**
+   * AI 改写正文的唯一出口：先本地乐观更新（编辑器立即刷新），再排队写库。
+   * 没有选中笔记时只提示，不产生任何写入。
+   */
   const applyAiContentChange = async (nextContent: string) => {
     const current = selectedNoteRef.current;
     if (!current) {
@@ -648,6 +761,7 @@ function AppContent() {
     await handleSaveNote(current.id, current.title, nextContent, current.category_id);
   };
 
+  /** AI「插入」：在编辑器光标处插字并按需补换行，偏移先 clamp 到正文长度防越界 */
   const handleAiInsertText = async (text: string) => {
     const current = selectedNoteRef.current;
     if (!current) {
@@ -665,12 +779,14 @@ function AppContent() {
     showToast("已插入到笔记", "success");
   };
 
+  /** AI「替换」：整篇覆盖，并把光标移到文末 */
   const handleAiReplaceContent = async (text: string) => {
     await applyAiContentChange(text);
     setEditorCursorOffset(text.length);
     showToast("已替换笔记内容", "success");
   };
 
+  /** 删除当前笔记：软删除进回收站，刷新列表后清空选中 */
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
     const noteId = selectedNote.id;
@@ -692,6 +808,8 @@ function AppContent() {
     }
   };
 
+  /* ---------- 回收站 ---------- */
+  /** 打开回收站：每次重新拉取，避免展示过期数据 */
   const handleOpenTrash = async () => {
     try {
       const notes = await notesApi.getTrashNotes();
@@ -789,6 +907,8 @@ function AppContent() {
     } catch { return dateStr; }
   };
 
+  /* ---------- 分组操作 ---------- */
+  /** 打开新建分组弹窗：清空编辑态与输入值 */
   const handleCreateCategory = () => {
     setEditingCategory(null);
     setCategoryName("");
@@ -841,6 +961,35 @@ function AppContent() {
     }
   };
 
+  /**
+   * 设置单篇笔记的 AI 访问档位（0 禁止 / 1 只读 / 2 完全）。
+   * 只改档位，不动正文；本地 notes 状态同步更新，
+   * AI 面板的权限快照依赖它重新计算（下一轮对话即生效）。
+   */
+  const handleSetNoteAiAccess = async (note: Note, level: AiAccessLevel) => {
+    if (note.ai_access === level) return;
+    try {
+      await notesApi.setNoteAiAccess(note.id, level);
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, ai_access: level } : n)));
+      setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, ai_access: level } : prev));
+      showToast(`「${note.title || "无标题"}」的 AI 访问已设为${AI_ACCESS_LABELS[level]}`, "success");
+    } catch {
+      showToast("操作失败，请重试", "error");
+    }
+  };
+
+  /** 设置分组的 AI 访问档位：作为组内笔记的上限，但不改写笔记自身的档位 */
+  const handleSetCategoryAiAccess = async (category: Category, level: AiAccessLevel) => {
+    if (category.ai_access === level) return;
+    try {
+      await categoriesApi.setCategoryAiAccess(category.id, level);
+      setCategories((prev) => prev.map((c) => (c.id === category.id ? { ...c, ai_access: level } : c)));
+      showToast(`「${category.name}」的 AI 访问已设为${AI_ACCESS_LABELS[level]}`, "success");
+    } catch {
+      showToast("操作失败，请重试", "error");
+    }
+  };
+
   /** 把笔记移动到指定分组（null = 未分类） */
   const handleMoveNoteToCategory = async (note: Note, categoryId: number | null) => {
     if (note.category_id === categoryId) return;
@@ -854,6 +1003,10 @@ function AppContent() {
     }
   };
 
+  /**
+   * 确认删除分组：deleteCategoryNotes=true 时组内笔记一并移入回收站，
+   * 否则由后端把这些笔记改为未分类；删的是当前分组时立刻取消选中。
+   */
   const confirmDeleteCategory = async () => {
     if (!deletingCategory) return;
     try {
@@ -878,8 +1031,21 @@ function AppContent() {
           ? { kind: "category", category: categories.find((c) => c.id === propertiesTarget.category.id) ?? propertiesTarget.category }
           : propertiesTarget;
 
+  /**
+   * 当前笔记的生效档位 = min(笔记, 所属分组)；没有打开笔记时按"完全"处理（不限制面板本身）。
+   * AI 面板据此决定要不要附正文、以及输入区显示「未授权 / 只读」。
+   */
+  const currentNoteAiLevel: AiAccessLevel = !selectedNote
+    ? 2
+    : ((Math.min(
+        selectedNote.ai_access,
+        selectedNote.category_id !== null
+          ? categories.find((c) => c.id === selectedNote.category_id)?.ai_access ?? 2
+          : 2,
+      ) as AiAccessLevel) ?? 2);
+
   return (
-    <div className="h-screen flex flex-col bg-slate-50">
+    <div className="h-screen flex flex-col bg-app">
       <div className="relative flex flex-1 overflow-hidden">
         {/* 侧边栏：分组 + 笔记抽屉式融合（可折叠） */}
         <div className={`sidebar-shell ${isSidebarCollapsed ? 'is-collapsed' : ''}`}>
@@ -971,18 +1137,19 @@ function AppContent() {
 
         {/* 主内容区：编辑器 + AI 面板（AI 面板作为 flex 兄弟节点，永远挤压而不遮挡） */}
         <div className="relative flex-1 flex overflow-hidden min-w-0">
-          <div className="relative flex-1 bg-white min-w-0 overflow-hidden">
+          <div className="relative flex-1 bg-surface min-w-0 overflow-hidden">
             <Suspense
               fallback={
                 <div className="h-full flex flex-col items-center justify-center gap-3">
                   <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
-                  <p className="text-sm text-slate-400">正在加载编辑器...</p>
+                  <p className="text-sm text-faint">正在加载编辑器...</p>
                 </div>
               }
             >
-              {/* 编辑器与欢迎页互斥渲染：无笔记时欢迎页可用，AI 面板依然在右侧可用 */}
+              {/* 编辑器与欢迎页互斥：没有可展示的笔记时才出欢迎页，AI 面板不受影响 */}
               {editorNote ? (
                 <div className="editor-layer">
+                  {/* 预览层激活时不传外部文件路径，避免把 AI 内容写回磁盘 */}
                   <NoteEditor
                     note={editorNote}
                     isTemporary={tempNote != null}
@@ -992,8 +1159,7 @@ function AppContent() {
                     onSave={handleSaveNote}
                     onDelete={handleDeleteNote}
                     onCursorOffsetChange={setEditorCursorOffset}
-                    fontSize={appSettings.editor.fontSize}
-                    ctrlScrollZoom={appSettings.editor.ctrlScrollZoom}
+                    editorSettings={appSettings.editor}
                     onToggleAiPanel={appSettings.general.enableAI ? toggleAiPanel : undefined}
                     isAiPanelOpen={appSettings.general.enableAI && aiPanelOpen}
                     onRegisterExport={registerExportNote}
@@ -1022,6 +1188,8 @@ function AppContent() {
             </Suspense>
           </div>
 
+          {/* AI 面板与编辑器是 flex 兄弟：展开时挤压编辑区而非覆盖；
+              叠放层激活时清空笔记上下文，避免 AI 误读底下的真实笔记 */}
           <AIChatPanel
             isOpen={aiPanelOpen && appSettings.general.enableAI}
             onClose={() => {
@@ -1030,6 +1198,8 @@ function AppContent() {
             noteTitle={overlayActive ? "" : selectedNote?.title || ""}
             noteContent={overlayActive ? "" : selectedNote?.content || ""}
             currentNoteId={overlayActive ? null : selectedNote?.id ?? null}
+            categories={categories}
+            currentNoteAiLevel={currentNoteAiLevel}
             aiPrompts={aiPrompts}
             aiSettings={aiSettings}
             onAiSettingsChange={(patch) => setAiSettings((prev) => ({ ...prev, ...patch }))}
@@ -1078,23 +1248,23 @@ function AppContent() {
       {/* 删除分类弹窗 */}
       <Modal isOpen={showDeleteCategoryModal} onClose={() => setShowDeleteCategoryModal(false)} title="删除分类">
         <div className="space-y-4" onKeyDown={(e) => { if (e.key === "Enter") confirmDeleteCategory(); }}>
-          <p className="text-sm text-slate-600">
-            确定要删除分类「<span className="font-medium text-slate-800">{deletingCategory?.name}</span>」吗？
+          <p className="text-sm text-body">
+            确定要删除分类「<span className="font-medium text-ink">{deletingCategory?.name}</span>」吗？
           </p>
           <label className="flex items-center gap-2.5 cursor-pointer group">
             <input
               type="checkbox"
               checked={deleteCategoryNotes}
               onChange={(e) => setDeleteCategoryNotes(e.target.checked)}
-              className="w-4 h-4 rounded border-slate-300 text-primary-500 focus:ring-primary-500/20"
+              className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
             />
-            <span className="text-sm text-slate-500 group-hover:text-slate-700 transition-colors">同时删除该分类下的所有笔记</span>
+            <span className="text-sm text-muted group-hover:text-body transition-colors">同时删除该分类下的所有笔记</span>
           </label>
           <div className="flex gap-2 justify-end pt-1">
             <button onClick={() => setShowDeleteCategoryModal(false)} className="btn-ghost px-4 py-2 text-sm">
               取消
             </button>
-            <button onClick={confirmDeleteCategory} className="px-4 py-2 text-sm font-medium text-white bg-red-500 rounded-xl hover:bg-red-600 transition-colors shadow-sm">
+            <button onClick={confirmDeleteCategory} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-sm">
               删除
             </button>
           </div>
@@ -1106,22 +1276,22 @@ function AppContent() {
         <div className="space-y-3 min-h-[200px] max-h-[60vh] flex flex-col">
           {trashNotes.length > 0 && (
             <div className="flex items-center justify-between gap-2 flex-shrink-0">
-              <div className="flex items-center gap-1.5 text-xs text-slate-400">
+              <div className="flex items-center gap-1.5 text-xs text-faint">
                 <span>共 {trashNotes.length} 条</span>
                 {selectedTrashIds.size > 0 && <span className="text-primary-500 font-medium">，已选 {selectedTrashIds.size} 条</span>}
               </div>
               <div className="flex items-center gap-1.5">
                 {selectedTrashIds.size > 0 && (
                   <>
-                    <button onClick={handleRestoreSelected} className="px-2.5 py-1 text-xs font-medium bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors">
+                    <button onClick={handleRestoreSelected} className="px-2.5 py-1 text-xs font-medium bg-success text-on-accent rounded-lg hover:bg-success-strong transition-colors">
                       还原选中
                     </button>
-                    <button onClick={handleDeleteSelected} className="px-2.5 py-1 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors">
+                    <button onClick={handleDeleteSelected} className="px-2.5 py-1 text-xs font-medium bg-danger text-on-accent rounded-lg hover:bg-danger-strong transition-colors">
                       删除选中
                     </button>
                   </>
                 )}
-                <button onClick={handleEmptyTrash} className="px-2.5 py-1 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+                <button onClick={handleEmptyTrash} className="px-2.5 py-1 text-xs font-medium text-danger border border-danger-line rounded-lg hover:bg-danger-soft transition-colors">
                   清空回收站
                 </button>
               </div>
@@ -1130,29 +1300,29 @@ function AppContent() {
           <div className="flex-1 overflow-y-auto space-y-1">
             {trashNotes.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
-                <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
-                  <Icon name="app-trash-thin" className="w-6 h-6 text-slate-300" />
+                <div className="w-12 h-12 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
+                  <Icon name="app-trash-thin" className="w-6 h-6 text-faint-soft" />
                 </div>
-                <p className="text-sm text-slate-400">回收站为空</p>
+                <p className="text-sm text-faint">回收站为空</p>
               </div>
             ) : (
               trashNotes.map((note) => (
-                <div key={note.id} className="flex items-center gap-2.5 p-2.5 rounded-xl hover:bg-slate-50 transition-colors group">
+                <div key={note.id} className="flex items-center gap-2.5 p-2.5 rounded-xl hover:bg-app transition-colors group">
                   <input
                     type="checkbox"
                     checked={selectedTrashIds.has(note.id)}
                     onChange={() => toggleTrashSelect(note.id)}
-                    className="w-4 h-4 rounded border-slate-300 text-primary-500 focus:ring-primary-500/20"
+                    className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
                   />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-700 truncate">{note.title || "无标题"}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">删除于 {formatTrashDate(note.deleted_at)}</p>
+                    <p className="text-sm font-medium text-body truncate">{note.title || "无标题"}</p>
+                    <p className="text-[11px] text-faint mt-0.5">删除于 {formatTrashDate(note.deleted_at)}</p>
                   </div>
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-emerald-50 hover:!text-emerald-600" title="还原">
+                    <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-success-soft hover:!text-success" title="还原">
                       <Icon name="app-restore" className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-red-50 hover:!text-red-500" title="永久删除">
+                    <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-danger-soft hover:!text-danger" title="永久删除">
                       <Icon name="app-trash" className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -1166,7 +1336,11 @@ function AppContent() {
       {/* 统一设置窗口：锚点式布局，融合软件设置 / AI 设置 / 记忆 / 备份恢复 */}
       <SettingsModal
         isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
+        onClose={() => {
+          // 主题落库有防抖，关窗时把最后一次取色冲下去，避免改完立刻关闭丢设置
+          void flushThemeSettings();
+          setShowSettings(false);
+        }}
         defaultSection={settingsSection}
         appSettings={appSettings}
         onAppSettingChange={applyAppSetting}
@@ -1182,6 +1356,12 @@ function AppContent() {
         onAiSelectedProviderChange={setProviderModalSelectedId}
         aiPrompts={aiPrompts}
         onAiPromptsChange={setAiPrompts}
+        categories={categories}
+        notes={notes}
+        onSetCategoryAiAccess={handleSetCategoryAiAccess}
+        onSetNoteAiAccess={handleSetNoteAiAccess}
+        theme={theme}
+        onThemeChange={handleThemeChange}
       />
 
       {/* 导出分组：右键分组菜单进入，可导出为压缩包或电子书 */}
@@ -1203,11 +1383,14 @@ function AppContent() {
         onMoveNote={handleMoveNoteToCategory}
         onTogglePin={handleTogglePin}
         onRenameCategory={handleRenameCategory}
+        onSetNoteAiAccess={handleSetNoteAiAccess}
+        onSetCategoryAiAccess={handleSetCategoryAiAccess}
+        enableAI={appSettings.general.enableAI}
       />
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}
       {isFileDragActive && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] pointer-events-none px-3.5 py-2 rounded-xl bg-slate-800/90 text-white text-xs shadow-lg">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] pointer-events-none px-3.5 py-2 rounded-xl bg-tooltip/90 text-on-accent text-xs shadow-lg">
           松开即可打开文件 · 拖到某个分组上可导入该分组
         </div>
       )}
