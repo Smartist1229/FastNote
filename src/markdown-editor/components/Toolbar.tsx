@@ -15,6 +15,7 @@
  *   表现为「点了没反应」。
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -203,7 +204,11 @@ const FloatingMenu: React.FC<{
   );
 };
 
-export const Toolbar: React.FC<ToolbarProps> = ({
+/**
+ * memo 包一层：工具栏有几十个按钮，而它的 props 在打字时几乎不变
+ * （格式状态由上层收敛成「值不变就复用旧引用」），没有这层就会每敲一个字全量重渲染。
+ */
+export const Toolbar = memo<ToolbarProps>(({
   config,
   labels,
   mode,
@@ -656,4 +661,4 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       )}
     </div>
   );
-};
+});

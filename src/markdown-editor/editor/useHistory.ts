@@ -7,7 +7,7 @@
  * 合并策略：连续键入（间隔 < 600ms）只记录一次快照，撤销时整段回退，
  * 而不是一个字一个字地退——这是所有主流编辑器的默认手感。
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 export interface HistorySnapshot {
   text: string;
@@ -76,12 +76,18 @@ export const useHistory = (limit: number): EditorHistory => {
     bump((v) => v + 1);
   }, []);
 
-  return {
-    record,
-    undo,
-    redo,
-    reset,
-    canUndo: past.current.length > 0,
-    canRedo: future.current.length > 0,
-  };
+  const canUndo = past.current.length > 0;
+  const canRedo = future.current.length > 0;
+
+  /*
+   * 必须是 memo 的。
+   *
+   * 这个对象一路传到预览的 context 里（handleTaskToggle → commitValue → history），
+   * 每渲染换一个引用就会让预览 context 每键失效，两千多个块级 memo 全部落空。
+   * 现在只有 canUndo / canRedo 真的翻转时才换新对象——连续打字时它们一直都是 true。
+   */
+  return useMemo(
+    () => ({ record, undo, redo, reset, canUndo, canRedo }),
+    [record, undo, redo, reset, canUndo, canRedo],
+  );
 };

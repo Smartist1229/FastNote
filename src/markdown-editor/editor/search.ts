@@ -6,6 +6,7 @@
  * - 「下一个 / 上一个」以光标偏移为锚点在命中列表里跳转，到底后按 loop 回到另一端；
  * - 正则模式下替换串支持 `$1`、`$&`、`$$`（交给 String.replace 处理）。
  */
+import { lineAtOffset } from "./lines";
 export interface SearchOptions {
   caseSensitive: boolean;
   regex: boolean;
@@ -124,12 +125,5 @@ export const replaceAllMatches = (
   return { text: out, caret };
 };
 
-/** 偏移 → 行号（0 基）：比 split('\n') 省一次全量数组 */
-export const offsetToLine = (text: string, offset: number): number => {
-  let line = 0;
-  const limit = Math.min(offset, text.length);
-  for (let index = 0; index < limit; index += 1) {
-    if (text[index] === "\n") line += 1;
-  }
-  return line;
-};
+/** 偏移 → 行号（0 基）：走共享切行缓存的二分，不必逐字符数换行 */
+export const offsetToLine = (text: string, offset: number): number => lineAtOffset(text, offset).line;

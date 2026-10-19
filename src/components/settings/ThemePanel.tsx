@@ -12,7 +12,7 @@
  * 为什么不需要"应用 / 取消"按钮：设置项都是实时生效的（App 的 effect 会立即写变量并落库），
  * 预览就是整个软件本身。面板里的预览卡只是把颜色并排放在一起，方便一次性对比。
  */
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { SavedTheme, ThemeColorKey, ThemeMode, ThemeSettings, ThemeTokens } from "@/interface/theme";
 import {
   COLOR_FIELD_META,
@@ -215,7 +215,7 @@ const ThemePreview: React.FC<{ tokens: ThemeTokens }> = ({ tokens }) => {
 
 /* ---------- 主组件 ---------- */
 
-export const ThemePanel: React.FC<{
+const ThemePanelBase: React.FC<{
   theme: ThemeSettings;
   onChange: (next: ThemeSettings) => void;
 }> = ({ theme, onChange }) => {
@@ -564,3 +564,10 @@ export const ThemePanel: React.FC<{
     </div>
   );
 };
+
+/**
+ * memo 包一层：主题面板是设置弹窗里最重的一块（预设卡片 + 取色器 + 预览 + 已存主题），
+ * 它的输入只有 theme 与 onChange —— 两者在「非主题」的设置改动（搜索、开关、目录跳转）下引用都不变，
+ * 交给 memo 跳过这些无谓的重渲染。
+ */
+export const ThemePanel = memo(ThemePanelBase);

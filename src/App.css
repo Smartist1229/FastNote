@@ -564,7 +564,11 @@ button:focus-visible {
   overflow: hidden;
   /* 以宽度过渡为主：内层宽度固定，折叠时文字不重新排版，所以顺滑 */
   transition: var(--transition-sidebar);
-  will-change: width;
+  /*
+   * 不再写 will-change: width —— width 属于布局属性，合成器无法接管，
+   * will-change 帮不到逐帧重排，却会把整个侧栏长期钉在合成层上，
+   * 合成层会关掉次像素抗锯齿，侧栏文字因此发虚（与下方 .ai-panel 的注释同一道理）。
+   */
 }
 .sidebar-shell.is-collapsed {
   width: 0;
@@ -1268,7 +1272,9 @@ button:focus-visible {
   background: var(--color-surface);
   font-size: 11.5px;
   color: var(--color-text-secondary);
-  transition: all 0.16s ease;
+  /* 只过渡实际会变的属性：transition: all 会把子属性也纳入监听，改样式时白白多做比对 */
+  transition: border-color 0.16s ease, color 0.16s ease, background-color 0.16s ease,
+    transform 0.16s ease;
 }
 .ai-empty-chip:hover {
   border-color: var(--color-accent-muted);

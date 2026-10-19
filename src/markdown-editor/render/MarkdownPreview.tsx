@@ -8,7 +8,7 @@
  *
  * 每个顶层块保留原始偏移（data-offset），实时预览整块替换时用它切源码。
  */
-import { createElement, Fragment } from "react";
+import { createElement, Fragment, memo, useMemo } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type {
   AlertKind,
@@ -19,7 +19,7 @@ import type {
   ParsedDocument,
 } from "../types";
 import { MdeIcon } from "../icons";
-import { PreviewCtx, usePreview, type PreviewContextValue } from "./context";
+import { OutlineCtx, PreviewCtx, useOutline, usePreview, type PreviewContextValue } from "./context";
 import { CodeBlock } from "./CodeBlock";
 import { MathBlock, MathInline } from "./MathNode";
 import { sanitizeHtml } from "./sanitize";
@@ -32,6 +32,13 @@ const ALERT_LABEL_KEY: Record<AlertKind, string> = {
   caution: "alertCaution",
 };
 
+/**
+ * 超过这个块数就给顶层块开 `content-visibility: auto`：
+ * 让浏览器跳过屏外块的布局与绘制，长文档的首屏与滚动都因此轻一大截。
+ * 短文档用不上这套（还会把分栏滚动同步的块高度读成占位值），所以按量开。
+ */
+const LARGE_DOC_BLOCKS = 240;
+
 /** `!!!` 提示块的图标：按类型区分，比纯色块更容易扫读 */
 const CALLOUT_ICON: Record<AlertKind, string> = {
   note: "info",
@@ -41,11 +48,24 @@ const CALLOUT_ICON: Record<AlertKind, string> = {
   caution: "octagon",
 };
 
-/** 顶层块的公共属性：滚动同步与实时预览定位 */
+/**
+ * 顶层块的公共属性：滚动同步与实时预览定位。
+ *
+ * 注意 `data-offset` 是**解析时**的偏移：块被上层复用时（内容没变、但前面的文字增删过）
+ * 它可能滞后若干字符，`data-line` 则随块一起校验过、始终对得上。
+ * 要做整块替换请以 `data-line` 定位，别直接信 `data-offset`。
+ */
 const blockAttrs = (node: BlockNode, topLevel: boolean) =>
   topLevel ? { "data-line": node.line, "data-offset": node.start } : {};
 
-/** 行内节点渲染 */
+/**
+ * 行内节点渲染。
+ *
+ * `keyBase` 只用来保证兄弟之间不撞名，**绝不能掺进 `line` / `start` 这类源码坐标**：
+ * 每敲一个字，后面所有块的坐标都会平移一位，掺了坐标的 key 会跟着全部变化，
+ * React 于是把整棵预览树 unmount 重挂一遍（DOM 全删全建，代码块的高亮 effect 也全部重跑）。
+ * 这里统一用固定的族名 + 下标，坐标再怎么变 key 都不动。
+ */
 export const renderInline = (nodes: InlineNode[], ctx: PreviewContextValue, keyBase: string): ReactNode[] =>
   nodes.map((node, index) => {
     const key = `${keyBase}-${index}`;
@@ -152,8 +172,31 @@ interface BlockViewProps {
   topLevel?: boolean;
 }
 
-/** 单个块渲染：实时预览复用它渲染每个可编辑块 */
-export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) => {
+/** TOC 正文：只有它订阅大纲，避免大纲变化惊动整篇块 */
+const TocBody: React.FC = () => {
+  const ctx = usePreview();
+  const outline = useOutline();
+  const items = outline.filter((item) => item.level <= ctx.config.outline.maxDepth);
+  if (!items.length) return <div className="mde-toc-empty">{ctx.labels.outlineEmpty}</div>;
+  return (
+    <ul>
+      {items.map((item) => (
+        <li key={item.id} style={{ paddingLeft: (item.level - 1) * 14 }}>
+          <a href={`#${item.id}`}>{item.text}</a>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+/**
+ * 单个块渲染：实时预览复用它渲染每个可编辑块。
+ *
+ * memo 是这里的命门：打字时整篇解析会为每一个块造新对象，
+ * 没有这层的话 2800 个块连同子树会被全量重渲染。
+ * 上层按「文本变化区间」把没被碰到的块换回旧对象，这层就能把它们整个跳过。
+ */
+const BlockViewBase: React.FC<BlockViewProps> = ({ node, topLevel = false }) => {
   const ctx = usePreview();
   const { config, labels } = ctx;
   const attrs = blockAttrs(node, topLevel);
@@ -164,11 +207,11 @@ export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) 
       return createElement(
         tag,
         { ...attrs, id: node.id, className: `mde-h mde-h${node.level}` },
-        renderInline(node.children, ctx, `h${node.line}`),
+        renderInline(node.children, ctx, "h"),
       );
     }
     case "paragraph":
-      return <p {...attrs}>{renderInline(node.children, ctx, `p${node.line}`)}</p>;
+      return <p {...attrs}>{renderInline(node.children, ctx, "p")}</p>;
     case "code":
       return (
         <div {...attrs} className="mde-code-wrap">
@@ -183,25 +226,14 @@ export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) 
       );
     case "hr":
       return <hr {...attrs} className="mde-hr" />;
-    case "toc": {
-      const items = ctx.doc.outline.filter((item) => item.level <= config.outline.maxDepth);
+    case "toc":
+      // TOC 单独订阅大纲：其它块不订阅，打字时才不会被大纲数组的变化带起来
       return (
         <nav {...attrs} className="mde-toc-block" aria-label={labels.tocTitle}>
           <div className="mde-toc-title">{labels.tocTitle}</div>
-          {items.length === 0 ? (
-            <div className="mde-toc-empty">{labels.outlineEmpty}</div>
-          ) : (
-            <ul>
-              {items.map((item) => (
-                <li key={item.id} style={{ paddingLeft: (item.level - 1) * 14 }}>
-                  <a href={`#${item.id}`}>{item.text}</a>
-                </li>
-              ))}
-            </ul>
-          )}
+          <TocBody />
         </nav>
       );
-    }
     case "html": {
       if (!config.preview.allowHtml) return <p {...attrs}>{node.raw}</p>;
       const html = config.preview.sanitizeHtml ? sanitizeHtml(node.raw) : node.raw;
@@ -276,7 +308,7 @@ export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) 
               />
             )}
             <span className="mde-li-content">
-              {renderListItemContent(item, ctx, `li${node.line}-${index}`)}
+              {renderListItemContent(item, ctx, `li${index}`)}
             </span>
           </li>
         )),
@@ -295,7 +327,7 @@ export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) 
               <tr>
                 {node.header.map((cell, index) => (
                   <th key={index} style={{ textAlign: node.align[index] ?? undefined }}>
-                    {renderInline(cell, ctx, `th${node.line}-${index}`)}
+                    {renderInline(cell, ctx, `th${index}`)}
                   </th>
                 ))}
               </tr>
@@ -305,7 +337,7 @@ export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) 
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex} style={{ textAlign: node.align[cellIndex] ?? undefined }}>
-                      {renderInline(cell, ctx, `td${node.line}-${rowIndex}-${cellIndex}`)}
+                      {renderInline(cell, ctx, `td${rowIndex}-${cellIndex}`)}
                     </td>
                   ))}
                 </tr>
@@ -319,6 +351,8 @@ export const BlockView: React.FC<BlockViewProps> = ({ node, topLevel = false }) 
       return null;
   }
 };
+
+export const BlockView = memo(BlockViewBase);
 
 /** front matter 元信息卡 */
 export const FrontmatterCard: React.FC<{ doc: ParsedDocument; labels: Record<string, string> }> = ({ doc, labels }) => {
@@ -371,6 +405,18 @@ export interface MarkdownPreviewProps {
   onTaskToggle?: (taskOffset: number, checked: boolean) => void;
 }
 
+/**
+ * 顶层块列表：key 一律用下标。
+ *
+ * 同理不能用 `node.start` 当 key——打字会让后面每一块的 start 平移，
+ * 于是整篇块被判定成「换了一批元素」而全部重挂。用下标则打字时 key 纹丝不动，
+ * 只有真正增删块时尾部才会重建，这在文档里是少数情况。
+ */
+const BlockList: React.FC<{ doc: ParsedDocument }> = ({ doc }) => {
+  if (!doc.blocks.length) return null;
+  return <>{doc.blocks.map((node, index) => <BlockView key={index} node={node} topLevel />)}</>;
+};
+
 /** 只读渲染整篇文档 */
 export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
   doc,
@@ -383,19 +429,38 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
   onTaskToggle,
 }) => {
   const hasFrontmatter = config.preview.showFrontmatter && doc.frontmatter;
+  const empty = config.preview.emptyText || labels.empty;
+  /*
+   * 这里刻意不把 doc 放进上下文。
+   *
+   * doc 每次解析都是新对象，放进去了就会把整篇块的订阅者全部唤醒，
+   * 块级 memo 直接失效——2800 个块又变成每次按键全量重渲染。
+   * 真正依赖 doc 的只有 TOC 与大纲，它们走各自的 context / props。
+   */
+  const ctx = useMemo(
+    () => ({ config, labels, readOnly, onLinkClick, onTaskToggle }),
+    [config, labels, readOnly, onLinkClick, onTaskToggle],
+  );
   return (
-    <PreviewCtx.Provider value={{ config, labels, doc, readOnly, onLinkClick, onTaskToggle }}>
-      <div className={`mde-preview${className ? ` ${className}` : ""}`} style={style}>
-        <div className="mde-preview-content">
-          {hasFrontmatter && <FrontmatterCard doc={doc} labels={labels} />}
-          {doc.blocks.length === 0 ? (
-            <div className="mde-preview-empty">{config.preview.emptyText || labels.empty}</div>
-          ) : (
-            doc.blocks.map((node) => <BlockView key={`${node.type}-${node.start}`} node={node} topLevel />)
-          )}
-          {config.preview.showFootnotes && <Footnotes doc={doc} labels={labels} />}
+    <PreviewCtx.Provider value={ctx}>
+      <OutlineCtx.Provider value={doc.outline}>
+        <div
+          className={`mde-preview${doc.blocks.length > LARGE_DOC_BLOCKS ? " is-large" : ""}${
+            className ? ` ${className}` : ""
+          }`}
+          style={style}
+        >
+          <div className="mde-preview-content">
+            {hasFrontmatter && <FrontmatterCard doc={doc} labels={labels} />}
+            {doc.blocks.length === 0 ? (
+              <div className="mde-preview-empty">{empty}</div>
+            ) : (
+              <BlockList doc={doc} />
+            )}
+            {config.preview.showFootnotes && <Footnotes doc={doc} labels={labels} />}
+          </div>
         </div>
-      </div>
+      </OutlineCtx.Provider>
     </PreviewCtx.Provider>
   );
 };

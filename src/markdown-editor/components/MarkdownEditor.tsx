@@ -30,9 +30,11 @@ import {
   applyAdmonition,
   applyCallout,
   applyHeading,
-  computeStats,
+  computeCursor,
+  computeDocStats,
   detectFormats,
   runCommand,
+  type ActiveFormats,
   type EditState,
 } from "../editor/commands";
 import { useHistory } from "../editor/useHistory";
@@ -57,6 +59,7 @@ import type {
   MarkdownEditorMode,
   MarkdownEditorProps,
   MarkdownStats,
+  ParsedDocument,
   ToolbarItemName,
 } from "../types";
 import { SourceEditor, type SourceEditorHandle } from "../components/SourceEditor";
@@ -139,6 +142,117 @@ const resolveHeight = (value: number | string | undefined, fallback: string): st
   return typeof value === "number" ? `${value}px` : value;
 };
 
+/** 分栏的栅格列：拖拽时直接写进容器样式，与下面的 render 共用同一套算法 */
+const splitColumns = (
+  ratio: number,
+  split: { resizable: boolean; dividerWidth: number },
+): string =>
+  split.resizable ? `${ratio}fr ${split.dividerWidth}px ${1 - ratio}fr` : `${ratio}fr ${1 - ratio}fr`;
+
+/** a → b 的文本变化区间 [lo, hi)：公共前缀 + 公共后缀之外就是真正动过的部分 */
+const changedRange = (a: string, b: string): [number, number] => {
+  const shared = Math.min(a.length, b.length);
+  let lo = 0;
+  while (lo < shared && a.charCodeAt(lo) === b.charCodeAt(lo)) lo += 1;
+  let hi = 0;
+  while (hi < shared - lo && a.charCodeAt(a.length - 1 - hi) === b.charCodeAt(b.length - 1 - hi)) hi += 1;
+  return [lo, a.length - hi];
+};
+
+/** 一份「源文本 + 解析选项 + 解析结果」的快照：三者必须成对流转 */
+interface ParsedSnapshot {
+  text: string;
+  allowHtml: boolean;
+  breaks: boolean;
+  doc: ParsedDocument;
+}
+
+/** 变化跨度超过这个字符数就不再当成「敲字」：多半是换笔记或整篇粘贴 */
+const WHOLESALE_SPAN = 4096;
+
+/**
+ * 这次改的是不是「整篇换掉」。
+ *
+ * 换笔记时两份文本几乎没有公共前后缀，变化跨度≈全文；这种改动要立刻解析、
+ * 也不该拿去和上一篇复用块——否则预览会先停在上一篇，甚至把上一篇的块搬过来。
+ */
+const isWholesaleChange = (previous: string, next: string): boolean => {
+  if (!previous.length || !next.length) return true;
+  const [lo, hi] = changedRange(previous, next);
+  const span = hi - lo;
+  if (span > WHOLESALE_SPAN) return true;
+  // 跨度同时占了原文与新文的大半：不是在原有内容上改，而是换了内容
+  return span * 2 > previous.length && span * 2 > next.length;
+};
+
+/** 块里是否带任务项：任务勾选取的是 `taskOffset` 这个绝对偏移 */
+const hasTaskItem = (node: ParsedDocument["blocks"][number]): boolean => {
+  if (node.type === "list") {
+    return node.items.some(
+      (item) => item.task !== null || item.children.some((child) => hasTaskItem(child)),
+    );
+  }
+  if (node.type === "blockquote" || node.type === "callout") {
+    return node.children.some((child) => hasTaskItem(child));
+  }
+  return false;
+};
+
+/**
+ * 复用未受本次改动影响的块节点。
+ *
+ * 前提是 `previous.text` 与 `previous.doc` 真的对得上（防抖期间 doc 会落后于 value，
+ * 拿 value 去配旧 doc 会让下面的区间判断全部算错，预览于是卡在上一篇）。
+ * 换笔记 / 整篇粘贴根本不具备「内容没被碰到」的前提，直接放弃复用。
+ *
+ * 头部：变化点之前的块偏移完全一致，按位置复用。
+ * 尾部：两边各自的「变化点之后」文本相同，但只要中间增删过字符，块的绝对偏移就整体平移了——
+ *   带任务项的块不能复用（勾选会按平移前的 taskOffset 改到别的字符上），
+ *   行号变了的也不能复用（data-line 是滚动同步与「跳到源码」的锚点）。
+ */
+const shareBlocks = (
+  next: { text: string; doc: ParsedDocument },
+  previous: { text: string; doc: ParsedDocument } | null,
+): ParsedDocument => {
+  if (!previous) return next.doc;
+  if (previous.text === next.text) return previous.doc;
+  if (isWholesaleChange(previous.text, next.text)) return next.doc;
+
+  const [lo, hi] = changedRange(previous.text, next.text);
+  const prevBlocks = previous.doc.blocks;
+  const blocks = next.doc.blocks;
+  const out = blocks.slice();
+
+  let head = 0;
+  while (head < blocks.length && blocks[head].end <= lo) head += 1;
+  let prevHead = 0;
+  while (prevHead < prevBlocks.length && prevBlocks[prevHead].end <= lo) prevHead += 1;
+  // 块数对不上说明中段增删了块，位置对应关系不确定，头部一律不复用
+  if (head === prevHead) {
+    for (let i = 0; i < head; i += 1) out[i] = prevBlocks[i];
+  }
+
+  const prevTail = previous.text.length - hi;
+  let i = blocks.length - 1;
+  let j = prevBlocks.length - 1;
+  while (i >= head && j >= prevHead) {
+    const block = blocks[i];
+    const old = prevBlocks[j];
+    // 两边都得整块落在公共后缀里，跨在变化点上的块不能复用
+    if (block.start < hi || old.start < prevTail) break;
+    // 相对位置 / 长度 / 行号必须逐项对上：任一项不符说明后缀里的块已经配对错行，后面更早的也不可信
+    if (old.start - prevTail !== block.start - hi) break;
+    if (old.end - old.start !== block.end - block.start) break;
+    if (old.line !== block.line) break;
+    // 任务项带着平移前的 taskOffset，复用会让勾选改到别的字符上
+    if (!hasTaskItem(block)) out[i] = old;
+    i -= 1;
+    j -= 1;
+  }
+
+  return { ...next.doc, blocks: out };
+};
+
 export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorProps>((props, ref) => {
   const {
     value: valueProp,
@@ -200,20 +314,88 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   }, []);
 
   /* ---------- 解析 ---------- */
-  const [doc, setDoc] = useState(() =>
-    parseMarkdown(value, { allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
+  const parseOptions = useMemo(
+    () => ({ allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
+    [config.preview.allowHtml, config.preview.breaks],
   );
-  useEffect(() => {
-    const allowHtml = config.preview.allowHtml;
-    const breaks = config.preview.breaks;
-    const delay = config.preview.debounce;
-    if (!delay) {
-      setDoc(parseMarkdown(value, { allowHtml, breaks }));
-      return;
+
+  /**
+   * 解析结果必须和「它是从哪段文本、哪套选项解析出来的」成对流转。
+   *
+   * 防抖期间 doc 天然落后于 value，若把 value 当成 doc 的文本记进复用缓存，
+   * 之后每次都会命中这条错账（`previous.text === text` 直接返回旧 doc），
+   * 表现就是换笔记后预览永远停在上一篇。
+   */
+  const makeSnapshot = useCallback(
+    (text: string, options: { allowHtml: boolean; breaks: boolean }): ParsedSnapshot => ({
+      text,
+      allowHtml: options.allowHtml,
+      breaks: options.breaks,
+      doc: parseMarkdown(text, options),
+    }),
+    [],
+  );
+
+  const [debounced, setDebounced] = useState<ParsedSnapshot>(() =>
+    makeSnapshot(value, parseOptions),
+  );
+
+  /**
+   * 本次渲染要显示的解析结果。
+   *
+   * 防抖为 0（实时预览）时直接在渲染期解析：走 effect 的话一次按键是
+   * 「渲染 → effect 解析 → setState → 再渲染」两趟提交，长文档上等于把整棵树 diff 两遍。
+   * 换笔记 / 整篇粘贴同样不等防抖——那是单击操作，不在按键热路径上，
+   * 等 120ms 只会让人先看见上一篇的残留内容。
+   */
+  const parsed = useMemo<ParsedSnapshot>(() => {
+    const upToDate =
+      debounced.text === value &&
+      debounced.allowHtml === parseOptions.allowHtml &&
+      debounced.breaks === parseOptions.breaks;
+    if (upToDate) return debounced;
+    if (!config.preview.debounce || isWholesaleChange(debounced.text, value)) {
+      return makeSnapshot(value, parseOptions);
     }
-    const timer = window.setTimeout(() => setDoc(parseMarkdown(value, { allowHtml, breaks })), delay);
+    return debounced;
+  }, [value, parseOptions, debounced, config.preview.debounce, makeSnapshot]);
+
+  /** 防抖落地：到点把「这一帧显示的解析结果」写进防抖状态，与渲染期解析保持同一份 */
+  useEffect(() => {
+    const delay = config.preview.debounce;
+    if (!delay) return;
+    const committed =
+      debounced.text === value &&
+      debounced.allowHtml === parseOptions.allowHtml &&
+      debounced.breaks === parseOptions.breaks;
+    if (committed) return;
+    // 这一帧已经同步解析过（换笔记 / 整篇替换）：到点直接落库，别再白解析一遍
+    const alreadyParsed =
+      parsed.text === value &&
+      parsed.allowHtml === parseOptions.allowHtml &&
+      parsed.breaks === parseOptions.breaks;
+    const timer = window.setTimeout(
+      () => setDebounced(alreadyParsed ? parsed : makeSnapshot(value, parseOptions)),
+      delay,
+    );
     return () => window.clearTimeout(timer);
-  }, [value, config.preview.debounce, config.preview.allowHtml, config.preview.breaks]);
+  }, [value, parseOptions, config.preview.debounce, debounced, parsed, makeSnapshot]);
+
+  /**
+   * 把「内容没被这次改动碰到」的块换回上一次的节点对象。
+   *
+   * 打字只改到一个块，但整篇解析会给每一个块造新对象——两千多个块于是全部重渲染一遍，
+   * 光这一项就是每键一百多毫秒。复用旧对象后，块级 memo 能把没变的块整个跳过，
+   * 预览的渲染量塌回到真正动过的那一两块。
+   *
+   * 缓存里存的是「快照」而不是 value：只有和 doc 配套的那段文本才能当复用基准。
+   */
+  const lastDoc = useRef<{ text: string; doc: ParsedDocument } | null>(null);
+  const doc = useMemo(() => {
+    const next = shareBlocks(parsed, lastDoc.current);
+    lastDoc.current = { text: parsed.text, doc: next };
+    return next;
+  }, [parsed]);
 
   /* ---------- 历史 ---------- */
   const history = useHistory(config.editor.historyLimit);
@@ -641,15 +823,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     onOutlineChange?.(doc.outline);
   }, [doc.outline, onOutlineChange]);
 
+  /*
+   * 统计拆成两档：「文档级」（字数/段数/阅读时长）只在文本变化时算，
+   * 「光标行列」只依赖文本 + 光标偏移。这样按方向键挪光标时，
+   * 文档级那部分直接命中 memo，只剩一次二分定位，不用再扫一遍全文。
+   */
+  const docStats = useMemo(
+    () => computeDocStats(value, config.statusBar.readingSpeed),
+    [value, config.statusBar.readingSpeed],
+  );
+  const cursor = useMemo(() => computeCursor(value, selection.start), [value, selection.start]);
   const stats: MarkdownStats = useMemo(
-    () =>
-      computeStats(
-        value,
-        selection.start,
-        config.statusBar.readingSpeed,
-        selection.end - selection.start,
-      ),
-    [value, selection, config.statusBar.readingSpeed],
+    () => ({ ...docStats, cursor: { ...cursor, selection: selection.end - selection.start } }),
+    [docStats, cursor, selection],
   );
 
   useEffect(() => {
@@ -878,11 +1064,58 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     if (apiRef.current) onReady?.(apiRef.current);
   }, [onReady]);
 
-  /* ---------- 工具栏状态 ---------- */
-  const formats = useMemo(
-    () => detectFormats(value, selection.start, selection.end),
-    [value, selection],
+  /**
+   * 传给预览的两个回调要钉成恒定引用。
+   *
+   * 它们在预览 context 里，一旦每次渲染换新，两千多个块的 memo 就全废了；
+   * 而宿主很可能是直接写 `onTaskToggle={(...) => ...}` 传进来的。
+   * 这里用 ref 转发：引用恒定，调用的始终是最新的那个实现。
+   */
+  const linkClickRef = useRef(onLinkClick);
+  linkClickRef.current = onLinkClick;
+  const stableLinkClick = useCallback<NonNullable<typeof onLinkClick>>(
+    (href, event) => linkClickRef.current?.(href, event),
+    [],
   );
+
+  const taskToggleRef = useRef(handleTaskToggle);
+  taskToggleRef.current = handleTaskToggle;
+  const stableTaskToggle = useCallback(
+    (taskOffset: number, checked: boolean) => taskToggleRef.current(taskOffset, checked),
+    [],
+  );
+
+  /* ---------- 工具栏状态 ---------- */
+  /**
+   * 内容没变时沿用上一次的对象引用。
+   *
+   * 工具栏按钮有几十个，每敲一个字都重渲染一次是笔不小的固定开销；而格式状态
+   * 只有 9 个字段，绝大多数按键并不改变它（在普通段落里打字，九个字段全都不动）。
+   * 这里做一次「值相等就复用旧引用」的收敛，配合 Toolbar 的 memo，
+   * 打字路径上工具栏基本不再重渲染。
+   */
+  const formatsRef = useRef<ActiveFormats | null>(null);
+  const formats = useMemo(() => {
+    const next = detectFormats(value, selection.start, selection.end);
+    const previous = formatsRef.current;
+    if (
+      previous &&
+      previous.heading === next.heading &&
+      previous.bold === next.bold &&
+      previous.italic === next.italic &&
+      previous.strike === next.strike &&
+      previous.mark === next.mark &&
+      previous.inlineCode === next.inlineCode &&
+      previous.quote === next.quote &&
+      previous.bulletList === next.bulletList &&
+      previous.orderedList === next.orderedList &&
+      previous.taskList === next.taskList
+    ) {
+      return previous;
+    }
+    formatsRef.current = next;
+    return next;
+  }, [value, selection]);
 
   const handleCustomTool = useCallback(
     (tool: MarkdownCustomTool) => {
@@ -986,15 +1219,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
 
         <div
           className="mde-panes"
-          style={
-            mode === "split"
-              ? {
-                  gridTemplateColumns: config.split.resizable
-                    ? `${splitRatio}fr ${config.split.dividerWidth}px ${1 - splitRatio}fr`
-                    : `${splitRatio}fr ${1 - splitRatio}fr`,
-                }
-              : undefined
-          }
+          style={mode === "split" ? { gridTemplateColumns: splitColumns(splitRatio, config.split) } : undefined}
         >
           {sourceVisible && (
             <SourceEditor
@@ -1026,13 +1251,26 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
                 const container = event.currentTarget.parentElement;
                 if (!container) return;
                 const rect = container.getBoundingClientRect();
+                const width = Math.max(1, rect.width);
+                const clamp = (value: number) => Math.min(0.8, Math.max(0.2, value));
+                let ratio = splitRatio;
+                /**
+                 * 拖拽期间直接改容器样式，不走 state。
+                 *
+                 * 每次 pointermove 都 setSplitRatio 的话，整棵编辑器（连同预览那几百个块）
+                 * 会跟着重渲染，拖动手感立刻变成幻灯片。这里改成只在松手时提交一次，
+                 * 拖动过程纯粹是一次样式写入——合成器直接吃下，不掉帧。
+                 */
                 const move = (moveEvent: PointerEvent) => {
-                  const ratio = (moveEvent.clientX - rect.left) / Math.max(1, rect.width);
-                  setSplitRatio(Math.min(0.8, Math.max(0.2, ratio)));
+                  const next = clamp((moveEvent.clientX - rect.left) / width);
+                  if (next === ratio) return;
+                  ratio = next;
+                  container.style.gridTemplateColumns = splitColumns(next, config.split);
                 };
                 const up = () => {
                   window.removeEventListener("pointermove", move);
                   window.removeEventListener("pointerup", up);
+                  setSplitRatio(ratio);
                 };
                 window.addEventListener("pointermove", move);
                 window.addEventListener("pointerup", up);
@@ -1047,8 +1285,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
                 config={config}
                 labels={labels}
                 readOnly={readOnly}
-                onLinkClick={onLinkClick}
-                onTaskToggle={handleTaskToggle}
+                onLinkClick={stableLinkClick}
+                onTaskToggle={stableTaskToggle}
               />
             </div>
           )}

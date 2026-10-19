@@ -12,7 +12,7 @@
  *   4. scope=live 立即生效，scope=startup 只影响下次启动时的初始状态。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -354,56 +354,62 @@ const SelectInput: React.FC<{
 /**
  * 行的统一渲染：左标题 + 说明 + 作用范围徽标，右侧按 kind 派发到具体控件。
  * disabled 时整行降低透明度，开关与分段控件忽略点击；行保留在原位，避免布局跳动。
+ *
+ * 用 memo 包一层：搜索输入、目录高亮、保存提示等状态变化都会重渲染整个弹窗，
+ * 但这些变化并不改动具体某一行的 row 对象（row 引用只在设置值变化时重建），
+ * 交给 memo 拦掉无谓的行级重渲染。
  */
-const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
-  <div
-    className={`flex items-start justify-between gap-6 py-3 ${
-      row.disabled ? "opacity-55" : ""
-    }`}
-  >
-    <div className="min-w-0">
-      <div className="flex items-center gap-2">
-        <span className={`text-xs font-medium ${row.disabled ? "text-faint" : "text-body"}`}>
-          {row.title}
-        </span>
-        <ScopeBadge scope={row.scope} />
-        {row.danger && <DangerBadge />}
+const RowView = memo(function RowView({ row }: { row: SettingRow }) {
+  return (
+    <div
+      className={`flex items-start justify-between gap-6 py-3 ${
+        row.disabled ? "opacity-55" : ""
+      }`}
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-medium ${row.disabled ? "text-faint" : "text-body"}`}>
+            {row.title}
+          </span>
+          <ScopeBadge scope={row.scope} />
+          {row.danger && <DangerBadge />}
+        </div>
+        <p className="text-[11px] text-faint leading-relaxed mt-1">{row.desc}</p>
       </div>
-      <p className="text-[11px] text-faint leading-relaxed mt-1">{row.desc}</p>
+      <div className="flex-shrink-0 pt-0.5">
+        {row.kind === "toggle" && (
+          <Switch value={row.value} disabled={row.disabled} onChange={row.onChange} />
+        )}
+        {row.kind === "number" && (
+          <NumberInput
+            value={row.value}
+            min={row.min}
+            max={row.max}
+            step={row.step ?? 1}
+            unit={row.unit}
+            onChange={row.onChange}
+          />
+        )}
+        {row.kind === "segment" && (
+          <SegmentedInput
+            value={row.value}
+            options={row.options}
+            disabled={row.disabled}
+            onChange={row.onChange}
+          />
+        )}
+        {row.kind === "select" && (
+          <SelectInput
+            value={row.value}
+            options={row.options}
+            disabled={row.disabled}
+            onChange={row.onChange}
+          />
+        )}
+      </div>
     </div>
-    <div className="flex-shrink-0 pt-0.5">
-      {row.kind === "toggle" && (
-        <Switch value={row.value} disabled={row.disabled} onChange={row.onChange} />
-      )}
-      {row.kind === "number" && (
-        <NumberInput
-          value={row.value}
-          min={row.min}
-          max={row.max}
-          step={row.step ?? 1}
-          unit={row.unit}
-          onChange={row.onChange}
-        />
-      )}
-      {row.kind === "segment" && (
-        <SegmentedInput
-          value={row.value}
-          options={row.options}
-          disabled={row.disabled}
-          onChange={row.onChange}
-        />
-      )}
-      {row.kind === "select" && (
-        <SelectInput
-          value={row.value}
-          options={row.options}
-          disabled={row.disabled}
-          onChange={row.onChange}
-        />
-      )}
-    </div>
-  </div>
-);
+  );
+});
 
 /**
  * 按 group 切段：相邻同组行归为一段，段前带一个小标题。
@@ -505,9 +511,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const contentRef = useRef<HTMLDivElement>(null);
   /** 各分区节点，供「点击目录滚动」与「滚动反查」读取 offsetTop */
   const sectionRefs = useRef<Partial<Record<SettingsSection, HTMLElement | null>>>({});
-  /** 点击目录后短暂锁定高亮，避免平滑滚动过程里高亮一路跳变 */
-  const lockRef = useRef(false);
-  const lockTimerRef = useRef<number | null>(null);
   /** 滚动事件的 rAF 句柄：一帧只反查一次，避免高频 setState */
   const scrollRafRef = useRef<number | null>(null);
 
@@ -899,8 +902,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     ];
   }, [appSettings, aiSettings, setApp, setAi]);
 
-  /** 未分类笔记：没有分组可继承，只能逐篇设 */
-  const uncategorized = useMemo(() => notes.filter((n) => !n.is_deleted && n.category_id === null), [notes]);
+  /**
+   * 未分类笔记：没有分组可继承，只能逐篇设。
+   * 弹窗关闭时本组件仍挂载（保留状态），这里用 isOpen 兜底，避免关着也白算一遍。
+   */
+  const uncategorized = useMemo(
+    () => (isOpen ? notes.filter((n) => !n.is_deleted && n.category_id === null) : []),
+    [notes, isOpen],
+  );
+
+  /**
+   * 「AI 访问权限」分区的数据：按分组把笔记分桶，并预先算出被分组档位压低的篇数。
+   * 原实现在渲染里对每个分组都 notes.filter 一遍（O(分组数 × 笔记数)），
+   * 而弹窗的搜索输入、开关改动都会触发重渲染，笔记一多就会明显拖慢。
+   */
+  const accessByCategory = useMemo(
+    () =>
+      isOpen
+        ? new Map(
+            categories.map((c) => {
+              const rows = notes.filter((n) => !n.is_deleted && n.category_id === c.id);
+              return [c.id, { rows, capped: rows.filter((n) => n.ai_access > c.ai_access).length }] as const;
+            }),
+          )
+        : new Map<number, { rows: typeof notes; capped: number }>(),
+    [categories, notes, isOpen],
+  );
 
   /* 搜索过滤：q 为归一化后的关键词，空串表示不过滤 */
   const q = query.trim().toLowerCase();
@@ -1001,7 +1028,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   /* 滚动监听：左侧目录跟随高亮 */
   const handleScroll = useCallback(() => {
-    if (lockRef.current) return;
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
@@ -1022,27 +1048,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [visibleSections]);
 
   /**
-   * 点击目录跳转：先锁高亮约 460ms（略长于平滑滚动耗时），
-   * 否则滚动过程中的 handleScroll 反查会把高亮改回中间经过的分区。
+   * 点击目录跳转：直接跳到位，不做平滑滚动。
+   * 平滑滚动的耗时随距离增长（「编辑器」分区设置项多、内容很长），既拖慢手感，
+   * 滚动期间的高亮反查也会让目录高亮一路跳变，因此这里用瞬时滚动。
    */
   const scrollToSection = useCallback((key: SettingsSection) => {
     const container = contentRef.current;
     const el = sectionRefs.current[key];
     if (!container || !el) return;
     setActive(key);
-    lockRef.current = true;
-    if (lockTimerRef.current !== null) window.clearTimeout(lockTimerRef.current);
-    lockTimerRef.current = window.setTimeout(() => {
-      lockRef.current = false;
-      lockTimerRef.current = null;
-    }, 460);
-    container.scrollTo({ top: Math.max(0, el.offsetTop - 8), behavior: "smooth" });
+    container.scrollTo({ top: Math.max(0, el.offsetTop - 8) });
   }, []);
 
   /* 卸载时清掉挂起的 timer 与 rAF，避免回调打到已卸载的组件上 */
   useEffect(() => {
     return () => {
-      if (lockTimerRef.current !== null) window.clearTimeout(lockTimerRef.current);
       if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
       if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
     };
@@ -1442,8 +1462,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                           <div className="rounded-xl border border-line divide-y divide-line-soft">
                             {categories.map((c) => {
-                              const rows = notes.filter((n) => !n.is_deleted && n.category_id === c.id);
-                              const capped = rows.filter((n) => n.ai_access > c.ai_access).length;
+                              const { rows, capped } = accessByCategory.get(c.id) ?? { rows: [], capped: 0 };
                               const expanded = expandedCategories.has(c.id);
                               return (
                                 <div key={c.id}>

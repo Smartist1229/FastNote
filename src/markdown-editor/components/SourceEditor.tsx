@@ -6,14 +6,21 @@
  *
  * 这里负责的只有「输入法友好」的本地行为：Tab 缩进、回车续写列表、括号配对、图片粘贴。
  * 格式命令、历史记录、快捷键都由上层统一处理，避免同一个按键出现两套逻辑。
+ *
+ * 长文档上的两条主线：
+ * - 行号槽与查找高亮层都只渲染可视区间，DOM 规模恒定在几十个节点，与文档长度无关；
+ * - 滚动只经过一个原生 passive 监听，逐帧做两三次样式写入，不触发 React 重渲染。
  */
 import {
   forwardRef,
   useCallback,
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ClipboardEvent,
   type CSSProperties,
   type DragEvent,
@@ -23,8 +30,14 @@ import {
 } from "react";
 import type { MarkdownChangeSource, MarkdownEditorConfig } from "../types";
 import { autoPairOnInput, continueMarkdownOnEnter, runCommand, type EditState } from "../editor/commands";
+import { lineOffsets, splitLines } from "../editor/lines";
 import { useVisualLineRows } from "../editor/useVisualLineRows";
+import { useVisibleRange } from "../editor/useVisibleRange";
 import type { SearchMatch } from "../editor/search";
+import { Gutter, type GutterHandle } from "../components/Gutter";
+
+/** 可视区间上下各多渲染几行：滚到边界时新内容已经在 DOM 里，不会闪一下空白 */
+const VIEW_PAD = 12;
 
 export interface SourceEditorHandle {
   focus: () => void;
@@ -100,6 +113,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
   ) => {
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const layerRef = useRef<HTMLDivElement | null>(null);
+    const gutterRef = useRef<GutterHandle | null>(null);
     const pendingSelection = useRef<[number, number] | null>(null);
     const composing = useRef(false);
     // textarea 同时存一份 state：行高测量要读它的尺寸，ref 变化不会触发更新
@@ -147,11 +161,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     );
 
     const showGutter = config.editor.lineNumbers;
-    /**
-     * 自动换行时一个逻辑行可能占好几行，行号必须按视觉行数撑高才对得上。
-     * 关掉换行时 rows 为空数组，每行固定一行高。
-     */
-    const lineRows = useVisualLineRows({
+    const ruler = useVisualLineRows({
       element,
       text: value,
       enabled: showGutter,
@@ -161,6 +171,39 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       lineHeight: config.editor.lineHeight,
       tabSize: config.editor.tabSize,
       fontLigatures: config.editor.fontLigatures,
+    });
+    const { range, scroll, schedule, sync } = useVisibleRange(element, ruler, VIEW_PAD);
+    // 订阅测量进度：渐进扫描每帧只动行号槽与高亮层，不带整棵编辑器。
+    // 行号没开时 ruler 不排版，也就不会有任何通知，这里自然退化成不重渲染。
+    useSyncExternalStore(ruler.subscribe, ruler.getVersion);
+
+    /**
+     * 滚动只挂一个原生 passive 监听。
+     *
+     * 用 React 的 onScroll 会让每一帧都过一遍事件调度；更糟的是原来在里面还做了
+     * `closest('.mde-source')?.querySelector('.mde-gutter-inner')`——
+     * 每帧一次 DOM 查询，滚动越快代价越高。现在两处目标都提前存成了 ref。
+     */
+    useEffect(() => {
+      const target = element;
+      if (!target) return;
+      const onScroll = () => {
+        const top = target.scrollTop;
+        const layer = layerRef.current;
+        if (layer) {
+          layer.scrollTop = top;
+          layer.scrollLeft = target.scrollLeft;
+        }
+        gutterRef.current?.follow(top);
+        schedule();
+      };
+      target.addEventListener("scroll", onScroll, { passive: true });
+      return () => target.removeEventListener("scroll", onScroll);
+    }, [element, schedule]);
+
+    /** 每次渲染都立刻重算可视区间：文本变了、高度测出来了，都不能让行号慢一帧 */
+    useLayoutEffect(() => {
+      if (element) sync();
     });
 
     useImperativeHandle(
@@ -188,19 +231,22 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
         scrollToLine: (line) => {
           const target = textareaRef.current;
           if (!target) return;
-          const unit = lineRows.unit || 24;
-          // 折行时按视觉行累加，否则长行会把目标行顶到视口外
-          let offset = 0;
+          const unit = ruler.unit || config.editor.fontSize * config.editor.lineHeight;
           const index = Math.max(0, line - 1);
-          if (lineRows.rows.length) {
-            for (let i = 0; i < index && i < lineRows.rows.length; i++) offset += (lineRows.rows[i] ?? 1) * unit;
-          } else {
-            offset = index * unit;
-          }
+          // ruler 测过就直接用真实偏移，折行时也不会把目标行顶到视口外；
+          // 行号没开时没有测量结果，退回按行数折算
+          const offset = ruler.lines.length ? ruler.offsetOf(index) : index * unit;
           target.scrollTop = Math.max(0, offset - 2 * unit);
         },
       }),
-      [emit, onSelectionChange, value, lineRows],
+      [
+        config.editor.fontSize,
+        config.editor.lineHeight,
+        emit,
+        onSelectionChange,
+        ruler,
+        value,
+      ],
     );
 
     const handleChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -304,21 +350,20 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     };
 
     /** 点击行号：选中整行文本，方便整行删除/替换 */
-    const selectLineAt = (lineIndex: number) => {
-      const element = textareaRef.current;
-      if (!element || !config.editor.gutterClickSelectsLine) return;
-      const lines = element.value.split("\n");
-      const index = Math.max(0, Math.min(lines.length - 1, lineIndex));
-      let start = 0;
-      for (let i = 0; i < index; i++) start += lines[i].length + 1;
-      const end = start + lines[index].length;
-      element.focus({ preventScroll: true });
-      element.setSelectionRange(start, end);
-      onSelectionChange?.(start, end);
-    };
-
-    const lineUnit = lineRows.unit || config.editor.fontSize * config.editor.lineHeight;
-    const lines = value.split("\n");
+    const selectLineAt = useCallback(
+      (lineIndex: number) => {
+        const element = textareaRef.current;
+        if (!element || !config.editor.gutterClickSelectsLine) return;
+        const offsets = lineOffsets(element.value);
+        const index = Math.max(0, Math.min(offsets.length - 1, lineIndex));
+        const start = offsets[index];
+        const end = start + (splitLines(element.value)[index]?.length ?? 0);
+        element.focus({ preventScroll: true });
+        element.setSelectionRange(start, end);
+        onSelectionChange?.(start, end);
+      },
+      [config.editor.gutterClickSelectsLine, onSelectionChange],
+    );
 
     /**
      * 命中高亮层：与 textarea 用同一份字体/行高/内边距，铺在它下面只画底色。
@@ -334,30 +379,24 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
 
     const renderFindLayer = (): ReactNode => {
       if (!matches || !matches.length || matchIndex < -1) return null;
-      const nodes: ReactNode[] = [];
-      let cursor = 0;
-      matches.forEach((match, index) => {
-        if (match.start > cursor) nodes.push(value.slice(cursor, match.start));
-        const slice = value.slice(match.start, match.end);
-        const isCurrent = index === matchIndex;
-        nodes.push(
-          isCurrent || !highlightOnlyCurrent ? (
-            <mark key={match.start} className={`mde-find-hit${isCurrent ? " is-current" : ""}`}>
-              {slice}
-            </mark>
-          ) : (
-            slice
-          ),
-        );
-        cursor = match.end;
-      });
-      if (cursor < value.length) nodes.push(value.slice(cursor));
+      const { first, last } = range;
+      /*
+       * 只有 ruler 把这段测过，才能切出可视区间来渲染：
+       * 行号没开时 ruler 不排版，偏移是假的，这时退回整篇渲染（老路径），
+       * 宁可慢一点也不能让高亮层与 textarea 错位。
+       */
+      const windowed = ruler.lines.length > 0 && ruler.frontier >= last;
+      const nodes = windowed
+        ? segment(value, matches, matchIndex, highlightOnlyCurrent, first, last)
+        : whole(value, matches, matchIndex, highlightOnlyCurrent);
       /*
        * 末尾换行：textarea 会把结尾的 `\n` 再渲染出一个空行（留给光标），
        * 而这层里 `pre-wrap` 的尾部换行不产生行盒——两边总高度会差一行，
        * 滚到底时同步的 scrollTop 被夹住，最后几屏的高亮就偏了。补个零宽字符凑齐这一行。
        */
       nodes.push("\u200b");
+      const padTop = windowed ? ruler.offsetOf(first) : 0;
+      const padBottom = windowed ? Math.max(0, ruler.total - ruler.offsetOf(last)) : 0;
       return (
         <div
           className={`mde-find-layer${config.editor.wrap ? "" : " is-nowrap"}`}
@@ -365,73 +404,69 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
           aria-hidden="true"
           style={textStyle}
         >
+          {padTop > 0 && <div className="mde-find-pad" style={{ height: padTop }} />}
           {nodes}
+          {padBottom > 0 && <div className="mde-find-pad" style={{ height: padBottom }} />}
         </div>
       );
     };
 
+    /** 依赖没变就不重建：查找高亮层动辄上千个节点，不能每次渲染都重造 */
+    const findLayer = useMemo(
+      () => renderFindLayer(),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [
+        value,
+        matches,
+        matchIndex,
+        highlightOnlyCurrent,
+        range.first,
+        range.last,
+        ruler.frontier,
+        config.editor.wrap,
+      ],
+    );
+
     return (
       <div className={`mde-source${className ? ` ${className}` : ""}${showGutter ? " has-gutter" : ""}`}>
         {showGutter && (
-          <div className="mde-gutter" aria-hidden="true">
-            <div className="mde-gutter-inner" style={{ lineHeight: `${lineUnit}px` }}>
-              {lines.map((_, index) => {
-                // 折行的续行不显示数字：把这一格撑到整个逻辑行的高度，数字留在首行
-                const span = lineRows.rows.length ? lineRows.rows[index] ?? 1 : 1;
-                return (
-                  <button
-                    type="button"
-                    className={`mde-gutter-line${span > 1 ? " is-wrapped" : ""}`}
-                    key={index}
-                    tabIndex={-1}
-                    title={`选中第 ${index + 1} 行`}
-                    style={span > 1 ? { height: `${span * lineUnit}px` } : undefined}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => selectLineAt(index)}
-                  >
-                    <span className="mde-gutter-num">{index + 1}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <Gutter
+            ref={gutterRef}
+            ruler={ruler}
+            range={range}
+            scroll={scroll}
+            lineHeight={config.editor.lineHeight}
+            fontSize={config.editor.fontSize}
+            gutterClickSelectsLine={config.editor.gutterClickSelectsLine}
+            onSelectLine={selectLineAt}
+          />
         )}
         <div className="mde-source-main">
-        {renderFindLayer()}
-        <textarea
-          ref={setElement}
-          className={`mde-textarea${config.editor.wrap ? "" : " is-nowrap"}`}
-          value={value}
-          onChange={handleChange}
-          onSelect={handleSelect}
-          onKeyDown={handleKeyDown}
-          onBeforeInput={handleBeforeInput}
-          onCompositionStart={() => {
-            composing.current = true;
-          }}
-          onCompositionEnd={() => {
-            composing.current = false;
-          }}
-          onPaste={handlePaste}
-          onDrop={handleDrop}
-          onScroll={(event) => {
-            const element = event.currentTarget;
-            const gutter = element.closest(".mde-source")?.querySelector(".mde-gutter-inner");
-            if (gutter instanceof HTMLElement) gutter.style.transform = `translateY(${-element.scrollTop}px)`;
-            const layer = layerRef.current;
-            if (layer) {
-              layer.scrollTop = element.scrollTop;
-              layer.scrollLeft = element.scrollLeft;
-            }
-          }}
-          readOnly={readOnly}
-          placeholder={placeholder}
-          spellCheck={config.editor.spellCheck}
-          autoFocus={autoFocus}
-          wrap={config.editor.wrap ? "soft" : "off"}
-          style={textStyle}
-          aria-label={placeholder}
-        />
+          {findLayer}
+          <textarea
+            ref={setElement}
+            className={`mde-textarea${config.editor.wrap ? "" : " is-nowrap"}`}
+            value={value}
+            onChange={handleChange}
+            onSelect={handleSelect}
+            onKeyDown={handleKeyDown}
+            onBeforeInput={handleBeforeInput}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
+            onPaste={handlePaste}
+            onDrop={handleDrop}
+            readOnly={readOnly}
+            placeholder={placeholder}
+            spellCheck={config.editor.spellCheck}
+            autoFocus={autoFocus}
+            wrap={config.editor.wrap ? "soft" : "off"}
+            style={textStyle}
+            aria-label={placeholder}
+          />
         </div>
       </div>
     );
@@ -439,3 +474,73 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
 );
 
 SourceEditor.displayName = "SourceEditor";
+
+/** 命中区间：把 [first, last) 这几行的文本切出来，命中处包 <mark> */
+function segment(
+  value: string,
+  matches: SearchMatch[],
+  matchIndex: number,
+  onlyCurrent: boolean,
+  first: number,
+  last: number,
+): ReactNode[] {
+  const offsets = lineOffsets(value);
+  const lines = splitLines(value);
+  const from = offsets[first] ?? 0;
+  const to = last > 0 ? (offsets[last - 1] ?? 0) + (lines[last - 1]?.length ?? 0) : 0;
+  return slice(value, matches, matchIndex, onlyCurrent, from, to);
+}
+
+/** 整篇渲染（行号没开、ruler 没有可用偏移时的退路） */
+function whole(value: string, matches: SearchMatch[], matchIndex: number, onlyCurrent: boolean): ReactNode[] {
+  return slice(value, matches, matchIndex, onlyCurrent, 0, value.length);
+}
+
+/** 把 [from, to) 这段文本切成节点，命中区间包 <mark> */
+function slice(
+  value: string,
+  matches: SearchMatch[],
+  matchIndex: number,
+  onlyCurrent: boolean,
+  from: number,
+  to: number,
+): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let cursor = from;
+  // 二分找到第一个可能落在这段里的命中：其余的不必扫
+  let index = firstMatchAtOrAfter(matches, from);
+  for (; index < matches.length; index += 1) {
+    const match = matches[index];
+    if (match.start >= to) break;
+    const start = Math.max(match.start, from);
+    const end = Math.min(match.end, to);
+    if (end <= cursor) continue;
+    if (start > cursor) nodes.push(value.slice(cursor, start));
+    const mark = value.slice(start, end);
+    const isCurrent = index === matchIndex;
+    if (isCurrent || !onlyCurrent) {
+      nodes.push(
+        <mark key={`m${start}`} className={`mde-find-hit${isCurrent ? " is-current" : ""}`}>
+          {mark}
+        </mark>,
+      );
+    } else {
+      nodes.push(mark);
+    }
+    cursor = end;
+  }
+  if (cursor < to) nodes.push(value.slice(cursor, to));
+  return nodes;
+}
+
+/** 第一个 `end > at` 的命中下标：段首之前就结束的命中整体跳过 */
+function firstMatchAtOrAfter(matches: SearchMatch[], at: number): number {
+  let low = 0;
+  let high = matches.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (matches[mid].end > at) high = mid;
+    else low = mid + 1;
+  }
+  return low;
+}

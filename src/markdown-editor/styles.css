@@ -700,6 +700,13 @@
   border: none !important;
 }
 
+/* 可视区间之外的上下占位：只负责把总高度撑到与 textarea 一致，不能产生行盒 */
+.mde-find-pad {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+
 .mde-find-hit {
   border-radius: 2px;
   background: var(--mde-search-match-bg);
@@ -778,16 +785,24 @@
   opacity: 0.7;
 }
 
+/*
+ * 行号槽只渲染可视区间，每行用绝对定位钉在真实纵向偏移上。
+ * 容器高度只到渲染区间为止（不是整篇几万像素），
+ * 于是平移量恒在一屏之内，`will-change` 也不会逼出一整块超大合成层。
+ */
 .mde-gutter-inner {
+  position: relative;
   will-change: transform;
 }
 
 /* 软换行时这一格会被撑成多行高：数字必须钉在首行，不能跟着垂直居中 */
 .mde-gutter-line {
+  position: absolute;
+  left: 0;
+  right: 0;
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
-  width: 100%;
   padding: 0 2px;
   border: none;
   border-radius: 3px;
@@ -852,6 +867,18 @@
   letter-spacing: var(--mde-preview-letter-spacing);
   text-align: var(--mde-preview-align);
   overflow-wrap: break-word;
+}
+
+/*
+ * 超长文档：让浏览器跳过屏外块的布局与绘制。
+ *
+ * `contain-intrinsic-size` 的 `auto` 前缀会让浏览器记住上次渲染出的真实高度，
+ * 滚动条才不会因为占位值而反复抽动。只对块数超过阈值的文档加 `is-large`：
+ * 短文档开了没收益，反而会让分栏滚动同步把屏外块的高度读成占位值。
+ */
+.mde-preview.is-large .mde-preview-content > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
 }
 
 .mde-preview-empty {
@@ -1648,10 +1675,19 @@
   text-transform: uppercase;
 }
 
-.mde-root .mde-toc-block ul {
+/*
+ * TOC 是列表结构但只当目录用，不能带原生圆点。
+ *
+ * 宿主（App.css）为了让正文列表显示原点/序号，给 `ul li` / `ol li` 写了
+ * `list-style-type: ... !important` 的通配规则，所以这里必须同样用 !important 才盖得住；
+ * 只写 `list-style: none` 会被那条规则按 !important 优先级的顺序判负，目录里就全是圆点。
+ */
+.mde-root .mde-toc-block ul,
+.mde-root .mde-toc-block li {
   margin: 0;
   padding: 0;
-  list-style: none;
+  list-style: none !important;
+  list-style-type: none !important;
 }
 
 .mde-root .mde-toc-block li {

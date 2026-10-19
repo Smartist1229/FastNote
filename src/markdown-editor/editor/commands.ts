@@ -11,6 +11,7 @@
  * - 行级命令（标题、列表、缩进）会保持光标相对位置，而不是把整段重新选中。
  */
 import type { ToolbarItemName } from "../types";
+import { countLines, lineAtOffset } from "./lines";
 
 export interface EditState {
   text: string;
@@ -472,7 +473,138 @@ export const autoPairOnInput = (
   };
 };
 
-/** 计算统计信息 */
+/* ---------------- 统计 ---------------- */
+
+/** 单词内部允许的连接符：`don't` / `state-of-art` 在词频统计里算一个词 */
+const isWordJoin = (code: number): boolean => code === 39 || code === 45 || code === 8217;
+
+/** 构成单词的字符：`[A-Za-z0-9_]` */
+const isWordChar = (code: number): boolean =>
+  (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
+
+/** CJK 汉字 / 假名 / 谚文：每个字算一个词 */
+const isCjk = (code: number): boolean =>
+  (code >= 0x3400 && code <= 0x4dbf) ||
+  (code >= 0x4e00 && code <= 0x9fff) ||
+  (code >= 0x3040 && code <= 0x30ff) ||
+  (code >= 0xac00 && code <= 0xd7af);
+
+/** 与正则 `\s` 对齐的空白判定（换行单独由 code === 10 处理） */
+const isSpace = (code: number): boolean =>
+  code === 32 ||
+  code === 9 ||
+  code === 11 ||
+  code === 12 ||
+  code === 13 ||
+  code === 0xa0 ||
+  code === 0x1680 ||
+  (code >= 0x2000 && code <= 0x200a) ||
+  code === 0x2028 ||
+  code === 0x2029 ||
+  code === 0x202f ||
+  code === 0x205f ||
+  code === 0x3000 ||
+  code === 0xfeff;
+
+/**
+ * 文档级统计（字数 / 字符 / 行数 / 段数 / 阅读时长）。
+ *
+ * 原来这一块是六条独立的全文扫描：两次 `match` 各产出一个几万项的数组，
+ * 两次 `split` 各产出一份全文切分，外加一次 `replace` 复制整篇——
+ * 每敲一个字都要付一遍，长文档上是稳稳的几十毫秒级抖动。
+ *
+ * 改成一遍扫描、零中间数组：词数、段数、去空格字数在同一个循环里累加出来。
+ * 行数直接取共享切行缓存的结果，连这一次遍历都省掉。
+ *
+ * 段数的判定与 `split(/\n\s*\n/).filter(非空)` 等价：段是「连续非空行」的极大区间。
+ */
+export const computeDocStats = (
+  text: string,
+  readingSpeed = 400,
+): {
+  words: number;
+  chars: number;
+  charsNoSpace: number;
+  lines: number;
+  paragraphs: number;
+  readingMinutes: number;
+} => {
+  let cjk = 0;
+  let latin = 0;
+  let paragraphs = 0;
+  let charsNoSpace = 0;
+  /** 当前行已经出现过实心字符 */
+  let lineHasContent = false;
+  /** 上一行是实心行 → 当前行与它同属一段 */
+  let inParagraph = false;
+  let inWord = false;
+  /** 刚吃进连接符，后面紧跟的字母不算新词 */
+  let joined = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code === 10) {
+      inParagraph = lineHasContent;
+      lineHasContent = false;
+      inWord = false;
+      joined = false;
+      continue;
+    }
+    if (isSpace(code)) {
+      inWord = false;
+      joined = false;
+      continue;
+    }
+    charsNoSpace += 1;
+    if (!lineHasContent && !inParagraph) paragraphs += 1;
+    lineHasContent = true;
+
+    if (isCjk(code)) {
+      cjk += 1;
+      inWord = false;
+      joined = false;
+      continue;
+    }
+    if (isWordChar(code)) {
+      if (!inWord && !joined) latin += 1;
+      inWord = true;
+      joined = false;
+      continue;
+    }
+    if (isWordJoin(code)) {
+      joined = inWord;
+      inWord = false;
+      continue;
+    }
+    inWord = false;
+    joined = false;
+  }
+
+  const words = cjk + latin;
+  return {
+    words,
+    chars: text.length,
+    charsNoSpace,
+    lines: countLines(text),
+    paragraphs,
+    readingMinutes: words === 0 ? 0 : Math.max(0.1, Math.round((words / Math.max(1, readingSpeed)) * 10) / 10),
+  };
+};
+
+/**
+ * 光标行列号（1 基）。
+ *
+ * 单独拆出来是为了让「挪光标」和「改文本」分别计价：光标移动时文本没变，
+ * 共享切行缓存直接命中，二分定位是 O(log n)，不用再扫一遍全文。
+ */
+export const computeCursor = (text: string, caret: number): { line: number; column: number } => {
+  if (!text) return { line: 1, column: 1 };
+  const at = Math.max(0, Math.min(caret, text.length));
+  const { line, start } = lineAtOffset(text, at);
+  return { line: line + 1, column: at - start + 1 };
+};
+
+/** 完整统计：文档级部分 + 光标位置（对外 API 保持原签名） */
 export const computeStats = (
   text: string,
   caret: number,
@@ -486,24 +618,10 @@ export const computeStats = (
   paragraphs: number;
   readingMinutes: number;
   cursor: { line: number; column: number; selection: number };
-} => {
-  const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
-  const latin = (text.match(/[A-Za-z0-9_]+(?:['’-][A-Za-z0-9_]+)*/g) || []).length;
-  const lines = text ? text.split("\n").length : 0;
-  const paragraphs = text ? text.split(/\n\s*\n/).filter((block) => block.trim()).length : 0;
-  const words = cjk + latin;
-  const line = text.slice(0, caret).split("\n").length;
-  const column = caret - lineStartOf(text, caret) + 1;
-  return {
-    words,
-    chars: text.length,
-    charsNoSpace: text.replace(/\s/g, "").length,
-    lines,
-    paragraphs,
-    readingMinutes: words === 0 ? 0 : Math.max(0.1, Math.round((words / Math.max(1, readingSpeed)) * 10) / 10),
-    cursor: { line, column, selection },
-  };
-};
+} => ({
+  ...computeDocStats(text, readingSpeed),
+  cursor: { ...computeCursor(text, caret), selection },
+});
 
 /** 光标所在行的格式状态：工具栏按钮高亮用 */
 export interface ActiveFormats {

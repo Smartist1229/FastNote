@@ -3,7 +3,7 @@
  * 不做进出场队列：新消息直接追加到数组末尾，超时后按 id 从数组中剔除。
  * showToast 用 useCallback 固定引用，可以安全放进依赖数组。
  */
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useCallback, useMemo, useState, ReactNode } from "react";
 import type { Toast, ToastContextType, ToastType } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
 
@@ -38,8 +38,15 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
     }, TOAST_DURATION_MS);
   }, []);
 
+  /**
+   * context 的 value 必须 memo：showToast 本身是稳定引用，但字面量 `{ showToast }`
+   * 每次 Provider 渲染都会生成新对象。Provider 会因为 toasts 增删而重渲染（每条提示两次），
+   * value 一变，所有 useToast 的消费组件（侧栏、编辑器、AI 面板…）都会跟着重渲染。
+   */
+  const value = useMemo(() => ({ showToast }), [showToast]);
+
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={value}>
       {children}
       {/* 容器 pointer-events-none 不挡页面点击，单条 toast 再恢复 auto 以便选中文字 */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col items-center gap-2 pointer-events-none">

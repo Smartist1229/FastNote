@@ -19,7 +19,7 @@
  * - AI 预览与电脑文件是叠放层，使用负 id 哨兵且永不落库；
  *   切层/关闭前先触发一次外部文件写回，避免丢掉最后一次编辑。
  */
-import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "@/App.css";
 import type { Category, ExternalTextFile, Note } from "@/interface/note";
 import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
@@ -158,8 +158,16 @@ function AppContent() {
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<number>>(new Set());
   /** AI 面板是否展开：仅启动时从 layout 恢复，切换本身不写设置 */
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  /** 编辑器光标偏移：AI「插入」以此为插入点，避免总是追加到文末 */
-  const [editorCursorOffset, setEditorCursorOffset] = useState(0);
+  /**
+   * 编辑器光标偏移：AI「插入」以此为插入点，避免总是追加到文末。
+   * 用 ref 而不是 state —— 它只在「AI 插入」时读一次，若放进 state，
+   * 编辑器每敲一个字都会触发本组件重渲染，连带侧栏笔记列表与 AI 面板一起重绘。
+   */
+  const editorCursorOffsetRef = useRef(0);
+  /** 编辑器上报光标的回调：引用保持稳定，避免每次渲染都让编辑器的同步 effect 重跑 */
+  const handleCursorOffsetChange = useCallback((offset: number) => {
+    editorCursorOffsetRef.current = offset;
+  }, []);
   /** 统一设置窗口：null 表示关闭，否则为打开时的分区 */
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -768,21 +776,21 @@ function AppContent() {
       showToast("请先选择一条笔记", "error");
       return;
     }
-    const offset = Math.max(0, Math.min(editorCursorOffset, current.content.length));
+    const offset = Math.max(0, Math.min(editorCursorOffsetRef.current, current.content.length));
     const prefix = current.content.slice(0, offset);
     const suffix = current.content.slice(offset);
     const separatorBefore = prefix && !prefix.endsWith("\n") ? "\n" : "";
     const separatorAfter = suffix && !text.endsWith("\n") ? "\n" : "";
     const nextContent = `${prefix}${separatorBefore}${text}${separatorAfter}${suffix}`;
     await applyAiContentChange(nextContent);
-    setEditorCursorOffset(offset + separatorBefore.length + text.length + separatorAfter.length);
+    editorCursorOffsetRef.current = offset + separatorBefore.length + text.length + separatorAfter.length;
     showToast("已插入到笔记", "success");
   };
 
   /** AI「替换」：整篇覆盖，并把光标移到文末 */
   const handleAiReplaceContent = async (text: string) => {
     await applyAiContentChange(text);
-    setEditorCursorOffset(text.length);
+    editorCursorOffsetRef.current = text.length;
     showToast("已替换笔记内容", "success");
   };
 
@@ -1044,6 +1052,15 @@ function AppContent() {
           : 2,
       ) as AiAccessLevel) ?? 2);
 
+  /**
+   * 欢迎页「最近更新」列表：只在 notes 变化时排一次。
+   * 直接在 JSX 里 [...notes].sort 会让每次渲染都重排一遍全量笔记。
+   */
+  const recentNotes = useMemo(
+    () => [...notes].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+    [notes],
+  );
+
   return (
     <div className="h-screen flex flex-col bg-app">
       <div className="relative flex flex-1 overflow-hidden">
@@ -1158,7 +1175,7 @@ function AppContent() {
                     onSaveToCategory={handleSavePreviewToCategory}
                     onSave={handleSaveNote}
                     onDelete={handleDeleteNote}
-                    onCursorOffsetChange={setEditorCursorOffset}
+                    onCursorOffsetChange={handleCursorOffsetChange}
                     editorSettings={appSettings.editor}
                     onToggleAiPanel={appSettings.general.enableAI ? toggleAiPanel : undefined}
                     isAiPanelOpen={appSettings.general.enableAI && aiPanelOpen}
@@ -1176,7 +1193,7 @@ function AppContent() {
                   totalNotes={notes.length}
                   categoryCount={categories.length}
                   trashCount={trashNotes.length}
-                  recentNotes={[...notes].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())}
+                  recentNotes={recentNotes}
                   onCreateNote={() => handleCreateNote()}
                   onOpenTrash={handleOpenTrash}
                   onOpenTextFile={handleOpenTextFileDialog}
