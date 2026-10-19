@@ -13,6 +13,7 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useRef,
+  useState,
   type ClipboardEvent,
   type CSSProperties,
   type DragEvent,
@@ -22,6 +23,7 @@ import {
 } from "react";
 import type { MarkdownChangeSource, MarkdownEditorConfig } from "../types";
 import { autoPairOnInput, continueMarkdownOnEnter, runCommand, type EditState } from "../editor/commands";
+import { useVisualLineRows } from "../editor/useVisualLineRows";
 import type { SearchMatch } from "../editor/search";
 
 export interface SourceEditorHandle {
@@ -100,11 +102,14 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     const layerRef = useRef<HTMLDivElement | null>(null);
     const pendingSelection = useRef<[number, number] | null>(null);
     const composing = useRef(false);
+    // textarea 同时存一份 state：行高测量要读它的尺寸，ref 变化不会触发更新
+    const [element, setElementState] = useState<HTMLTextAreaElement | null>(null);
 
     const setElement = useCallback(
-      (element: HTMLTextAreaElement | null) => {
-        textareaRef.current = element;
-        onElement?.(element);
+      (next: HTMLTextAreaElement | null) => {
+        textareaRef.current = next;
+        setElementState(next);
+        onElement?.(next);
       },
       [onElement],
     );
@@ -119,6 +124,20 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       element.setSelectionRange(selection[0], selection[1]);
     }, [value]);
 
+    /**
+     * 命中高亮层的滚动兜底：层刚挂载（打开搜索 / 改查询词）时 scrollTop 是 0，
+     * 而 textarea 可能已经滚到中间——只靠 textarea 的 onScroll 同步的话，
+     * 挂载到下一次滚动之间这层全是错位的。
+     * 每次渲染都对齐一次（两个赋值，开销可忽略），滚动中则仍由 onScroll 实时跟。
+     */
+    useLayoutEffect(() => {
+      const layer = layerRef.current;
+      const target = textareaRef.current;
+      if (!layer || !target) return;
+      layer.scrollTop = target.scrollTop;
+      layer.scrollLeft = target.scrollLeft;
+    });
+
     const emit = useCallback(
       (next: EditState, source: MarkdownChangeSource) => {
         pendingSelection.current = [next.start, next.end];
@@ -126,6 +145,23 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       },
       [onChange],
     );
+
+    const showGutter = config.editor.lineNumbers;
+    /**
+     * 自动换行时一个逻辑行可能占好几行，行号必须按视觉行数撑高才对得上。
+     * 关掉换行时 rows 为空数组，每行固定一行高。
+     */
+    const lineRows = useVisualLineRows({
+      element,
+      text: value,
+      enabled: showGutter,
+      wrap: config.editor.wrap,
+      fontFamily: config.editor.fontFamily,
+      fontSize: config.editor.fontSize,
+      lineHeight: config.editor.lineHeight,
+      tabSize: config.editor.tabSize,
+      fontLigatures: config.editor.fontLigatures,
+    });
 
     useImperativeHandle(
       ref,
@@ -150,13 +186,21 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
           pendingSelection.current = [start, end];
         },
         scrollToLine: (line) => {
-          const element = textareaRef.current;
-          if (!element) return;
-          const height = parseFloat(getComputedStyle(element).lineHeight) || 24;
-          element.scrollTop = Math.max(0, (line - 3) * height);
+          const target = textareaRef.current;
+          if (!target) return;
+          const unit = lineRows.unit || 24;
+          // 折行时按视觉行累加，否则长行会把目标行顶到视口外
+          let offset = 0;
+          const index = Math.max(0, line - 1);
+          if (lineRows.rows.length) {
+            for (let i = 0; i < index && i < lineRows.rows.length; i++) offset += (lineRows.rows[i] ?? 1) * unit;
+          } else {
+            offset = index * unit;
+          }
+          target.scrollTop = Math.max(0, offset - 2 * unit);
         },
       }),
-      [emit, onSelectionChange, value],
+      [emit, onSelectionChange, value, lineRows],
     );
 
     const handleChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -273,8 +317,8 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       onSelectionChange?.(start, end);
     };
 
-    const lineHeight = config.editor.fontSize * config.editor.lineHeight;
-    const showGutter = config.editor.lineNumbers;
+    const lineUnit = lineRows.unit || config.editor.fontSize * config.editor.lineHeight;
+    const lines = value.split("\n");
 
     /**
      * 命中高亮层：与 textarea 用同一份字体/行高/内边距，铺在它下面只画底色。
@@ -308,6 +352,12 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
         cursor = match.end;
       });
       if (cursor < value.length) nodes.push(value.slice(cursor));
+      /*
+       * 末尾换行：textarea 会把结尾的 `\n` 再渲染出一个空行（留给光标），
+       * 而这层里 `pre-wrap` 的尾部换行不产生行盒——两边总高度会差一行，
+       * 滚到底时同步的 scrollTop 被夹住，最后几屏的高亮就偏了。补个零宽字符凑齐这一行。
+       */
+      nodes.push("\u200b");
       return (
         <div
           className={`mde-find-layer${config.editor.wrap ? "" : " is-nowrap"}`}
@@ -324,20 +374,25 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       <div className={`mde-source${className ? ` ${className}` : ""}${showGutter ? " has-gutter" : ""}`}>
         {showGutter && (
           <div className="mde-gutter" aria-hidden="true">
-            <div className="mde-gutter-inner" style={{ lineHeight: `${lineHeight}px` }}>
-              {Array.from({ length: Math.max(1, value.split("\n").length) }, (_, index) => (
-                <button
-                  type="button"
-                  className="mde-gutter-line"
-                  key={index}
-                  tabIndex={-1}
-                  title={`选中第 ${index + 1} 行`}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => selectLineAt(index)}
-                >
-                  {index + 1}
-                </button>
-              ))}
+            <div className="mde-gutter-inner" style={{ lineHeight: `${lineUnit}px` }}>
+              {lines.map((_, index) => {
+                // 折行的续行不显示数字：把这一格撑到整个逻辑行的高度，数字留在首行
+                const span = lineRows.rows.length ? lineRows.rows[index] ?? 1 : 1;
+                return (
+                  <button
+                    type="button"
+                    className={`mde-gutter-line${span > 1 ? " is-wrapped" : ""}`}
+                    key={index}
+                    tabIndex={-1}
+                    title={`选中第 ${index + 1} 行`}
+                    style={span > 1 ? { height: `${span * lineUnit}px` } : undefined}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectLineAt(index)}
+                  >
+                    <span className="mde-gutter-num">{index + 1}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

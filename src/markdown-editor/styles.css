@@ -77,7 +77,7 @@
   --mde-search-match-active-bg: rgba(234, 92, 0, 0.5);
   --mde-search-match-active-border: #ea5c00;
   --mde-callout-tint: 7%;
-  --mde-radius: 10px;
+  --mde-radius: 4px;
   --mde-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --mde-mono-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
   --mde-preview-font-family: var(--mde-font-family);
@@ -658,9 +658,15 @@
   inset: 0;
   z-index: 0;
   padding: 20px 24px;
-  /* 保持与 textarea 一致的滚动占位，否则自动换行时高亮会整体错位 */
-  overflow: scroll;
-  scrollbar-color: transparent transparent;
+  /* 高亮层必须和 textarea 完全对齐才会不错位，滚动占位尤其关键：
+     滚动条会吃掉可用宽度，两边差几像素，折出来的行就不一样，命中标记整体偏移。
+     所以这里不用 overflow: scroll（它恒占位），而是照抄 textarea 的 overflow 行为：
+     textarea 出现滚动条时这一层才出现，两边宽度始终同步。
+     另外千万不要给这一层写 scrollbar-color / scrollbar-width：标准属性一旦生效，
+     ::-webkit-scrollbar 的宽度声明就被忽略，滚动条会变回默认的 15px（比 textarea 宽 5px），
+     高亮照样错位。隐藏它的滚动条只能靠下面那条 ::-webkit-scrollbar-thumb。 */
+  overflow-x: hidden;
+  overflow-y: auto;
   color: transparent;
   white-space: pre-wrap;
   overflow-wrap: break-word;
@@ -675,6 +681,8 @@
 .mde-find-layer.is-nowrap {
   white-space: pre;
   overflow-wrap: normal;
+  /* 与 .mde-textarea.is-nowrap 对齐：不折行时横向也要能滚动 */
+  overflow-x: auto;
 }
 
 .mde-find-layer::-webkit-scrollbar-track,
@@ -682,9 +690,14 @@
   background: transparent;
 }
 
-.mde-find-layer::-webkit-scrollbar-thumb {
-  border: none;
-  background-color: transparent;
+/* 这层滚动条只为「占住和 textarea 一样的宽度」而存在（滚动位置由 textarea 同步），
+   绝不能画出来：宿主应用常有自己的全局滚动条样式（颜色/圆角），普通的透明声明
+   可能被盖掉，于是编辑器右侧多出一条假滚动条。这里用 !important 钉死透明。 */
+.mde-find-layer::-webkit-scrollbar-thumb,
+.mde-find-layer::-webkit-scrollbar-thumb:hover,
+.mde-find-layer::-webkit-scrollbar-thumb:active {
+  background-color: transparent !important;
+  border: none !important;
 }
 
 .mde-find-hit {
@@ -728,6 +741,20 @@
   overflow-wrap: normal;
 }
 
+/* 连字开关（`editor.fontLigatures`）。
+   必须覆盖到所有用等宽字体排版的层：源码区、行号槽、查找高亮层、代码块。
+   查找层漏掉的话，同一段字在两层里的宽度不一样，高亮就会整体错位。 */
+.mde-textarea,
+.mde-find-layer,
+.mde-gutter,
+.mde-root .mde-inline-code,
+.mde-code-text,
+.mde-code-ln,
+.mde-code-lang {
+  font-variant-ligatures: var(--mde-ligatures, none);
+  font-feature-settings: var(--mde-font-features, "liga" 0, "calt" 0);
+}
+
 .mde-textarea::placeholder {
   color: var(--mde-text-faint);
 }
@@ -755,8 +782,11 @@
   will-change: transform;
 }
 
+/* 软换行时这一格会被撑成多行高：数字必须钉在首行，不能跟着垂直居中 */
 .mde-gutter-line {
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
   width: 100%;
   padding: 0 2px;
   border: none;
@@ -770,9 +800,32 @@
   transition: background-color 100ms ease, color 100ms ease;
 }
 
+.mde-gutter-num {
+  display: block;
+  flex: none;
+}
+
 .mde-gutter-line:hover {
   background: var(--mde-toolbar-hover);
   color: var(--mde-gutter-active-text);
+}
+
+/* 折行测量层：字体与宽度由 JS 同步成 textarea 的值，只用来量「这一行折成几行」 */
+.mde-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.mde-measure-line {
+  display: block;
 }
 
 /* ============ 预览 ============ */
@@ -1210,11 +1263,19 @@
   justify-content: space-between;
   min-height: 30px;
   padding: 3px 8px 3px 12px;
+  /* 头部底色由预设给：选中「跟随主题」预设时，theme.ts 会把这里算成主题色调制的版本 */
   background: var(--mde-code-header-bg);
   color: var(--mde-code-text);
 }
 
+/* 折叠开关在语言名左侧时，头部左内边距收紧一点，避免「箭头 + 语言名」显得离边框太远 */
+.mde-code-head:has(> .mde-code-fold) {
+  padding-left: 6px;
+}
+
 .mde-code-lang {
+  /* 折叠开关在语言名左侧、工具在右侧：把语言名推到中间靠左，右侧工具保持贴边 */
+  margin-right: auto;
   font-family: var(--mde-mono-family);
   font-size: 11px;
   letter-spacing: 0.04em;
@@ -1261,10 +1322,12 @@
   padding: 10px 0;
 }
 
-/* 折叠：限制高度 + 底部渐隐 + 居中展开按钮 */
+/* 折叠：限制高度 + 底部渐隐。
+   「展开全部」按钮已去掉：只留渐隐做「下面还有内容」的暗示，折叠态整块可点展开。 */
 .mde-code-body.is-collapsed {
   max-height: var(--mde-code-collapse-height, 260px);
   overflow: hidden;
+  cursor: pointer;
 }
 
 .mde-code-body.is-collapsed::after {
@@ -1276,40 +1339,7 @@
   pointer-events: none;
 }
 
-/* 折叠后的「展开全部」：轻量幽灵按钮，半透明底 + 细边，不再抢视线 */
-.mde-code-expand {
-  position: absolute;
-  left: 50%;
-  bottom: 9px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transform: translateX(-50%);
-  height: 22px;
-  padding: 0 11px;
-  border: 1px solid color-mix(in srgb, var(--mde-code-text) 16%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--mde-code-header-bg) 88%, transparent);
-  backdrop-filter: blur(4px);
-  color: color-mix(in srgb, var(--mde-code-text) 82%, transparent);
-  font-family: var(--mde-font-family);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
-}
-
-.mde-code-expand:hover {
-  border-color: color-mix(in srgb, var(--mde-accent) 55%, transparent);
-  color: var(--mde-accent);
-  background: color-mix(in srgb, var(--mde-code-header-bg) 96%, var(--mde-accent) 4%);
-}
-
-.mde-code-expand svg {
-  display: block;
-}
+/* 折叠后的「展开」入口已改为整块可点（见 .mde-code-body.is-collapsed），不再有悬浮按钮 */
 
 .mde-code-fold svg {
   transition: transform 140ms ease;

@@ -231,9 +231,9 @@ export function parseInline(src: string, ctx: InlineContext): InlineNode[] {
       continue;
     }
 
-    // 换行：两空格以上为硬换行，否则软换行
+    // 换行：两空格以上为硬换行，否则软换行；开启 breaks（GFM）时单个 \n 就算硬换行
     if (ch === "\n") {
-      const hard = /[ ]{2,}$/.test(src.slice(0, i));
+      const hard = ctx.breaks || /[ ]{2,}$/.test(src.slice(0, i));
       trimTrailingSpaces();
       flush();
       out.push({ type: "break", hard });

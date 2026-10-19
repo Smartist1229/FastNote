@@ -11,6 +11,7 @@ import { memo, useMemo } from "react";
 import { MarkdownEditor } from "@/markdown-editor";
 import { buildAiRenderConfig } from "@/config/markdownEditor";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/themeRuntime";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 export const AiMarkdown: React.FC<{ content: string }> = memo(function AiMarkdown({ content }) {
   const tokens = useActiveThemeTokens();
@@ -19,7 +20,18 @@ export const AiMarkdown: React.FC<{ content: string }> = memo(function AiMarkdow
 
   return (
     <div className="ai-markdown">
-      <MarkdownEditor value={content} mode="render" config={config} readOnly />
+      <MarkdownEditor
+        value={content}
+        mode="render"
+        config={config}
+        readOnly
+        // 不接的话会走预览的 window.open(_self) —— 在 WebView 里就是整个窗口跳到那个网页
+        onLinkClick={(href) => {
+          if (href.startsWith("#")) return true;
+          void openUrl(href).catch(() => undefined);
+          return false;
+        }}
+      />
     </div>
   );
 });

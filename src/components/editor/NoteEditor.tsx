@@ -636,22 +636,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
       {/* 编辑器 */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        <div
-          ref={editorWrapRef}
-          className="editor-container h-full"
-          onClick={async (e) => {
-            const target = e.target as HTMLElement;
-            const link = target.closest("a");
-            if (link && link.href) {
-              e.preventDefault();
-              try {
-                await openUrl(link.href);
-              } catch (error) {
-                console.error("Failed to open link:", error);
-              }
-            }
-          }}
-        >
+        <div ref={editorWrapRef} className="editor-container h-full">
           <Suspense
             fallback={
               <div className="h-full flex items-center justify-center text-sm text-faint">
@@ -667,7 +652,9 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               config={editorConfig}
               onChange={handleContentChange}
               onLinkClick={(href) => {
-                // 交给系统浏览器打开：在 WebView 里跳转会把整个应用顶掉
+                // 页内锚点（脚注 ↔ 正文）留在编辑器里滚动，不能交给浏览器
+                if (href.startsWith("#")) return true;
+                // 其余一律交给系统浏览器：在 WebView 里跳转会把整个应用顶掉
                 void openUrl(href).catch(() => undefined);
                 return false;
               }}

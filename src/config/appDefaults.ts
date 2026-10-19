@@ -22,6 +22,22 @@ import type {
 export const FONT_SIZE_MIN = 12;
 export const FONT_SIZE_MAX = 24;
 
+/**
+ * 默认字体栈：不开放给用户配（设置面板没有对应开关），只作为出厂默认值。
+ *
+ * 消费方是 config/markdownEditor.ts，由它注入自研编辑器的四处字体：源码输入区、
+ * 代码块等宽区、预览正文、工具栏/查找框等界面。App.css 里 `html` 的全局字体与
+ * 这里的 APP_UI_FONT_STACK 是同一套，改一处就要同步另一处。
+ *
+ * 取值基准是自研编辑器组件的 FONT_STACKS（src/markdown-editor/defaults.ts），
+ * 只多塞了一个软件内置的 MiSans VF：等宽字体没有中文字形，不补的话源码里的中文
+ * 会掉到系统默认字体，跟软件界面不是一套。
+ */
+export const APP_UI_FONT_STACK =
+  '"MiSans VF", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif';
+export const APP_MONO_FONT_STACK =
+  '"JetBrains Mono", "Cascadia Code", "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, "MiSans VF", monospace';
+
 /* ---------- General ---------- */
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   /** 启动时清空回收站（只在软件初始化时执行，永久删除、不可恢复） */
@@ -36,6 +52,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   minimizeToTray: false,
   /** 是否开启 AI 能力（关闭后隐藏所有 AI 相关入口和设置，开启后可为软件开启 AI 能力） */
   enableAI: false,
+  /** 是否启用单例模式：默认开启，关掉后允许多开（多进程同时写库有风险，故标为不建议修改） */
+  singleInstance: true, 
 };
 
 /* ---------- Editor ---------- */
@@ -68,6 +86,11 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   ctrlScrollZoom: true,
   /** 源码行高 */
   sourceLineHeight: 1.75,
+  /**
+   * 字体连字：等宽字体会把 `->`、`==`、`<=` 画成一个符号，
+   * 而 Markdown 源码里这些是语法记号（`~~删除线~~`、`==高亮==`），默认关更不容易看错。
+   */
+  fontLigatures: false,
   /** 源码区行号 */
   lineNumbers: true,
   /** 点击行号选中整行 */
@@ -124,12 +147,12 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   mermaidTheme: "default",
   /** 预览里任务项可勾选 */
   taskInteractive: true,
+  /** 单个换行即换行（GFM breaks） */
+  breaks: false,
   /** 允许 HTML 标签 */
   allowHtml: true,
   /** 渲染前净化 HTML */
   sanitizeHtml: true,
-  /** 链接交给应用侧用系统浏览器打开 */
-  linkTarget: "_self",
   /** 显示 front matter 属性卡 */
   showFrontmatter: true,
   /** 显示脚注区 */
@@ -212,8 +235,8 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   /* 查找替换 */
   /** 启用查找框 */
   searchEnabled: true,
-  /** 打开即展开替换行 */
-  searchShowReplace: true,
+  /** Ctrl/⌘+F 只打开查找行（Ctrl/⌘+H 才带替换行一起出来） */
+  searchShowReplace: false,
   /** 默认不区分大小写 */
   searchCaseSensitive: false,
   /** 默认不用正则 */
@@ -232,6 +255,8 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   codeTheme: "github",
   /** 启用快捷键 */
   shortcuts: true,
+  /** 编辑器外框圆角（px）：与 config/markdownEditor.ts 的 NOTE_EDITOR_RADIUS 保持一致 */
+  radius: 4,
 };
 
 /* ---------- Layout ---------- */

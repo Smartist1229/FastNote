@@ -979,6 +979,7 @@ name = "fastnote"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs",
  "futures-util",
  "pulldown-cmark",
  "reqwest 0.12.28",

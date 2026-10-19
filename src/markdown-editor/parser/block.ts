@@ -40,6 +40,8 @@ interface ParseState {
   slugs: Map<string, number>;
   outline: OutlineItem[];
   allowHtml: boolean;
+  /** 单个换行（GFM breaks）：\n 直接算硬换行 */
+  breaks: boolean;
 }
 
 const indentOf = (text: string): number => {
@@ -387,6 +389,7 @@ const parseBlocks = (lines: SourceLine[], st: ParseState, depth: number): BlockN
     footnoteIndex: st.footnoteIndex,
     footnoteOrder: st.footnoteOrder,
     allowHtml: st.allowHtml,
+    breaks: st.breaks,
   };
 
   while (i < lines.length) {
@@ -839,7 +842,10 @@ const parseBlocks = (lines: SourceLine[], st: ParseState, depth: number): BlockN
 };
 
 /** 入口：解析整篇 Markdown */
-export function parseMarkdown(src: string, options: { allowHtml?: boolean } = {}): ParsedDocument {
+export function parseMarkdown(
+  src: string,
+  options: { allowHtml?: boolean; breaks?: boolean } = {},
+): ParsedDocument {
   const text = src.replace(/\r\n?/g, "\n");
   const st: ParseState = {
     links: new Map(),
@@ -849,6 +855,7 @@ export function parseMarkdown(src: string, options: { allowHtml?: boolean } = {}
     slugs: new Map(),
     outline: [],
     allowHtml: options.allowHtml ?? true,
+    breaks: options.breaks ?? false,
   };
 
   const lines = toLines(text);

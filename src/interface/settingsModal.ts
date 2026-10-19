@@ -3,7 +3,7 @@
 import type { AiPromptEntry, AiProvider, AiSettings } from "./ai";
 import type { AiAccessLevel } from "./aiAccess";
 import type { Category, Note } from "./note";
-import type { AppSettings } from "./settings";
+import type { AppSettings, EnumOption } from "./settings";
 import type { ThemeSettings } from "./theme";
 
 /** 设置窗口的分区（左侧导航项），写法顺序即导航中的排列顺序 */
@@ -65,11 +65,18 @@ export interface RowBase {
   keywords?: string;
   /** 依赖未满足时置灰：控件保留在原位，但不可交互（例如未开启托盘时的关闭行为） */
   disabled?: boolean;
+  /**
+   * 危险标记：只是在标题后额外挂一枚「不建议修改」徽标，
+   * 用来提示"改了可能出问题"的项（例如关掉单例模式导致多进程同时写库）。
+   * 不影响可交互性——真要禁用请同时用 disabled。
+   */
+  danger?: boolean;
 }
 
 /**
  * 设置项行模型，按 kind 决定渲染的控件与取值类型：
- * toggle = 开关；number = 数值输入（min/max 必填）；segment = 分段按钮组。
+ * toggle = 开关；number = 数值输入（min/max 必填）；
+ * segment = 分段按钮组（选项少）；select = 下拉框（选项多，一行放不下时用）。
  */
 export type SettingRow =
   | (RowBase & { kind: "toggle"; value: boolean; onChange: (v: boolean) => void })
@@ -87,7 +94,13 @@ export type SettingRow =
       kind: "segment";
       value: string;
       /** value 必须是其中一项的 value */
-      options: { value: string; label: string }[];
+      options: EnumOption[];
+      onChange: (v: string) => void;
+    })
+  | (RowBase & {
+      kind: "select";
+      value: string;
+      options: EnumOption[];
       onChange: (v: string) => void;
     });
 

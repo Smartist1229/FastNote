@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -2694,6 +2694,8 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
  * 全部由 Rust 侧驱动，不依赖前端 JS（JS 只在设置变化时下发指令）：
  *   - 单实例：run() 里注册 tauri-plugin-single-instance（命名互斥量，跨进程有效），
  *     第二个实例启动时会回调这里 → 聚焦已有窗口并自行退出。
+ *     开关在库里（app.config.general.singleInstance，默认开）：插件一旦注册就必然创建
+ *     互斥量、且无法在注册后再撤销，所以只能在 Builder 之前先读一次设置再决定是否注册。
  *   - 托盘：setup() 里用 TrayIconBuilder 创建，生命周期归 Rust 所有；
  *     即使窗口隐藏、webview 不再执行 JS，托盘依然存在。
  *   - 关闭行为：on_window_event(CloseRequested) 读库里的设置，
@@ -2702,6 +2704,64 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
 
 /// 托盘图标 ID
 const TRAY_ID: &str = "fastnote-tray";
+
+/// 库文件名：解析数据目录后拼上它就是数据库路径
+const DB_FILE_NAME: &str = "fastnote.db";
+
+/// 兜底用的包标识：与 tauri.conf.json 的 identifier 一致（只在 dirs 兜底分支用到）
+const APP_IDENTIFIER: &str = "com.smartist.fastnote";
+
+/**
+ * 数据目录：优先 exe 同级的 data（便携模式，拷走整个目录就带着数据走），
+ * 否则退回系统应用数据目录（与 tauri 的 app_data_dir 同规则：dirs::data_dir()/identifier）。
+ *
+ * 两处都要用：run() 里读单例开关时还没有 AppHandle，setup() 里才拿得到 tauri 的路径。
+ * 抽成一个函数是为了保证两边算出同一个库文件——算出不同路径等于换了个空库。
+ *
+ * @param app_data_dir tauri 解析出的应用数据目录；run() 阶段传 None，此时用 dirs 兜底
+ */
+fn resolve_data_dir(app_data_dir: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let install_data_dir = exe_dir.join("data");
+            if std::fs::create_dir_all(&install_data_dir).is_ok() {
+                return install_data_dir;
+            }
+        }
+    }
+    app_data_dir.unwrap_or_else(|| {
+        dirs::data_dir()
+            .map(|d| d.join(APP_IDENTIFIER))
+            .unwrap_or_else(|| std::path::PathBuf::from("data"))
+    })
+}
+
+/**
+ * 在 Builder 之前读一次「单例模式」开关。
+ *
+ * 只读、且库文件不存在时直接返回默认（true）：绝不能在这里新建数据库——
+ * 真正的建库在 setup() 里做，那时才确定最终路径。
+ * 读不到（键缺失 / 脏值 / 库被占用）一律按默认「开启」处理，多开的风险远大于误挡一次启动。
+ */
+fn read_single_instance_enabled(app_data_dir: Option<std::path::PathBuf>) -> bool {
+    let db_path = resolve_data_dir(app_data_dir).join(DB_FILE_NAME);
+    if !db_path.exists() {
+        return true;
+    }
+    let Ok(conn) = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return true;
+    };
+    // 另一个进程可能正在写库（单例模式下它才是主实例），等它写完再读
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(1500));
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        params!["app.config.general.singleInstance"],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
+    .unwrap_or(true)
+}
 
 /// 读取 app_settings 表里某个键的原始字符串值（值以 JSON 文本存储）
 fn read_setting_raw(app: &AppHandle, key: &str) -> Option<String> {
@@ -2901,12 +2961,17 @@ fn sync_autostart_shortcut(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 
 pub fn run() {
-    tauri::Builder::default()
-        // 单实例插件必须最先注册：保证第二实例在任何初始化之前就被挡下
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    // 单实例开关必须在 Builder 之前读：插件一旦注册就必然创建互斥量，事后无法撤销。
+    // 关掉时干脆不注册——第二实例不会创建互斥量，也就不会被挡下，可以真正多开。
+    let single_instance = read_single_instance_enabled(None);
+    let mut builder = tauri::Builder::default();
+    if single_instance {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 已有实例在运行：呼出它的窗口（窗口可能正处于隐藏/最小化状态）
             show_main_window(app);
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
@@ -2955,31 +3020,13 @@ pub fn run() {
             set_autostart_enabled,
         ])
         .setup(|app| {
-            let data_dir = match std::env::current_exe() {
-                Ok(exe_path) => {
-                    if let Some(exe_dir) = exe_path.parent() {
-                        let install_data_dir = exe_dir.join("data");
-                        if std::fs::create_dir_all(&install_data_dir).is_ok() {
-                            install_data_dir
-                        } else {
-                            let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
-                            std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
-                            app_data_dir
-                        }
-                    } else {
-                        let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
-                        std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
-                        app_data_dir
-                    }
-                }
-                Err(_) => {
-                    let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
-                    std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
-                    app_data_dir
-                }
-            };
-            
-            let db_path = data_dir.join("fastnote.db");
+            // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件
+            let data_dir = resolve_data_dir(app.path().app_data_dir().ok());
+            if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                panic!("failed to create app data dir: {e}");
+            }
+
+            let db_path = data_dir.join(DB_FILE_NAME);
 
             let conn = Connection::open(db_path).expect("failed to open database");
             init_database(&conn).expect("failed to initialize database");

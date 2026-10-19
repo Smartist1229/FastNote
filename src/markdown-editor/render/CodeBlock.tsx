@@ -70,22 +70,23 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
   return (
     <div className={`mde-code${wrap ? " is-wrapped" : ""}`} data-lang={node.lang}>
       <div className="mde-code-head">
+        {/* 折叠开关放在语言名前面：它对应的就是「这段代码」，读起来是「收起 · python」，比藏在右侧工具里直观 */}
+        {canCollapse && (
+          <button
+            type="button"
+            className={`mde-code-tool mde-code-fold${collapsed ? " is-collapsed" : ""}`}
+            onClick={() => setCollapsed((value) => !value)}
+            title={collapsed ? labels.expandCode : labels.collapseCode}
+            aria-label={collapsed ? labels.expandCode : labels.collapseCode}
+            aria-expanded={!collapsed}
+          >
+            <MdeIcon name="chevron" size={13} />
+          </button>
+        )}
         <span className="mde-code-lang">
           {config.preview.showCodeLanguage ? node.lang || labels.code : ""}
         </span>
         <span className="mde-code-tools">
-          {canCollapse && (
-            <button
-              type="button"
-              className={`mde-code-tool mde-code-fold${collapsed ? " is-collapsed" : ""}`}
-              onClick={() => setCollapsed((value) => !value)}
-              title={collapsed ? labels.expandCode : labels.collapseCode}
-              aria-label={collapsed ? labels.expandCode : labels.collapseCode}
-              aria-expanded={!collapsed}
-            >
-              <MdeIcon name="chevron" size={13} />
-            </button>
-          )}
           {config.preview.codeActions.wrap && (
             <button
               type="button"
@@ -110,7 +111,13 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
           )}
         </span>
       </div>
-      <div className={`mde-code-body${collapsed ? " is-collapsed" : ""}`}>
+      <div
+        className={`mde-code-body${collapsed ? " is-collapsed" : ""}`}
+        // 折叠态整块可点：没有「展开全部」按钮了，靠底部虚影暗示「下面还有」，
+        // 但点击入口不能少——点空白处即展开，也可以点右上角的折叠开关
+        onClick={collapsed ? () => setCollapsed(false) : undefined}
+        title={collapsed ? labels.expandCode : undefined}
+      >
         <div className={`mde-code-lines${showNumbers ? " with-numbers" : ""}`}>
           {lines.map((line, index) => (
             <div
@@ -122,12 +129,6 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
             </div>
           ))}
         </div>
-        {collapsed && (
-          <button type="button" className="mde-code-expand" onClick={() => setCollapsed(false)}>
-            {labels.expandCodeLines} · {lineCount}
-            <MdeIcon name="chevron" size={11} />
-          </button>
-        )}
       </div>
     </div>
   );

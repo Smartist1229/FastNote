@@ -30,6 +30,9 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# 数据目录兜底：Builder 之前要读单例开关，那时还没有 AppHandle 拿不到 tauri 的路径解析，
+# 用 dirs 自己算（规则与 tauri 的 app_data_dir 一致：data_dir()/identifier）
+dirs = "6"
 # 分组导出：ZIP 打包 / EPUB（本质是特定结构的 zip）
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # 分组导出：笔记正文是 Markdown，导出 HTML / EPUB 时渲染成网页

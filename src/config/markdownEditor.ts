@@ -18,10 +18,17 @@ import type {
 import { hexToRgba } from "@/lib/theme";
 import type { ResolvedThemeMode, ThemeTokens } from "@/interface/theme";
 import type { EditorSettings } from "@/interface/settings";
-import { FONT_SIZE_MAX, FONT_SIZE_MIN } from "@/config/appDefaults";
+import { APP_MONO_FONT_STACK, APP_UI_FONT_STACK, FONT_SIZE_MAX, FONT_SIZE_MIN } from "@/config/appDefaults";
 
 /** 夹取到 [min, max]：设置里的数值型项在写入前已夹过一次，这里只防脏数据 */
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/**
+ * 笔记编辑器的**默认**根圆角（px）：4，不跟随主题圆角。
+ * 主题圆角服务于卡片与弹窗，编辑器是铺满内容区的面板，跟着它变会出现明显的弧度缺口。
+ * 这里只是默认值——用户可在「编辑器 → 主题与其他 → 编辑器圆角」里改（0 = 直角）。
+ */
+const NOTE_EDITOR_RADIUS = 4;
 
 /**
  * 主题令牌 → 编辑器配色。
@@ -56,6 +63,8 @@ export const buildEditorColors = (
   inlineCodeBg: tokens.surfaceAlt,
   inlineCodeText: tokens.textInk,
   codeBorder: tokens.border,
+  // codeHighlight / codeBorder 的「跟随主题」变体在 markdown-editor/theme.ts 里按语义色算，
+  // 且只在选中 follow 预设时生效——这里保持常规预设的原样。
   quoteBorder: hexToRgba(tokens.accent, 0.35),
   quoteBg: tokens.surfaceAlt,
   quoteText: tokens.textMuted,
@@ -105,12 +114,30 @@ export const NOTE_EDITOR_CONFIG: DeepPartial<MarkdownEditorConfig> = {
   },
   editor: {
     placeholder: "开始书写 Markdown…",
+    // 源码区用等宽栈（组件默认是同一套 MONO，这里显式写死为软件的默认值），
+    // 字体不放进设置面板，改 config/appDefaults.ts 即全软件生效
+    fontFamily: APP_MONO_FONT_STACK,
   },
   preview: {
+    // 外链一律由应用侧拦截后用系统浏览器打开（见 NoteEditor 的 onLinkClick），
+    // 这里设 _self 是防止 WebView 真的在窗口里跳转，把整个界面顶掉
+    linkTarget: "_self",
     typography: {
       // 预览内边距比组件默认（28px 32px）紧一点，笔记区宽度有限
       padding: "22px 26px",
+      // 预览正文走软件界面字体，与全局（App.css html）保持一致
+      fontFamily: APP_UI_FONT_STACK,
     },
+  },
+  theme: {
+    // 工具栏、查找框、大纲等界面元素
+    fontFamily: APP_UI_FONT_STACK,
+    // 代码块、内联代码
+    monoFontFamily: APP_MONO_FONT_STACK,
+    // 笔记区是铺满内容区的面板：默认 4px，不跟随主题里的圆角设置
+    // （主题圆角是给卡片/弹窗用的，跟着它变会让编辑器四角出现明显的弧度缺口）。
+    // 组件本身的 radius 配置保留，用户仍可在设置里覆盖。
+    radius: NOTE_EDITOR_RADIUS,
   },
   toolbar: {
     // 窄窗下工具栏溢出时可横向滚动
@@ -150,6 +177,7 @@ export const buildNoteEditorConfig = (
       lineHeight: settings.sourceLineHeight,
       tabSize: settings.tabSize,
       tabKey: settings.tabKey,
+      fontLigatures: settings.fontLigatures,
       wrap: settings.wrap,
       spellCheck: settings.spellCheck,
       lineNumbers: settings.lineNumbers,
@@ -185,8 +213,8 @@ export const buildNoteEditorConfig = (
       mermaidTheme: settings.mermaidTheme,
       taskInteractive: settings.taskInteractive,
       allowHtml: settings.allowHtml,
+      breaks: settings.breaks,
       sanitizeHtml: settings.sanitizeHtml,
-      linkTarget: settings.linkTarget,
       showFrontmatter: settings.showFrontmatter,
       showFootnotes: settings.showFootnotes,
       tables: {
@@ -252,10 +280,12 @@ export const buildNoteEditorConfig = (
       maxMatches: settings.searchMaxMatches,
     },
     theme: {
+      ...NOTE_EDITOR_CONFIG.theme,
       mode: themeMode,
       colors: buildEditorColors(tokens, themeMode),
       codeTheme: settings.codeTheme,
-      radius: tokens.radius,
+      // 圆角取设置项而不是主题令牌：默认 4px，用户可在「编辑器」里自己调（0 = 直角）
+      radius: clamp(settings.radius, 0, 24),
     },
     shortcuts: settings.shortcuts,
   };
@@ -288,6 +318,7 @@ export const buildAiRenderConfig = (
       maxWidth: "none",
       padding: "0",
       paragraphSpacing: 0.75,
+      fontFamily: APP_UI_FONT_STACK,
     },
   },
   toolbar: { show: false },
@@ -295,6 +326,8 @@ export const buildAiRenderConfig = (
   search: { enabled: false },
   shortcuts: false,
   theme: {
+    fontFamily: APP_UI_FONT_STACK,
+    monoFontFamily: APP_MONO_FONT_STACK,
     mode: themeMode,
     colors: buildEditorColors(tokens, themeMode),
     codeTheme: "atom",

@@ -127,4 +127,6 @@ export interface InlineContext {
   /** 已引用的脚注顺序 */
   footnoteOrder: string[];
   allowHtml: boolean;
+  /** 单个换行（GFM breaks）：`\n` 直接算硬换行，而不是靠行尾两个空格 */
+  breaks: boolean;
 }

@@ -10,7 +10,7 @@
  * 字段全部是 EditorSettings 的顶层键：库里一个键一个值，没有嵌套路径。
  * 新增一项只改本文件 + interface/settings.ts 的类型 + appDefaults 的默认值。
  */
-import type { EditorSettings } from "@/interface/settings";
+import type { EditorSettings, EnumOption } from "@/interface/settings";
 
 /** 设置弹窗里的分组小标题；顺序即弹窗里的排列顺序 */
 export type EditorSettingGroup =
@@ -49,7 +49,7 @@ interface SpecBase {
   disabledWhen?: (s: EditorSettings) => boolean;
 }
 
-/** 三种控件：开关 / 数字 / 分段（枚举） */
+/** 四种控件：开关 / 数字 / 分段（枚举） / 下拉（枚举，选项多） */
 export type EditorSettingSpec =
   | (SpecBase & { kind: "toggle" })
   | (SpecBase & {
@@ -61,7 +61,9 @@ export type EditorSettingSpec =
       /** 数值单位后缀（px、ms、em…） */
       unit?: string;
     })
-  | (SpecBase & { kind: "segment"; options: { value: string; label: string }[] });
+  | (SpecBase & { kind: "segment"; options: EnumOption[] })
+  /** 选项多（6 个以上）时用下拉而不是分段按钮，避免一行排不下 */
+  | (SpecBase & { kind: "select"; options: EnumOption[] });
 
 /**
  * 全部编辑器设置项。
@@ -165,6 +167,14 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 2.4,
     step: 0.05,
     unit: "倍",
+  },
+  {
+    field: "fontLigatures",
+    group: "源码编辑",
+    kind: "toggle",
+    title: "字体连字",
+    desc: "开启后 `->`、`==`、`<=` 这类记号会被字体画成一个符号；写 Markdown 时容易分不清实际字符，默认关。",
+    keywords: "连字 ligature ligatures 箭头 -> 符号 font",
   },
   {
     field: "lineNumbers",
@@ -422,6 +432,14 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     keywords: "任务 复选框 勾选 待办 task checkbox todo",
   },
   {
+    field: "breaks",
+    group: "预览",
+    kind: "toggle",
+    title: "单换行即换行",
+    desc: "预览时每个换行符都渲染成换行（GFM breaks）；关闭则遵循标准 Markdown，行尾补两个空格才算换行。",
+    keywords: "换行 回车 br breaks newline 软换行 硬换行",
+  },
+  {
     field: "allowHtml",
     group: "预览",
     kind: "toggle",
@@ -437,18 +455,6 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     desc: "渲染前去掉 script、on* 事件与 javascript: 链接，保留其余标签。",
     keywords: "html 净化 安全 sanitize xss script",
     disabledWhen: (s) => !s.allowHtml,
-  },
-  {
-    field: "linkTarget",
-    group: "预览",
-    kind: "segment",
-    title: "链接打开方式",
-    desc: "预览里点链接时交给应用用系统浏览器打开，还是走浏览器默认的新标签页。",
-    keywords: "链接 打开 新标签 浏览器 link target",
-    options: [
-      { value: "_self", label: "系统浏览器" },
-      { value: "_blank", label: "新标签页" },
-    ],
   },
   {
     field: "showFrontmatter",
@@ -821,9 +827,9 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     field: "searchShowReplace",
     group: "查找替换",
     kind: "toggle",
-    title: "默认展开替换",
-    desc: "按 Ctrl/⌘+F 打开时就连替换输入框一起展开。",
-    keywords: "替换 展开 replace 查找",
+    title: "Ctrl/⌘+F 带替换行",
+    desc: "按 Ctrl/⌘+F 打开查找框时就连替换输入框一起展开；关闭后只出查找行，要替换按 Ctrl/⌘+H 或用框内的展开箭头。",
+    keywords: "替换 展开 replace 查找 ctrl f h",
     disabledWhen: (s) => !s.searchEnabled,
   },
   {
@@ -889,17 +895,29 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
   {
     field: "codeTheme",
     group: "主题与其他",
-    kind: "segment",
+    kind: "select",
     title: "代码块配色",
-    desc: "代码块（含 AI 回复里的代码块）用哪套高亮配色。",
-    keywords: "代码块 配色 主题 高亮 code theme 预设",
+    desc: "代码块（含 AI 回复里的代码块）用哪套高亮配色；选择「主题」时，代码块底色、文字、token 配色与行高亮都换成当前软件主题的语义色，换主题会一起变。",
+    keywords: "代码块 配色 主题 高亮 code theme 预设 跟随",
+    // swatch 取各预设的底色 + 三个 token 色，让「按外观挑」不用逐一点开试；
+    // 「主题」没有固定色值，用当前主题的主色渐变表示「跟着软件主题走」
     options: [
-      { value: "github", label: "GitHub" },
-      { value: "atom", label: "Atom" },
-      { value: "nord", label: "Nord" },
-      { value: "solarized", label: "Solarized" },
-      { value: "monokai", label: "Monokai" },
-      { value: "plain", label: "无色" },
+      {
+        value: "follow",
+        label: "主题",
+        swatch: [
+          "linear-gradient(135deg, rgb(var(--c-primary-400)), rgb(var(--c-primary-600)))",
+          "rgb(var(--c-primary-50))",
+          "rgb(var(--c-primary-100))",
+          "rgb(var(--c-primary-200))",
+        ],
+      },
+      { value: "github", label: "GitHub", swatch: ["#f6f8fa", "#cf222e", "#0a3069", "#8250df"] },
+      { value: "atom", label: "Atom", swatch: ["#282c34", "#c678dd", "#98c379", "#61afef"] },
+      { value: "nord", label: "Nord", swatch: ["#2e3440", "#81a1c1", "#a3be8c", "#88c0d0"] },
+      { value: "solarized", label: "Solarized", swatch: ["#fdf6e3", "#859900", "#2aa198", "#268bd2"] },
+      { value: "monokai", label: "Monokai", swatch: ["#272822", "#f92672", "#e6db74", "#a6e22e"] },
+      { value: "plain", label: "无色", swatch: ["rgb(var(--c-surface))", "rgb(var(--c-faint))", "rgb(var(--c-faint-soft))", "rgb(var(--c-faint))"] },
     ],
   },
   {
@@ -909,6 +927,18 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "启用快捷键",
     desc: "加粗、斜体、查找等编辑器快捷键；关闭后只保留系统输入法的按键。",
     keywords: "快捷键 shortcut 键盘 关闭",
+  },
+  {
+    field: "radius",
+    group: "主题与其他",
+    kind: "number",
+    min: 0,
+    max: 24,
+    step: 1,
+    unit: "px",
+    title: "编辑器圆角",
+    desc: "源码区与预览区外框的圆角。设为 0 时四角为直角；这也是分栏/阅读视图外层容器的圆角来源。",
+    keywords: "圆角 半径 radius 弧度 直角 corners",
   },
 ];
 

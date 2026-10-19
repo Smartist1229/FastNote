@@ -115,8 +115,11 @@ const useResolvedTheme = (mode: "light" | "dark" | "auto"): "light" | "dark" => 
   return mode === "auto" ? system : mode;
 };
 
+/** 归一化快捷键只需要这几个字段，原生事件与 React 合成事件都能传进来 */
+type KeyLike = Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "code" | "key">;
+
 /** 从事件生成归一化快捷键字符串 */
-const acceleratorOf = (event: ReactKeyboardEvent<HTMLElement>): string => {
+const acceleratorOf = (event: KeyLike): string => {
   const parts: string[] = [];
   if (event.ctrlKey || event.metaKey) parts.push("mod");
   if (event.altKey) parts.push("alt");
@@ -197,17 +200,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   }, []);
 
   /* ---------- 解析 ---------- */
-  const [doc, setDoc] = useState(() => parseMarkdown(value, { allowHtml: config.preview.allowHtml }));
+  const [doc, setDoc] = useState(() =>
+    parseMarkdown(value, { allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
+  );
   useEffect(() => {
     const allowHtml = config.preview.allowHtml;
+    const breaks = config.preview.breaks;
     const delay = config.preview.debounce;
     if (!delay) {
-      setDoc(parseMarkdown(value, { allowHtml }));
+      setDoc(parseMarkdown(value, { allowHtml, breaks }));
       return;
     }
-    const timer = window.setTimeout(() => setDoc(parseMarkdown(value, { allowHtml })), delay);
+    const timer = window.setTimeout(() => setDoc(parseMarkdown(value, { allowHtml, breaks })), delay);
     return () => window.clearTimeout(timer);
-  }, [value, config.preview.debounce, config.preview.allowHtml]);
+  }, [value, config.preview.debounce, config.preview.allowHtml, config.preview.breaks]);
 
   /* ---------- 历史 ---------- */
   const history = useHistory(config.editor.historyLimit);
@@ -525,6 +531,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    *
    * 查找框要能在任意焦点位置唤起（工具栏、预览区、甚至没聚焦时点开菜单后），
    * 单靠 textarea 的 onKeyDown 覆盖面不够；用捕获还能抢在输入框的 Esc 失焦之前关掉查找框。
+   *
+   * mod+f / mod+g / mod+h 必须在这里就 preventDefault：否则宿主容器（浏览器标签页、
+   * WebView2）会接着弹出自己的原生查找条 / 历史页。软件侧建议在 window 捕获阶段也拦一层，
+   * 但那里一旦 stopPropagation，这里的处理就拿不到事件了。
    */
   const handleRootKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -537,13 +547,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         return;
       }
       if (accelerator === "mod+f") {
+        // 只开查找；替换行留给折叠箭头手动展开（Ctrl/⌘+H 才直接带出来）
         event.preventDefault();
-        openSearchRef.current();
+        openSearchRef.current(undefined, false);
         return;
       }
       if (accelerator === "mod+h") {
         event.preventDefault();
         openSearchRef.current(undefined, true);
+        return;
+      }
+      if (accelerator === "mod+g" || accelerator === "mod+shift+g") {
+        // 沿用浏览器习惯：Ctrl/⌘+G 找下一个、加 Shift 找上一个
+        event.preventDefault();
+        if (!searchOpen) openSearchRef.current(undefined, false);
+        else if (accelerator === "mod+shift+g") goPrevRef.current();
+        else goNextRef.current();
         return;
       }
       if (accelerator === "f3" || accelerator === "shift+f3") {
@@ -563,6 +582,39 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
   }, [fullscreen, toggleFullscreen]);
+
+  /**
+   * 挡掉宿生的原生查找快捷键（`config.search.blockHostFind`）。
+   *
+   * 浏览器标签页 / WebView2 / Electron 都会自己吃掉 Ctrl+F / G / H 弹原生查找条，
+   * 光在根节点 preventDefault 拦不住——那些是宿主在 window 层（甚至浏览器进程）处理的。
+   * 所以在 window **捕获阶段** 再拦一层：按键落在编辑器内部时才动手，
+   * 编辑器以外的地方完全不受影响。
+   *
+   * 只 preventDefault、绝不 stopPropagation：宿主自己的处理器（以及下面根节点那套）
+   * 还得照常收到事件。多个编辑器实例同时挂载时各自守卫各自的根节点，互不干扰。
+   */
+  useEffect(() => {
+    if (!config.search.enabled || !config.search.blockHostFind) return;
+    const guard = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      const root = rootRef.current;
+      if (!root || !event.target || !root.contains(event.target as Node)) return;
+      const accelerator = acceleratorOf(event);
+      if (
+        accelerator === "mod+f" ||
+        accelerator === "mod+g" ||
+        accelerator === "mod+shift+g" ||
+        accelerator === "mod+h" ||
+        accelerator === "f3" ||
+        accelerator === "shift+f3"
+      ) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", guard, true);
+    return () => window.removeEventListener("keydown", guard, true);
+  }, [config.search.blockHostFind, config.search.enabled]);
 
   /* ---------- 滚动同步 ---------- */
   useEffect(() => {
@@ -646,10 +698,21 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     const mark = root.querySelector<HTMLElement>(".mde-find-hit.is-current");
     if (!mark) return;
     const markRect = mark.getBoundingClientRect();
-    const viewRect = element.getBoundingClientRect();
+    /*
+     * 必须换算成「内容坐标」再算目标 scrollTop：mark 的视口位置取决于高亮层自己的
+     * scrollTop 是否跟手，而层刚挂载 / 刚重建时可能还停在旧位置（textarea 已经滚了），
+     * 直接拿视口差 += 会把视图滚过头——实测能偏出一整屏，当前命中反而跑到视口外。
+     * 用 markRect - 层的盒顶 + 层的 scrollTop 得到与滚动无关的内容偏移，对同步状态免疫。
+     */
+    const layer = root.querySelector<HTMLElement>(".mde-find-layer");
+    const markTop = layer
+      ? markRect.top - layer.getBoundingClientRect().top + layer.scrollTop
+      : markRect.top - element.getBoundingClientRect().top + element.scrollTop;
+    const viewTop = element.scrollTop;
+    const viewBottom = viewTop + element.clientHeight;
     const margin = 28;
-    if (markRect.top >= viewRect.top + margin && markRect.bottom <= viewRect.bottom - margin) return;
-    element.scrollTop += markRect.top - viewRect.top - element.clientHeight / 2 + markRect.height / 2;
+    if (markTop >= viewTop + margin && markTop + markRect.height <= viewBottom - margin) return;
+    element.scrollTop = markTop - element.clientHeight / 2 + markRect.height / 2;
   }, []);
 
   const revealMatch = useCallback(
@@ -750,11 +813,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         const selected = valueRef.current.slice(start, end);
         if (selected && !selected.includes("\n") && selected.length < 200) setSearchQuery(selected);
       }
-      if (withReplace) setSearchShowReplace(true);
+      // withReplace 省略时按配置走（Ctrl/⌘+F 传 false、Ctrl/⌘+H 传 true）
+      const wantReplace = withReplace ?? config.search.showReplace;
+      setSearchShowReplace(wantReplace);
       setSearchFocusToken((token) => token + 1);
       setSearchOpen(true);
     },
-    [config.search.enabled, config.search.seedFromSelection],
+    [config.search.enabled, config.search.seedFromSelection, config.search.showReplace],
   );
 
   const closeSearch = useCallback(() => {
@@ -792,7 +857,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     setMode: (next) => changeMode(next),
     getStats: () => statsRef.current,
     getOutline: () => docRef.current.outline,
-    getDocument: () => parseMarkdown(valueRef.current, { allowHtml: config.preview.allowHtml }),
+    getDocument: () =>
+      parseMarkdown(valueRef.current, { allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
     runCommand: (name) => runToolbar(name),
     undo,
     redo,

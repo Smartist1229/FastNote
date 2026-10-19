@@ -16,7 +16,7 @@
 | 解析 | CommonMark 主体 + GFM（表格、任务列表、删除线、自动链接）+ 扩展（高亮、上下标、Alert、`!!!` 提示块、脚注、TOC、front matter） |
 | 渲染 | highlight.js 代码高亮（可换主题）、代码块折叠、KaTeX 公式、Mermaid 图表、表格对齐、脚注区、可折叠 Admonition             |
 | 编辑 | 工具栏 33 个工具、快捷键、撤销重做、自动续写列表、括号配对、Tab 缩进、图片粘贴、任务勾选、行号点击选中整行                             |
-| 查找 | Ctrl/⌘+F 右上角悬浮查找框（VSCode 风格）：区分大小写、正则、替换 / 全部替换、命中高亮与计数                               |
+| 查找 | 右上角悬浮查找框（VSCode 风格）：区分大小写、正则、替换 / 全部替换、命中高亮与计数；`Ctrl/⌘+F` 只开查找、`Ctrl/⌘+H` 带替换行，`Ctrl/⌘+G` / `Ctrl/⌘+Shift+G` 跳下/上一个  |
 | 配置 | 深合并 config：模式、排版、间距、全量颜色、圆角、代码配色、工具栏条目、状态栏字段、大纲、查找、快捷键                                |
 | 工程 | 受控/非受控、命令式 API、TypeScript 类型全导出、CSS 变量换肤、样式自包含                                        |
 
@@ -81,7 +81,9 @@ mode: "split" | "code" | "read" | "render"
 
 - 切模式不会丢失内容与光标位置，草稿始终落在源码里；
 - `render` 下组件不画边框、不带自己的底色、高度自适应，嵌进任何容器都像一段普通富文本；
-- `split` 的同步策略可选 `anchor`（默认，按行插值）或 `ratio`（按滚动比例）；
+- `split` 的同步策略可选 `anchor`（默认，按块锚点插值）或 `ratio`（按滚动比例）。`anchor`
+  用「单调锚点表 + 强制端点」：表从 `(0,0)` 起步、以两端各自的最大滚动值收尾，因此
+  **纯文本（没有任何块锚点）、源码比预览长、预览比源码长这三种情况都能两端对齐**；
 - 关闭 `preview.syncScroll` 后两栏各自滚动。
 
 ---
@@ -167,7 +169,8 @@ mode: "split" | "code" | "read" | "render"
 | `placeholder`             | `string`                         | `"开始书写 Markdown…"` |                                   |
 | `spellCheck`              | `boolean`                        | `false`            |                                   |
 | `wrap`                    | `boolean`                        | `true`             | 自动换行                              |
-| `lineNumbers`             | `boolean`                        | `false`            | 源码行号（换行开启时可能错位，建议配合 `wrap:false`） |
+| `lineNumbers`             | `boolean`                        | `false`            | 源码行号；自动换行时按视觉行数对齐，折行续行前不显示数字 |
+| `fontLigatures`           | `boolean`                        | `false`            | 字体连字；开启后 `->`、`==`、`<=` 会被字体画成一个符号  |
 | `autoPair.brackets`       | `boolean`                        | `true`             | `()[]{}` 自动配对                     |
 | `autoPair.quotes`         | `boolean`                        | `false`            | `""''` 自动配对                       |
 | `autoPair.backticks`      | `boolean`                        | `true`             | 反引号配对                             |
@@ -203,6 +206,7 @@ mode: "split" | "code" | "read" | "render"
 | `tables.fullWidth`      | `boolean`                                                | `true`      | 撑满宽度                               |
 | `taskInteractive`       | `boolean`                                                | `true`      | 勾选框可点                              |
 | `allowHtml`             | `boolean`                                                | `true`      | 允许 HTML                            |
+| `breaks`                | `boolean`                                                | `false`     | 单个换行即换行（GFM breaks）；关闭则行尾需两个空格才算换行 |
 | `sanitizeHtml`          | `boolean`                                                | `true`      | 基础净化（去 script / on* / javascript:） |
 | `linkTarget`            | `"_blank" \| "_self"`                                    | `"_blank"`  |                                    |
 | `emptyText`             | `string`                                                 | `""`        | 空文档文案                              |
@@ -280,13 +284,14 @@ type ToolbarEntry = ToolbarItemName | "|" | { group: ToolbarItemName[] };
 | `split.resizable`          | `true`  | 可拖拽                      |
 | `split.dividerWidth`       | `1`     | 分隔条 px                   |
 | `search.enabled`           | `true`  | 查找框与 `Mod+F`；关闭后快捷键也不拦截  |
-| `search.showReplace`       | `true`  | 打开时是否展开替换行（`Mod+H` 始终展开） |
+| `search.showReplace`       | `true`  | 打开时是否展开替换行；`Mod+F` 恒为不展开，`Mod+H` 恒为展开，此值仅作为兜底/程序化打开的默认 |
 | `search.caseSensitive`     | `false` | 初始：区分大小写                 |
 | `search.regex`             | `false` | 初始：正则表达式                 |
 | `search.highlightAll`      | `true`  | 源码区高亮全部命中（关闭只高亮当前命中）     |
 | `search.loop`              | `true`  | 跳到末尾后回绕到开头               |
 | `search.maxMatches`        | `2000`  | 最多统计/高亮的命中数（大文档保护）       |
 | `search.seedFromSelection` | `true`  | 打开时把选区文本填进查找框            |
+| `search.blockHostFind`     | `true`  | 焦点在编辑器内时，在 window 捕获阶段挡掉宿主的原生 `Mod+F/G/H`、`F3`（避免原生查找条和编辑器查找框一起弹出来） |
 
 ```tsx
 config={{
@@ -300,13 +305,41 @@ config={{
 | ---------------- | --------------------------------------------------------------------- | --------- | -------------- |
 | `mode`           | `"light" \| "dark" \| "auto"`                                         | `"light"` | auto 跟随系统      |
 | `colors`         | `Partial<MarkdownThemeColors>`                                        | `{}`      | 覆盖任意颜色         |
-| `codeTheme`      | `"github" \| "atom" \| "nord" \| "solarized" \| "monokai" \| "plain"` | `"atom"`  | 代码块配色          |
+| `codeTheme`      | `"github" \| "atom" \| "nord" \| "solarized" \| "monokai" \| "plain" \| "follow"` | `"atom"` | 代码块配色          |
 | `codeColors`     | `Partial<CodeThemeColors>`                                            | `{}`      | 覆盖单个 token 色   |
-| `radius`         | `number`                                                              | `10`      | 根圆角            |
+| `radius`         | `number`                                                              | `4`       | 根圆角（px，`0` = 直角） |
 | `fontFamily`     | `string`                                                              | 系统栈       | UI 字体          |
 | `monoFontFamily` | `string`                                                              | 等宽栈       | 代码字体           |
 | `className`      | `string`                                                              | —         | 附加类名           |
 | `cssVars`        | `Record<string, string>`                                              | `{}`      | 任意 CSS 变量直写根节点 |
+
+> `radius` 默认 `4`（紧凑、贴近代码编辑器观感）。它只是**默认值**，不是硬编码：
+> 上层想跟随自己的圆角体系，把 `theme.radius` 传进去即可（或直接覆盖 CSS 变量 `--mde-radius`）。
+> 不传时组件就是 4px，不受宿主页面的 `border-radius` 规则影响。
+
+### 5.10.1 codeTheme: "follow"（主题）
+
+固定预设（`github` / `atom` / …）有自己的一套底色与 token 色，换软件主题时代码块不会跟着变。
+选 `"follow"` 则反过来：代码块配色全部从**当前主题的语义色**推算，换主题/预设/自定义取色都会同步。
+
+| 代码元素      | 取的主题色                                    |
+| --------- | ---------------------------------------- |
+| 底色         | `toolbarBg`（比正文暗一档，代码块像沉进去的一块面板）            |
+| 头部         | `accent` 10% 混入 `toolbarBg`                 |
+| 正文 / 标点    | `textBody`                               |
+| 行高亮         | `accent` 16% 透明                           |
+| 外框         | `accent` 28% 混入 `border`                   |
+| 关键字        | `accent`                                 |
+| 字符串 / 新增行  | `tipColor`（成功色）                           |
+| 数字 / 类型 / 内置 | `noteColor`（信息色）                          |
+| 函数 / 属性 / 字面 | `link`                                   |
+| 标签 / 删除行   | `danger`                                 |
+| 注释         | `textFaint`                              |
+| 元信息        | `textMuted`                              |
+| 变量         | `inlineCodeText`                         |
+
+> 显式传了 `theme.colors.codeHighlight` / `codeBorder` 时用你的值，不会被引擎覆盖。
+
 
 `MarkdownThemeColors` 可覆盖的键（全部会落成 `--mde-*` 变量，留空字符串则沿用回退值）：
 
@@ -416,6 +449,7 @@ config={{ toolbar: { exclude: ["mermaid", "footnote", "toc"] } }}
 | `Mod+S`                         | `onSave`             |
 | `Mod+Alt+Enter`                 | 全屏                   |
 | `Mod+F` / `Mod+H`               | 打开查找框 / 打开并展开替换行     |
+| `Mod+G` / `Mod+Shift+G`         | 跳到下一个 / 上一个命中（未打开时先打开查找框） |
 | `F3` / `Shift+F3`               | 下一个 / 上一个命中          |
 | 在查找框内：`Enter` / `Shift+Enter`   | 下一个 / 上一个命中          |
 | 在查找框内：`Ctrl+Alt+Enter`          | 全部替换                 |
@@ -656,7 +690,7 @@ src/markdown-editor/
 - 表格必须有表头行，且不支持跨行合并；
 - HTML 净化是正则级：能挡住 `script`、事件属性、`javascript:`，不等同于浏览器级 sanitizer。渲染不可信内容时建议 `allowHtml: false`；
 - 分栏同步在「自动换行 + 超长行」时是近似值，按源码行插值；
-- 源码行号按逻辑行渲染，开启自动换行且单行折行时数字不会跟着折行；
+- 源码行号按逻辑行渲染：开启自动换行时每个行号占满对应逻辑行的全部视觉行，折行续行前不显示数字；行高由隐藏测量层实时计算，宽度/字体变化会自动重测；
 - 大纲只取顶层标题，引用/列表里的标题不进大纲；
 - 实时模式下未进入任何块编辑时点工具栏命令，会自动落在全局光标所在的块（兜底：最近编辑过的块 / 文末新块）；
 - 行高亮范围单块最多解析 5000 行，超出部分截断；

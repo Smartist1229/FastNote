@@ -31,6 +31,7 @@ import {
   replaceAllMatches,
   replaceMatch,
 } from "../src/markdown-editor/editor/search.ts";
+import { bindScrollSync } from "../src/markdown-editor/editor/scrollSync.ts";
 
 /** 行内节点 → 紧凑字符串，便于断言 */
 const inline = (nodes) =>
@@ -660,6 +661,148 @@ test("配置：查找配置有默认值", () => {
   assert.equal(config.search.enabled, true);
   assert.equal(config.search.maxMatches, 2000);
   assert.equal(typeof config.search.showReplace, "boolean");
+});
+
+/* ---------------- 分栏滚动同步 ---------------- */
+/**
+ * 用最小 DOM 桩把 scrollSync 跑起来：只需要它在真实 DOM 上用到的那几个读写点
+ * （scrollTop / scrollHeight / clientHeight / getBoundingClientRect / querySelectorAll /
+ * getComputedStyle）。rAF 换成手动 flush，避免测试依赖真实帧时序。
+ */
+const frames = [];
+globalThis.requestAnimationFrame = (fn) => frames.push(fn);
+globalThis.cancelAnimationFrame = () => {};
+globalThis.MutationObserver = class {
+  observe() {}
+  disconnect() {}
+};
+
+const makePane = ({ scrollHeight, clientHeight, blocks = [], value = "" }) => {
+  const listeners = {};
+  const pane = {
+    scrollTop: 0,
+    scrollHeight,
+    clientHeight,
+    value,
+    addEventListener(type, fn) {
+      (listeners[type] ??= []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners[type] = (listeners[type] ?? []).filter((item) => item !== fn);
+    },
+    dispatch(type) {
+      [...(listeners[type] ?? [])].forEach((fn) => fn());
+    },
+    getBoundingClientRect() {
+      return { top: 0, height: this.clientHeight };
+    },
+    // 真实 DOM 里块的位置是「内容偏移 - 当前滚动」，这里照抄，否则锚点会整体平移
+    querySelectorAll() {
+      return blocks.map((block) => ({
+        dataset: { line: String(block.line) },
+        getBoundingClientRect: () => ({ top: block.top - pane.scrollTop }),
+      }));
+    },
+    ownerDocument: {
+      defaultView: {
+        getComputedStyle: () => ({ lineHeight: "24px", paddingTop: "0px", paddingBottom: "0px" }),
+      },
+    },
+  };
+  return pane;
+};
+
+/** 滚到某处并跑完同步（模拟一次用户滚动） */
+const scrollTo = (pane, value) => {
+  pane.scrollTop = value;
+  pane.dispatch("scroll");
+  frames.splice(0).forEach((fn) => fn());
+};
+
+const maxOf = (pane) => pane.scrollHeight - pane.clientHeight;
+
+/** 源码比预览长的 markdown：块锚点均匀分布在两端之间 */
+const LONG_SOURCE = Array.from({ length: 100 }, (_, i) =>
+  i % 10 === 0 ? `## 标题 ${i}` : `正文段落内容 ${i}`,
+).join("\n");
+const mdBlocks = [1, 11, 21, 31, 41, 51, 61, 71, 81, 91].map((line, index) => ({
+  line,
+  top: index * 200,
+}));
+
+test("滚动同步：纯文本（只有一个块锚点）两端互相对齐", () => {
+  const text = Array.from({ length: 100 }, (_, i) => `纯文本第 ${i + 1} 行`).join("\n");
+  const editor = makePane({ scrollHeight: 3000, clientHeight: 600, value: text });
+  const preview = makePane({ scrollHeight: 2000, clientHeight: 600, blocks: [{ line: 1, top: 0 }] });
+  bindScrollSync({ editor, preview, lineHeight: 24, mode: "anchor" });
+
+  scrollTo(preview, maxOf(preview));
+  assert.equal(editor.scrollTop, maxOf(editor));
+  scrollTo(preview, 0);
+  assert.equal(editor.scrollTop, 0);
+  scrollTo(editor, maxOf(editor));
+  assert.equal(preview.scrollTop, maxOf(preview));
+});
+
+test("滚动同步：markdown 两端互相对齐（源码比预览长）", () => {
+  const editor = makePane({ scrollHeight: 4000, clientHeight: 600, value: LONG_SOURCE });
+  const preview = makePane({ scrollHeight: 2500, clientHeight: 600, blocks: mdBlocks });
+  bindScrollSync({ editor, preview, lineHeight: 24, mode: "anchor" });
+
+  scrollTo(preview, maxOf(preview));
+  assert.equal(editor.scrollTop, maxOf(editor));
+  scrollTo(preview, 0);
+  assert.equal(editor.scrollTop, 0);
+  scrollTo(editor, maxOf(editor));
+  assert.equal(preview.scrollTop, maxOf(preview));
+  scrollTo(editor, 0);
+  assert.equal(preview.scrollTop, 0);
+});
+
+test("滚动同步：预览比源码长时两端同样对齐", () => {
+  const editor = makePane({ scrollHeight: 1600, clientHeight: 600, value: LONG_SOURCE });
+  const preview = makePane({ scrollHeight: 5000, clientHeight: 600, blocks: mdBlocks });
+  bindScrollSync({ editor, preview, lineHeight: 24, mode: "anchor" });
+
+  scrollTo(editor, maxOf(editor));
+  assert.equal(preview.scrollTop, maxOf(preview));
+  scrollTo(preview, maxOf(preview));
+  assert.equal(editor.scrollTop, maxOf(editor));
+});
+
+test("滚动同步：映射单调，连续滚动不会回跳", () => {
+  const editor = makePane({ scrollHeight: 4000, clientHeight: 600, value: LONG_SOURCE });
+  const preview = makePane({ scrollHeight: 2500, clientHeight: 600, blocks: mdBlocks });
+  bindScrollSync({ editor, preview, lineHeight: 24, mode: "anchor" });
+
+  let previous = -1;
+  for (const step of [0, 300, 700, 1100, 1500, 1900]) {
+    scrollTo(preview, step);
+    assert.equal(editor.scrollTop >= previous, true, `预览 ${step} 时源码回跳到 ${editor.scrollTop}`);
+    previous = editor.scrollTop;
+  }
+});
+
+test("滚动同步：ratio 模式按比例映射且两端对齐", () => {
+  const editor = makePane({ scrollHeight: 4000, clientHeight: 600, value: LONG_SOURCE });
+  const preview = makePane({ scrollHeight: 2500, clientHeight: 600, blocks: mdBlocks });
+  bindScrollSync({ editor, preview, lineHeight: 24, mode: "ratio" });
+
+  scrollTo(preview, 0);
+  assert.equal(editor.scrollTop, 0);
+  scrollTo(preview, maxOf(preview) / 2);
+  assert.equal(editor.scrollTop, Math.round(maxOf(editor) / 2));
+  scrollTo(preview, maxOf(preview));
+  assert.equal(editor.scrollTop, maxOf(editor));
+});
+
+test("滚动同步：解绑后不再响应滚动", () => {
+  const editor = makePane({ scrollHeight: 3000, clientHeight: 600, value: LONG_SOURCE });
+  const preview = makePane({ scrollHeight: 2000, clientHeight: 600, blocks: mdBlocks });
+  const unbind = bindScrollSync({ editor, preview, lineHeight: 24, mode: "anchor" });
+  unbind();
+  scrollTo(preview, maxOf(preview));
+  assert.equal(editor.scrollTop, 0);
 });
 
 /* ---------------- 运行 ---------------- */

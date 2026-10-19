@@ -13,10 +13,16 @@ import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
 /**
  * 全局禁用「原生组合键」：WebView2 会把这些键交给宿主浏览器处理，
  * 弹出的打印 / 查找条是系统 UI，CSS 挡不住、React 也拦不住（事件不进组件树），
- * 只能在 window 的**捕获阶段**吃掉。keyup 再兜一次，防止按键松开时才触发。
+ * 只能在 window 的**捕获阶段** preventDefault。keyup 再兜一次，防止按键松开时才触发。
  *
  * - Ctrl/Cmd + P：原生打印
- * - Ctrl/Cmd + F：WebView2 自带的查找条（应用自身的所有搜索都不依赖它）
+ * - Ctrl/Cmd + F / G：WebView2 自带的查找条（含"查找下一个"）；
+ *   应用里的查找/跳转由编辑器组件自己处理（Ctrl+F 查找、Ctrl+G 下一个、Ctrl+H 替换）
+ * - Ctrl/Cmd + H：浏览器历史
+ *
+ * 注意只能 preventDefault、绝不能 stopPropagation：
+ * React 的事件都委托在 #root 上，window 捕获阶段把传播掐断的话，
+ * 编辑器自己的 Ctrl+F/G/H 处理器就一个事件都收不到了（这就拦死了应用功能）。
  *
  * 用 code 而不是 key：部分输入法 / 键盘布局下 key 会变成非字母（俄语布局的 "а"），
  * code 始终对应物理按键位置。
@@ -24,6 +30,8 @@ import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
 const BLOCKED_NATIVE_SHORTCUTS = [
   { key: "p", code: "KeyP" },
   { key: "f", code: "KeyF" },
+  { key: "g", code: "KeyG" },
+  { key: "h", code: "KeyH" },
 ];
 
 const blockNativeShortcut = (e: KeyboardEvent) => {
@@ -33,7 +41,6 @@ const blockNativeShortcut = (e: KeyboardEvent) => {
   );
   if (!hit) return;
   e.preventDefault();
-  e.stopPropagation();
 };
 window.addEventListener("keydown", blockNativeShortcut, true);
 window.addEventListener("keyup", blockNativeShortcut, true);

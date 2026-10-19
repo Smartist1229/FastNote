@@ -169,8 +169,25 @@ export interface CodeThemeDefinition {
   colors: CodeThemeColors;
 }
 
+/**
+ * 「主题」占位定义（preset key 是 follow）。
+ *
+ * 这套配色没有固定色值——它的底/字/token 全部由当前主题的语义色推算，
+ * 计算在 theme.ts 的 `buildFollowCodeTheme` 里做（那里才拿得到最终生效的主题色）。
+ * 这里必须留一条记录，是因为 CODE_THEMES 是 Record<CodeThemePreset, ...>；
+ * resolveCodeTheme 遇到 "follow" 会走那条动态分支，不会用到下面这些透明值。
+ */
+const FOLLOW_CODE_THEME: CodeThemeDefinition = {
+  label: "主题",
+  bg: "transparent",
+  headerBg: "transparent",
+  text: "inherit",
+  colors: {} as CodeThemeColors,
+};
+
 /** 内置代码配色预设 */
 export const CODE_THEMES: Record<CodeThemePreset, CodeThemeDefinition> = {
+  follow: FOLLOW_CODE_THEME,
   github: {
     label: "GitHub Light",
     bg: "#f6f8fa",
@@ -589,6 +606,8 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     tabKey: "indent",
     placeholder: "开始书写 Markdown…",
     spellCheck: false,
+    // 源码里的 `~~`、`->` 是 Markdown 语法本身，连成一坨会误读，默认关掉连字
+    fontLigatures: false,
     wrap: true,
     lineNumbers: false,
     autoPair: { brackets: true, quotes: false, backticks: true },
@@ -617,6 +636,7 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     tables: { striped: true, bordered: false, compact: false, fullWidth: true },
     taskInteractive: true,
     allowHtml: true,
+    breaks: false,
     sanitizeHtml: true,
     linkTarget: "_blank",
     emptyText: "",
@@ -683,13 +703,14 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     loop: true,
     maxMatches: 2000,
     seedFromSelection: true,
+    blockHostFind: true,
   },
   theme: {
     mode: "light",
     colors: {},
     codeTheme: "atom",
     codeColors: {},
-    radius: 10,
+    radius: 4,
     fontFamily: FONT_STACKS.sans,
     monoFontFamily: FONT_STACKS.mono,
     cssVars: {},

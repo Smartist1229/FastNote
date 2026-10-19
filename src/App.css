@@ -553,14 +553,16 @@ button:focus-visible {
 }
 
 /* ---------- 侧边栏折叠与唤出把手 ---------- */
+/* 宽度走 --sidebar-w：侧边栏组件拖拽右边缘时改写它。
+   宽度必须挂在外壳而不是内层——折叠动画是外壳 width → 0，内层若是 auto 就无法过渡。 */
 .sidebar-shell {
-  width: 272px;
-  min-width: 272px;
-  max-width: 272px;
+  width: var(--sidebar-w, 272px);
+  min-width: var(--sidebar-w, 272px);
+  max-width: var(--sidebar-w, 272px);
   flex-shrink: 0;
   height: 100%;
   overflow: hidden;
-  /* 以宽度过渡为主：内层固定 272px，折叠时文字不重新排版，所以顺滑 */
+  /* 以宽度过渡为主：内层宽度固定，折叠时文字不重新排版，所以顺滑 */
   transition: var(--transition-sidebar);
   will-change: width;
 }
@@ -571,10 +573,14 @@ button:focus-visible {
   opacity: 0;
   pointer-events: none;
 }
+/* 拖拽期间关掉过渡，让宽度严格跟手（松手后由组件移除） */
+.sidebar-shell.is-resizing {
+  transition: none;
+}
 /* 固定内层宽度，避免折叠过程中文字逐帧回流 */
 .sidebar-shell > * {
-  width: 272px;
-  min-width: 272px;
+  width: var(--sidebar-w, 272px);
+  min-width: var(--sidebar-w, 272px);
 }
 
 /* 左边缘 20px 透明感应区：平时只剩把手，鼠标移入才浮现（不遮挡正文点击） */
@@ -1700,10 +1706,17 @@ button:focus-visible {
 
 /* ---------- 自研编辑器（.mde-root）在应用里的收尾调整 ----------
    颜色、字号、字体全部由 config/markdownEditor.ts 注入，这里只处理两件
-   CSS 才能解决的事：中文走 MiSans，以及弹窗里的代码块不能盖住遮罩。 */
+   CSS 才能解决的事：中文走 MiSans 兜底（值与 config/appDefaults.ts 的
+   APP_UI_FONT_STACK 同源，改一处要同步另一处），以及弹窗里的代码块不能盖住遮罩。 */
 .mde-root.mde-root,
 .mde-root.mde-root .mde-preview-content {
   font-family: "MiSans VF", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+/* 笔记区的编辑器是铺满内容区的面板：组件默认的 1px 描边会在四周留一道多余的框线，这里去掉。
+   圆角不要在这里覆盖——它由 config/markdownEditor.ts 决定（默认 4px，不跟随主题圆角），
+   组件的 radius 配置能力保留，其它嵌入场景（demo、AI 渲染）不受影响。 */
+.editor-container .mde-root {
+  border: none;
 }
 /* 弹窗里的代码块头部压到 0，避免突破 Modal 的遮罩层（z-index: 50） */
 .modal-overlay .mde-code-head,
@@ -1727,8 +1740,10 @@ button:focus-visible {
   box-shadow: inset 0 0 0 1px var(--color-success-soft);
 }
 
-/* 拖拽期间关掉普通 hover：否则子元素的 hover 底色会盖住落点高亮，且拖到笔记上会误触发 hover */
-.drawer-dragging .drawer-note:hover {
+/* 拖拽期间关掉普通 hover：否则子元素的 hover 底色会盖住落点高亮，且拖到笔记上会误触发 hover。
+   选中态的笔记（note-selected-bg）必须排除：它是「深色渐变 + 白字」的反色高亮，
+   把背景剥掉后就只剩白字贴白底，整行看起来一片白（拖动笔记经过自己时必现）。 */
+.drawer-dragging .drawer-note:hover:not(.note-selected-bg) {
   background-color: transparent !important;
   background-image: none !important;
   border-color: transparent !important;

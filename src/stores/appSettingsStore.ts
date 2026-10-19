@@ -10,7 +10,7 @@ import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
  * 数据源是 SQLite 的 app_settings 表，与 AI 设置同表、只靠前缀区分：
  *   app.config.<分类>.<字段>
  *     general：cleanTrashOnStartup / trayEnabled / closeBehavior / autostart /
- *              minimizeToTray / enableAI
+ *              minimizeToTray / enableAI / singleInstance
  *     editor： 见 interface/settings.ts 的 EditorSettings（config/editorSettingSpecs.ts 里的规格表）
  *     layout： sidebarCollapsed / aiPanelOpen
  *     view：   sortBy / sortOrder
@@ -19,6 +19,7 @@ import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
  * 读取：一次取回整表 → 逐字段校验 → 缺键 / 类型不符 / 越界都回退默认值，
  *       并把这些键的默认值补写回库 —— 首次启动即等于把整套默认设置写进数据库，
  *       后续新增设置项也会在下次启动时自动补上。
+ *       反过来，已下线的设置项（不再出现在默认值里）会在读取时被清掉，避免废弃键越积越多。
  * 写入：只写被改的那一个键，由 App.tsx 在用户操作时立即调用。
  * 重置：删除全部 app.config.* 键（下次启动重新回退并补写默认），不碰 AI 设置的键。
  */
@@ -89,6 +90,14 @@ export const loadAppSettings = async (): Promise<AppSettings> => {
   for (const category of CATEGORIES) {
     const defaults = DEFAULT_APP_SETTINGS[category] as unknown as Record<string, unknown>;
     const merged: Record<string, unknown> = { ...defaults };
+    const categoryPrefix = configKey(category, "");
+
+    // 库里留有本分类已下线的键（删掉的设置项）：顺手清掉，避免废弃键在数据库里堆积
+    for (const key of Object.keys(rows)) {
+      if (!key.startsWith(categoryPrefix)) continue;
+      if (key.slice(categoryPrefix.length) in defaults) continue;
+      pending.push(settingsApi.deleteAppSetting(key).catch(() => undefined));
+    }
 
     for (const [field, fallback] of Object.entries(defaults)) {
       const key = configKey(category, field);

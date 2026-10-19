@@ -13,11 +13,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getName, getVersion } from "@tauri-apps/api/app";
 import type { AiSettings } from "@/interface/ai";
-import type { AppSettings } from "@/interface/settings";
+import type { AppSettings, EnumOption } from "@/interface/settings";
 import type { BackupSummary } from "@/interface/backup";
 import type {
   SectionMeta,
@@ -96,6 +97,16 @@ const ScopeBadge: React.FC<{ scope: Scope }> = ({ scope }) => (
   </span>
 );
 
+/** 危险徽标：与「重启生效」并列，提示这一项改动有风险，默认态不要动 */
+const DangerBadge: React.FC = () => (
+  <span
+    className="px-1.5 py-[1px] rounded text-[10px] font-medium border flex-shrink-0 bg-danger-soft text-danger border-danger-line/60"
+    title="该项改动可能导致数据异常，非必要请勿修改"
+  >
+    不建议修改
+  </span>
+);
+
 const Switch: React.FC<{ value: boolean; disabled?: boolean; onChange: (v: boolean) => void }> = ({
   value,
   disabled,
@@ -170,9 +181,28 @@ const NumberInput: React.FC<{
  * 枚举设置项：分段按钮组而不是原生 select —— 选项少（2~3 个）时更直观，
  * 且样式跟随主题，不再是浏览器默认的下拉框。
  */
+/**
+ * 选项色卡：底色铺满，token 色画成小色点，让用户不点开也能看出这套配色长什么样。
+ * 没有 swatch 的选项（绝大多数）返回 null，不占位置。
+ */
+const OptionSwatch: React.FC<{ swatch?: string[] }> = ({ swatch }) => {
+  if (!swatch || swatch.length === 0) return null;
+  const [bg, ...dots] = swatch;
+  return (
+    <span
+      className="w-4 h-4 flex-none rounded-[3px] border border-line/70 inline-flex items-center justify-center gap-[1.5px] overflow-hidden"
+      style={{ background: bg }}
+    >
+      {dots.slice(0, 3).map((c, i) => (
+        <span key={i} className="w-[3px] h-[3px] rounded-full" style={{ background: c }} />
+      ))}
+    </span>
+  );
+};
+
 const SegmentedInput: React.FC<{
   value: string;
-  options: { value: string; label: string }[];
+  options: EnumOption[];
   disabled?: boolean;
   onChange: (v: string) => void;
 }> = ({ value, options, disabled, onChange }) => (
@@ -201,6 +231,127 @@ const SegmentedInput: React.FC<{
 );
 
 /**
+ * 下拉选择：选项多时分段按钮一行放不下，收进一个框里。
+ *
+ * 为什么不用原生 <select>：系统绘制的选项列表样式不受控，亮色窗口里是一整块系统灰，
+ * 与设置窗口的观感脱节。这里自绘菜单——portal 到 body + fixed 定位，
+ * 避免被设置窗口的滚动容器裁掉；点外部 / Esc / 选中即收起。
+ */
+const SelectInput: React.FC<{
+  value: string;
+  options: EnumOption[];
+  disabled?: boolean;
+  onChange: (v: string) => void;
+}> = ({ value, options, disabled, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number } | null>(null);
+  const current = options.find((o) => o.value === value);
+
+  const close = () => setOpen(false);
+
+  const openMenu = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // 下方放不下就往上翻，避免菜单被窗口底边截断
+    const height = Math.min(options.length * 28 + 8, 264);
+    const flip = rect.bottom + 4 + height > window.innerHeight && rect.top - 4 - height > 0;
+    setPos({
+      top: flip ? rect.top - 4 - height : rect.bottom + 4,
+      left: rect.left,
+      minWidth: rect.width,
+    });
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    // 点在触发器上交给它自己的 onClick 收起，其余点击一律关闭。
+    // 菜单内部必须放过：mousedown 早于 click，这里关掉会让菜单先卸载，
+    // 选项的 onClick 就再也收不到（表现为「点了没反应、值不变」）。
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    // 滚动 / 改窗口大小时菜单位置会飘，直接收起最省事；
+    // scroll 用捕获阶段，设置窗口自己的滚动容器不冒泡到 document
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 text-[11px] rounded-lg bg-surface border transition-colors ${
+          open ? "border-primary-400 text-primary-600" : "border-line text-body hover:bg-surface-alt"
+        } ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+      >
+        <OptionSwatch swatch={current?.swatch} />
+        {current?.label ?? value}
+        <Icon
+          name="sidebar-chevron-down"
+          className={`w-3 h-3 text-faint transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            className="fixed z-[80] p-1 rounded-lg bg-surface border border-line shadow-elevated animate-scaleIn"
+            style={{ top: pos.top, left: pos.left, minWidth: pos.minWidth, maxHeight: 264, overflowY: "auto" }}
+          >
+            {options.map((o) => {
+              const active = o.value === value;
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => {
+                    onChange(o.value);
+                    setOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-2 py-1.5 text-[11px] text-left rounded-md transition-colors ${
+                    active ? "bg-primary-50 text-primary-600 font-medium" : "text-body hover:bg-surface-alt"
+                  }`}
+                >
+                  <OptionSwatch swatch={o.swatch} />
+                  <span className="flex-1 truncate">{o.label}</span>
+                  {active && <Icon name="sidebar-check" className="w-3 h-3 flex-none text-primary-500" />}
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+};
+
+/**
  * 行的统一渲染：左标题 + 说明 + 作用范围徽标，右侧按 kind 派发到具体控件。
  * disabled 时整行降低透明度，开关与分段控件忽略点击；行保留在原位，避免布局跳动。
  */
@@ -216,6 +367,7 @@ const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
           {row.title}
         </span>
         <ScopeBadge scope={row.scope} />
+        {row.danger && <DangerBadge />}
       </div>
       <p className="text-[11px] text-faint leading-relaxed mt-1">{row.desc}</p>
     </div>
@@ -235,6 +387,14 @@ const RowView: React.FC<{ row: SettingRow }> = ({ row }) => (
       )}
       {row.kind === "segment" && (
         <SegmentedInput
+          value={row.value}
+          options={row.options}
+          disabled={row.disabled}
+          onChange={row.onChange}
+        />
+      )}
+      {row.kind === "select" && (
+        <SelectInput
           value={row.value}
           options={row.options}
           disabled={row.disabled}
@@ -438,9 +598,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           onChange: (v: number) => setApp("editor", spec.field, v),
         };
       }
+      // segment 与 select 的行形状相同（value + options），只是渲染控件不同
       return {
         ...base,
-        kind: "segment",
+        kind: spec.kind,
         value: editor[spec.field] as string,
         options: spec.options,
         onChange: (v: string) => setApp("editor", spec.field, v),
@@ -457,6 +618,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         keywords: "回收站 清空 清理 垃圾 startup",
         value: appSettings.general.cleanTrashOnStartup,
         onChange: (v) => setApp("general", "cleanTrashOnStartup", v),
+      },
+      {
+        section: "general",
+        kind: "toggle",
+        scope: "startup",
+        danger: true,
+        title: "启用单例模式",
+        desc: "开启后同一时间只允许运行一个软件进程：再次双击启动时不会再开新窗口，而是把已运行的窗口叫到前台。关闭后可以同时打开多个进程，但多个进程会同时读写同一个笔记数据库，极易互相覆盖、导致笔记保存失败或内容丢失，请确认清楚再关闭（默认开启）。",
+        keywords: "单例 多开 多进程 实例 single instance 单实例 重复启动",
+        value: appSettings.general.singleInstance,
+        onChange: (v) => setApp("general", "singleInstance", v),
       },
       {
         section: "general",

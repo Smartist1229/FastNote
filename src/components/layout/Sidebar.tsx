@@ -9,7 +9,7 @@
  * - searchQuery 非空时忽略 view，扁平展示三组搜索结果。
  * - 副作用：内部拖拽落点直接调 notesApi.updateNote 写 category_id，成功后 onNotesUpdated() 刷新全局。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Category, Note } from "@/interface/note";
 import type { SidebarProps } from "@/interface/sidebar";
 import type { ContextMenuItem } from "@/interface/ui";
@@ -26,6 +26,15 @@ const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: '
 /** 排序浮层宽度（px）：定位时用它把浮层夹在视口内 */
 const SORT_MENU_WIDTH = 132;
 const ORPHAN_GROUP_ID = -1; // 虚拟分组 ID：承载 category_id 指向已删除分组的遗留笔记
+/* ---------- 侧边栏宽度（拖拽右边缘调节，规则与 AI 对话面板一致） ----------
+ * 宽度不落库：每次启动都是默认值。理由是侧边栏宽度高度依赖窗口尺寸，
+ * 记住一个窄窗口下的宽度，换到大屏反而显得局促，收益不如"拖一下就调好"。
+ */
+const MIN_SIDEBAR_WIDTH = 250;
+const MAX_SIDEBAR_WIDTH = 480;
+const DEFAULT_SIDEBAR_WIDTH = 272;
+/** 主内容区保底宽度：侧边栏上限 = 可用宽度 − 该值，窗口越宽侧边栏越能放宽到 MAX_SIDEBAR_WIDTH */
+const SIDEBAR_CONTENT_MIN_WIDTH = 560;
 /** 搜索视图三个虚拟分组 → 展开状态 key */
 const SEARCH_GROUP_KEY: Record<string, 'all' | 'title' | 'content'> = {
   'search-all': 'all',
@@ -358,8 +367,97 @@ export const Sidebar: React.FC<SidebarProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const categoryCount = categories.length;
+  /* ---------- 宽度拖拽（右边缘） ----------
+   * 宽度本身挂在外层 .sidebar-shell 上（折叠动画在那里，auto→0 无法过渡），
+   * 所以本组件只负责把结果写成 --sidebar-w 变量，由 CSS 消费。
+   */
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  /** 可用宽度：主窗口行的实际宽度（不含侧边栏自身，否则会形成"改宽度→回调→再改宽度"的循环） */
+  const [availWidth, setAvailWidth] = useState(0);
+  const resizingRef = useRef(false);
+  /** 上一次实际写进 --sidebar-w 的值：尺寸没变就不重写，避免 ResizeObserver 反复触发样式写入 */
+  const writtenWidthRef = useRef(0);
+  /** 刚开始拖拽时补一次"可用宽度"实测：窗口如果是在折叠期间被缩小的，ResizeObserver 那会儿是跳过的 */
+  const measureAvailWidth = useCallback(() => {
+    const host = sidebarRef.current?.parentElement?.parentElement;
+    return host ? host.clientWidth : 0;
+  }, []);  /** 折叠状态：折叠时外壳宽 0，此时不要按"可用宽度"夹取，否则会记下一个被压扁的宽度 */
+  const isCollapsedRef = useRef(isCollapsed);
+  isCollapsedRef.current = isCollapsed;
+  useLayoutEffect(() => {
+    if (isCollapsed) return;
+    const host = sidebarRef.current?.parentElement?.parentElement;
+    if (!host) return;
+    // 只监听父容器的内容盒：外壳宽度变化属于"自己的变化"，不参与观测，否则可能自激
+    const update = () => {
+      if (isCollapsedRef.current) return;
+      const next = host.clientWidth;
+      setAvailWidth((prev) => (prev === next ? prev : next));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [isCollapsed]);
+  /** 上限：可用宽度 − 内容区保底；窗口越窄上限越小，正文永远不会被挤变形 */
+  const maxSidebarWidth = availWidth > 0
+    ? Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, availWidth - SIDEBAR_CONTENT_MIN_WIDTH))
+    : MAX_SIDEBAR_WIDTH;
+  /** 实际渲染宽度 = min(用户设定宽度, 上限)：派生而不回写 state，窗口变宽时能恢复到用户原设定值 */
+  const effectiveSidebarWidth = Math.min(sidebarWidth, maxSidebarWidth);
+  // 宽度落到外壳变量上：折叠时 width 归零的是 CSS，变量保留用户设定值，展开后即恢复
+  useLayoutEffect(() => {
+    const shell = sidebarRef.current?.parentElement;
+    if (!shell) return;
+    if (writtenWidthRef.current === effectiveSidebarWidth) return;
+    writtenWidthRef.current = effectiveSidebarWidth;
+    shell.style.setProperty('--sidebar-w', `${effectiveSidebarWidth}px`);
+  }, [effectiveSidebarWidth]);
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    /* 外壳必须是 .sidebar-shell（本组件根节点的父级）：拖拽期间要在它身上关掉宽度过渡。
+       挂错了元素过渡照常生效，快速拖动时外壳宽度追不上指针，与主内容区之间就会拉出一条大间隙。 */
+    const shell = sidebarRef.current?.parentElement;
+    shell?.classList.add('is-resizing');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    /* 侧边栏贴着窗口左边缘，但窗口可能有原生边框/内边距，所以取根节点的左边界而不是 0；
+       每次拖拽实测一次，同时把可用宽度刷新到最新（窗口可能在拖拽前刚被改过大小）。 */
+    const measured = measureAvailWidth();
+    if (measured > 0) setAvailWidth((prev) => (prev === measured ? prev : measured));
+    const limit = measured > 0
+      ? Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, measured - SIDEBAR_CONTENT_MIN_WIDTH))
+      : maxSidebarWidth;
+    const originX = sidebarRef.current?.getBoundingClientRect().left ?? 0;
+    const mm = (ev: MouseEvent) => {
+      if (!resizingRef.current) return;
+      // 必须取整：小数宽度会让侧边栏内所有文字落在半个像素上，看起来发虚
+      setSidebarWidth(Math.round(Math.max(MIN_SIDEBAR_WIDTH, Math.min(limit, ev.clientX - originX))));
+    };
+    const mu = () => {
+      resizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', mm);
+      document.removeEventListener('mouseup', mu);
+      // 等 React 把最终宽度刷进 DOM 后再恢复过渡，避免回弹
+      requestAnimationFrame(() => shell?.classList.remove('is-resizing'));
+    };
+    document.addEventListener('mousemove', mm);
+    document.addEventListener('mouseup', mu);
+  }, [maxSidebarWidth, measureAvailWidth]);
   return (
-    <div className="h-full sidebar-bg border-r border-line/80 flex flex-col overflow-hidden">
+    <div ref={sidebarRef} className="relative h-full sidebar-bg border-r border-line/80 flex flex-col overflow-hidden">
+      {/* 右边缘拖拽把手：调节侧边栏宽度（上下限见 MIN/MAX_SIDEBAR_WIDTH） */}
+      <div
+        data-resize-handle="sidebar"
+        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary-200/50 active:bg-primary-300/50 transition-colors z-30"
+        onMouseDown={onResizeStart}
+        title="拖拽调整侧边栏宽度"
+        aria-hidden="true"
+      />
       {/* Logo + 头部按钮 */}
       <div className="px-3.5 pt-3.5 pb-2 flex-shrink-0">
         <div className="relative flex items-center justify-between">

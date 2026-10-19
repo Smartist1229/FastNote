@@ -22,6 +22,11 @@ export interface GeneralSettings {
   minimizeToTray: boolean;
   /** 是否开启 AI 能力（关闭后隐藏所有 AI 相关入口和设置） */
   enableAI: boolean;
+  /**
+   * 是否启用单例模式（只允许一个软件进程）。
+   * 只在启动时读取：关掉后可以同时开多个进程，多个进程会同时写同一个库文件。
+   */
+  singleInstance: boolean;
 }
 
 /** 笔记编辑器可选的默认视图（render 是给 AI 回复用的纯渲染模式，不作为笔记的默认视图） */
@@ -32,9 +37,6 @@ export type EditorTabKey = "indent" | "spaces" | "none";
 
 /** 分栏同步滚动策略：anchor 按源码行锚点插值 | ratio 按滚动比例 */
 export type EditorSyncScrollMode = "anchor" | "ratio";
-
-/** 预览里链接的打开方式（外链最终都交给应用侧用系统浏览器打开） */
-export type EditorLinkTarget = "_blank" | "_self";
 
 /** Mermaid 图表主题 */
 export type EditorMermaidTheme = "default" | "dark" | "forest" | "neutral" | "base";
@@ -75,6 +77,11 @@ export interface EditorSettings {
   ctrlScrollZoom: boolean;
   /** 源码行高（倍数） */
   sourceLineHeight: number;
+  /**
+   * 字体连字：开启后等宽字体会把 `->`、`==`、`<=` 画成单个符号。
+   * 写 Markdown 时这些是语法记号，连成一坨会误读，默认关。
+   */
+  fontLigatures: boolean;
   /** 源码区是否显示行号（纯源码模式与分栏左栏） */
   lineNumbers: boolean;
   /** 点击行号是否选中整行 */
@@ -131,12 +138,12 @@ export interface EditorSettings {
   mermaidTheme: EditorMermaidTheme;
   /** 任务列表勾选框可点击 */
   taskInteractive: boolean;
+  /** 单个换行即换行（GFM breaks）：每行的 \n 都渲染成换行，不用行尾补两个空格 */
+  breaks: boolean;
   /** 允许 HTML 标签（关闭后原样显示为文本） */
   allowHtml: boolean;
   /** 对 HTML 做基础净化（去 script / on* / javascript:） */
   sanitizeHtml: boolean;
-  /** 链接打开方式 */
-  linkTarget: EditorLinkTarget;
   /** 显示 front matter 元信息卡 */
   showFrontmatter: boolean;
   /** 显示脚注区 */
@@ -239,6 +246,25 @@ export interface EditorSettings {
   codeTheme: EditorCodeTheme;
   /** 启用编辑器快捷键 */
   shortcuts: boolean;
+  /**
+   * 编辑器外框圆角（px）。0 = 直角。
+   * 笔记区默认 4px（见 config/markdownEditor.ts 的 NOTE_EDITOR_RADIUS，不跟随主题圆角）；
+   * 这里放开是为了让需要直角/大圆角的用户自己调，改它就等于覆盖默认值。
+   */
+  radius: number;
+}
+
+/**
+ * 枚举型设置项的一个选项，供分段按钮 / 下拉共用。
+ *
+ * swatch 是「按外观挑」的场景用的色卡：[底色, ...token 色]——第一项作底，其余画成小色点。
+ * 底色允许写渐变，token 色允许写 rgb(var(--c-*))，这样就有一个能跟着主题变色的选项
+ * （代码块配色的「主题」项就是这么表示的）。
+ */
+export interface EnumOption {
+  value: string;
+  label: string;
+  swatch?: string[];
 }
 
 /** 界面布局：只决定启动时的初始布局，不跟随运行时的折叠/开关状态 */

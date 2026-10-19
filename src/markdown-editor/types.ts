@@ -249,7 +249,7 @@ export interface MarkdownTypography {
 }
 
 /** 代码块配色预设名 */
-export type CodeThemePreset = "github" | "atom" | "nord" | "solarized" | "monokai" | "plain";
+export type CodeThemePreset = "github" | "atom" | "nord" | "solarized" | "monokai" | "plain" | "follow";
 
 /** 代码高亮 token → 颜色；未给出的沿用预设 */
 export interface CodeThemeColors {
@@ -281,6 +281,11 @@ export interface MarkdownEditorInputConfig {
   tabKey: "indent" | "spaces" | "none";
   placeholder: string;
   spellCheck: boolean;
+  /**
+   * 字体连字：等宽字体默认会把 `->`、`==`、`<=` 画成一个符号。
+   * Markdown 源码里这些是语法标记，连起来会影响判读，所以默认关。
+   */
+  fontLigatures: boolean;
   /** 自动换行（关闭后横向滚动） */
   wrap: boolean;
   /** 代码模式行号槽 */
@@ -348,6 +353,8 @@ export interface MarkdownPreviewConfig {
   };
   /** 任务列表勾选框可点击 */
   taskInteractive: boolean;
+  /** 单个换行即换行（GFM breaks）：开 after 每行的 `\n` 都渲染成换行，不用行尾补两个空格 */
+  breaks: boolean;
   /** 允许 HTML 标签（关闭后原样显示为文本） */
   allowHtml: boolean;
   /** 对 HTML 做基础净化（去 script / on* / javascript:） */
@@ -422,7 +429,7 @@ export interface MarkdownOutlineConfig {
 export interface MarkdownSearchConfig {
   /** 是否启用查找框与 Ctrl/⌘+F */
   enabled: boolean;
-  /** 打开时是否展开替换行（Ctrl/⌘+H 始终展开） */
+  /** Ctrl/⌘+F 打开时是否直接展开替换行；替换行始终可以手动展开，Ctrl/⌘+H 总是带着它打开 */
   showReplace: boolean;
   /** 初始：区分大小写 */
   caseSensitive: boolean;
@@ -436,6 +443,15 @@ export interface MarkdownSearchConfig {
   maxMatches: number;
   /** 打开时把当前选区文本填进查找框 */
   seedFromSelection: boolean;
+  /**
+   * 焦点在编辑器内时，替宿主挡掉查找相关的原生快捷键（Ctrl/⌘+F / G / H）。
+   *
+   * 浏览器标签页、WebView2、Electron 都会抢这几个键弹自己的查找条 / 替换条，
+   * 结果就是"编辑器查找框 + 原生查找条"一起出来。这里在 **window 捕获阶段**
+   * 对落在编辑器内部的按键 preventDefault，把原生那层挡掉；
+   * 宿主仍然收得到事件（不 stopPropagation），也不需要自己再写一遍拦截。
+   */
+  blockHostFind: boolean;
 }
 
 /** 分栏配置 */
