@@ -169,18 +169,20 @@
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--mde-border-strong) transparent;
+  /* 不要写 scrollbar-width / scrollbar-color：标准属性一旦生效，下面
+     ::-webkit-scrollbar 的 height 声明就被忽略，滚动条会回到 8px 的"细"档，
+     比正文区的滚动条显眼得多。高度只能靠 webkit 伪元素控。 */
 }
 
 .mde-toolbar.is-scrollable::-webkit-scrollbar {
-  height: 4px;
+  height: 3px;
 }
 
 .mde-toolbar.is-scrollable::-webkit-scrollbar-thumb {
   border: none;
   border-radius: 2px;
   background: var(--mde-border-strong);
+  cursor: default;
 }
 
 .mde-toolbar.is-scrollable::-webkit-scrollbar-track {
@@ -244,9 +246,15 @@
   white-space: nowrap;
 }
 
+/*
+ * 下拉指示：V 形 chevron（不是带杆的箭头）。
+ * 12px 下 1.8 的线宽太细、容易糊成一根，「可展开」读不出来，
+ * 这里单独加粗到 2.4：stroke-width 是继承属性，写在 svg 上就够，不用碰 path。
+ */
 .mde-tool-caret {
-  opacity: 0.55;
+  opacity: 0.6;
   margin-left: -2px;
+  stroke-width: 2.4;
 }
 
 .mde-toolbar.is-compact .mde-tool {
@@ -284,17 +292,45 @@
 }
 
 /* 模式切换：分段控件 */
-/* 工具栏横向滚动时，模式切换吸附在右侧，始终点得到 */
-.mde-toolbar.is-scrollable .mde-tool-slot.is-mode {
+.mde-tool-slot.is-mode {
+  margin-left: 2px;
+}
+
+/*
+ * 尾部吸附组（`toolbar.pinTail`）：视图切换 / 大纲 / 全屏 / 复制。
+ *
+ * 这一组钉在工具栏右缘，窗口变窄、前面的按钮被滚走时它们始终点得到；
+ * 底色必须不透明（盖住从下面滑过去的按钮）。
+ * 滚动后左侧补一条渐变，暗示「左边还有东西」，否则看着像凭空浮着。
+ *
+ * 右缘留白由它自己出（`right: 0` + `padding-right: 8px`），inner 的右内边距在有尾组时让位：
+ * 两处都算的话，滚到最右（尾组从"钉住"回到自然位置）会整体左移 8px，看着像吸附不稳。
+ */
+.mde-toolbar.has-tail .mde-toolbar-inner {
+  padding-right: 0;
+}
+
+.mde-toolbar-tail {
   position: sticky;
   right: 0;
   z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 6px;
+  padding-right: 8px;
   background: var(--mde-toolbar-bg);
-  box-shadow: -8px 0 10px -8px var(--mde-toolbar-bg);
 }
 
-.mde-tool-slot.is-mode {
-  margin-left: 2px;
+.mde-toolbar-tail.is-stuck::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  width: 14px;
+  background: linear-gradient(to right, transparent, var(--mde-toolbar-bg));
+  pointer-events: none;
 }
 
 .mde-mode-switch {
@@ -434,6 +470,12 @@
 }
 
 /* ============ 查找 / 替换（VSCode 风格悬浮框） ============ */
+/*
+ * 两行是同一个网格，不是各自一条 flex：
+ *   列1 = 折叠开关 / 占位（22px）、列2 = 输入框（自适应）、列3 = 右侧按钮组（auto）。
+ * 这样两个输入框的左右边缘天然对齐，右侧按钮多宽都不会把输入框挤歪。
+ * 行容器用 display:contents 把自己从盒模型里摘掉，直接让按钮参与网格。
+ */
 .mde-search {
   position: absolute;
   top: 8px;
@@ -446,6 +488,11 @@
   border-radius: 8px;
   background: var(--mde-search-bg);
   box-shadow: var(--mde-search-shadow);
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 4px;
+  row-gap: 5px;
   animation: mde-pop 120ms ease;
 }
 
@@ -455,18 +502,12 @@
 }
 
 .mde-search-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  display: contents;
 }
 
-.mde-search-row + .mde-search-row {
-  margin-top: 5px;
-}
-
-/* 第二行留出的宽度，用来和第一行的折叠开关对齐 */
+/* 第二行留出的宽度，用来和第一行的折叠开关对齐（网格列1已经空出来，这里只是占位） */
 .mde-search-spacer {
-  flex: none;
+  display: block;
   width: 22px;
 }
 
@@ -477,17 +518,29 @@
   gap: 1px;
 }
 
+/* 右侧「模式/上/下/关闭」这一整组：整体靠右，两行之间多余的宽度只留在它左边 */
+.mde-search-tail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* 与 .mde-search-actions 的间隙一致：字面 / 替换 / 全部替换三者间距均匀，不忽宽忽窄 */
+  gap: 1px;
+  min-width: 0;
+}
+
 .mde-search-field {
   position: relative;
-  flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
+  height: 24px;
 }
 
 .mde-search-input {
   width: 100%;
   height: 24px;
+  box-sizing: border-box;
   padding: 0 7px;
   border: 1px solid var(--mde-input-border);
   border-radius: 5px;
@@ -500,12 +553,29 @@
   transition: border-color 120ms ease;
 }
 
+/* 有计数的那一行：右边留出计数文字的宽度（最多 "2000/2000" 这种），字不会被数字压住 */
+.mde-search-field.is-counted .mde-search-input {
+  /* 够放「12345/20000+」这种五位数计数：命中上限抬高后计数可能比原来长一截 */
+  padding-right: 64px;
+}
+
 .mde-search-input::placeholder {
   color: var(--mde-text-faint);
 }
 
-.mde-search-input:focus {
+/*
+ * 焦点态：描边转强调色 + 一圈很软的辉光。
+ *
+ * 必须带上 :focus-visible 并且优先级高过宿主：宿主常有全局
+ * `input:focus-visible { box-shadow: 0 0 0 2px …, 0 0 0 4px … }` 的焦点环，
+ * 那是按普通表单控件调的，套在这个 24px 高的小输入框上就是截图里那圈又粗又硬的紫边。
+ * `outline: none` 单独写在 :focus 上是为了压住宿主的 outline 版本。
+ */
+.mde-search-input:focus,
+.mde-search-input:focus-visible {
+  outline: none;
   border-color: var(--mde-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mde-accent) 16%, transparent);
 }
 
 /* 查询无结果：输入框描边转红，与 VSCode 一致 */
@@ -513,14 +583,27 @@
   border-color: var(--mde-danger);
 }
 
+.mde-search-input.is-empty:focus,
+.mde-search-input.is-empty:focus-visible {
+  border-color: var(--mde-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mde-danger) 16%, transparent);
+}
+
+/*
+ * 计数叠在输入框右端：它占的是输入框自己的盒内空间（输入框留了右内边距），
+ * 不再是 row 里的一个 flex 子项——否则它会把这行的输入框挤窄，两行就对不起。
+ */
 .mde-search-count {
-  flex: none;
-  margin-left: 6px;
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--mde-text-faint);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   user-select: none;
+  pointer-events: none;
 }
 
 .mde-search-actions {
@@ -567,15 +650,22 @@
   color: var(--mde-toolbar-active-text);
 }
 
-.mde-search-text-btn {
+/*
+ * 选择器带上 .mde-search：`.mde-root button` 是 (0,1,1)，单靠 `.mde-search-text-btn`
+ * (0,1,0) 压不住它，字号和颜色都会被 `font-size: inherit` / `color: inherit` 抢走
+ * （文字按钮于是跟正文一样大，看着和旁边的图标不是一套）。
+ */
+.mde-search .mde-search-text-btn {
   height: 22px;
-  padding: 0 8px;
+  padding: 0 7px;
   border: none;
   border-radius: 5px;
   background: transparent;
   color: var(--mde-text-muted);
   font-family: var(--mde-font-family);
+  /* 三个文字按钮（字面 / 替换 / 全部替换）共用同一档字号与内边距，看上去才是一组 */
   font-size: 11.5px;
+  line-height: 1;
   white-space: nowrap;
   cursor: pointer;
   transition: background-color 110ms ease, color 110ms ease;
@@ -589,6 +679,21 @@
 .mde-search-text-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/*
+ * 替换串的模式开关：紧挨着替换输入框右侧。
+ * 它是个文字按钮——"字面 / 正则" 比一个图标更能说明当前替换串会被怎么解释；
+ * 最小宽度是为了在「字面/正则」两种长度（英文是 Text/Regex）之间不跳动。
+ */
+.mde-search-text-btn.is-mode {
+  min-width: 30px;
+  padding: 0 5px;
+}
+
+.mde-search-text-btn.is-active {
+  background: var(--mde-toolbar-active-bg);
+  color: var(--mde-toolbar-active-text);
 }
 
 /* ============ 布局 ============ */
@@ -636,16 +741,24 @@
   background: var(--mde-accent);
 }
 
-/* ============ 源码编辑区 ============ */
+/* ============ 编辑区 ============ */
 .mde-source {
   position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
   background: var(--mde-editor-bg);
+  /*
+   * 正文区的内边距：正文、占位提示、行号槽三处必须一致（否则第一行就对不齐）。
+   * 在这里定一次，下面各处引用。
+   */
+  --mde-editor-pad-x: 24px;
+  --mde-editor-pad-y: 20px;
+  /* 行号槽与正文之间不再留缝，正文靠自己的左内边距与数字拉开一点距离 */
+  --mde-editor-pad-left: 10px;
 }
 
-/* textarea 与高亮层叠放：层在下（absolute），输入框在上（relative + z-index） */
+/* 可编辑区（.mde-content）与自绘光标层（.mde-caret-layer）叠放：光标在上、不吃事件 */
 .mde-source-main {
   position: relative;
   flex: 1;
@@ -653,106 +766,160 @@
   display: flex;
 }
 
-.mde-find-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  padding: 20px 24px;
-  /* 高亮层必须和 textarea 完全对齐才会不错位，滚动占位尤其关键：
-     滚动条会吃掉可用宽度，两边差几像素，折出来的行就不一样，命中标记整体偏移。
-     所以这里不用 overflow: scroll（它恒占位），而是照抄 textarea 的 overflow 行为：
-     textarea 出现滚动条时这一层才出现，两边宽度始终同步。
-     另外千万不要给这一层写 scrollbar-color / scrollbar-width：标准属性一旦生效，
-     ::-webkit-scrollbar 的宽度声明就被忽略，滚动条会变回默认的 15px（比 textarea 宽 5px），
-     高亮照样错位。隐藏它的滚动条只能靠下面那条 ::-webkit-scrollbar-thumb。 */
-  overflow-x: hidden;
-  overflow-y: auto;
-  color: transparent;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  pointer-events: none;
-  user-select: none;
-}
-
-.mde-source.has-gutter .mde-find-layer {
-  padding-left: 8px;
-}
-
-.mde-find-layer.is-nowrap {
-  white-space: pre;
-  overflow-wrap: normal;
-  /* 与 .mde-textarea.is-nowrap 对齐：不折行时横向也要能滚动 */
-  overflow-x: auto;
-}
-
-.mde-find-layer::-webkit-scrollbar-track,
-.mde-find-layer::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-/* 这层滚动条只为「占住和 textarea 一样的宽度」而存在（滚动位置由 textarea 同步），
-   绝不能画出来：宿主应用常有自己的全局滚动条样式（颜色/圆角），普通的透明声明
-   可能被盖掉，于是编辑器右侧多出一条假滚动条。这里用 !important 钉死透明。 */
-.mde-find-layer::-webkit-scrollbar-thumb,
-.mde-find-layer::-webkit-scrollbar-thumb:hover,
-.mde-find-layer::-webkit-scrollbar-thumb:active {
-  background-color: transparent !important;
-  border: none !important;
-}
-
-/* 可视区间之外的上下占位：只负责把总高度撑到与 textarea 一致，不能产生行盒 */
-.mde-find-pad {
-  display: block;
-  height: 0;
-  overflow: hidden;
-}
-
-.mde-find-hit {
-  border-radius: 2px;
-  background: var(--mde-search-match-bg);
-  box-shadow: inset 0 0 0 1px var(--mde-search-match-border);
-  color: transparent;
-}
-
-.mde-find-hit.is-current {
-  background: var(--mde-search-match-active-bg);
-  box-shadow: inset 0 0 0 1px var(--mde-search-match-active-border);
-}
-
-.mde-textarea {
-  position: relative;
-  z-index: 1;
+/*
+ * 编辑区：contenteditable 容器，同时兼滚动容器。
+ *
+ * 里面只放可视区间那几十个 `.mde-line`，所以 DOM 规模与文档长度无关——
+ * 以前整篇文本都在一个 textarea 里，几万行的文档光是节点就是几万个。
+ */
+.mde-content {
   flex: 1;
-  width: 100%;
-  height: 100%;
-  padding: 20px 24px;
+  min-width: 0;
+  /*
+   * 定位 + z-index 2：让正文压在它自己那层「当前行底色」之上（底色是 `.mde-line`
+   * 自己的 background，与正文同一个栈，靠 z-index 分先后）。
+   * 查找命中走 `::highlight()`，是浏览器直接画在文字上的，不参与这一层的层序。
+   */
+  position: relative;
+  z-index: 2;
+  padding: var(--mde-editor-pad-y) var(--mde-editor-pad-x) var(--mde-editor-pad-y) var(--mde-editor-pad-left);
   border: none;
   outline: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /*
+   * 关掉滚动锚定：内容高度一变（改字号、切文档、虚拟化区间伸缩），浏览器会
+   * 「锚定」某个可见节点替我们挪 scrollTop，挪出来的差既不通知也不受控。
+   */
+  overflow-anchor: none;
   background: transparent;
   color: var(--mde-text-body);
   font-family: var(--mde-mono-family);
   font-size: var(--mde-editor-font-size);
   line-height: var(--mde-editor-line-height);
   caret-color: var(--mde-accent);
-  resize: none;
-  overflow-y: auto;
-  overflow-x: hidden;
   white-space: pre-wrap;
   overflow-wrap: break-word;
   tab-size: 2;
 }
 
-.mde-textarea.is-nowrap {
+.mde-content.is-nowrap {
   white-space: pre;
-  overflow-x: auto;
   overflow-wrap: normal;
+  /* 不折行时横向也要能滚：超宽的行由 `.mde-line` 撑出 scrollWidth */
+  overflow-x: auto;
+}
+
+/*
+ * 行容器：上下 padding 就是「可视区间之外的部分」。
+ *
+ * 用 padding 而不是占位 div，是为了让浏览器找不到一个可以把光标放进去的空节点——
+ * 按方向键走到区间尽头时，光标会留在最后一行，而不是掉进占位里再也不出来。
+ */
+.mde-lines {
+  display: block;
+  min-width: 0;
+}
+
+.mde-line {
+  display: block;
+}
+
+/*
+ * 围栏代码块：整块（含 ``` 围栏行）铺一层很浅的底色，把代码和正文分开。
+ *
+ * 底色必须和文字左缘对齐。不要再用「负外边距 + 等量左内边距」往外铺：
+ * 编辑区带 `overflow`（裁剪发生在 padding box），铺出去的部分会被裁掉一截，
+ * 结果色带比文字更靠左，看上去像正文被缩进了一格。
+ * token 的颜色不在这里，它由注入的 `::highlight(mde-syn-*)` 规则画（见文件末尾）。
+ */
+.mde-line.is-code {
+  background: var(--mde-source-code-bg, rgba(15, 23, 42, 0.035));
+}
+
+/* 光标正好落在代码行上：当前行底色叠在代码底色上，别把代码的底色顶掉 */
+.mde-line.is-code.is-current {
+  background:
+    linear-gradient(var(--mde-active-line-bg), var(--mde-active-line-bg)),
+    var(--mde-source-code-bg, rgba(15, 23, 42, 0.035));
+}
+
+/* 占位提示：contenteditable 没有 :placeholder-shown，用一个绝对定位的兄弟节点画 */
+.mde-placeholder {
+  position: absolute;
+  /* 正文是 z-index 2，占位要盖在它上面；放在 4 是因为光标层占了 3 */
+  z-index: 4;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: var(--mde-editor-pad-y) var(--mde-editor-pad-x) var(--mde-editor-pad-y) var(--mde-editor-pad-left);
+  color: var(--mde-text-faint);
+  font-family: var(--mde-mono-family);
+  font-size: var(--mde-editor-font-size);
+  line-height: var(--mde-editor-line-height);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+
+.mde-source.has-gutter .mde-placeholder {
+  padding-left: 8px;
+}
+
+/*
+ * 查找命中的高亮：走 CSS 自定义高亮（见 editor/highlights.ts），
+ * 只往注册表里塞 Range，不改 DOM。编辑区与预览区共用这几个名字，观感一致。
+ *
+ * 铺出来就是命中那一段**文字**的范围（高度随字形盒，折行时每段各自铺），
+ * 不是整行——整行色带看着像选中了整行，也和预览区对不上。
+ *
+ * 颜色写成字面量而不是 var(--mde-search-match-bg)：`::highlight()` 只认少数几个属性，
+ * 自定义属性在它里面不保证可用（取不到时会退化成透明，等于没高亮）。
+ * 这里的值与 --mde-search-match-bg 的出厂值一致，改那个变量时记得同步这里。
+ */
+::highlight(mde-find-hit) {
+  background-color: rgba(255, 197, 66, 0.42);
+}
+
+::highlight(mde-find-current) {
+  background-color: rgba(234, 92, 0, 0.5);
+}
+
+/*
+ * 大纲跳转的目标：只给标题文字本身铺一层底色（含 `###`），不铺整块。
+ * 编辑区与预览区同一个名字（编辑区区间是目标行的文字范围）。
+ */
+::highlight(mde-flash) {
+  background-color: rgba(99, 102, 241, 0.28);
+}
+
+/*
+ * 光标所在行。
+ *
+ * 按行虚拟化之后「哪一行」只是给那一个 `.mde-line` 加个类——不需要额外的定位层，
+ * 行号槽里同一格跟着点亮（它们的纵向偏移本来就出自同一张表）。
+ */
+.mde-line.is-current {
+  background: var(--mde-active-line-bg);
+}
+
+.mde-gutter-line.is-current .mde-gutter-num,
+.mde-gutter-line.is-flash .mde-gutter-num {
+  color: var(--mde-gutter-active-text);
+  font-weight: 600;
+}
+
+.mde-source.has-gutter .mde-content {
+  padding-left: 8px;
 }
 
 /* 连字开关（`editor.fontLigatures`）。
-   必须覆盖到所有用等宽字体排版的层：源码区、行号槽、查找高亮层、代码块。
-   查找层漏掉的话，同一段字在两层里的宽度不一样，高亮就会整体错位。 */
-.mde-textarea,
-.mde-find-layer,
+   必须覆盖到所有用等宽字体排版的层：编辑区、行号槽、折行测量层、代码块。
+   测量层漏掉的话，同一段字在两层里折出来的行数不一样，行号与光标就会整体错位。 */
+.mde-content,
+.mde-line,
+.mde-measure,
 .mde-gutter,
 .mde-root .mde-inline-code,
 .mde-code-text,
@@ -762,18 +929,67 @@
   font-feature-settings: var(--mde-font-features, "liga" 0, "calt" 0);
 }
 
-.mde-textarea::placeholder {
-  color: var(--mde-text-faint);
+/*
+ * 自绘光标。
+ *
+ * 原生光标恒为 1px（Chromium 没有 caret-width），125%/150% 缩放下细成一根毛发，
+ * 所以这里把它隐掉（caret-color: transparent，见下），用一条 2px 的竖线代替：
+ * 位置由 JS 算好后只写 transform，滚动时同一份坐标平移即可，不重新排版。
+ *
+ * 宽度做成变量：宿主想要更粗/更细或跟随字号都只改这一个值，不用动组件。
+ */
+.mde-caret-layer {
+  position: absolute;
+  inset: 0;
+  /* 正文是 z-index 2，光标要压在它上面 */
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-.mde-source.has-gutter .mde-textarea {
-  padding-left: 8px;
+.mde-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--mde-caret-width, 2px);
+  /* 高度默认取变量（字号 × caretHeight）；JS 落光标时会再写一次内联值 */
+  height: var(--mde-caret-height, 1.25em);
+  border-radius: calc(var(--mde-caret-width, 2px) / 2);
+  background: var(--mde-accent);
+  opacity: 0;
+  will-change: transform;
+}
+
+/*
+ * 闪烁：动的时候实心、停手之后才闪（和原生一致）。
+ * 重新挂上这个类动画就从头播一次——JS 那边靠「移除 → 读 offsetWidth → 加回」重启动画。
+ */
+.mde-caret.is-blinking {
+  animation: mde-caret-blink 1.06s steps(1, end) infinite;
+}
+
+@keyframes mde-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 自绘光标接管期间隐掉原生那根细线；量不出位置时 JS 会把这个类摘掉 */
+.mde-content.is-caret-hidden {
+  caret-color: transparent;
 }
 
 .mde-gutter {
   flex: none;
+  /* 右内边距归零：行号槽与正文区贴合，不再隔出一道缝；数字与文字的距离交给正文自己的左内边距 */
   width: 46px;
-  padding: 20px 8px 0 0;
+  /* 顶边与正文对齐：-y 变量必须与 .mde-content / .mde-placeholder 一致 */
+  padding: var(--mde-editor-pad-y) 0 0 0;
   overflow: hidden;
   background: var(--mde-gutter-bg);
   color: var(--mde-gutter-text);
@@ -821,11 +1037,10 @@
 }
 
 .mde-gutter-line:hover {
-  background: var(--mde-toolbar-hover);
   color: var(--mde-gutter-active-text);
 }
 
-/* 折行测量层：字体与宽度由 JS 同步成 textarea 的值，只用来量「这一行折成几行」 */
+/* 折行测量层：字体与宽度由 JS 同步成编辑区的值，只用来量「这一行折成几行」 */
 .mde-measure {
   position: absolute;
   top: 0;
@@ -850,6 +1065,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--mde-preview-bg);
+  /* 只是为了让点击能落进焦点（阅读模式下 Ctrl/⌘+F 才传得到根节点），不需要焦点环 */
+  outline: none;
 }
 
 .mde-preview {
@@ -1202,6 +1419,116 @@
   max-width: 100%;
   margin: 0.5em 0;
   border-radius: 6px;
+}
+
+/* 可点击放大：给个 zoom-in 指针提示（preview.imagePreview） */
+.mde-root .mde-image.is-zoomable {
+  cursor: zoom-in;
+}
+
+/* ============ 图片放大预览 ============ */
+/*
+ * 固定铺满视口：图片放大要看整张，不该被编辑区的边框裁掉。
+ * 节点由 ImageViewer 用 `createPortal` 挂到 document.body，这里的兜底色
+ * 只是给「没传 themeVars」的独立用法用（portal 后不再继承 `.mde-root`）。
+ */
+.mde-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--mde-image-viewer-bg, rgba(15, 23, 42, 0.8));
+  animation: mde-fade 120ms ease;
+}
+
+/* portal 的外壳：不参与布局，只负责把 `--mde-*` 变量带进来 */
+.mde-image-viewer-portal {
+  display: contents;
+}
+
+.mde-image-viewer-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mde-image-viewer-img {
+  max-width: 92%;
+  max-height: 92%;
+  user-select: none;
+  -webkit-user-drag: none;
+  cursor: grab;
+  will-change: transform;
+  transition: transform 80ms ease-out;
+}
+
+/* 拖动中跟手：去掉过渡，否则图片会落后指针一截 */
+.mde-image-viewer-img.is-dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+.mde-image-viewer-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mde-bg, #ffffff) 88%, transparent);
+  color: var(--mde-text-body);
+  font-size: 12px;
+  box-shadow: var(--mde-shadow);
+  pointer-events: none;
+}
+
+.mde-image-viewer-scale {
+  color: var(--mde-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mde-image-viewer-hint {
+  color: var(--mde-text-muted);
+}
+
+.mde-image-viewer-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mde-bg, #ffffff) 88%, transparent);
+  color: var(--mde-text-body);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.mde-image-viewer-close:hover {
+  color: var(--mde-text);
+}
+
+@keyframes mde-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .mde-root .mde-mark {
@@ -1842,6 +2169,20 @@
 
 .mde-root ::-webkit-scrollbar-thumb:hover {
   background-color: var(--mde-scrollbar-thumb-hover);
+}
+
+/*
+ * 滚动条上统一用箭头光标。
+ *
+ * 编辑区自己带 `cursor: text`，指针划到它右侧的滚动条上时浏览器仍按元素的
+ * 光标去画，于是变成一根 I 形插入符——看着像能在滚动条上打字。滚动条是绘制在
+ * 元素之上的独立区域，只能靠伪元素单独声明光标。
+ */
+.mde-root ::-webkit-scrollbar,
+.mde-root ::-webkit-scrollbar-track,
+.mde-root ::-webkit-scrollbar-thumb,
+.mde-root ::-webkit-scrollbar-corner {
+  cursor: default;
 }
 
 /* ============ 深色微调（颜色已由变量覆盖） ============ */

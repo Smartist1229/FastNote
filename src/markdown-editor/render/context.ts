@@ -15,6 +15,13 @@ export interface PreviewContextValue {
   readOnly: boolean;
   onLinkClick?: (href: string, event: ReactMouseEvent) => boolean | void;
   onTaskToggle?: (taskOffset: number, checked: boolean) => void;
+  /**
+   * 点击预览里的图片（宿主接管用）。返回 `true` 表示已处理；
+   * 不传时组件自己弹放大浮层（见 `showImage`）。
+   */
+  onImageClick?: (src: string, alt: string) => boolean | void;
+  /** 组件内置的放大浮层入口：把图片交给预览自己渲染的 `ImageViewer` */
+  showImage?: (src: string, alt: string) => void;
 }
 
 export const PreviewCtx = createContext<PreviewContextValue | null>(null);

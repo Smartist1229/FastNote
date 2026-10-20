@@ -420,13 +420,15 @@ fn supports_extended_thinking(model: &str) -> bool {
 }
 
 #[tauri::command]
-fn create_category(name: String, state: State<AppState>) -> Result<Category, String> {
+fn create_category(name: String, ai_access: Option<i64>, state: State<AppState>) -> Result<Category, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
+    // 同 create_note：默认档位由前端按设置传入，缺省"完全"
+    let ai_access = ai_access.unwrap_or(2).clamp(0, 2);
     
     conn.execute(
-        "INSERT INTO categories (name, created_at) VALUES (?1, ?2)",
-        params![name, now],
+        "INSERT INTO categories (name, created_at, ai_access) VALUES (?1, ?2, ?3)",
+        params![name, now, ai_access],
     ).map_err(|e| e.to_string())?;
     
     let id = conn.last_insert_rowid();
@@ -436,7 +438,7 @@ fn create_category(name: String, state: State<AppState>) -> Result<Category, Str
         name,
         created_at: now,
         note_count: 0,
-        ai_access: 2,
+        ai_access,
     })
 }
 
@@ -1497,13 +1499,16 @@ fn delete_category(id: i64, delete_notes: bool, state: State<AppState>) -> Resul
 }
 
 #[tauri::command]
-fn create_note(title: String, content: String, category_id: Option<i64>, state: State<AppState>) -> Result<Note, String> {
+fn create_note(title: String, content: String, category_id: Option<i64>, ai_access: Option<i64>, state: State<AppState>) -> Result<Note, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
+    // 新笔记的 AI 档位由调用方给（设置里的「新建笔记默认权限」），缺省按"完全"，
+    // 与老版本行为一致；写库时显式带上，返回值也用同一个值，避免库里是 A 返回是 B
+    let ai_access = ai_access.unwrap_or(2).clamp(0, 2);
 
     conn.execute(
-        "INSERT INTO notes (title, content, category_id, created_at, updated_at, is_pinned) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-        params![title, content, category_id, now, now],
+        "INSERT INTO notes (title, content, category_id, created_at, updated_at, is_pinned, ai_access) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+        params![title, content, category_id, now, now, ai_access],
     ).map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();
@@ -1518,8 +1523,7 @@ fn create_note(title: String, content: String, category_id: Option<i64>, state: 
         is_deleted: false,
         deleted_at: None,
         is_pinned: false,
-        // 新建笔记默认"完全访问"；需要收紧时调用方创建后立即 set_note_ai_access
-        ai_access: 2,
+        ai_access,
     })
 }
 
@@ -1546,6 +1550,7 @@ fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
     })
 }
 
+/// 查询笔记列表（含正文）。正文随列表一起返回，AI 读未打开的笔记也无需额外请求。
 #[tauri::command]
 fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, state: State<AppState>) -> Result<Vec<Note>, String> {
     let conn = state.conn.lock().unwrap();
@@ -1592,6 +1597,22 @@ fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, stat
     }
     
     Ok(result)
+}
+
+/// 读取单条笔记（含正文），供编辑器保存前的兜底校验/按 id 取用。
+#[tauri::command]
+fn get_note(id: i64, state: State<AppState>) -> Result<Note, String> {
+    let conn = state.conn.lock().unwrap();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
+             FROM notes WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    stmt.query_row(params![id], map_row_to_note)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2789,6 +2810,19 @@ fn read_setting_string(app: &AppHandle, key: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// 启动时是否应该显示主窗口。
+///
+/// 窗口以 `visible: false` 创建、由前端在首帧画完后 show()（见 main.tsx），
+/// 所以"开机自启 + 开机后最小化 + 托盘已开启"这条规则要让前端也问一次：
+/// 否则前端那句 show() 会把本该藏在托盘里的窗口顶出来。
+/// 与 setup 里的分支用同一套判定，改规则时两处一起改。
+#[tauri::command]
+fn should_show_on_startup(app: AppHandle) -> bool {
+    let tray_on = read_setting_bool(&app, "app.config.general.trayEnabled", true);
+    let minimize_to_tray = read_setting_bool(&app, "app.config.general.minimizeToTray", false);
+    !(launched_from_autostart() && minimize_to_tray && tray_on)
+}
+
 /// 显示、取消最小化并聚焦主窗口（第二个实例 / 托盘左键 / 托盘菜单共用）
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -2982,6 +3016,7 @@ pub fn run() {
             delete_category,
             create_note,
             get_notes,
+            get_note,
             update_note,
             set_note_ai_access,
             set_category_ai_access,
@@ -3018,6 +3053,7 @@ pub fn run() {
             write_text_file,
             set_tray_enabled,
             set_autostart_enabled,
+            should_show_on_startup,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件
@@ -3095,8 +3131,20 @@ pub fn run() {
             if launched_from_autostart() && minimize_to_tray && tray_on {
                 let _ = window.hide();
             } else {
-                let _ = window.show();
-                let _ = window.set_focus();
+                /*
+                 * 不在这里直接 show：窗口一显示，系统会先画出 webview 的空白帧
+                 * （深色主题是黑屏、浅色是白屏），之后才轮到 index.html 里的加载页。
+                 * 正常路径由前端 main.tsx 在首帧画完后自己 show()，这里只做兜底：
+                 * 前端脚本出错 / 加载失败时窗口不能永远不出现。
+                 */
+                let fallback = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if !fallback.is_visible().unwrap_or(true) {
+                        let _ = fallback.show();
+                        let _ = fallback.set_focus();
+                    }
+                });
             }
 
             Ok(())

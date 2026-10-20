@@ -9,18 +9,37 @@ import { invoke } from '@tauri-apps/api/core';
 
 import type { ExternalTextFile, Note } from '@/interface/note';
 
-/** 新建笔记（create_note），返回完整 Note（含 id 与时间戳）；categoryId 为 null 表示未分组 */
-export const createNote = async (title: string, content: string, categoryId: number | null): Promise<Note> => {
-  return await invoke('create_note', { title, content, categoryId });
+/**
+ * 新建笔记（create_note），返回完整 Note（含 id 与时间戳）；categoryId 为 null 表示未分组。
+ * aiAccess 是这条笔记的初始 AI 访问档位（0 禁止 / 1 只读 / 2 完全），由调用方按
+ * 「新建笔记默认权限」传入；省略时 Rust 侧按 2（完全）处理，与老版本一致。
+ */
+export const createNote = async (
+  title: string,
+  content: string,
+  categoryId: number | null,
+  aiAccess?: number,
+): Promise<Note> => {
+  return await invoke('create_note', { title, content, categoryId, aiAccess });
 };
 
 /**
- * 查询笔记（get_notes）。categoryId 为 null 查全部分组；
+ * 查询笔记列表（get_notes）。categoryId 为 null 查全部分组；
  * sortBy 支持 created_at/updated_at/title，其它值按 updated_at；sortOrder 仅 "asc" 生效。
- * 置顶笔记恒在最前；返回不含回收站内的笔记。
+ * 置顶笔记恒在最前；返回不含回收站内的笔记，且始终带正文——
+ * AI 读取未打开的笔记依赖它，不能在这里裁掉 content。
  */
-export const getNotes = async (categoryId: number | null, sortBy: string, sortOrder: string): Promise<Note[]> => {
+export const getNotes = async (
+  categoryId: number | null,
+  sortBy: string,
+  sortOrder: string,
+): Promise<Note[]> => {
   return await invoke('get_notes', { categoryId, sortBy, sortOrder });
+};
+
+/** 读取单条笔记（get_note），返回带正文的完整 Note；不存在时 reject */
+export const getNote = async (id: number): Promise<Note> => {
+  return await invoke('get_note', { id });
 };
 
 /** 更新标题/正文/分组并刷新 updated_at（update_note）；不传 is_pinned，Rust 侧保持原值 */

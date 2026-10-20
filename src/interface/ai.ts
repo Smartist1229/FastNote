@@ -9,6 +9,8 @@
  * id 与时间戳由 Rust 侧生成，前端只读；改动字段名等于改契约，需同步 lib.rs。
  */
 
+import type { AiAccessLevel } from "./aiAccess";
+
 /** 服务商协议风格：决定请求体格式、鉴权头与该类型的默认接口路径 */
 export type AiProviderType = "openai" | "google" | "claude";
 
@@ -82,6 +84,14 @@ export interface AiSettings {
    * 但对话本身仍可用（当作普通聊天）。分组级、笔记级开关在此基础上进一步限制。
    */
   aiAccessEnabled: boolean;
+  /**
+   * 新建笔记时套用的默认档位（默认 2 完全）。
+   * 软件里新建、另存、导入文件、以及 AI 的 createNote 都走这个初始值；
+   * 建好之后仍可在「笔记属性」里单独调整，改这里不会影响已存在的笔记。
+   */
+  defaultNoteAiAccess: AiAccessLevel;
+  /** 新建分组时套用的默认档位（默认 2 完全）；同样只影响新建，不改已有分组 */
+  defaultCategoryAiAccess: AiAccessLevel;
   /**
    * 输入框高度（px）：0 = 自动（44px 起随内容长高，上限 min(320, 面板可用高度 45%)）；
    * > 0 = 手动固定（拖上边缘设定，双击恢复自动）。

@@ -5,6 +5,7 @@
  * 不需要碰组件内部的选择器。代码高亮 token 也走变量，换配色只需换一组值。
  */
 import { DARK_COLORS, LIGHT_COLORS, resolveCodeTheme, type CodeThemeDefinition } from "./defaults";
+import { SYNTAX_TOKENS, syntaxHighlightName } from "./editor/syntax";
 import type { MarkdownEditorConfig, MarkdownThemeColors } from "./types";
 
 const kebab = (value: string): string => value.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
@@ -75,7 +76,16 @@ const applyFollowFrameColors = (
   codeBorder: overrides.codeBorder ?? `color-mix(in srgb, ${colors.accent} 28%, ${colors.border})`,
 });
 
-export const buildThemeVars = (config: MarkdownEditorConfig, resolved: "light" | "dark"): ThemeResult => {
+/**
+ * 解析出「最终生效」的主题配色与代码配色。
+ *
+ * 编辑区代码 token 的着色规则（`buildSyntaxRules`）要用同一份代码配色，
+ * 所以这一步单独拎出来，两条路各取所需、不会算出两套色。
+ */
+const resolvePalette = (
+  config: MarkdownEditorConfig,
+  resolved: "light" | "dark",
+): { colors: MarkdownThemeColors; code: CodeThemeDefinition } => {
   const followPreset = config.theme.codeTheme === "follow";
   const base = resolved === "dark" ? DARK_COLORS : LIGHT_COLORS;
   const merged = { ...base, ...config.theme.colors };
@@ -83,6 +93,30 @@ export const buildThemeVars = (config: MarkdownEditorConfig, resolved: "light" |
   const code = followPreset
     ? buildFollowCodeTheme(colors)
     : resolveCodeTheme({ ...config, theme: { ...config.theme, mode: resolved } });
+  return { colors, code };
+};
+
+/**
+ * 编辑区代码 token 的 `::highlight()` 规则文本。
+ *
+ * `::highlight()` 里**自定义属性不保证可用**（取不到就退化成透明，等于没着色），
+ * 所以颜色只能用字面量——这里把当前代码配色（预设或「跟随主题」算出来的那套）
+ * 的十六进制值直接写进规则里，随主题一起变。半透明色（`color-mix` / `rgba`）
+ * 求不出字面色，跳过它，那一类 token 就沿用正文颜色。
+ */
+export const buildSyntaxRules = (config: MarkdownEditorConfig, resolved: "light" | "dark"): string => {
+  const { code } = resolvePalette(config, resolved);
+  return SYNTAX_TOKENS.map((token) => {
+    const color = code.colors[token];
+    if (!color || !/#[0-9a-f]{3,8}/i.test(color)) return "";
+    return `::highlight(${syntaxHighlightName(token)}) { color: ${color.trim()}; }`;
+  })
+    .filter(Boolean)
+    .join("\n");
+};
+
+export const buildThemeVars = (config: MarkdownEditorConfig, resolved: "light" | "dark"): ThemeResult => {
+  const { colors, code } = resolvePalette(config, resolved);
   const typography = config.preview.typography;
 
   const vars: Record<string, string> = {
@@ -103,6 +137,12 @@ export const buildThemeVars = (config: MarkdownEditorConfig, resolved: "light" |
     "--mde-preview-align": typography.textAlign,
     "--mde-editor-font-size": `${config.editor.fontSize}px`,
     "--mde-editor-line-height": String(config.editor.lineHeight),
+    // 自绘光标宽度：非法值（0 / 负 / NaN）回退到 2px
+    "--mde-caret-width": `${config.editor.caretWidth > 0 ? config.editor.caretWidth : 2}px`,
+    // 自绘光标高度：字号 × 倍数（非法值回退 1.25），比字略高、不占满行盒
+    "--mde-caret-height": `${
+      config.editor.fontSize * (config.editor.caretHeight > 0 ? config.editor.caretHeight : 1.25)
+    }px`,
     // 连字关 → none + 关掉 liga/calt：等宽字体默认会把 ->、== 画成单个符号
     "--mde-ligatures": config.editor.fontLigatures ? "normal" : "none",
     "--mde-font-features": config.editor.fontLigatures ? '"liga" 1, "calt" 1' : '"liga" 0, "calt" 0',

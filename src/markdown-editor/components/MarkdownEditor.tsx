@@ -5,7 +5,7 @@
  * - 持有文档、模式、选择区、历史、全屏/大纲等界面状态；
  * - 把「工具栏 / 快捷键 / 命令式 API / 任务勾选」统一收敛成 `applyEdit()` 一条写入口，
  *   保证任何来源的改动都会走同一套历史记录与受控回调；
- * - 几种模式只是不同的视图组合：源码（textarea）、分栏（源码 + 预览）、阅读（预览）、
+ * - 几种模式只是不同的视图组合：编辑（contenteditable + 按行虚拟化）、分栏（编辑 + 预览）、阅读（预览）、
  *   纯渲染（render，无外壳），它们共用同一份文档与同一套渲染。
  *
  * 受控/非受控：传了 `value` 就是受控（内部不再存值，只回调 onChange）；
@@ -24,7 +24,7 @@ import {
 } from "react";
 import "../styles.css";
 import { ALL_MODES, resolveConfig, resolveLabels } from "../defaults";
-import { buildThemeVars } from "../theme";
+import { buildSyntaxRules, buildThemeVars } from "../theme";
 import { parseMarkdown } from "../parser/block";
 import {
   applyAdmonition,
@@ -37,8 +37,15 @@ import {
   type ActiveFormats,
   type EditState,
 } from "../editor/commands";
-import { useHistory } from "../editor/useHistory";
+import { useHistory } from "../editor/hooks/useHistory";
 import { bindScrollSync } from "../editor/scrollSync";
+import {
+  applyTextHighlights,
+  clearHighlights,
+  setFlashRanges,
+  type TextHighlightResult,
+} from "../editor/highlights";
+import { lineOffsets, splitLines } from "../editor/lines";
 import {
   expandReplacement,
   findMatches,
@@ -59,6 +66,7 @@ import type {
   MarkdownEditorMode,
   MarkdownEditorProps,
   MarkdownStats,
+  OutlineItem,
   ParsedDocument,
   ToolbarItemName,
 } from "../types";
@@ -66,10 +74,87 @@ import { SourceEditor, type SourceEditorHandle } from "../components/SourceEdito
 import { Toolbar } from "../components/Toolbar";
 import { StatusBar } from "../components/StatusBar";
 import { Outline } from "../components/Outline";
-import { SearchBox } from "../components/SearchBox";
+import { SearchBox } from "../components/overlays/SearchBox";
+import { ImageViewer } from "../components/overlays/ImageViewer";
 import { MarkdownPreview } from "../render/MarkdownPreview";
 
-/** 文本编辑目标：源码 textarea 与实时预览块编辑框都满足这个形状 */
+/** `## 标题` 这类行里「标记 + 空格」的那一段，光标要跳过它 */
+const HEADING_MARK = /^[ \t]*#{1,6}[ \t]+/;
+
+/**
+ * 标题行里光标该落的偏移。
+ *
+ * - `lineStart`：行首（`###` 前面，顶格）。改标题级别时最顺手，也是默认值；
+ *   落在行首再敲一个字会插到 `#` 前面，所以要改内容得先按一下 End——这是取舍后的默认。
+ * - `textStart`：跳过 `### `，落在标题文字的第一个字符上。
+ *
+ * 匹配不上（这一行其实已经不是标题了）就退回到行首。
+ */
+const headingCaretOffset = (
+  text: string,
+  line: number,
+  target: "lineStart" | "textStart",
+): number => {
+  const offsets = lineOffsets(text);
+  const index = Math.max(0, Math.min(offsets.length - 1, line - 1));
+  const start = offsets[index] ?? 0;
+  if (target !== "textStart") return start;
+  const raw = splitLines(text)[index] ?? "";
+  return start + (HEADING_MARK.exec(raw)?.[0].length ?? 0);
+};
+
+/** `[id="..."]` 选择器：标题 id 里可能有引号或空格，先转义 */
+const idSelector = (id: string): string => `[id="${id.replace(/["\\]/g, (char) => `\\${char}`)}"]`;
+
+/**
+ * 预览区里某一行对应的顶层块。
+ *
+ * 优先按标题 id 直接命中（`### 测试` 渲染成 `<h3 id="测试">`），
+ * 找不到再退回「最后一个 data-line 不超过目标的块」。
+ */
+const findPreviewBlock = (
+  container: HTMLElement,
+  line: number,
+  id?: string,
+): HTMLElement | null => {
+  if (id) {
+    const exact = container.querySelector<HTMLElement>(idSelector(id));
+    if (exact) return exact;
+  }
+  let fallback: HTMLElement | null = null;
+  container.querySelectorAll<HTMLElement>("[data-line]").forEach((node) => {
+    if (Number(node.dataset.line) <= line) fallback = node;
+  });
+  return fallback;
+};
+
+/**
+ * 把预览区滚到「目标块贴在视口顶部」的位置。
+ *
+ * 超长文档给屏外块加了 `content-visibility: auto`（见 styles.css）：没渲染出来的块
+ * 只按 `contain-intrinsic-size` 报一个占位高度，直接量它的位置必然偏——
+ * 这就是「长文档里点靠后的目录，第一次跳不准、再点一次才对」的来源。
+ *
+ * 所以这里迭代几次：先按当前（占位）位置跳一次，把目标带进渲染范围，
+ * 浏览器随即补排它周围的块，下一帧量到的就是真值，再校准；收敛（差 < 1px）即停。
+ */
+const settlePreviewScroll = (container: HTMLElement, node: HTMLElement, offset: number): void => {
+  let previous = -1;
+  let tries = 6;
+  const step = () => {
+    const top = node.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    const max = Math.max(0, container.scrollHeight - container.clientHeight);
+    const next = Math.min(max, Math.max(0, top - offset));
+    container.scrollTop = next;
+    tries -= 1;
+    if (tries <= 0 || Math.abs(next - previous) < 1) return;
+    previous = next;
+    requestAnimationFrame(step);
+  };
+  step();
+};
+
+/** 文本编辑目标：编辑区（contenteditable）与实时预览块编辑框都满足这个形状 */
 interface EditorTarget {
   getState: () => EditState;
   apply: (next: EditState) => void;
@@ -208,7 +293,7 @@ const hasTaskItem = (node: ParsedDocument["blocks"][number]): boolean => {
  * 头部：变化点之前的块偏移完全一致，按位置复用。
  * 尾部：两边各自的「变化点之后」文本相同，但只要中间增删过字符，块的绝对偏移就整体平移了——
  *   带任务项的块不能复用（勾选会按平移前的 taskOffset 改到别的字符上），
- *   行号变了的也不能复用（data-line 是滚动同步与「跳到源码」的锚点）。
+ *   行号变了的也不能复用（data-line 是滚动同步与「跳到编辑区」的锚点）。
  */
 const shareBlocks = (
   next: { text: string; doc: ParsedDocument },
@@ -277,13 +362,68 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     onTaskToggle,
     onOutlineChange,
     onStatsChange,
+    onFontSizeChange,
     onFullscreenChange,
   } = props;
 
-  const config = useMemo(() => resolveConfig(configPatch as DeepPartial<MarkdownEditorConfig>), [configPatch]);
+  const baseConfig = useMemo(
+    () => resolveConfig(configPatch as DeepPartial<MarkdownEditorConfig>),
+    [configPatch],
+  );
+
+  /* ---------- 字号缩放（Ctrl/⌘ + 滚轮 / `=` / `-` / `0`） ---------- */
+  /**
+   * 生效字号：宿主传了 `onFontSizeChange` 就完全受控（设置项归宿主管），
+   * 没传则退化成内部覆盖值——单独用这个组件时也能直接 Ctrl+滚轮缩放。
+   */
+  const [localSize, setLocalSize] = useState<number | null>(null);
+  const effectiveFontSize = onFontSizeChange
+    ? baseConfig.editor.fontSize
+    : (localSize ?? baseConfig.editor.fontSize);
+
+  /** 宿主的字号变了（改设置、外部回写）→ 放弃本地覆盖，以新配置为准 */
+  useEffect(() => {
+    if (!onFontSizeChange) setLocalSize(null);
+  }, [baseConfig.editor.fontSize, onFontSizeChange]);
+
+  const zoom = baseConfig.editor.zoom;
+  const zoomRef = useRef({ zoom, size: effectiveFontSize });
+  zoomRef.current = { zoom, size: effectiveFontSize };
+
+  /** 改字号：±1 加减一个步长，0 恢复默认（默认是多少由宿主的 config 说了算） */
+  const applyZoom = useCallback(
+    (delta: 1 | -1 | 0) => {
+      const state = zoomRef.current;
+      if (!state.zoom.enabled) return;
+      if (delta === 0) {
+        setLocalSize(null);
+        onFontSizeChange?.(null);
+        return;
+      }
+      const next = Math.min(state.zoom.max, Math.max(state.zoom.min, state.size + delta * state.zoom.step));
+      if (next === state.size) return;
+      if (onFontSizeChange) onFontSizeChange(next);
+      else setLocalSize(next);
+    },
+    [onFontSizeChange],
+  );
+
+  /** 生效配置：只覆盖字号，其余原样沿用解析后的配置 */
+  const config = useMemo(
+    () =>
+      effectiveFontSize === baseConfig.editor.fontSize
+        ? baseConfig
+        : { ...baseConfig, editor: { ...baseConfig.editor, fontSize: effectiveFontSize } },
+    [baseConfig, effectiveFontSize],
+  );
   const labels = useMemo(() => resolveLabels(config), [config]);
   const resolvedTheme = useResolvedTheme(config.theme.mode);
   const themeVars = useMemo(() => buildThemeVars(config, resolvedTheme).vars, [config, resolvedTheme]);
+  /**
+   * 编辑区代码 token 的着色规则（`::highlight()` 的字面量颜色）：
+   * 与 `themeVars` 同源，换主题 / 换代码配色预设时一起重算。
+   */
+  const syntaxRules = useMemo(() => buildSyntaxRules(config, resolvedTheme), [config, resolvedTheme]);
 
   /* ---------- 值 / 模式 ---------- */
   const isControlled = valueProp !== undefined;
@@ -313,6 +453,44 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     setSelection({ start, end });
   }, []);
 
+  /**
+   * 大纲跳转后临时高亮的目标。
+   *
+   * `line` 给编辑区（只铺那一行的文字范围，走 `::highlight(mde-flash)`）、
+   * `id` 给预览区（`::highlight(mde-flash)` 铺标题文字）；
+   * `anchor` 是跳转时落下的光标偏移——光标一旦离开这个点就说明用户去看别处了，高亮撤掉。
+   */
+  const [flash, setFlash] = useState<{ line: number; id: string; anchor: number } | null>(null);
+  const flashRef = useRef(flash);
+  flashRef.current = flash;
+
+  /**
+   * 视口顶部所在的编辑行（1 基），滚动时更新。
+   *
+   * 大纲的「当前在哪一节」不该只认光标：阅读视图根本没有光标，其余视图里光滚动也不动光标，
+   * 于是选中项一直钉在原地。`null` 表示「按光标算」——用户一挪光标就回到这个状态。
+   */
+  const [scrollLine, setScrollLine] = useState<number | null>(null);
+
+  /** 预览区当前命中的区间：查找跳转要把它滚进视野 */
+  const previewCurrentRef = useRef<Range | null>(null);
+
+  /**
+   * 编辑区上报的选区变化。
+   *
+   * 光标离开了大纲跳转落下的那个点 → 撤掉跳转高亮。跳转本身也会走到这里（偏移相同），
+   * 那时不算「离开」。光标动手之后大纲也该重新跟光标走，把滚动带来的覆盖值清掉。
+   */
+  const handleSourceSelection = useCallback(
+    (start: number, end: number) => {
+      const target = flashRef.current;
+      if (target && start !== target.anchor) setFlash(null);
+      setScrollLine(null);
+      updateSelection(start, end);
+    },
+    [updateSelection],
+  );
+
   /* ---------- 解析 ---------- */
   const parseOptions = useMemo(
     () => ({ allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
@@ -341,6 +519,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   );
 
   /**
+   * 输入法正在组合（拼音还没选字）。
+   *
+   * 组合期间每敲一个字母都会走一遍 input 事件，而解析 + 预览重渲染是几十毫秒的量级，
+   * 正好卡在候选词刷新的节奏上；这里在组合期间先不解析，等 compositionend 补一次。
+   * 用 ref 是因为它不该触发渲染，`composeTick` 才是「组合结束，可以补解析了」的信号。
+   */
+  const composingRef = useRef(false);
+  const [composeTick, setComposeTick] = useState(0);
+
+  /**
    * 本次渲染要显示的解析结果。
    *
    * 防抖为 0（实时预览）时直接在渲染期解析：走 effect 的话一次按键是
@@ -349,6 +537,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    * 等 120ms 只会让人先看见上一篇的残留内容。
    */
   const parsed = useMemo<ParsedSnapshot>(() => {
+    if (composingRef.current) return debounced;
     const upToDate =
       debounced.text === value &&
       debounced.allowHtml === parseOptions.allowHtml &&
@@ -358,12 +547,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       return makeSnapshot(value, parseOptions);
     }
     return debounced;
-  }, [value, parseOptions, debounced, config.preview.debounce, makeSnapshot]);
+  }, [value, parseOptions, debounced, config.preview.debounce, composeTick, makeSnapshot]);
 
   /** 防抖落地：到点把「这一帧显示的解析结果」写进防抖状态，与渲染期解析保持同一份 */
   useEffect(() => {
     const delay = config.preview.debounce;
     if (!delay) return;
+    // 组合期间不落库：否则等 120ms 的定时器正好在候选词中间把整篇重解析一遍
+    if (composingRef.current) return;
     const committed =
       debounced.text === value &&
       debounced.allowHtml === parseOptions.allowHtml &&
@@ -379,7 +570,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       delay,
     );
     return () => window.clearTimeout(timer);
-  }, [value, parseOptions, config.preview.debounce, debounced, parsed, makeSnapshot]);
+  }, [value, parseOptions, config.preview.debounce, debounced, parsed, composeTick, makeSnapshot]);
 
   /**
    * 把「内容没被这次改动碰到」的块换回上一次的节点对象。
@@ -408,6 +599,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   const [searchOptions, setSearchOptions] = useState<SearchOptions>({
     caseSensitive: config.search.caseSensitive,
     regex: config.search.regex,
+    regexReplace: config.search.regexReplace,
   });
   const [searchFocusToken, setSearchFocusToken] = useState(0);
   const [matchIndex, setMatchIndex] = useState(0);
@@ -443,9 +635,30 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     setSplitRatio(config.split.ratio);
   }, [config.split.ratio]);
 
+  /* ---------- 图片放大预览 ---------- */
+  /** 当前被点开的图片；null = 浮层不显示 */
+  const [viewingImage, setViewingImage] = useState<{ src: string; alt: string } | null>(null);
+  /*
+   * 纯渲染模式（AI 回复那种嵌在别的面板里的小块）不弹浮层：
+   * 它没有自己的外壳，浮层会盖到宿主界面上去。
+   */
+  const onImageClick = useCallback(
+    (src: string, alt: string) => {
+      if (!config.preview.imagePreview || mode === "render") return undefined;
+      setViewingImage({ src, alt });
+      return true;
+    },
+    [config.preview.imagePreview, mode],
+  );
+  /* 切视图时清掉浮层，避免下次打开时残留 */
+  useEffect(() => {
+    setViewingImage(null);
+  }, [mode]);
+
   /* ---------- 引用 ---------- */
   const sourceRef = useRef<SourceEditorHandle | null>(null);
-  const sourceElRef = useRef<HTMLTextAreaElement | null>(null);
+  /** 编辑区的滚动容器（contenteditable）：滚动同步要绑它 */
+  const sourceElRef = useRef<HTMLElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -466,7 +679,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     [history, isControlled, onChange, updateSelection],
   );
 
-  const handleSourceElement = useCallback((element: HTMLTextAreaElement | null) => {
+  const handleSourceElement = useCallback((element: HTMLElement | null) => {
     sourceElRef.current = element;
   }, []);
 
@@ -554,7 +767,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       if (!isControlled) setInnerValue(snapshot.text);
       onChange?.(snapshot.text, { source, mode: modeRef.current });
       updateSelection(snapshot.caret, snapshot.caret);
-      // 值更新是异步的，这里只排队选区，等 textarea 拿到新值后再落光标
+      // 值更新是异步的，这里只排队选区，等编辑区拿到新值后再落光标
       sourceRef.current?.queueSelection(snapshot.caret, snapshot.caret);
     },
     [isControlled, onChange, updateSelection],
@@ -712,7 +925,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    * 根节点的捕获阶段快捷键。
    *
    * 查找框要能在任意焦点位置唤起（工具栏、预览区、甚至没聚焦时点开菜单后），
-   * 单靠 textarea 的 onKeyDown 覆盖面不够；用捕获还能抢在输入框的 Esc 失焦之前关掉查找框。
+   * 单靠编辑区的 onKeyDown 覆盖面不够；用捕获还能抢在输入框的 Esc 失焦之前关掉查找框。
    *
    * mod+f / mod+g / mod+h 必须在这里就 preventDefault：否则宿主容器（浏览器标签页、
    * WebView2）会接着弹出自己的原生查找条 / 历史页。软件侧建议在 window 捕获阶段也拦一层，
@@ -720,7 +933,32 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    */
   const handleRootKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (!config.search.enabled || event.nativeEvent.isComposing) return;
+      if (event.nativeEvent.isComposing) return;
+      /*
+       * 字号快捷键：Ctrl/⌘ + `=`（含 `+`）、`-`、`0`。
+       * 同样要在这里 preventDefault：WebView2 会把这几个组合键当成整页缩放，
+       * 不拦的话界面整体变大，编辑器字号反而没变。
+       * 小键盘的 +/-、以及带 Shift 敲出来的 `+`/`_` 都归到同一组。
+       */
+      if (config.editor.zoom.enabled && (event.ctrlKey || event.metaKey) && !event.altKey) {
+        const key = event.key;
+        if (key === "=" || key === "+") {
+          event.preventDefault();
+          applyZoom(1);
+          return;
+        }
+        if (key === "-" || key === "_") {
+          event.preventDefault();
+          applyZoom(-1);
+          return;
+        }
+        if (key === "0") {
+          event.preventDefault();
+          applyZoom(0);
+          return;
+        }
+      }
+      if (!config.search.enabled) return;
       const accelerator = acceleratorOf(event);
       if (accelerator === "escape" && searchOpen) {
         event.preventDefault();
@@ -735,15 +973,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         return;
       }
       if (accelerator === "mod+h") {
+        /*
+         * 阅读视图没有可编辑的正文，「替换」在那儿无处可落——这个键只吃掉，不开查找框
+         * （要查找按 Ctrl/⌘+F，那才是阅读视图支持的那一半）。
+         */
         event.preventDefault();
-        openSearchRef.current(undefined, true);
+        if (modeRef.current !== "read") openSearchRef.current(undefined, true);
         return;
       }
       if (accelerator === "mod+g" || accelerator === "mod+shift+g") {
-        // 沿用浏览器习惯：Ctrl/⌘+G 找下一个、加 Shift 找上一个
+        // 只在查找框已经打开时才是「找下一个 / 上一个」；没开的时候不做任何事，
+        // 它不该代替 Ctrl/⌘+F 把查找框弹出来。
         event.preventDefault();
-        if (!searchOpen) openSearchRef.current(undefined, false);
-        else if (accelerator === "mod+shift+g") goPrevRef.current();
+        if (!searchOpen) return;
+        if (accelerator === "mod+shift+g") goPrevRef.current();
         else goNextRef.current();
         return;
       }
@@ -753,7 +996,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         else goNextRef.current();
       }
     },
-    [config.search.enabled, searchOpen],
+    [applyZoom, config.editor.zoom.enabled, config.search.enabled, searchOpen],
   );
 
   useEffect(() => {
@@ -798,6 +1041,26 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     return () => window.removeEventListener("keydown", guard, true);
   }, [config.search.blockHostFind, config.search.enabled]);
 
+  /**
+   * Ctrl/⌘ + 滚轮改字号。
+   *
+   * 必须是**非 passive** 监听：WebView2 / 浏览器接到 Ctrl+滚轮会把整页缩放（连同工具栏、
+   * 侧边栏一起变大），不 preventDefault 就变成「改的不是编辑器字号，是整个界面」。
+   * 挂在根节点而不是 window 上：指针必须落在编辑器范围内才响应。
+   */
+  useEffect(() => {
+    if (!config.editor.zoom.enabled) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      applyZoom(event.deltaY < 0 ? 1 : -1);
+    };
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, [applyZoom, config.editor.zoom.enabled]);
+
   /* ---------- 滚动同步 ---------- */
   useEffect(() => {
     if (mode !== "split" || !config.preview.syncScroll) return;
@@ -807,16 +1070,191 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     return bindScrollSync({
       editor,
       preview,
-      lineHeight: config.editor.fontSize * config.editor.lineHeight,
+      /*
+       * 编辑区虚拟化之后 DOM 里只有可视的那几十行，行偏移只能问 LineRuler——
+       * 而它也正是编辑区自己滚动时所依据的那张表，两边同源才不会各滚各的。
+       */
+      geometry: {
+        lineOffset: (line) => sourceRef.current?.lineOffset(line) ?? 0,
+        unit: () =>
+          sourceRef.current?.lineUnit() ?? config.editor.fontSize * config.editor.lineHeight,
+      },
+      lineCount: () => splitLines(valueRef.current).length,
       mode: config.preview.syncScrollMode,
     });
+  }, [mode, config.preview.syncScroll, config.preview.syncScrollMode]);
+
+  /*
+   * 预览区的查找高亮：只在阅读视图铺。
+   *
+   * 分栏时两侧都铺的话，同一处命中左右各亮一遍，改动一侧另一侧还留着旧位置，
+   * 看着就是「两边都亮着、但只亮了一边是真的」。计数与替换始终以编辑区为准，
+   * 预览侧只在「没有编辑区可看」的阅读视图里负责画。
+   *
+   * 高亮是往注册表里塞 Range（见 editor/highlights.ts），不往 React 渲染的树里插节点；
+   * 预览每次重解析都会换掉节点，所以 `doc` 一变就要重铺一次。
+   */
+  useEffect(() => {
+    const container = previewRef.current;
+    if (!container) return;
+    if (!config.search.highlightPreview || mode !== "read" || !searchOpen || !searchQuery) {
+      previewCurrentRef.current = null;
+      clearHighlights(container);
+      return;
+    }
+    const result: TextHighlightResult = applyTextHighlights(
+      container,
+      searchQuery,
+      searchOptions,
+      matchIndex,
+    );
+    previewCurrentRef.current = result.current;
+    return () => clearHighlights(container);
   }, [
+    config.search.highlightPreview,
+    doc,
+    matchIndex,
     mode,
-    config.preview.syncScroll,
-    config.preview.syncScrollMode,
-    config.editor.fontSize,
-    config.editor.lineHeight,
+    searchOpen,
+    searchOptions,
+    searchQuery,
   ]);
+
+  /*
+   * 跳转高亮的落点与撤销。
+   *
+   * 两侧都只铺「标题文字本身」的范围，不铺整行/整块：
+   * 预览区走 `::highlight(mde-flash)`（给标题元素的内容建一个 Range），
+   * 编辑区由 SourceEditor 按行号铺目标行的文字范围。
+   * 两者都是「一次性」的：改了内容、换了视图、光标移到别处、鼠标点到别处，都撤掉。
+   */
+  useEffect(() => {
+    const container = previewRef.current;
+    if (!container) return;
+    const node = flash ? container.querySelector<HTMLElement>(idSelector(flash.id)) : null;
+    if (!node) {
+      setFlashRanges(container, []);
+      return;
+    }
+    const range = container.ownerDocument.createRange();
+    range.selectNodeContents(node);
+    setFlashRanges(container, [range]);
+    return () => setFlashRanges(container, []);
+  }, [doc, flash, mode]);
+
+  useEffect(() => {
+    setFlash(null);
+  }, [value, mode]);
+
+  /** 鼠标点到大纲以外的任何地方都算「去看别处了」 */
+  useEffect(() => {
+    if (!flash) return;
+    const view = rootRef.current?.ownerDocument.defaultView;
+    if (!view) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".mde-outline")) return;
+      setFlash(null);
+    };
+    view.addEventListener("mousedown", onDown, true);
+    return () => view.removeEventListener("mousedown", onDown, true);
+  }, [flash]);
+
+  /*
+   * 让大纲的选中项跟着正文滚动走。
+   *
+   * 「现在停在哪一节」= 视口顶部那一行落在哪两个标题之间。两侧各算各的：
+   * 编辑区问 LineRuler 的偏移表（虚拟化之后 DOM 里没有整篇，只能问它），
+   * 预览区量标题元素的矩形（`data-line` 跟着块走，不会因为前面的字增删而错位）。
+   * 滚动事件本身很密，用 rAF 合并到一帧再 setState。
+   *
+   * 值只算一次还不够——这里靠 `mode` 重新绑定：切视图时编辑区/预览区会整体挂载或卸载，
+   * 滚动容器也就换了。光标一动则由 `handleSourceSelection` 把这个覆盖值清成 null，
+   * 大纲立刻回到「跟光标」。
+   */
+  useEffect(() => {
+    const editor: HTMLElement | null =
+      mode === "code" || mode === "split" ? sourceElRef.current : null;
+    const preview: HTMLElement | null =
+      mode === "read" || mode === "split" ? previewRef.current : null;
+    if (!editor && !preview) return;
+
+    /** 视口顶部那一行：在偏移表里二分，找最后一个「起点不晚于 scrollTop」的行 */
+    const lineAtEditorTop = (element: HTMLElement): number => {
+      const handle = sourceRef.current;
+      if (!handle) return 1;
+      const total = Math.max(1, splitLines(valueRef.current).length);
+      const top = element.scrollTop;
+      let lo = 1;
+      let hi = total;
+      let best = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        // +4 的容差：正好贴在顶边上的那一行也算「在顶部」
+        if (handle.lineOffset(mid) <= top + 4) {
+          best = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return best;
+    };
+
+    /** 预览区顶部以下、最后一个已经贴上顶边的标题所在行 */
+    const lineAtPreviewTop = (element: HTMLElement): number => {
+      const containerTop = element.getBoundingClientRect().top;
+      let line = 1;
+      element.querySelectorAll<HTMLElement>(".mde-h").forEach((node) => {
+        if (node.getBoundingClientRect().top - containerTop <= 8) {
+          line = Number(node.dataset.line) || line;
+        }
+      });
+      return line;
+    };
+
+    let frame = 0;
+    const commit = (element: HTMLElement) => {
+      frame = 0;
+      const next = element === preview ? lineAtPreviewTop(element) : lineAtEditorTop(element);
+      setScrollLine((previous) => (previous === next ? previous : next));
+    };
+    // 事件触发时重新读 ref：切视图后节点可能已经换掉
+    const onEditorScroll = () => {
+      const element = sourceElRef.current;
+      if (element && !frame) frame = requestAnimationFrame(() => commit(element));
+    };
+    const onPreviewScroll = () => {
+      const element = previewRef.current;
+      if (element && !frame) frame = requestAnimationFrame(() => commit(element));
+    };
+
+    editor?.addEventListener("scroll", onEditorScroll, { passive: true });
+    preview?.addEventListener("scroll", onPreviewScroll, { passive: true });
+    // 挂载 / 切视图后先量一次，别等用户滚一下才对上
+    const initial = editor ?? preview;
+    if (initial) commit(initial);
+    return () => {
+      editor?.removeEventListener("scroll", onEditorScroll);
+      preview?.removeEventListener("scroll", onPreviewScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [mode]);
+
+  /*
+   * 阅读视图里编辑区整个卸载了，焦点往往掉在 body 上——不在 `.mde-root` 内，
+   * 根节点上的捕获监听就收不到按键，表现为「阅读视图按 Ctrl/⌘+F 没反应」。
+   * 切进阅读视图时把焦点收进预览区（那儿唯一可点的面），快捷键才有落点。
+   */
+  useEffect(() => {
+    if (mode !== "read") return;
+    const root = rootRef.current;
+    const preview = previewRef.current;
+    if (!root || !preview) return;
+    const active = root.ownerDocument.activeElement;
+    if (active && root.contains(active)) return;
+    preview.focus({ preventScroll: true });
+  }, [mode]);
 
   /* ---------- 对外回调 ---------- */
   useEffect(() => {
@@ -848,27 +1286,21 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   docRef.current = doc;
 
   /* ---------- 滚动到行 ---------- */
-  const scrollToLine = useCallback(
-    (line: number) => {
-      if (mode === "read") {
-        const container = previewRef.current;
-        if (!container) return;
-        const nodes = container.querySelectorAll<HTMLElement>("[data-line]");
-        let target: HTMLElement | null = null;
-        nodes.forEach((node) => {
-          if (Number(node.dataset.line) <= line) target = node;
-        });
-        if (target) {
-          const element = target as HTMLElement;
-          const top = element.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
-          container.scrollTo({ top: top - 12, behavior: "smooth" });
-          return;
-        }
+  /**
+   * 把某个编辑行带进视野：预览区可见就先滚预览（大纲、查找跳转都走这里），
+   * 编辑区可见就滚编辑区。分栏时两边一起动。
+   */
+  const scrollToLine = useCallback((line: number, headingId?: string) => {
+    const current = modeRef.current;
+    if (current === "split" || current === "read") {
+      const container = previewRef.current;
+      if (container) {
+        const node = findPreviewBlock(container, line, headingId);
+        if (node) settlePreviewScroll(container, node, 12);
       }
-      sourceRef.current?.scrollToLine(line);
-    },
-    [mode],
-  );
+    }
+    if (current !== "read") sourceRef.current?.scrollToLine(line);
+  }, []);
 
   /* ---------- 查找 / 替换：跳转与改写 ---------- */
   const clampIndex = useCallback((index: number, list: SearchMatch[]) => {
@@ -876,42 +1308,44 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     return Math.min(Math.max(index, 0), list.length - 1);
   }, []);
 
-  /** 命中不在可视区时把它滚到中间；用高亮层的真实位置测量，自动换行也不会算错 */
-  const scrollMatchIntoView = useCallback(() => {
-    const root = rootRef.current;
-    const element = sourceElRef.current;
-    if (!root || !element) return;
-    const mark = root.querySelector<HTMLElement>(".mde-find-hit.is-current");
-    if (!mark) return;
-    const markRect = mark.getBoundingClientRect();
-    /*
-     * 必须换算成「内容坐标」再算目标 scrollTop：mark 的视口位置取决于高亮层自己的
-     * scrollTop 是否跟手，而层刚挂载 / 刚重建时可能还停在旧位置（textarea 已经滚了），
-     * 直接拿视口差 += 会把视图滚过头——实测能偏出一整屏，当前命中反而跑到视口外。
-     * 用 markRect - 层的盒顶 + 层的 scrollTop 得到与滚动无关的内容偏移，对同步状态免疫。
-     */
-    const layer = root.querySelector<HTMLElement>(".mde-find-layer");
-    const markTop = layer
-      ? markRect.top - layer.getBoundingClientRect().top + layer.scrollTop
-      : markRect.top - element.getBoundingClientRect().top + element.scrollTop;
-    const viewTop = element.scrollTop;
-    const viewBottom = viewTop + element.clientHeight;
-    const margin = 28;
-    if (markTop >= viewTop + margin && markTop + markRect.height <= viewBottom - margin) return;
-    element.scrollTop = markTop - element.clientHeight / 2 + markRect.height / 2;
-  }, []);
-
+  /**
+   * 跳到某个命中。
+   *
+   * 位置由编辑区自己按行偏移表算（`scrollToOffset`），不再去量高亮层里的
+   * `.is-current`：那层只铺可视区间，命中在视口外时 DOM 里没有这个节点，
+   * 量不到就不滚动——「36 个结果、从最后一个绕回第一个时视图不动」正是这个原因。
+   */
   const revealMatch = useCallback(
     (match: SearchMatch, select: boolean) => {
-      if (modeRef.current === "read") {
+      const current = modeRef.current;
+      const container = previewRef.current;
+      /*
+       * 阅读模式没有编辑区可落光标，只能滚预览。
+       * 优先用刚铺好的「当前命中」区间——它才是屏上真正标出来的那一段；
+       * 没有（高亮被关掉、或还没铺）就退回按行找块。
+       */
+      if (current === "read") {
+        const range = previewCurrentRef.current;
+        if (container && range && container.contains(range.startContainer)) {
+          const box = container.getBoundingClientRect();
+          const rect = range.getBoundingClientRect();
+          const margin = 56;
+          if (rect.top >= box.top + margin && rect.bottom <= box.bottom - margin) return;
+          const top = rect.top - box.top + container.scrollTop;
+          const max = Math.max(0, container.scrollHeight - container.clientHeight);
+          container.scrollTop = Math.min(max, Math.max(0, top - container.clientHeight / 2));
+          return;
+        }
         scrollToLine(offsetToLine(valueRef.current, match.start));
         return;
       }
       // 不抢焦点：查找框里连按 Enter 要一直是「下一个」，抢回来就成了在编辑器里换行
       if (select) sourceRef.current?.setSelection(match.start, match.end, false);
-      requestAnimationFrame(scrollMatchIntoView);
+      sourceRef.current?.scrollToOffset(match.start);
+      // 分栏时预览也带过去：只看编辑区滚了、预览没动，等于没跳
+      if (current === "split") scrollToLine(offsetToLine(valueRef.current, match.start));
     },
-    [scrollMatchIntoView, scrollToLine, updateSelection],
+    [scrollToLine],
   );
 
   // 命中集合变了（改查询词 / 改文本）→ 把当前命中挪到光标最近的那个
@@ -926,8 +1360,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     if (!searchOpen || !matches.length) return;
     const index = clampIndex(matchIndex, matches);
     if (index < 0) return;
+    /*
+     * 落选区只写 DOM，不给编辑区抢焦点（`setSelection` 的 focus 传 false）。
+     * 但浏览器自己会把焦点带进可编辑元素——查找框里连按 Enter 找下一个时，
+     * 焦点就这么跑到编辑区，下一次 Enter 变成换行。落完选区把焦点还回查找框。
+     */
+    const doc = rootRef.current?.ownerDocument;
+    const before = doc?.activeElement as HTMLElement | null;
+    const fromSearchBox = Boolean(before?.closest?.(".mde-search"));
     revealMatch(matches[index], selectOnRevealRef.current);
     selectOnRevealRef.current = false;
+    if (fromSearchBox && doc?.activeElement !== before && before?.isConnected) {
+      before.focus({ preventScroll: true });
+    }
   }, [clampIndex, matchIndex, matches, revealMatch, searchOpen]);
 
   /** goToMatch 里要回调 revealMatch，用 ref 转发避免声明顺序与依赖抖动 */
@@ -968,12 +1413,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     if (index < 0) return;
     const text = valueRef.current;
     const match = list[index];
-    const replacement = expandReplacement(
-      text.slice(match.start, match.end),
-      searchQuery,
-      searchReplace,
-      searchOptions,
-    );
+    // 正则模式按捕获组展开 $1 / $& / $<name>（传全文才能拿到真实捕获组）
+    const replacement = expandReplacement(text, match, searchQuery, searchReplace, searchOptions);
     const result = replaceMatch(text, match, replacement);
     selectOnRevealRef.current = true;
     commitValue(result.text, result.caret, "search");
@@ -984,8 +1425,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     const list = matchesRef.current;
     if (!list.length) return;
     const text = valueRef.current;
-    const result = replaceAllMatches(text, list, (matched) =>
-      expandReplacement(matched, searchQuery, searchReplace, searchOptions),
+    const result = replaceAllMatches(text, list, (match) =>
+      expandReplacement(text, match, searchQuery, searchReplace, searchOptions),
     );
     commitValue(result.text, result.caret, "search");
   }, [commitValue, readOnly, searchOptions, searchQuery, searchReplace]);
@@ -999,8 +1440,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         const selected = valueRef.current.slice(start, end);
         if (selected && !selected.includes("\n") && selected.length < 200) setSearchQuery(selected);
       }
-      // withReplace 省略时按配置走（Ctrl/⌘+F 传 false、Ctrl/⌘+H 传 true）
-      const wantReplace = withReplace ?? config.search.showReplace;
+      /*
+       * withReplace 省略时按配置走（Ctrl/⌘+F 传 false、Ctrl/⌘+H 传 true）。
+       * 阅读模式没有可编辑的正文，替换行整个不给——Ctrl/⌘+H 在那里只等于「查找」。
+       */
+      const wantReplace = (withReplace ?? config.search.showReplace) && modeRef.current !== "read";
       setSearchShowReplace(wantReplace);
       setSearchFocusToken((token) => token + 1);
       setSearchOpen(true);
@@ -1008,9 +1452,21 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     [config.search.enabled, config.search.seedFromSelection, config.search.showReplace],
   );
 
+  /**
+   * 阅读模式只查找、不替换：那一侧没有可编辑的目标，
+   * 给了「替换 / 全部替换」点了也不会有反应，不如整行不给。
+   */
+  const searchAllowReplace = mode !== "read";
+
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
-    sourceRef.current?.focus();
+    /*
+     * 关掉之后要把焦点交回某个「编辑器内部的面」：留在 body 上的话，
+     * 下一次 Ctrl/⌘+F 传不到根节点上。阅读视图没有编辑区，就交给预览区。
+     */
+    const source = sourceRef.current;
+    if (source) source.focus();
+    else if (modeRef.current === "read") previewRef.current?.focus({ preventScroll: true });
   }, []);
 
   goNextRef.current = goNext;
@@ -1124,9 +1580,42 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     [],
   );
 
+  /**
+   * 点大纲。
+   *
+   * 三件事，无论当前是哪种视图都做：
+   * 1. 滚过去——预览可见就滚预览（按标题 id 精确命中），编辑区可见就滚编辑区；
+   * 2. 高亮目标标题（两侧都只铺文字范围），光标或鼠标移到别处才撤；
+   * 3. 能编辑就把光标也带过去，只滚视图不够。
+   *
+   * 光标落点由 `config.outline.caretTarget` 决定，默认行首（顶格，在 `###` 前面）。
+   */
   const handleOutlineSelect = useCallback(
-    (item: { line: number }) => scrollToLine(item.line),
-    [scrollToLine],
+    (item: OutlineItem) => {
+      const current = modeRef.current;
+      const caret = headingCaretOffset(valueRef.current, item.line, config.outline.caretTarget);
+      if (config.outline.flashTarget) {
+        const next = { line: Math.max(1, item.line) - 1, id: item.id, anchor: caret };
+        /*
+         * 必须先同步写进 ref 再 setState。
+         *
+         * 紧接着的 `setSelection` 会同步回调 `handleSourceSelection`，那里读的是
+         * `flashRef.current` 来判断「光标是不是离开了跳转点」——state 要等这一趟
+         * 渲染完才更新，此刻 ref 里还是上一次的 flash，于是判定成「离开了」，
+         * 把刚点出来的高亮又清掉。表现就是有的标题要点两下才亮。
+         */
+        flashRef.current = next;
+        setFlash(next);
+      }
+      scrollToLine(item.line, item.id);
+      if (current === "read") return;
+      /*
+       * 先滚到目标行（由上一行完成），再落选区，并且**不再**让落选区自己滚一次：
+       * 否则「滚到顶部」和「滚到居中」两套逻辑打架，视图会先跳一下再回弹。
+       */
+      sourceRef.current?.setSelection(caret, caret, true, false);
+    },
+    [config.outline.caretTarget, config.outline.flashTarget, scrollToLine],
   );
 
   /* ---------- 渲染 ---------- */
@@ -1154,7 +1643,24 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       data-theme={resolvedTheme}
       data-mode={mode}
       onKeyDownCapture={handleRootKeyDownCapture}
+      /*
+       * 组合状态挂在根节点上：composition 事件会从编辑区冒泡上来，
+       * 这里只做一个标记 + 一次「结束了，可以补解析」的渲染信号。
+       */
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={() => {
+        composingRef.current = false;
+        setComposeTick((tick) => tick + 1);
+      }}
     >
+      {/*
+        编辑区代码 token 的着色：`::highlight()` 只认字面量颜色，
+        所以把当前代码配色的十六进制值拼成规则注入，换主题 / 换预设时跟着重算。
+        编辑区没挂出来时不注入，省掉一份用不到的样式表。
+      */}
+      {sourceVisible && config.editor.codeHighlight && <style>{syntaxRules}</style>}
       {config.toolbar.show && chromeVisible && (
         <Toolbar
           config={config}
@@ -1190,8 +1696,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
             query={searchQuery}
             replaceText={searchReplace}
             options={searchOptions}
-            showReplace={searchShowReplace}
+            allowReplace={searchAllowReplace}
+            showReplace={searchAllowReplace && searchShowReplace}
             matchCount={matches.length}
+            matchCapped={matches.length >= config.search.maxMatches}
             matchIndex={matchIndex}
             readOnly={readOnly}
             focusToken={searchFocusToken}
@@ -1212,7 +1720,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
             items={doc.outline}
             config={config}
             labels={labels}
-            activeLine={stats.cursor.line}
+            /*
+             * 当前项按优先级取：
+             * 1. 刚点出去的那一项（跳转高亮期间）：任何视图下点大纲都能看见自己点了谁；
+             * 2. 视口顶部那一行（`scrollLine`）：滚动正文时选中项跟着走，阅读视图没有光标也照样跟；
+             * 3. 光标所在行：没有滚动覆盖值时的兜底（阅读视图下恒为第 1 行）。
+             */
+            activeLine={flash ? flash.line + 1 : (scrollLine ?? stats.cursor.line)}
             onSelect={handleOutlineSelect}
           />
         )}
@@ -1226,7 +1740,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
               ref={sourceRef}
               value={value}
               onChange={handleSourceChange}
-              onSelectionChange={updateSelection}
+              onSelectionChange={handleSourceSelection}
               config={config}
               readOnly={readOnly}
               placeholder={placeholder ?? config.editor.placeholder}
@@ -1238,6 +1752,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
               matches={matches}
               matchIndex={matchIndex}
               highlightOnlyCurrent={!config.search.highlightAll}
+              activeLine={cursor.line - 1}
+              flashLine={flash ? flash.line : -1}
             />
           )}
 
@@ -1279,14 +1795,21 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
           )}
 
           {previewVisible && (
-            <div className="mde-preview-pane" ref={previewRef}>
+            /*
+             * `tabIndex={-1}`：阅读模式里预览区是唯一可点的地方，不给它能接收焦点的话，
+             * 点过预览之后焦点会掉回 body，Ctrl/⌘+F 就再也传不到编辑器根节点上
+             * ——表现为「预览视图里按 Ctrl+F 没反应」。
+             */
+            <div className="mde-preview-pane" ref={previewRef} tabIndex={-1}>
               <MarkdownPreview
                 doc={doc}
                 config={config}
                 labels={labels}
                 readOnly={readOnly}
+                themeVars={themeVars}
                 onLinkClick={stableLinkClick}
                 onTaskToggle={stableTaskToggle}
+                onImageClick={onImageClick}
               />
             </div>
           )}
@@ -1296,6 +1819,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
 
       {config.statusBar.show && chromeVisible && (
         <StatusBar config={config} labels={labels} stats={stats} mode={mode} />
+      )}
+
+      {viewingImage && (
+        <ImageViewer
+          src={viewingImage.src}
+          alt={viewingImage.alt}
+          config={config.preview.imageZoom}
+          themeVars={themeVars}
+          onClose={() => setViewingImage(null)}
+        />
       )}
     </div>
   );

@@ -27,6 +27,15 @@ export interface ModalProps {
   children: React.ReactNode;
   /** 宽度档位：默认 lg；设置窗口这类带侧栏的内容用 2xl 才放得下 */
   size?: "lg" | "xl" | "2xl";
+  /** 固定宽度（px 或任意 CSS 长度）；传了就不再套 size 的 max-width */
+  width?: number | string;
+  /** 固定高度；传了内容区会变成滚动容器，弹窗不再随内容伸缩 */
+  height?: number | string;
+  /**
+   * 非模态：不铺遮罩、不拦点击（底下的界面照常可交互），标题栏可拖动移动位置。
+   * 点窗外不会关闭（本来就不关），Esc 也不关，只能走关闭按钮。
+   */
+  floating?: boolean;
 }
 
 /** useConfirm 的参数；confirmText / cancelText 缺省为「确定」/「取消」 */

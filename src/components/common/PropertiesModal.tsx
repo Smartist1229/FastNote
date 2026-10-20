@@ -110,6 +110,11 @@ export const PropertiesModal: React.FC<{
     setGroupMenu((m) => ({ ...m, open: false }));
   }, [targetKey]);
 
+  /**
+   * 字数：列表本身就带正文，直接取，不用再按 id 读一次。
+   */
+  const wordCount = note ? note.content.length : 0;
+
   /** 笔记所属分组名；分组已删除时退化为占位文案，避免显示成空白 */
   const categoryName = note
     ? note.category_id === null
@@ -216,7 +221,7 @@ export const PropertiesModal: React.FC<{
                 }
               />
             )}
-            <Row label="字数" content={`${note.content.length.toLocaleString()} 字`} />
+            <Row label="字数" content={`${wordCount.toLocaleString()} 字`} />
             <Row label="创建时间" content={formatDateTime(note.created_at)} />
             <Row label="更新时间" content={formatDateTime(note.updated_at)} />
             <Row label="编号" content={note.id} />

@@ -4,9 +4,13 @@ import { invoke } from '@tauri-apps/api/core';
 
 import type { Category } from '@/interface/note';
 
-/** 新建分组（create_category），返回含 id 的记录，note_count 初始为 0 */
-export const createCategory = async (name: string): Promise<Category> => {
-  return await invoke('create_category', { name });
+/**
+ * 新建分组（create_category），返回含 id 的记录，note_count 初始为 0。
+ * aiAccess 是分组的初始 AI 访问档位（0 禁止 / 1 只读 / 2 完全），由调用方按
+ * 「新建分组默认权限」传入；省略时 Rust 侧按 2（完全）处理。
+ */
+export const createCategory = async (name: string, aiAccess?: number): Promise<Category> => {
+  return await invoke('create_category', { name, aiAccess });
 };
 
 /** 读取全部分组（get_categories），按 created_at 倒序；note_count 不含回收站笔记 */

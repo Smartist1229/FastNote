@@ -27,7 +27,7 @@ const FRAME_BUDGET = 512;
 const FILLER = "\u200b";
 
 export interface RulerBox {
-  /** textarea 内容区可用宽度（px） */
+  /** 编辑区内容区可用宽度（px） */
   width: number;
   /** 单行行高（px） */
   unit: number;
@@ -56,8 +56,18 @@ export class LineRuler {
   rows = new Float64Array(0);
   /** 已实测的前缀长度（行数） */
   frontier = 0;
-  /** 单行行高（px） */
+  /** 单行行高（px）：来自容器的 computed line-height，用于把测量层的像素高度折算成行数 */
   unit = 0;
+  /**
+   * 真实的行推进（px）：一行走多高。
+   *
+   * 大多数情况下等于 `unit`，但**不能直接拿 computed line-height 当它用**：
+   * 那个值只是显示用的四舍五入结果，而排版用的行盒是 LayoutUnit（1/64 px）——
+   * 像 14px × 1.9 = 26.6px 这种值并不能整除，真实推进是 26.59375，
+   * 每行差 0.006px；一行看不出来，两千行就是十几像素，折行多的话还会被放大。
+   * 所以这里用一个探针实测一次「几行占多高」，把差值抹掉。
+   */
+  advance = 0;
   /** 内容总高（px） */
   total = 0;
   /** 可视窗口的末行下标 + 1，由行号槽每帧写入 */
@@ -156,6 +166,12 @@ export class LineRuler {
       this.redoFrom = 0;
       this.redoTo = 0;
       this.styleStale = true;
+      /*
+       * 行推进只跟字体/字号/行高/宽度有关，排版条件一变就重新实测一次。
+       * 量不出来（极端情况下探针被裁剪）就退回 computed 值，退化到老行为。
+       */
+      const measured = this.measureAdvance(element);
+      this.advance = measured && measured > box.unit * 0.6 && measured < box.unit * 1.6 ? measured : box.unit;
     }
 
     if (textChanged || boxChanged) {
@@ -188,13 +204,101 @@ export class LineRuler {
     this.notify();
   }
 
-  /** 保证 [0, upto) 全部实测过：直接跳到远处时这里一次补齐，之后就不用再测 */
+  /**
+   * 保证 [0, upto) 全部实测过：直接跳到远处时这里一次补齐，之后就不用再测。
+   *
+   * 补齐会改偏移表（未测行原本按 1 行算），所以要主动通知一次：查找高亮层的上下垫高
+   * 就是按这张表算的，不通知的话「滚动到远处再改字号」时那条路径上没人重算 → 高亮整层偏移。
+   * 一帧最多通知一次（`measure` 每次滚动只调一遍，且 `target <= frontier` 时直接返回）。
+   */
   ensureVisible(element: HTMLElement, upto: number): void {
     const target = Math.min(upto, this.lines.length);
     if (target <= this.frontier) return;
     this.measureRange(element, this.frontier, target);
     this.frontier = target;
     this.offsetsStale = true;
+    this.notify();
+  }
+
+  /**
+   * 光标在**内容坐标系**里的位置（px）：x 从内容左边缘算，y 从内容顶边算。
+   *
+   * 复用行号槽的测量层：它已经和编辑区同字体、同宽度、同折行规则（连字也一起），
+   * 只把光标所在的那一行拆成「前缀 + 标记 + 后缀」排一次，标记的 offsetLeft/offsetTop
+   * 就是光标的位置——折行、Tab、代理对、CJK 全宽都由浏览器算，不用另养一套宽度模型。
+   *
+   * 一次调用 = 一次排版 + 两次读取，所以只在光标真的动过时调（滚动只是平移，别走这里）。
+   */
+  caretPoint(element: HTMLElement, line: number, column: number): { x: number; y: number } | null {
+    if (!this.lines.length) return null;
+    const box = this.mirrorOf(element);
+    if (!box) return null;
+    if (this.styleStale) {
+      this.stylize(box, element);
+      this.styleStale = false;
+    }
+
+    const index = Math.max(0, Math.min(line, this.lines.length - 1));
+    const text = this.lines[index] ?? "";
+    const at = Math.max(0, Math.min(column, text.length));
+    const doc = element.ownerDocument;
+    const row = doc.createElement("div");
+    row.className = "mde-measure-line";
+    // offsetParent 收窄到这一行：量出来的就是行内坐标，折出来的第几行体现在 top 里
+    row.style.position = "relative";
+    /*
+     * 首尾各放一个零宽标记，尾部那个就是光标。
+     *
+     * 为什么不直接用尾部标记的 offsetTop：行内盒的 offsetTop 不是行盒顶，
+     * 而是「内容区顶」——等于 (line-height − 字体内容高) / 2 的那点内缩（实测 4px）。
+     * 拿一个同样在行首的标记做基准相减，剩下的就恰好是「折过几个视觉行」。
+     */
+    const base = doc.createElement("span");
+    base.textContent = FILLER;
+    const marker = doc.createElement("span");
+    marker.textContent = FILLER;
+    row.appendChild(base);
+    row.appendChild(doc.createTextNode(text.slice(0, at)));
+    row.appendChild(marker);
+    row.appendChild(doc.createTextNode(text.slice(at)));
+    box.appendChild(row);
+    // 先写完再读：整个过程只触发一次重排
+    const x = marker.offsetLeft;
+    /*
+     * 行内的折行偏移（marker.offsetTop - base.offsetTop）是测量层量出来的，单位是
+     * 测量层的行高 `unit`；真实排版用的是 `advance`，两者可能差零点几像素。
+     * 折过几行先折算成行数，再乘以 advance，光标才不会在一行的第 2、3 段上慢慢偏。
+     */
+    const rowsIntoLine = this.unit > 0 ? (marker.offsetTop - base.offsetTop) / this.unit : 0;
+    const y = this.offsetOf(index) + Math.round(rowsIntoLine) * (this.advance || this.unit);
+    box.textContent = "";
+    return { x, y };
+  }
+
+  /**
+   * 实测「一行占多高」。
+   *
+   * 探针就是测量层里的一行：同样的字体 / 字号 / 行高 / 宽度，塞 6 行进去，
+   * 量出来的高度除以 6。编辑区现在是 contenteditable 的块级容器，
+   * 行盒与测量层同源，所以探针也用同一个 div——不必再为一个表单控件单开一套。
+   */
+  private measureAdvance(element: HTMLElement): number | null {
+    const box = this.mirrorOf(element);
+    if (!box) return null;
+    if (this.styleStale) {
+      this.stylize(box, element);
+      this.styleStale = false;
+    }
+    const doc = element.ownerDocument;
+    const probe = doc.createElement("div");
+    probe.className = "mde-measure-line";
+    // 6 行要真的排成 6 行：测量层整体跟着编辑区走 pre-wrap，这里强制不折
+    probe.style.whiteSpace = "pre";
+    probe.textContent = "x\nx\nx\nx\nx\nx";
+    box.appendChild(probe);
+    const height = probe.getBoundingClientRect().height;
+    probe.remove();
+    return height > 0 ? height / 6 : null;
   }
 
   /** 推进一帧的渐进测量；返回是否还有剩余 */
@@ -216,9 +320,8 @@ export class LineRuler {
       this.offsetsStale = true;
     }
 
-    const more = this.pending > 0;
-    if (more) this.notify();
-    return more;
+    this.notify();
+    return this.pending > 0;
   }
 
   dispose(): void {
@@ -239,18 +342,19 @@ export class LineRuler {
   private rebuildOffsets(): void {
     const n = this.lines.length;
     if (this.offsets.length < n + 1) this.offsets = new Float64Array(n + 1);
-    const unit = this.unit;
+    // 用实测的行推进，不是 computed line-height：两者在小数行高下会差零点几像素
+    const advance = this.advance || this.unit;
     let at = 0;
     for (let i = 0; i < n; i += 1) {
       this.offsets[i] = at;
-      at += this.rows[i] * unit;
+      at += this.rows[i] * advance;
     }
     this.offsets[n] = at;
     this.total = at;
     this.offsetsStale = false;
   }
 
-  /** 取到与 textarea 同字体同宽度的隐藏测量层 */
+  /** 取到与编辑区同字体同宽度的隐藏测量层 */
   private mirrorOf(element: HTMLElement): HTMLDivElement | null {
     const host = element.parentElement ?? element.ownerDocument.body;
     if (this.mirror && this.host === host) return this.mirror;
@@ -266,7 +370,7 @@ export class LineRuler {
   }
 
   /**
-   * 把测量层的排版条件对齐到 textarea。
+   * 把测量层的排版条件对齐到编辑区容器。
    *
    * 可用宽度要按 clientWidth 减左右 padding 算：纵向滚动条出现时 clientWidth 会自己变小。
    * 连字也要跟着：它改变字符宽度，两边不一致时同一行折出来的行数不同。
@@ -289,6 +393,12 @@ export class LineRuler {
       box.style.tabSize = source.tabSize;
       box.style.wordBreak = source.wordBreak;
       box.style.overflowWrap = source.overflowWrap;
+      /*
+       * 折行方式要照抄：关掉自动换行时编辑区是 `pre`，
+       * 测量层若还留着 CSS 里的 `pre-wrap`，超宽的长行会被折成几段，
+       * 光标横向坐标就变成「折行后的列」而不是真实列——nowrap 下会整体偏左。
+       */
+      box.style.whiteSpace = source.whiteSpace;
       box.style.fontVariantLigatures = source.fontVariantLigatures;
       box.style.fontFeatureSettings = source.fontFeatureSettings;
     }

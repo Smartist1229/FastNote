@@ -1,9 +1,11 @@
 /**
  * 渲染入口：先注册全局输入拦截（禁用原生 Ctrl+P 打印 / Ctrl+F 查找、滚动条拖选防护），
- * 再挂载 React 根节点（StrictMode + ErrorBoundary），最后收起启动 splash。
+ * 再挂载 React 根节点（StrictMode + ErrorBoundary），首帧画完之后唤出窗口、收起启动 splash。
  */
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "@/App";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { applyTheme, readCachedTheme } from "@/lib/theme";
@@ -32,6 +34,17 @@ const BLOCKED_NATIVE_SHORTCUTS = [
   { key: "f", code: "KeyF" },
   { key: "g", code: "KeyG" },
   { key: "h", code: "KeyH" },
+  /*
+   * 字号缩放（Ctrl/⌘ + `=` / `-` / `0`）由编辑器自己处理。
+   * 不完全挡掉的话，焦点不在编辑器里时 WebView2 会拿去做**整页缩放**——
+   * 工具栏、侧边栏一起变大，比不改还难受。这里只 preventDefault，
+   * 编辑器根节点照样收得到事件（它自己再拦一次并改字号）。
+   */
+  { key: "=", code: "Equal" },
+  { key: "+", code: "NumpadAdd" },
+  { key: "-", code: "Minus" },
+  { key: "_", code: "NumpadSubtract" },
+  { key: "0", code: "Digit0" },
 ];
 
 const blockNativeShortcut = (e: KeyboardEvent) => {
@@ -118,5 +131,56 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   </React.StrictMode>,
 );
 
-// 收起 index.html 里的启动 splash（紧随 render 调用，此时首帧尚未绘制）
-document.getElementById("splash")?.classList.add("hidden");
+/**
+ * 唤出窗口 + 收起启动 splash。
+ *
+ * 窗口是用 `visible: false` 创建的（见 tauri.conf.json），显示时机交给这里而不是 Rust：
+ * 窗口一显示，系统会先把 webview 的**空白帧**画出来——深色主题是黑屏、浅色是白屏，
+ * 之后才轮到 index.html 里的加载页，也就是"先白一下才出现 loading"。
+ * 等 React 首帧提交 + 一帧绘制之后再 show()，窗口出现时屏幕上已经是加载页。
+ *
+ * 两条触发并行，先到先得：
+ * - 两帧 rAF：正常情况下这一帧已经进了合成器，最稳；
+ * - 定时器兜底：窗口还不可见时 WebView2 会把页面当后台页，rAF 可能被节流甚至暂停，
+ *   只靠 rAF 会死锁（窗口不显示 → rAF 不来 → 永远不显示），最后由 Rust 的 3 秒兜底收场。
+ *
+ * Rust 侧另有一个 3 秒定时器（前端脚本整个崩了也不会永远没有窗口），
+ * 这里的 splash 收起放在 show() 之后——显示失败也不能把界面永远停在加载页。
+ */
+const splash = document.getElementById("splash");
+const appWindow = isTauri() ? getCurrentWindow() : null;
+
+const revealWindow = () => {
+  let revealed = false;
+  const reveal = () => {
+    if (revealed) return;
+    revealed = true;
+    const done = () => splash?.classList.add("hidden");
+    if (!appWindow) {
+      done();
+      return;
+    }
+    /*
+     * 先问一句该不该显示：开机自启 + 「开机后最小化到托盘」时窗口应该藏在托盘里，
+     * 无条件 show() 会把用户特意藏起来的窗口顶出来。问不到就按显示处理。
+     */
+    void invoke<boolean>("should_show_on_startup")
+      .catch(() => true)
+      .then(async (shouldShow) => {
+        try {
+          if (shouldShow) {
+            await appWindow.show();
+            await appWindow.setFocus();
+          }
+        } catch (error) {
+          console.error("显示主窗口失败:", error);
+        } finally {
+          done();
+        }
+      });
+  };
+  requestAnimationFrame(() => requestAnimationFrame(reveal));
+  window.setTimeout(reveal, 200);
+};
+
+revealWindow();

@@ -1,19 +1,15 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.5.5",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "test:parse": "node scripts/run-parse-test.mjs",
-    "test:editor": "node scripts/run-markdown-test.mjs",
-    "test:access": "node scripts/ai-access.test.mjs",
-    "check": "node scripts/audit.mjs",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "demo:editor": "vite --port 5200"
+    "vite:dev": "vite",
+    "vite:build": "tsc && vite build",
+    "vite:preview": "vite preview",
+    "demo:editor": "vite --port 5200",
+    "dev": "tauri dev",
+    "build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.11.0",

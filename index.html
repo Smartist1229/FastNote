@@ -59,6 +59,12 @@
         font-family: "MiSans VF", "Segoe UI", system-ui, -apple-system, "Microsoft YaHei UI", sans-serif;
       }
       #splash.hidden { opacity: 0; pointer-events: none; }
+
+      /*
+       * 文档底色先按主题铺好：splash 淡出、React 还没接管的那几帧里，
+       * 看到的是主题底色而不是浏览器默认的白底。
+       */
+      html, body { background-color: var(--color-bg); }
       
       .splash-logo {
         width: 56px; height: 56px;

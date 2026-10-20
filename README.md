@@ -27,5 +27,5 @@ pnpm tauri:build       # 打包桌面应用
 
 - 前端：React 19 + TypeScript + Vite + Tailwind CSS
 - 桌面端：Tauri 2 (Rust 后端)
-- 编辑器：自研 Markdown 编辑器（src/markdown-editor，自研解析器 + 四种视图 + 全量可配置）
+- 编辑器：自研 Markdown 编辑器（src/markdown-editor，自研解析器 + 三种视图 + 全量可配置）
 - 数据库：SQLite（笔记数据 + AI 设置加密存储）

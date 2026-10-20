@@ -54,6 +54,12 @@ export interface ToolContext {
   currentNoteId: number | null;
   /** 本轮 AI 访问规则快照：读写工具一律先过 canAiAccessNote / canAiAccessCategory */
   access: AiAccessRules;
+  /**
+   * 新建笔记 / 分组时套用的初始档位（设置里的「新建笔记 / 新建分组默认权限」）。
+   * 由面板在每轮发送时从 AI 设置快照进来，执行器不直接读设置。
+   */
+  defaultNoteAiAccess: AiAccessLevel;
+  defaultCategoryAiAccess: AiAccessLevel;
 }
 
 /**

@@ -8,6 +8,7 @@
  * - expandedDrawer 由 App 持有，同一时刻只展开一个抽屉（手风琴）。
  * - searchQuery 非空时忽略 view，扁平展示三组搜索结果。
  * - 副作用：内部拖拽落点直接调 notesApi.updateNote 写 category_id，成功后 onNotesUpdated() 刷新全局。
+ * - 主列表带正文（AI 需要读未打开的笔记），搜索直接在 notes 上匹配，无需额外请求。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Category, Note } from "@/interface/note";
@@ -189,6 +190,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   );
   /** 收藏聚合视图：所有已收藏笔记（沿用后端排序：置顶优先 + 当前排序字段） */
   const favoriteNotes = useMemo(() => notes.filter((n) => n.is_pinned), [notes]);
+  /**
+   * 搜索：主列表已经带正文，直接在 notes 上匹配，不再额外拉数据。
+   */
   /** 搜索视图「全部搜索结果」：标题或正文命中即可，保持后端排序 */
   const searchMatches = useMemo(
     () => notes.filter((n) => n.title.toLowerCase().includes(query) || n.content.toLowerCase().includes(query)),

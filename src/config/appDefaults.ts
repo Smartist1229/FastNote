@@ -25,12 +25,12 @@ export const FONT_SIZE_MAX = 24;
 /**
  * 默认字体栈：不开放给用户配（设置面板没有对应开关），只作为出厂默认值。
  *
- * 消费方是 config/markdownEditor.ts，由它注入自研编辑器的四处字体：源码输入区、
+ * 消费方是 config/markdownEditor.ts，由它注入自研编辑器的四处字体：编辑输入区、
  * 代码块等宽区、预览正文、工具栏/查找框等界面。App.css 里 `html` 的全局字体与
  * 这里的 APP_UI_FONT_STACK 是同一套，改一处就要同步另一处。
  *
  * 取值基准是自研编辑器组件的 FONT_STACKS（src/markdown-editor/defaults.ts），
- * 只多塞了一个软件内置的 MiSans VF：等宽字体没有中文字形，不补的话源码里的中文
+ * 只多塞了一个软件内置的 MiSans VF：等宽字体没有中文字形，不补的话编辑区里的中文
  * 会掉到系统默认字体，跟软件界面不是一套。
  */
 export const APP_UI_FONT_STACK =
@@ -66,36 +66,40 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
  */
 export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   /* 视图 */
-  /** 打开笔记时的默认视图：源码（只写 Markdown） */
+  /** 打开笔记时的默认视图：编辑（只写 Markdown） */
   defaultMode: "code",
-  /** 工具栏显示「分栏 / 源码 / 阅读」切换 */
+  /** 工具栏显示「分栏 / 编辑 / 阅读」切换 */
   showModeSwitch: true,
-  /** 分栏时源码区占比 */
+  /** 分栏时编辑区占比 */
   splitRatio: 0.5,
   /** 分栏分隔条可拖动 */
   splitResizable: true,
   /** 分栏两栏同步滚动 */
   syncScroll: true,
-  /** 同步滚动按源码行锚点对齐 */
+  /** 同步滚动按编辑行锚点对齐 */
   syncScrollMode: "anchor",
 
-  /* 源码编辑 */
-  /** 编辑器默认正文字号（px）：Ctrl/⌘ + 滚轮可在 12–24 之间临时缩放，工具栏字号按钮恢复到这个值 */
+  /* 编辑 */
+  /** 编辑器默认正文字号（px）：Ctrl/⌘ + `0` 与工具栏字号按钮都恢复到这个值 */
   fontSize: 14,
-  /** Ctrl/Cmd + 滚轮是否调整编辑器字号 */
+  /** Ctrl/⌘ + 滚轮、Ctrl/⌘ + `=` / `-` 是否调整编辑器字号 */
   ctrlScrollZoom: true,
-  /** 源码行高 */
-  sourceLineHeight: 1.75,
+  /** 每次加减字号的步长（px） */
+  zoomStep: 1,
+  /** 编辑行高（1.9 是"看着不挤"的默认；老版本是 1.75，见 appSettingsStore 的旧默认值升级） */
+  sourceLineHeight: 1.9,
+  /** 编辑字间距（px）：中英混排贴太紧时加一点空气，0 为不加 */
+  letterSpacing: 1,
   /**
    * 字体连字：等宽字体会把 `->`、`==`、`<=` 画成一个符号，
-   * 而 Markdown 源码里这些是语法记号（`~~删除线~~`、`==高亮==`），默认关更不容易看错。
+   * 而 Markdown 编辑区里这些是语法记号（`~~删除线~~`、`==高亮==`），默认关更不容易看错。
    */
   fontLigatures: false,
-  /** 源码区行号 */
+  /** 编辑区行号 */
   lineNumbers: true,
   /** 点击行号选中整行 */
   gutterClickSelectsLine: true,
-  /** 源码自动换行 */
+  /** 编辑自动换行 */
   wrap: true,
   /** Tab 宽度（同时用作列表缩进） */
   tabSize: 2,
@@ -113,6 +117,16 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   spellCheck: false,
   /** 撤销栈上限 */
   historyLimit: 200,
+  /** 光标所在行整行高亮 */
+  highlightActiveLine: true,
+  /** 自绘光标宽度（px） */
+  caretWidth: 2,
+  /** 自绘光标高度（字号倍数）：比字略高一点，但不占满行盒 */
+  caretHeight: 1.25,
+  /** 编辑区代码块增强：识别语言、整块浅底、token 着色 */
+  codeHighlight: true,
+  /** 滚到底部时的额外留白（px） */
+  scrollPaddingBottom: 120,
 
   /* 预览 */
   /** 输入到渲染的防抖（ms） */
@@ -165,6 +179,14 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   tableCompact: false,
   /** 表格撑满宽度 */
   tableFullWidth: true,
+  /** 点击图片放大预览 */
+  imagePreview: true,
+  /** 放大预览每格滚轮倍率 */
+  imageZoomStep: 1.2,
+  /** 放大预览最小倍率 */
+  imageZoomMin: 0.2,
+  /** 放大预览最大倍率 */
+  imageZoomMax: 8,
 
   /* 排版 */
   /** 预览行高 */
@@ -201,6 +223,8 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   toolbarHoverCloseDelay: 220,
   /** 滚轮横向滚动工具栏 */
   toolbarScrollWheel: true,
+  /** 尾部按钮常驻右缘（视图切换 / 大纲 / 全屏 / 复制） */
+  toolbarPinTail: true,
 
   /* 状态栏 */
   /** 状态栏默认关闭，把空间留给正文 */
@@ -231,6 +255,10 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   outlineMaxDepth: 3,
   /** 大纲层级缩进 */
   outlineIndent: true,
+  /** 点大纲后光标落在行首（`###` 前面，顶格） */
+  outlineCaretTarget: "lineStart",
+  /** 点大纲后把目标标题高亮一下 */
+  outlineFlashTarget: true,
 
   /* 查找替换 */
   /** 启用查找框 */
@@ -241,14 +269,20 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   searchCaseSensitive: false,
   /** 默认不用正则 */
   searchRegex: false,
+  /** 默认：替换串不按正则展开（需要时在查找框里临时打开） */
+  searchRegexReplace: false,
   /** 高亮全部命中 */
   searchHighlightAll: true,
+  /** 预览区命中高亮：只在阅读视图铺（分栏视图只铺编辑侧） */
+  searchHighlightPreview: true,
   /** 查找循环 */
   searchLoop: true,
   /** 选中文字带入查找框 */
   searchSeedFromSelection: true,
-  /** 最大命中数 */
-  searchMaxMatches: 2000,
+  /** 最大命中数（老默认 2000 在几万字的笔记里查常用字就会截断，见 appSettingsStore 的默认值升级） */
+  searchMaxMatches: 20000,
+  /** 挡掉浏览器原生查找条：否则 Ctrl+F 会同时弹出编辑器的查找框和 WebView 的查找条 */
+  searchBlockHostFind: true,
 
   /* 主题与其他 */
   /** 代码块配色预设 */

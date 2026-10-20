@@ -40,6 +40,7 @@ import { AiProviderSettings } from "@/components/ai/AiProviderModal";
 import { ThemePanel } from "@/components/settings/ThemePanel";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
+import { useDraggable } from "@/components/common/useDraggable";
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import { useToast } from "@/components/common/Toast";
@@ -426,6 +427,18 @@ const chunkByGroup = (rows: SettingRow[]): { group: string | null; items: Settin
   return chunks;
 };
 
+/** 分组节点的 key：分组名只在分区内唯一（「视图」这类名字多个分区都有） */
+const groupKey = (section: SettingsSection, group: string | null) => `${section}::${group ?? ""}`;
+
+/**
+ * AI 访问三档的分段选项：与「单篇笔记 / 分组」用的是同一套文案（AI_ACCESS_LABELS），
+ * 数值在 onChange 里转回 number，档位类型只认 0/1/2。
+ */
+const ACCESS_LEVEL_OPTIONS: EnumOption[] = ([0, 1, 2] as AiAccessLevel[]).map((level) => ({
+  value: String(level),
+  label: AI_ACCESS_LABELS[level],
+}));
+
 /* ---------- 备份工具函数 ---------- */
 
 /** 备份文件名里的时间戳：20261006-1930 */
@@ -503,6 +516,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   /** 左侧目录当前高亮的分区；滚动时由 handleScroll 反查更新 */
   const [active, setActive] = useState<SettingsSection>(defaultSection ?? "general");
+  /**
+   * 目录里展开了哪些分区。默认全收起——设置项很多，全摊开要滚半天；
+   * 搜索时强制全展开，否则命中的二级项会被折叠藏起来。
+   */
+  const [expanded, setExpanded] = useState<Set<SettingsSection>>(new Set());
+  /** 当前高亮的分组（分区内的二级项），null 表示只高亮到分区一级 */
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
   /** 关于页：软件名与版本（版本由 Tauri 自动获取） */
   const [appName, setAppName] = useState(APP_NAME_FALLBACK);
   const [appVersion, setAppVersion] = useState("");
@@ -511,6 +531,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const contentRef = useRef<HTMLDivElement>(null);
   /** 各分区节点，供「点击目录滚动」与「滚动反查」读取 offsetTop */
   const sectionRefs = useRef<Partial<Record<SettingsSection, HTMLElement | null>>>({});
+  /** 分区内各分组段的节点：二级目录跳转与高亮反查都靠它 */
+  const groupRefs = useRef<Record<string, HTMLElement | null>>({});
+  /** 左侧目录容器（高亮项自动滚进可视区） */
+  const navRef = useRef<HTMLElement>(null);
   /** 滚动事件的 rAF 句柄：一帧只反查一次，避免高频 setState */
   const scrollRafRef = useRef<number | null>(null);
 
@@ -899,6 +923,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: aiSettings.aiAccessEnabled,
         onChange: (v) => setAi("aiAccessEnabled", v),
       },
+      {
+        section: "access",
+        kind: "segment",
+        scope: "live",
+        title: "新建笔记默认权限",
+        desc:
+          "之后新建的笔记以此档位开局：软件里新建、另存为笔记、导入文件，以及 AI 创建笔记都算。" +
+          "已有笔记不受影响，建好后仍可在「笔记属性」里单独改。",
+        keywords: "默认 新建 笔记 权限 档位 note default",
+        disabled: !aiSettings.aiAccessEnabled,
+        value: String(aiSettings.defaultNoteAiAccess),
+        options: ACCESS_LEVEL_OPTIONS,
+        onChange: (v) => setAi("defaultNoteAiAccess", Number(v) as AiAccessLevel),
+      },
+      {
+        section: "access",
+        kind: "segment",
+        scope: "live",
+        title: "新建分组默认权限",
+        desc:
+          "之后新建的分组（含 AI 创建的分组）以此档位开局。分组档位是组内笔记的上限，" +
+          "设成「只读」时组内笔记再怎么写也超不过它。",
+        keywords: "默认 新建 分组 权限 档位 category default",
+        disabled: !aiSettings.aiAccessEnabled,
+        value: String(aiSettings.defaultCategoryAiAccess),
+        options: ACCESS_LEVEL_OPTIONS,
+        onChange: (v) => setAi("defaultCategoryAiAccess", Number(v) as AiAccessLevel),
+      },
     ];
   }, [appSettings, aiSettings, setApp, setAi]);
 
@@ -985,6 +1037,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [rows, q],
   );
 
+  /** 分区的二级分组（按行顺序去重）；空数组表示这个分区在目录里是叶子节点 */
+  const groupsOf = useCallback(
+    (section: SettingsSection) => {
+      const out: string[] = [];
+      for (const row of visibleRowsOf(section)) {
+        if (row.group && !out.includes(row.group)) out.push(row.group);
+      }
+      return out;
+    },
+    [visibleRowsOf],
+  );
+
   /* 打开时：重置状态并定位到目标分区 */
   useEffect(() => {
     if (!isOpen) return;
@@ -1000,6 +1064,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
     return () => cancelAnimationFrame(raf);
   }, [isOpen, defaultSection]);
+
+  /* 关闭时：把左侧目录里展开的二级项全部收起，下次打开回到干净的一级列表 */
+  useEffect(() => {
+    if (isOpen) return;
+    setExpanded((prev) => (prev.size ? new Set<SettingsSection>() : prev));
+    setActiveGroup((prev) => (prev === null ? prev : null));
+  }, [isOpen]);
 
   /* 关于页：打开设置时读取应用名与版本号 */
   useEffect(() => {
@@ -1026,7 +1097,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [visibleSections, isOpen, active]);
 
-  /* 滚动监听：左侧目录跟随高亮 */
+  /* 滚动监听：左侧目录跟随高亮（分区 + 分区内的分组） */
   const handleScroll = useCallback(() => {
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
@@ -1043,9 +1114,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (container.scrollTop + container.clientHeight >= container.scrollHeight - 2) {
         current = visibleSections[visibleSections.length - 1]?.key ?? current;
       }
-      if (current) setActive(current);
+      if (!current) return;
+      setActive(current);
+      // 同一分区内取「最后一个越过顶线的分组」；分区里没有分组就是 null
+      let group: string | null = null;
+      for (const name of groupsOf(current)) {
+        const el = groupRefs.current[groupKey(current, name)];
+        if (el && el.offsetTop <= top) group = name;
+      }
+      setActiveGroup(group);
     });
-  }, [visibleSections]);
+  }, [visibleSections, groupsOf]);
 
   /**
    * 点击目录跳转：直接跳到位，不做平滑滚动。
@@ -1057,8 +1136,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const el = sectionRefs.current[key];
     if (!container || !el) return;
     setActive(key);
+    setActiveGroup(null);
     container.scrollTo({ top: Math.max(0, el.offsetTop - 8) });
   }, []);
+
+  /** 二级目录：跳到分区里的某个分组 */
+  const scrollToGroup = useCallback((section: SettingsSection, group: string) => {
+    const container = contentRef.current;
+    const el = groupRefs.current[groupKey(section, group)];
+    if (!container || !el) return;
+    setActive(section);
+    setActiveGroup(group);
+    container.scrollTo({ top: Math.max(0, el.offsetTop - 8) });
+  }, []);
+
+  /** 展开 / 收起某个分区（只动目录，不改变右侧位置） */
+  const toggleSection = useCallback((key: SettingsSection) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  /**
+   * 右侧悬停：左侧目录跟着高亮（含二级项）。
+   * 只做高亮、不滚动右侧——鼠标划过就跳页会让内容抖得没法用。
+   */
+  const hoverSection = useCallback((section: SettingsSection, group: string | null) => {
+    setActive((prev) => (prev === section ? prev : section));
+    setActiveGroup(group);
+  }, []);
+
+  /** 高亮项自动滚进目录可视区（分组很多时，滚到下面的分区目录也能跟得上） */
+  useEffect(() => {
+    if (!isOpen) return;
+    const nav = navRef.current;
+    const selector = activeGroup ? `[data-nav-key="${active}:${activeGroup}"]` : `[data-nav-key="${active}"]`;
+    const el = nav?.querySelector<HTMLElement>(selector);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [active, activeGroup, expanded, isOpen]);
 
   /* 卸载时清掉挂起的 timer 与 rAF，避免回调打到已卸载的组件上 */
   useEffect(() => {
@@ -1151,6 +1269,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  // 非模态浮窗：标题栏拖动挪位置（不落库，关掉再开回到居中）
+  const drag = useDraggable(isOpen);
+
   // 所有 hook 都已执行完，关闭时直接不渲染（保留组件状态，下次打开不闪）
   if (!isOpen) return null;
 
@@ -1159,13 +1280,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <>
-      <div
-        className="modal-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
-        style={{ background: "var(--color-overlay)" }}
-      >
-        <div className="modal-content bg-surface rounded-2xl shadow-2xl w-[860px] h-[600px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden">
-          {/* 头部：标题 + 自动保存提示（aria-live 供读屏播报）+ 关闭 */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-line-soft flex-shrink-0">
+      {/* 非模态：不铺遮罩、整层 pointer-events 关掉，只有卡片本身可点——
+          开着设置也能继续看笔记、点列表；点窗外不会关闭，关闭走按钮或 Esc */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        <div
+          ref={drag.panelRef}
+          className="modal-content floating-panel pointer-events-auto bg-surface rounded-2xl w-[860px] h-[600px] max-w-[94vw] max-h-[92vh] flex flex-col overflow-hidden"
+          style={drag.style}
+        >
+          {/* 头部：标题 + 自动保存提示（aria-live 供读屏播报）+ 关闭；按住可拖动窗口 */}
+          <div
+            className="flex items-center justify-between px-5 py-3.5 border-b border-line-soft flex-shrink-0 cursor-grab active:cursor-grabbing select-none"
+            onPointerDown={drag.startDrag}
+          >
             <div className="flex items-center gap-2">
               <Icon name="ai-settings-bold" className="w-4 h-4 text-primary-500" />
               <h3 className="text-base font-semibold text-ink">设置</h3>
@@ -1204,7 +1331,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   />
                 </div>
               </div>
-              <nav className="flex-1 overflow-y-auto chat-scrollbar px-2 pb-3">
+              <nav ref={navRef} className="flex-1 overflow-y-auto chat-scrollbar px-2 pb-3">
                 {getVisibleGroups(appSettings.general.enableAI).map((group) => {
                   const items = visibleSections.filter((s) => s.group === group);
                   if (items.length === 0) return null;
@@ -1213,26 +1340,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="px-2.5 pt-2.5 pb-1 text-[10px] font-semibold text-faint-soft uppercase tracking-wider">
                         {group}
                       </div>
-                      {items.map((s) => (
-                        <button
-                          key={s.key}
-                          onClick={() => scrollToSection(s.key)}
-                          className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg text-xs font-medium transition-colors ${
-                            active === s.key
-                              ? "bg-primary-50 text-primary-600"
-                              : "text-muted hover:bg-surface-alt/70"
-                          }`}
-                        >
-                          <Icon
-                            name={s.icon}
-                            className={`w-3.5 h-3.5 flex-shrink-0 ${active === s.key ? "opacity-100" : "opacity-70"}`}
-                          />
-                          <span className="truncate">{s.label}</span>
-                          {active === s.key && (
-                            <span className="ml-auto w-1 h-1 rounded-full bg-primary-500 flex-shrink-0" />
-                          )}
-                        </button>
-                      ))}
+                      {items.map((s) => {
+                        const subGroups = groupsOf(s.key);
+                        // 搜索时强制展开：命中的二级项藏在折叠里等于搜不到
+                        const open = q ? true : expanded.has(s.key);
+                        const isActive = active === s.key;
+                        return (
+                          <div key={s.key}>
+                            {/* 折叠箭头必须只属于这一行：包住下面的二级列表会让它跑到整块的垂直中间 */}
+                            <div className="relative">
+                              <button
+                                data-nav-key={s.key}
+                                onClick={() => {
+                                  // 有二级项的分区：点一次展开并跳到该分区，再点一次收起
+                                  // （收起只动左栏，不把右侧拽回来——用户可能只是想合上目录）
+                                  if (subGroups.length === 0) {
+                                    scrollToSection(s.key);
+                                    return;
+                                  }
+                                  setExpanded((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(s.key)) next.delete(s.key);
+                                    else next.add(s.key);
+                                    return next;
+                                  });
+                                  if (!open) scrollToSection(s.key);
+                                }}
+                                className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg text-xs font-medium ${
+                                  subGroups.length > 0 ? "pr-7" : ""
+                                } ${
+                                  isActive
+                                    ? "bg-primary-50 text-primary-600"
+                                    : "text-muted hover:bg-surface-alt/70"
+                                }`}
+                              >
+                                <Icon
+                                  name={s.icon}
+                                  className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "opacity-100" : "opacity-70"}`}
+                                />
+                                <span className="truncate">{s.label}</span>
+                                {/* 没有二级项的叶子分区：用圆点标记当前项（有二级项的用折叠箭头） */}
+                                {isActive && subGroups.length === 0 && (
+                                  <span className="ml-auto w-1 h-1 rounded-full bg-primary-500 flex-shrink-0" />
+                                )}
+                              </button>
+                              {subGroups.length > 0 && (
+                                <button
+                                  type="button"
+                                  aria-label={open ? "收起二级目录" : "展开二级目录"}
+                                  aria-expanded={open}
+                                  onClick={() => toggleSection(s.key)}
+                                  className="absolute right-1 top-[15px] -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-md text-faint hover:text-body hover:bg-surface-alt/70"
+                                >
+                                  <Icon
+                                    name="sidebar-chevron-down"
+                                    className={`w-3 h-3 transition-transform ${open ? "" : "-rotate-90"}`}
+                                  />
+                                </button>
+                              )}
+                            </div>
+                            {subGroups.length > 0 && open && (
+                              <div className="mt-0.5 mb-1 ml-[18px] border-l border-line-soft pl-1.5">
+                                {subGroups.map((name) => {
+                                  const on = isActive && activeGroup === name;
+                                  return (
+                                    <button
+                                      key={name}
+                                      data-nav-key={`${s.key}:${name}`}
+                                      onClick={() => scrollToGroup(s.key, name)}
+                                      className={`w-full text-left px-2 py-[5px] rounded-md text-[11px] truncate ${
+                                        on
+                                          ? "bg-primary-50 text-primary-600 font-medium"
+                                          : "text-faint hover:bg-surface-alt/70 hover:text-body"
+                                      }`}
+                                    >
+                                      {name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })}
@@ -1265,6 +1455,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       }}
                       data-section={s.key}
                       className="mb-11 last:mb-2 [&>*+*]:pl-8"
+                      // 指针进到这一块，左侧目录的高亮就跟过来（滚轮只会动右侧，高亮由 handleScroll 反查）
+                      onMouseEnter={() => hoverSection(s.key, null)}
                     >
                       <div className="flex items-center gap-2 mb-2 pb-2 border-b border-line-soft">
                         <span className="w-6 h-6 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
@@ -1277,7 +1469,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {sectionRows.length > 0 && (
                         <div className="space-y-1">
                           {chunkByGroup(sectionRows).map((chunk) => (
-                            <div key={chunk.group ?? "_"} className="divide-y divide-line-soft">
+                            <div
+                              key={chunk.group ?? "_"}
+                              className="divide-y divide-line-soft"
+                              ref={(el) => {
+                                groupRefs.current[groupKey(s.key, chunk.group)] = el;
+                              }}
+                              onMouseEnter={() => hoverSection(s.key, chunk.group)}
+                            >
                               {chunk.group && (
                                 <p className="pt-3 pb-1 text-[11px] font-semibold text-muted">
                                   {chunk.group}

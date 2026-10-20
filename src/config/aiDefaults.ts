@@ -45,6 +45,9 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   maxTokens: 8192,
   composerHeight: 0,
   aiAccessEnabled: true,
+  /** 新建笔记/分组默认沿用"完全"：等于老版本行为，升级后不会突然出现看不见的笔记 */
+  defaultNoteAiAccess: 2,
+  defaultCategoryAiAccess: 2,
 };
 
 /* ---------- 工具声明 ---------- */
@@ -329,6 +332,7 @@ export const TRUNCATED_TOOL_CALL_NOTICE =
  * - minThinkingLen 0–1000 字符 / maxRounds 0–200 轮 / contextBudget 2000–200000 token
  * - keepRecent 2–50 条 / toolResultChars 200–20000 字符
  * - composerHeight 0–1200 px / maxTokens 256–32000 token
+ * - 新建笔记/分组的默认 AI 档位 0–2（禁止 / 只读 / 完全）
  */
 export const normalizeAiSettings = (raw: Record<string, unknown> | null | undefined): AiSettings => {
   const merged: AiSettings = { ...DEFAULT_AI_SETTINGS };
@@ -346,5 +350,8 @@ export const normalizeAiSettings = (raw: Record<string, unknown> | null | undefi
   merged.toolResultChars = Math.min(20000, Math.max(200, Math.round(merged.toolResultChars)));
   merged.composerHeight = Math.min(1200, Math.max(0, Math.round(merged.composerHeight)));
   merged.maxTokens = Math.min(32000, Math.max(256, Math.round(merged.maxTokens)));
+  // 默认档位只有 0/1/2 三档：手改库写成 5 或 -1 时按最近的合法档收住
+  merged.defaultNoteAiAccess = Math.min(2, Math.max(0, Math.round(merged.defaultNoteAiAccess))) as 0 | 1 | 2;
+  merged.defaultCategoryAiAccess = Math.min(2, Math.max(0, Math.round(merged.defaultCategoryAiAccess))) as 0 | 1 | 2;
   return merged;
 };

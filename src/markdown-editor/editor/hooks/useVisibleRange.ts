@@ -1,5 +1,5 @@
 /**
- * 源码区当前可视的逻辑行区间。
+ * 编辑区当前可视的逻辑行区间。
  *
  * 行号槽与查找高亮层都要「只渲染看得见的那几十行」，所以区间计算放在一处共享，
  * 滚动监听也只挂一个。
@@ -13,7 +13,7 @@
  * 滚动本身不触发重渲染：位置存 ref，只有跨过区间边界（上下各留 PAD 行余量）才 setState。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LineRuler } from "./lineRows";
+import type { LineRuler } from "../lineRows";
 
 export interface VisibleRange {
   first: number;
@@ -30,7 +30,7 @@ export interface Viewport {
   sync: () => void;
 }
 
-export const useVisibleRange = (target: HTMLTextAreaElement | null, ruler: LineRuler, pad: number): Viewport => {
+export const useVisibleRange = (target: HTMLElement | null, ruler: LineRuler, pad: number): Viewport => {
   const [range, setRange] = useState<VisibleRange>({ first: 0, last: 0 });
   const scroll = useRef(0);
   const frame = useRef(0);

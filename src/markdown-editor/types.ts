@@ -28,8 +28,8 @@ export type { SearchMatch, SearchOptions } from "./editor/search";
 
 /**
  * 视图模式。
- * - `split`：左源码右预览；
- * - `code`：只显示源码（可开行号）；
+ * - `split`：左编辑右预览；
+ * - `code`：只显示编辑区（可开行号）；
  * - `read`：只显示渲染结果，但保留工具栏 / 状态栏等外壳；
  * - `render`：**纯渲染**——只输出渲染结果，工具栏、状态栏、查找框、大纲一律不渲染，
  *   高度随内容增长。给「只要把一段 Markdown 显示出来」的场景用（如 AI 回复），
@@ -224,6 +224,19 @@ export interface MarkdownThemeColors {
   searchMatchActiveBg: string;
   /** 当前命中描边 */
   searchMatchActiveBorder: string;
+  /** 光标所在行的底色（editor.highlightActiveLine） */
+  activeLineBg: string;
+  /** 大纲跳转后目标标题的高亮底色（outline.flashTarget） */
+  jumpFlashBg: string;
+  /**
+   * 编辑区里围栏代码块整块的底色（`editor.codeHighlight`）。
+   *
+   * 只是「很浅的一层」，用来把代码块和正文分开；语法 token 的颜色不在这里，
+   * 它跟 `theme.codeTheme` / `theme.codeColors` 走（见 theme.ts 的 buildSyntaxRules）。
+   */
+  sourceCodeBg: string;
+  /** 图片放大预览浮层的遮罩底色（preview.imagePreview） */
+  imageViewerBg: string;
 }
 
 /** 预览区排版参数 */
@@ -275,6 +288,12 @@ export interface MarkdownEditorInputConfig {
   fontFamily: string;
   fontSize: number;
   lineHeight: number;
+  /**
+   * 字间距（任意 CSS 长度，`"0"` 表示不加）。
+   * 中英混排、纯中文长文里给字与字之间留一点空气，整块正文会松快不少；
+   * 会同时作用到编辑区与折行测量层，两处必须一致（否则同一行折出来的行数不同）。
+   */
+  letterSpacing: string;
   /** Tab 宽度（同时用于列表缩进） */
   tabSize: number;
   /** Tab 键行为：indent = 缩进整行，spaces = 插入空格，none = 交给浏览器 */
@@ -283,7 +302,7 @@ export interface MarkdownEditorInputConfig {
   spellCheck: boolean;
   /**
    * 字体连字：等宽字体默认会把 `->`、`==`、`<=` 画成一个符号。
-   * Markdown 源码里这些是语法标记，连起来会影响判读，所以默认关。
+   * Markdown 编辑区里这些是语法标记，连起来会影响判读，所以默认关。
    */
   fontLigatures: boolean;
   /** 自动换行（关闭后横向滚动） */
@@ -300,10 +319,54 @@ export interface MarkdownEditorInputConfig {
   continueMarkdownOnEnter: boolean;
   /** 撤销栈上限 */
   historyLimit: number;
+  /**
+   * 字号缩放（Ctrl/⌘ + 滚轮、Ctrl/⌘ + `=` / `-` / `0`）。
+   *
+   * 组件只负责把「目标字号」算出来交给 `onFontSizeChange`，
+   * 默认字号（`0` 复原到哪）由宿主自己决定——它才是设置项的主人。
+   */
+  zoom: {
+    /** 是否允许改字号；关掉后这四个按键/手势都还给宿主 */
+    enabled: boolean;
+    /** 每次加减的步长（px） */
+    step: number;
+    /** 缩放范围（px） */
+    min: number;
+    max: number;
+  };
   /** 滚到底部时额外留白（px），方便继续写 */
   scrollPaddingBottom: number;
   /** 点击行号选中整行 */
   gutterClickSelectsLine: boolean;
+  /**
+   * 光标所在行整行高亮。
+   *
+   * 按行虚拟化之后「哪一行是当前行」只是给那一个 `.mde-line` 加个类的事，
+   * 行号槽里对应的那一格也跟着点亮。失焦时撤掉（否则两个编辑器并排会各亮一行）。
+   */
+  highlightActiveLine: boolean;
+  /**
+   * 自绘光标的宽度（px）。
+   *
+   * 原生光标恒为 1px（Chromium 没有 caret-width），125%/150% 缩放下细成一根毛发，
+   * 所以组件自己画一根；这里决定它多宽，0 / 负数回退到默认的 2px。
+   */
+  caretWidth: number;
+  /**
+   * 编辑区的代码块增强：识别围栏里的语言，给整块铺一层浅底色，并给 token 着色。
+   *
+   * 关掉之后编辑区就是纯文本的样子（围栏仍按普通文字显示，样式和以前一致）。
+   * 着色依赖 `preview.highlight`（同一个 highlight.js 开关），预览关掉高亮时这里也不再着色。
+   */
+  codeHighlight: boolean;
+  /**
+   * 自绘光标的高度（相对字号的倍数）。
+   *
+   * 1 = 与字同高；略大于 1 时上下各出头一点，像原生光标那样把字符"括"住。
+   * 不会超过行盒高度（行高 1.75 时 1.25 倍字号正好居中、上下留白）。
+   * 0 / 负数回退到默认的 1.25。
+   */
+  caretHeight: number;
 }
 
 /** 预览区配置 */
@@ -312,7 +375,7 @@ export interface MarkdownPreviewConfig {
   debounce: number;
   /** 分栏模式是否同步滚动 */
   syncScroll: boolean;
-  /** 同步策略：anchor 按源码行锚点插值，ratio 按滚动比例 */
+  /** 同步策略：anchor 按编辑行锚点插值，ratio 按滚动比例 */
   syncScrollMode: "anchor" | "ratio";
   /** 代码高亮 */
   highlight: boolean;
@@ -353,6 +416,22 @@ export interface MarkdownPreviewConfig {
   };
   /** 任务列表勾选框可点击 */
   taskInteractive: boolean;
+  /**
+   * 点击图片放大预览（分栏预览区 / 阅读视图）。
+   *
+   * 放大后在浮层里用滚轮继续缩放、按住拖动平移，Esc / 点空白关闭。
+   * 关掉后图片就是普通静态图，点击不弹浮层（宿主可以用 `onImageClick` 接管）。
+   */
+  imagePreview: boolean;
+  /** 放大预览浮层的缩放参数（`imagePreview` 为 true 时生效） */
+  imageZoom: {
+    /** 每格滚轮的倍率（>1；缩小取倒数） */
+    step: number;
+    /** 最小倍率 */
+    min: number;
+    /** 最大倍率 */
+    max: number;
+  };
   /** 单个换行即换行（GFM breaks）：开 after 每行的 `\n` 都渲染成换行，不用行尾补两个空格 */
   breaks: boolean;
   /** 允许 HTML 标签（关闭后原样显示为文本） */
@@ -390,6 +469,11 @@ export interface MarkdownToolbarConfig {
   scrollable: boolean;
   /** 滚轮纵向滚动转换为工具栏横向滚动 */
   scrollWheel: boolean;
+  /**
+   * 尾部吸附：把「视图切换 / 大纲 / 全屏 / 复制」这一组钉在工具栏右缘，
+   * 窗口变窄、前面的按钮被滚走时它们始终点得到。关掉就整排一起滚。
+   */
+  pinTail: boolean;
   /** 鼠标悬停即展开下拉菜单（标题 / 提示块 / 警告提示块） */
   openOnHover: boolean;
   /** 悬停展开的延迟（ms），避免扫过工具栏时菜单乱闪 */
@@ -423,6 +507,17 @@ export interface MarkdownOutlineConfig {
   maxDepth: number;
   /** 大纲项前缀是否显示层级缩进 */
   indent: boolean;
+  /**
+   * 点击大纲后光标落在哪里：
+   * - `lineStart`：行首（`###` 前面，顶格）—— 要改标题级别时最顺手；
+   * - `textStart`：标题文字前（跳过 `### `）—— 要改标题内容时最顺手。
+   */
+  caretTarget: "lineStart" | "textStart";
+  /**
+   * 点击大纲后把目标标题高亮一下：编辑区整行（含 `###`）、预览区整个标题块。
+   * 高亮在光标移到别处（点别的地方 / 打字）时自动撤掉。
+   */
+  flashTarget: boolean;
 }
 
 /** 查找 / 替换配置（Ctrl+F 悬浮框，交互对齐 VSCode） */
@@ -435,8 +530,20 @@ export interface MarkdownSearchConfig {
   caseSensitive: boolean;
   /** 初始：正则表达式 */
   regex: boolean;
-  /** 源码区高亮全部命中（关闭则只高亮当前命中） */
+  /**
+   * 初始：替换串也按正则展开（替换串里原样写下的查找正则 = 整个命中）。
+   * 只在 `regex` 打开时有意义。
+   */
+  regexReplace: boolean;
+  /** 编辑区高亮全部命中（关闭则只高亮当前命中） */
   highlightAll: boolean;
+  /**
+   * 预览 / 阅读视图里也铺命中高亮。
+   *
+   * 分栏时左右各铺各的：编辑侧按编辑区偏移铺，预览侧按渲染后的文本节点扫。
+   * 两边计数不保证一一对应（编辑区里的 `**` 在预览里不显示），计数与替换始终以编辑区为准。
+   */
+  highlightPreview: boolean;
   /** 跳转到末尾后再按下一个时回到开头 */
   loop: boolean;
   /** 最多统计 / 高亮多少个命中，避免大文档卡顿 */
@@ -610,6 +717,13 @@ export interface MarkdownEditorProps {
   onOutlineChange?: (outline: OutlineItem[]) => void;
   /** 统计变化 */
   onStatsChange?: (stats: MarkdownStats) => void;
+  /**
+   * 用户改了字号（Ctrl/⌘ + 滚轮、Ctrl/⌘ + `=` / `-` / `0`）。
+   *
+   * 传 `null` 表示「恢复到默认字号」——默认值归宿主管（通常就是设置里的默认字号），
+   * 组件自己不存它。不传这个回调时组件退化成内部临时缩放，单独用也能缩。
+   */
+  onFontSizeChange?: (fontSize: number | null) => void;
   /** 全屏状态变化 */
   onFullscreenChange?: (fullscreen: boolean) => void;
 }

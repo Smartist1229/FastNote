@@ -4,11 +4,11 @@
  * 为什么用 React 元素而不是拼 HTML 字符串：
  * - 文本天然转义，只有显式 allowHtml 的节点才走 innerHTML；
  * - 任务勾选框、链接点击、TOC 跳转都需要真实事件，字符串方案得靠事件委托猜目标；
- * - 每个顶层块带 `data-line`，分栏滚动同步按源码行映射，而不是按百分比糊弄。
+ * - 每个顶层块带 `data-line`，分栏滚动同步按编辑行映射，而不是按百分比糊弄。
  *
- * 每个顶层块保留原始偏移（data-offset），实时预览整块替换时用它切源码。
+ * 每个顶层块保留原始偏移（data-offset），实时预览整块替换时用它切编辑区文本。
  */
-import { createElement, Fragment, memo, useMemo } from "react";
+import { createElement, Fragment, memo, useMemo, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type {
   AlertKind,
@@ -23,6 +23,7 @@ import { OutlineCtx, PreviewCtx, useOutline, usePreview, type PreviewContextValu
 import { CodeBlock } from "./CodeBlock";
 import { MathBlock, MathInline } from "./MathNode";
 import { sanitizeHtml } from "./sanitize";
+import { ImageViewer } from "../components/overlays/ImageViewer";
 
 const ALERT_LABEL_KEY: Record<AlertKind, string> = {
   note: "alertNote",
@@ -61,7 +62,7 @@ const blockAttrs = (node: BlockNode, topLevel: boolean) =>
 /**
  * 行内节点渲染。
  *
- * `keyBase` 只用来保证兄弟之间不撞名，**绝不能掺进 `line` / `start` 这类源码坐标**：
+ * `keyBase` 只用来保证兄弟之间不撞名，**绝不能掺进 `line` / `start` 这类编辑坐标**：
  * 每敲一个字，后面所有块的坐标都会平移一位，掺了坐标的 key 会跟着全部变化，
  * React 于是把整棵预览树 unmount 重挂一遍（DOM 全删全建，代码块的高亮 effect 也全部重跑）。
  * 这里统一用固定的族名 + 下标，坐标再怎么变 key 都不动。
@@ -132,9 +133,18 @@ export const renderInline = (nodes: InlineNode[], ctx: PreviewContextValue, keyB
             src={node.src}
             alt={node.alt}
             title={node.title}
-            className="mde-image"
+            className={`mde-image${ctx.config.preview.imagePreview ? " is-zoomable" : ""}`}
             loading="lazy"
             draggable={false}
+            onClick={
+              ctx.config.preview.imagePreview
+                ? () => {
+                    // 宿主传了 onImageClick 就完全交给它（例如换成自己的灯箱）
+                    if (ctx.onImageClick) ctx.onImageClick(node.src, node.alt);
+                    else ctx.showImage?.(node.src, node.alt);
+                  }
+                : undefined
+            }
           />
         );
       case "footnoteRef":
@@ -401,8 +411,11 @@ export interface MarkdownPreviewProps {
   readOnly?: boolean;
   className?: string;
   style?: CSSProperties;
+  /** 主题变量：图片放大浮层 portal 到 body 后需要它来继承配色 */
+  themeVars?: Record<string, string>;
   onLinkClick?: (href: string, event: ReactMouseEvent) => boolean | void;
   onTaskToggle?: (taskOffset: number, checked: boolean) => void;
+  onImageClick?: (src: string, alt: string) => boolean | void;
 }
 
 /**
@@ -425,11 +438,18 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
   readOnly = false,
   className,
   style,
+  themeVars,
   onLinkClick,
   onTaskToggle,
+  onImageClick,
 }) => {
   const hasFrontmatter = config.preview.showFrontmatter && doc.frontmatter;
   const empty = config.preview.emptyText || labels.empty;
+  /*
+   * 宿主没接管图片点击时，预览自己弹放大浮层。
+   * 浮层状态放在这里（而不是每一张图各自持有），同一时刻只会有一层。
+   */
+  const [viewing, setViewing] = useState<{ src: string; alt: string } | null>(null);
   /*
    * 这里刻意不把 doc 放进上下文。
    *
@@ -438,8 +458,16 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
    * 真正依赖 doc 的只有 TOC 与大纲，它们走各自的 context / props。
    */
   const ctx = useMemo(
-    () => ({ config, labels, readOnly, onLinkClick, onTaskToggle }),
-    [config, labels, readOnly, onLinkClick, onTaskToggle],
+    () => ({
+      config,
+      labels,
+      readOnly,
+      onLinkClick,
+      onTaskToggle,
+      onImageClick,
+      showImage: (src: string, alt: string) => setViewing({ src, alt }),
+    }),
+    [config, labels, readOnly, onLinkClick, onTaskToggle, onImageClick],
   );
   return (
     <PreviewCtx.Provider value={ctx}>
@@ -460,6 +488,15 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
             {config.preview.showFootnotes && <Footnotes doc={doc} labels={labels} />}
           </div>
         </div>
+        {viewing && !onImageClick && (
+          <ImageViewer
+            src={viewing.src}
+            alt={viewing.alt}
+            config={config.preview.imageZoom}
+            themeVars={themeVars}
+            onClose={() => setViewing(null)}
+          />
+        )}
       </OutlineCtx.Provider>
     </PreviewCtx.Provider>
   );

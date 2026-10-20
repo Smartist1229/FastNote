@@ -190,6 +190,12 @@ function AppContent() {
    */
   const [aiPrompts, setAiPrompts] = useState<AiPromptEntry[]>([]);
   const [aiSettings, setAiSettings] = useState<AiSettings>(DEFAULT_AI_SETTINGS);
+  /**
+   * 新建笔记 / 分组时套用的初始 AI 档位（设置里的「新建笔记 / 新建分组默认权限」）。
+   * 只决定"创建那一刻"的值，之后各按自己的属性走；取值在 normalizeAiSettings 里收敛到 0–2。
+   */
+  const defaultNoteAiAccess = aiSettings.defaultNoteAiAccess;
+  const defaultCategoryAiAccess = aiSettings.defaultCategoryAiAccess;
   /** 设置是否已从数据库读回：读回前不写库，避免用默认值覆盖用户数据 */
   const [aiConfigLoaded, setAiConfigLoaded] = useState(false);
   /** 右键「导出分组」的目标（真实分组 / 默认分组 / 搜索分组归一成同一结构），非 null 时打开导出窗口 */
@@ -401,6 +407,9 @@ function AppContent() {
   /**
    * 打开真实笔记：撤掉上层叠放（先触发外部文件写回），切到它所属分组并展开抽屉，
    * 再用一次短延时把 focusNoteId 送进侧边栏做高亮。
+   *
+   * 正文随列表一起在内存里，直接切换即可；不要在这里插一层"正在读取"遮罩——
+   * 遮罩哪怕只存在一两帧，整块编辑面板也会闪一下。
    */
   const openNote = useCallback((note: Note) => {
     // 打开真实笔记：撤掉上层叠着的电脑文件 / AI 预览（先触发一次文件写回）
@@ -410,7 +419,6 @@ function AppContent() {
     }
     setTempNote(null);
     setExternalFile(null);
-    setSelectedNote(note);
     setSelectedCategoryId(note.category_id);
     setExpandedDrawer(note.category_id === null ? 'uncategorized' : note.category_id);
     if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
@@ -423,6 +431,8 @@ function AppContent() {
         focusTimerRef.current = null;
       }, 2600);
     }, 40);
+
+    setSelectedNote(note);
   }, []);
 
   /** 展开/收起 AI 对话面板（只改当前界面，不写设置） */
@@ -479,11 +489,7 @@ function AppContent() {
       const currentSelectedNote = selectedNoteRef.current;
       if (currentSelectedNote) {
         const updatedNote = allNotes.find((note) => note.id === currentSelectedNote.id);
-        if (updatedNote) {
-          setSelectedNote({ ...updatedNote });
-        } else {
-          setSelectedNote(null);
-        }
+        setSelectedNote(updatedNote ?? null);
       }
     } catch (error) {
       console.error("Failed to load data:", error);
@@ -535,7 +541,7 @@ function AppContent() {
     setTempNote(null);
     setExternalFile(null);
     try {
-      const note = await notesApi.createNote("无标题", "", targetCategory);
+      const note = await notesApi.createNote("无标题", "", targetCategory, defaultNoteAiAccess);
       setNotes((prev) => [...prev, note]);
       setSelectedNote(note);
       setSelectedCategoryId(targetCategory);
@@ -549,7 +555,7 @@ function AppContent() {
   /** 临时预览（AI 回复）另存为真实笔记：写库后打开它，叠放层一并清空 */
   const handleSavePreviewToCategory = async (categoryId: number | null, title: string, content: string) => {
     try {
-      const note = await notesApi.createNote(title, content, categoryId);
+      const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
@@ -602,7 +608,7 @@ function AppContent() {
     // 另存前先触发一次写回，把最后一点改动交给原文件（不等待完成）
     flushExternalRef.current?.();
     try {
-      const note = await notesApi.createNote(title, content, categoryId);
+      const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
@@ -636,7 +642,7 @@ function AppContent() {
     if (!ok) return;
     try {
       const file = await notesApi.readTextFile(path);
-      await notesApi.createNote(file.name, file.content, categoryId);
+      await notesApi.createNote(file.name, file.content, categoryId, defaultNoteAiAccess);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId);
       showToast("已导入到分组", "success");
@@ -644,7 +650,7 @@ function AppContent() {
     } catch (e) {
       showToast(typeof e === "string" ? e : "导入失败", "error");
     }
-  }, [confirm, showToast]);
+  }, [confirm, defaultNoteAiAccess, showToast]);
 
   /** 欢迎页「打开文本文件」：系统文件选择框 → 按外部文件模式打开 */
   const handleOpenTextFileDialog = useCallback(async () => {
@@ -735,7 +741,7 @@ function AppContent() {
     exportNoteRef.current = fn;
   }, []);
 
-  /** 侧边栏右键「保存笔记」：打开中的笔记交给编辑器（内容最新），其余直接导出库里内容 */
+  /** 侧边栏右键「保存笔记」：打开中的笔记交给编辑器（内容最新），其余按 id 读正文后导出 */
   const handleExportNoteFromMenu = async (note: Note) => {
     if (selectedNote?.id === note.id && exportNoteRef.current) {
       exportNoteRef.current();
@@ -933,7 +939,7 @@ function AppContent() {
     if (!categoryName.trim()) return;
     try {
       if (editingCategory) { await categoriesApi.updateCategory(editingCategory.id, categoryName); }
-      else { await categoriesApi.createCategory(categoryName); }
+      else { await categoriesApi.createCategory(categoryName, defaultCategoryAiAccess); }
       await loadData();
       setShowCategoryModal(false);
     } catch (error) {
@@ -1008,6 +1014,20 @@ function AppContent() {
       showToast("移动成功", "success");
     } catch {
       showToast("移动失败", "error");
+    }
+  };
+
+  /** 重命名笔记标题：走 update_note，正文原样带回 */
+  const handleRenameNote = async (note: Note, title: string) => {
+    try {
+      await notesApi.updateNote(note.id, title, note.content, note.category_id);
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, title } : n)));
+      if (selectedNoteRef.current?.id === note.id) {
+        setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, title } : prev));
+      }
+      showToast("已更新笔记标题", "success");
+    } catch {
+      showToast("重命名失败，请重试", "error");
     }
   };
 
@@ -1288,9 +1308,9 @@ function AppContent() {
         </div>
       </Modal>
 
-      {/* 回收站弹窗 */}
-      <Modal isOpen={showTrashModal} onClose={() => setShowTrashModal(false)} title="回收站">
-        <div className="space-y-3 min-h-[200px] max-h-[60vh] flex flex-col">
+      {/* 回收站弹窗：固定宽高，列表长短不影响窗口尺寸（内容在内部滚动） */}
+      <Modal isOpen={showTrashModal} onClose={() => setShowTrashModal(false)} title="回收站" width={560} height={520}>
+        <div className="flex h-full min-h-0 flex-col gap-3">
           {trashNotes.length > 0 && (
             <div className="flex items-center justify-between gap-2 flex-shrink-0">
               <div className="flex items-center gap-1.5 text-xs text-faint">
@@ -1393,10 +1413,7 @@ function AppContent() {
         target={propertiesTargetLive}
         categories={categories}
         onClose={() => setPropertiesTarget(null)}
-        onRenameNote={async (note, title) => {
-          await handleSaveNote(note.id, title, note.content, note.category_id);
-          showToast("已更新笔记标题", "success");
-        }}
+        onRenameNote={handleRenameNote}
         onMoveNote={handleMoveNoteToCategory}
         onTogglePin={handleTogglePin}
         onRenameCategory={handleRenameCategory}

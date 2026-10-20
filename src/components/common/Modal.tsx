@@ -1,11 +1,19 @@
 /**
  * 通用弹窗：受控组件，isOpen 为 false 时直接返回 null，子树的本地状态随之丢弃。
- * 只支持两种关闭方式——右上角按钮与 Esc；点遮罩不关闭，避免误点把正在填的表单关掉。
+ * 关闭方式只有右上角按钮——点遮罩不关（避免误点把正在填的表单关掉），Esc 也不关
+ * （非模态时面板不持有焦点，Esc 多半是用户想关编辑器里的东西）。
  * 不带焦点陷阱与滚动锁定，内容区（及其中的浮层）需自行处理；size 仅决定最大宽度。
+ * 要固定尺寸就传 width / height：宽度走内联 style（不再套 size 的 max-w），
+ * 高度传了之后卡片固定高、内容区自己滚，弹窗不会再被内容撑大或缩水。
+ *
+ * 传了 `floating` 就切成非模态浮窗：不铺遮罩、整层 pointer-events 关掉，
+ * 只有卡片本身可点——底下的界面照常可交互；标题栏可拖动挪位置（每次打开回到居中）。
+ * 目前没有任何调用方用它（设置窗自己实现的浮窗外壳，属性窗已经改回模态）；
+ * 确认框这类必须挡住全屏的仍走模态。
  */
-import { useEffect } from 'react';
 import type { ModalProps } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
+import { useDraggable } from "@/components/common/useDraggable";
 
 /** size → 最大宽度；外层已有 p-4，视口再窄也只是贴边不会溢出 */
 const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
@@ -14,32 +22,42 @@ const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
   "2xl": "max-w-3xl",
 };
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = "lg" }) => {
-  // 监听挂在 document 上：弹窗里的 input 通常 autofocus，Esc 要能从任意焦点位置生效
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('keydown', handleKeyDown);
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, onClose]);
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = "lg", width, height, floating = false }) => {
+  // hooks 不能条件调用：非浮窗时 enabled=false，startDrag 直接返回
+  const drag = useDraggable(floating && isOpen);
 
   if (!isOpen) return null;
 
+  /** 固定宽度时不套 w-full / max-w：max-width 会把内联的 width 夹回去 */
+  const widthClass = width == null ? `w-full ${SIZE_CLASS[size]}` : "";
+  /** 固定高度（或浮窗）时卡片必须是 flex 列，内容区才能被压成滚动容器 */
+  const scrollBody = floating || height != null;
+
   return (
     <div
-      className="modal-overlay fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      className={
+        floating
+          ? "fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+          : "modal-overlay fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      }
     >
-      <div className={`modal-content bg-surface rounded-2xl shadow-2xl w-full ${SIZE_CLASS[size]} overflow-hidden`}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-line-soft">
+      <div
+        ref={drag.panelRef}
+        className={`modal-content relative rounded-2xl flex flex-col overflow-hidden ${widthClass} ${
+          floating ? "floating-panel bg-surface pointer-events-auto max-h-[92vh]" : "bg-surface shadow-2xl"
+        }`}
+        style={{
+          ...(floating ? drag.style : undefined),
+          ...(width != null ? { width } : undefined),
+          ...(height != null ? { height } : undefined),
+        }}
+      >
+        <div
+          className={`flex items-center justify-between px-5 py-4 border-b border-line-soft flex-shrink-0${
+            floating ? " cursor-grab active:cursor-grabbing select-none" : ""
+          }`}
+          onPointerDown={floating ? drag.startDrag : undefined}
+        >
           <h3 className="text-base font-semibold text-ink">{title}</h3>
           <button
             onClick={onClose}
@@ -49,7 +67,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
             <Icon name="modal-close" className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className={scrollBody ? "flex-1 min-h-0 overflow-y-auto chat-scrollbar p-5" : "p-5"}>{children}</div>
       </div>
     </div>
   );

@@ -8,7 +8,7 @@
  *   3. `exclude: ['bold', ...]` 一键隐藏。
  *
  * 两个容易踩的坑，实现里刻意绕开了：
- * - 所有按钮都 `onMouseDown` 阻止默认行为：否则点击按钮会让 textarea 失焦，
+ * - 所有按钮都 `onMouseDown` 阻止默认行为：否则点击按钮会让编辑区失焦，
  *   实时预览正在编辑的块会被立刻提交，选区也丢了，工具栏就没法作用于当前选区。
  * - 下拉菜单必须渲染到 body（portal + fixed 定位）。工具栏为了窄窗口可横向滚动设了
  *   `overflow-x: auto / overflow-y: hidden`，留在内部渲染的菜单会被整块裁掉，
@@ -70,6 +70,12 @@ const MUTATING: ToolbarItemName[] = [
 const ALERT_KINDS = ["note", "tip", "important", "warning", "caution"] as const;
 type AlertKind = (typeof ALERT_KINDS)[number];
 const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
+
+/**
+ * 尾部吸附组：窗口变窄时这几个必须一直点得到（切换视图、看大纲、全屏、复制全文）。
+ * 顺序与预设里 items 的末尾保持一致。
+ */
+const PIN_TAIL_ITEMS = new Set<ToolbarItemName>(["mode", "outline", "fullscreen", "copy"]);
 
 /** 带下拉的三种工具 */
 type MenuKind = "heading" | "alert" | "callout";
@@ -234,6 +240,11 @@ export const Toolbar = memo<ToolbarProps>(({
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuKind | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  /**
+   * 工具栏内容比可视区宽：吸附组正压在左边按钮上，需要一层渐隐暗示「那里还有东西」。
+   * 用几何判断而不是「是否滚动过」——scrollLeft 为 0 时内容照样可能已经溢出。
+   */
+  const [stuck, setStuck] = useState(false);
   const wrapper = useRef<HTMLDivElement | null>(null);
   const menuNode = useRef<HTMLDivElement | null>(null);
   /** 各下拉按钮的 DOM，用于定位浮层菜单 */
@@ -303,6 +314,8 @@ export const Toolbar = memo<ToolbarProps>(({
     const element = wrapper.current;
     if (!element || !toolbar.scrollable || !toolbar.scrollWheel) return;
     const onWheel = (event: WheelEvent) => {
+      // Ctrl/⌘ + 滚轮是「改字号」，不能同时把工具栏横着滚一段
+      if (event.ctrlKey || event.metaKey) return;
       if (element.scrollWidth <= element.clientWidth + 1) return;
       if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
       event.preventDefault();
@@ -487,7 +500,7 @@ export const Toolbar = memo<ToolbarProps>(({
           }}
         >
           <MdeIcon name={icon} size={16} />
-          <MdeIcon name="arrow-down" size={11} className="mde-tool-caret" />
+          <MdeIcon name="chevron-down" size={12} className="mde-tool-caret" />
         </ToolButton>
       </div>
     );
@@ -597,17 +610,61 @@ export const Toolbar = memo<ToolbarProps>(({
 
   const customVisible = toolbar.customItems.filter((tool) => tool.visible !== false);
 
+  /*
+   * 尾部吸附：把末尾这组常驻工具从流程里切出来，单独包一层 sticky 容器。
+   * 只认平铺在 items 里的工具名（预设里 mode/outline/fullscreen/copy 就是这样），
+   * 分组写法（`{ group: [...] }`）不参与——分组意味着「同类按钮排在一起」，
+   * 拆一半出去反而更乱。
+   */
+  const tailStart = (() => {
+    if (!toolbar.pinTail) return visibleItems.length;
+    let at = visibleItems.length;
+    while (at > 0) {
+      const entry = visibleItems[at - 1];
+      if (
+        typeof entry === "string" &&
+        entry !== "|" &&
+        PIN_TAIL_ITEMS.has(entry) &&
+        !toolbar.exclude.includes(entry)
+      ) {
+        at -= 1;
+        continue;
+      }
+      break;
+    }
+    return at;
+  })();
+  const headItems = visibleItems.slice(0, tailStart);
+  const tailItems = visibleItems.slice(tailStart);
+
+  /** 每次渲染后量一次是否溢出：内容增减、紧凑模式、显示文字标签都会改变它 */
+  useLayoutEffect(() => {
+    const element = wrapper.current;
+    if (!element) return;
+    const next = element.scrollWidth > element.clientWidth + 1;
+    if (next !== stuck) setStuck(next);
+  });
+
+  /** 窗口缩放不会触发重渲染，得靠 ResizeObserver 补一次（容器宽度变了溢出状态可能翻转） */
+  useEffect(() => {
+    const element = wrapper.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setStuck(element.scrollWidth > element.clientWidth + 1));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div
       ref={wrapper}
       className={`mde-toolbar${toolbar.sticky ? " is-sticky" : ""}${toolbar.compact ? " is-compact" : ""}${
         toolbar.scrollable ? " is-scrollable" : ""
-      }`}
+      }${tailItems.length > 0 ? " has-tail" : ""}`}
       role="toolbar"
       aria-label="Markdown 工具栏"
     >
       <div className="mde-toolbar-inner">
-        {visibleItems.map(renderEntry)}
+        {headItems.map(renderEntry)}
         {customVisible.length > 0 && <span className="mde-sep" aria-hidden="true" />}
         {customVisible.map((tool) => (
           <ToolButton
@@ -621,6 +678,11 @@ export const Toolbar = memo<ToolbarProps>(({
             {typeof tool.icon === "string" ? <PathIcon d={tool.icon} size={16} /> : tool.icon}
           </ToolButton>
         ))}
+        {tailItems.length > 0 && (
+          <div className={`mde-toolbar-tail${stuck ? " is-stuck" : ""}`}>
+            {tailItems.map((entry, index) => renderEntry(entry, tailStart + index))}
+          </div>
+        )}
       </div>
 
       {openMenu === "heading" && (

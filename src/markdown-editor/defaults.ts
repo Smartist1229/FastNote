@@ -88,6 +88,10 @@ export const LIGHT_COLORS: MarkdownThemeColors = {
   searchMatchBorder: "rgba(202, 148, 40, 0.55)",
   searchMatchActiveBg: "rgba(234, 92, 0, 0.5)",
   searchMatchActiveBorder: "#ea5c00",
+  activeLineBg: "rgba(15, 23, 42, 0.045)",
+  jumpFlashBg: "rgba(234, 92, 0, 0.18)",
+  sourceCodeBg: "rgba(15, 23, 42, 0.035)",
+  imageViewerBg: "rgba(15, 23, 42, 0.8)",
 };
 
 /** 暗色主题 */
@@ -158,6 +162,10 @@ export const DARK_COLORS: MarkdownThemeColors = {
   searchMatchBorder: "rgba(121, 133, 148, 0.8)",
   searchMatchActiveBg: "rgba(187, 92, 0, 0.72)",
   searchMatchActiveBorder: "#f0a35e",
+  activeLineBg: "rgba(255, 255, 255, 0.055)",
+  jumpFlashBg: "rgba(240, 163, 94, 0.22)",
+  sourceCodeBg: "rgba(255, 255, 255, 0.045)",
+  imageViewerBg: "rgba(2, 6, 14, 0.86)",
 };
 
 /** 代码配色定义 */
@@ -445,9 +453,9 @@ const ZH_LABELS: Record<string, string> = {
   outline: "大纲",
   fullscreen: "全屏",
   copy: "复制全文",
-  "mode.split": "分栏",
-  "mode.code": "源码",
-  "mode.read": "阅读",
+  "mode.split": "分栏预览视图",
+  "mode.code": "编辑视图",
+  "mode.read": "阅读视图",
   words: "字",
   chars: "字符",
   lines: "行",
@@ -494,6 +502,14 @@ const ZH_LABELS: Record<string, string> = {
   searchClose: "关闭（Esc）",
   searchReplace: "替换",
   searchReplaceAll: "全部替换",
+  searchReplaceMode: "替换串模式",
+  searchReplaceLiteral: "字面",
+  searchReplaceRegex: "正则",
+  searchReplaceModeLocked: "先打开「使用正则表达式」，才能切换替换串模式",
+  searchReplaceLiteralHint:
+    "替换串按字面贴入。点一下切到「正则」：替换串里写下的查找正则会展开成命中文本",
+  searchReplaceRegexHint:
+    "替换串按正则展开：写下的查找正则就是整个命中。例如查找 [a-z]+、替换 -[a-z]+ 得到 -原词",
   searchNoResult: "无结果",
 };
 
@@ -533,7 +549,7 @@ const EN_LABELS: Record<string, string> = {
   fullscreen: "Fullscreen",
   copy: "Copy all",
   "mode.split": "Split",
-  "mode.code": "Source",
+  "mode.code": "Edit",
   "mode.read": "Read",
   words: "words",
   chars: "chars",
@@ -581,6 +597,14 @@ const EN_LABELS: Record<string, string> = {
   searchClose: "Close (Esc)",
   searchReplace: "Replace",
   searchReplaceAll: "Replace All",
+  searchReplaceMode: "Replacement mode",
+  searchReplaceLiteral: "Text",
+  searchReplaceRegex: "Regex",
+  searchReplaceModeLocked: "Turn on “Use Regular Expression” first",
+  searchReplaceLiteralHint:
+    "Replacement is inserted literally. Click to switch to “Regex”: the search pattern written in the replacement expands to the match",
+  searchReplaceRegexHint:
+    "Replacement is expanded as a pattern: the search regex stands for the whole match. e.g. find [a-z]+ replace -[a-z]+ → -word",
   searchNoResult: "No results",
 };
 
@@ -602,19 +626,31 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     fontFamily: FONT_STACKS.mono,
     fontSize: 14,
     lineHeight: 1.75,
+    // 字间距默认不额外加：组件本身不替宿主决定排版松紧
+    letterSpacing: "0",
     tabSize: 2,
     tabKey: "indent",
     placeholder: "开始书写 Markdown…",
     spellCheck: false,
-    // 源码里的 `~~`、`->` 是 Markdown 语法本身，连成一坨会误读，默认关掉连字
+    // 编辑区里的 `~~`、`->` 是 Markdown 语法本身，连成一坨会误读，默认关掉连字
     fontLigatures: false,
     wrap: true,
     lineNumbers: false,
     autoPair: { brackets: true, quotes: false, backticks: true },
     continueMarkdownOnEnter: true,
     historyLimit: 200,
+    // 字号缩放：默认开，步长 1px；范围比多数宿主更宽，宿主可再夹紧
+    zoom: { enabled: true, step: 1, min: 10, max: 32 },
     scrollPaddingBottom: 120,
     gutterClickSelectsLine: true,
+    // 当前行高亮：按行虚拟化之后只是给那一个 .mde-line 加类，开销可忽略
+    highlightActiveLine: true,
+    // 自绘光标宽度：原生那根恒为 1px，高缩放下几乎看不见
+    caretWidth: 2,
+    // 光标高度 = 字号 × 该值：比字略高一点（上下各出头），但不占满整个行盒
+    caretHeight: 1.25,
+    // 编辑区代码块增强：围栏语言识别 + 整块浅底色 + token 着色（依赖 preview.highlight 的 highlight.js）
+    codeHighlight: true,
   },
   preview: {
     debounce: 120,
@@ -635,6 +671,9 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     mermaidTheme: "default",
     tables: { striped: true, bordered: false, compact: false, fullWidth: true },
     taskInteractive: true,
+    // 点击图片放大预览：分栏预览区与阅读视图里点图弹浮层，滚轮缩放
+    imagePreview: true,
+    imageZoom: { step: 1.2, min: 0.2, max: 8 },
     allowHtml: true,
     breaks: false,
     sanitizeHtml: true,
@@ -666,6 +705,7 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     tooltip: true,
     scrollable: true,
     scrollWheel: true,
+    pinTail: true,
     openOnHover: true,
     hoverOpenDelay: 140,
     hoverCloseDelay: 220,
@@ -688,6 +728,10 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     title: "大纲",
     maxDepth: 3,
     indent: true,
+    // 点大纲后光标落在行首（`###` 前面）：改标题级别比改文字更常见
+    caretTarget: "lineStart",
+    // 跳转后把目标标题高亮一下，光标移到别处自动撤掉
+    flashTarget: true,
   },
   split: {
     ratio: 0.5,
@@ -699,9 +743,20 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     showReplace: true,
     caseSensitive: false,
     regex: false,
+    regexReplace: false,
     highlightAll: true,
+    // 预览/阅读视图同样铺命中高亮（阅读时铺；分栏只铺编辑侧）
+    highlightPreview: true,
     loop: true,
-    maxMatches: 2000,
+    /*
+     * 命中上限。
+     *
+     * 这是个「防跑飞」的上限，不是产品功能：几万字的笔记里查一个常用字
+     * （「的」「，」）轻松过两千，卡在 2000 会让后面的命中既看不到也跳不过去。
+     * 命中列表本身只是两个数字的对象，两万条也就几百 KB，真正贵的是渲染，
+     * 而渲染是按可视区间切的（见 SourceEditor 的 WHOLE_RENDER_MATCHES）。
+     */
+    maxMatches: 20000,
     seedFromSelection: true,
     blockHostFind: true,
   },

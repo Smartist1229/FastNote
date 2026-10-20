@@ -100,6 +100,13 @@ export const buildEditorColors = (
   searchMatchBorder: hexToRgba(tokens.warning, 0.75),
   searchMatchActiveBg: hexToRgba(tokens.accent, 0.5),
   searchMatchActiveBorder: tokens.accent,
+  // 光标所在行：比正文深一点点就够了，重了会盖过选中色
+  activeLineBg: hexToRgba(tokens.textInk, 0.05),
+  // 大纲跳转后的目标标题：用强调色，和「当前命中」是同一套语义（都是"你刚跳到这儿"）
+  jumpFlashBg: hexToRgba(tokens.accent, 0.16),
+  // 编辑区代码块的整块底色：按主题强调色掺出一层极浅的底（很淡，只把代码块与正文分开）。
+  // 与 preview.codeTheme 无关——这里只管编辑区那层「底色」，token 的文字颜色仍由 codeTheme 决定。
+  sourceCodeBg: hexToRgba(tokens.accent, 0.05),
 });
 
 /**
@@ -114,7 +121,7 @@ export const NOTE_EDITOR_CONFIG: DeepPartial<MarkdownEditorConfig> = {
   },
   editor: {
     placeholder: "开始书写 Markdown…",
-    // 源码区用等宽栈（组件默认是同一套 MONO，这里显式写死为软件的默认值），
+    // 编辑区用等宽栈（组件默认是同一套 MONO，这里显式写死为软件的默认值），
     // 字体不放进设置面板，改 config/appDefaults.ts 即全软件生效
     fontFamily: APP_MONO_FONT_STACK,
   },
@@ -175,6 +182,8 @@ export const buildNoteEditorConfig = (
       ...NOTE_EDITOR_CONFIG.editor,
       fontSize: bodyFontSize,
       lineHeight: settings.sourceLineHeight,
+      // 字间距：软件里按 px 存，编辑器收 CSS 长度
+      letterSpacing: `${clamp(settings.letterSpacing, 0, 3)}px`,
       tabSize: settings.tabSize,
       tabKey: settings.tabKey,
       fontLigatures: settings.fontLigatures,
@@ -189,6 +198,21 @@ export const buildNoteEditorConfig = (
         backticks: settings.autoPairBackticks,
       },
       historyLimit: settings.historyLimit,
+      highlightActiveLine: settings.highlightActiveLine,
+      caretWidth: clamp(settings.caretWidth, 1, 6),
+      // 光标高度按字号倍数给（1 = 与字同高，略大于 1 上下各出头一点）
+      caretHeight: clamp(settings.caretHeight, 0.6, 2),
+      // 编辑区代码块增强（语言识别 + 整块浅底 + token 着色）；
+      // 底色由 buildEditorColors 的 sourceCodeBg 按主题色生成，这里只传开关
+      codeHighlight: settings.codeHighlight,
+      scrollPaddingBottom: clamp(settings.scrollPaddingBottom, 0, 600),
+      // 字号缩放交给编辑器自己做（滚轮 + Ctrl/⌘ =/- /0），软件只管开关、步长与范围
+      zoom: {
+        enabled: settings.ctrlScrollZoom,
+        step: clamp(settings.zoomStep, 1, 4),
+        min: FONT_SIZE_MIN,
+        max: FONT_SIZE_MAX,
+      },
     },
     preview: {
       ...NOTE_EDITOR_CONFIG.preview,
@@ -217,6 +241,13 @@ export const buildNoteEditorConfig = (
       sanitizeHtml: settings.sanitizeHtml,
       showFrontmatter: settings.showFrontmatter,
       showFootnotes: settings.showFootnotes,
+      imagePreview: settings.imagePreview,
+      // 放大浮层缩放区间：最小值不能高过最大值，否则滚轮一滚就顶到边界
+      imageZoom: {
+        step: clamp(settings.imageZoomStep, 1.05, 3),
+        min: clamp(settings.imageZoomMin, 0.1, 1),
+        max: clamp(settings.imageZoomMax, 2, 20),
+      },
       tables: {
         striped: settings.tableStriped,
         bordered: settings.tableBordered,
@@ -225,7 +256,7 @@ export const buildNoteEditorConfig = (
       },
       typography: {
         ...NOTE_EDITOR_CONFIG.preview?.typography,
-        // 预览比源码大 1px：源码要塞更多字符，预览要更好读
+        // 预览比编辑大 1px：编辑要塞更多字符，预览要更好读
         fontSize: bodyFontSize + 1,
         lineHeight: settings.previewLineHeight,
         paragraphSpacing: settings.paragraphSpacing,
@@ -244,6 +275,7 @@ export const buildNoteEditorConfig = (
       labels: settings.toolbarLabels,
       tooltip: settings.toolbarTooltip,
       scrollWheel: settings.toolbarScrollWheel,
+      pinTail: settings.toolbarPinTail,
       openOnHover: settings.toolbarOpenOnHover,
       hoverOpenDelay: settings.toolbarHoverOpenDelay,
       hoverCloseDelay: settings.toolbarHoverCloseDelay,
@@ -264,6 +296,8 @@ export const buildNoteEditorConfig = (
       width: settings.outlineWidth,
       maxDepth: settings.outlineMaxDepth,
       indent: settings.outlineIndent,
+      caretTarget: settings.outlineCaretTarget,
+      flashTarget: settings.outlineFlashTarget,
     },
     split: {
       ratio: settings.splitRatio,
@@ -274,10 +308,13 @@ export const buildNoteEditorConfig = (
       showReplace: settings.searchShowReplace,
       caseSensitive: settings.searchCaseSensitive,
       regex: settings.searchRegex,
+      regexReplace: settings.searchRegexReplace,
       highlightAll: settings.searchHighlightAll,
+      highlightPreview: settings.searchHighlightPreview,
       loop: settings.searchLoop,
       seedFromSelection: settings.searchSeedFromSelection,
       maxMatches: settings.searchMaxMatches,
+      blockHostFind: settings.searchBlockHostFind,
     },
     theme: {
       ...NOTE_EDITOR_CONFIG.theme,

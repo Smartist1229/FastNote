@@ -13,6 +13,7 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { Icon } from "@/components/common/Icon";
+import { AiConfirmCard } from "@/components/ai/AiConfirmCard";
 import * as notesApi from "@/api/notes";
 import * as categoriesApi from "@/api/categories";
 import * as aiApi from "@/api/ai";
@@ -331,9 +332,14 @@ const activeModelOf = (provider: AiProvider | null, enabled: string[]): string =
  * 所有读写工具都经过这个函数，所以笔记级权限只需要在这一处判断。
  */
 const fetchNoteById = async (noteId: number, access: AiAccessRules) => {
-  const all = await notesApi.getNotes(null, "updated_at", "desc");
-  const hit = all.find((n: any) => n.id === noteId && !n.is_deleted) || null;
-  return hit && canAiReadNote(access, hit) ? hit : null;
+  // 按 id 取单条：列表虽然也带正文，但没打开的笔记可能刚被别处改过，单条读取更能保证拿到最新内容
+  let hit: any = null;
+  try {
+    hit = await notesApi.getNote(noteId);
+  } catch {
+    hit = null;
+  }
+  return hit && !hit.is_deleted && canAiReadNote(access, hit) ? hit : null;
 };
 
 /** 列表/搜索类工具共用：只保留未删除、且对 AI 开放的笔记 */
@@ -663,7 +669,12 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
           created,
         };
       }
-      const r = await notesApi.createNote(String(it.title ?? "无标题"), String(it.content ?? ""), cat?.id ?? null);
+      const r = await notesApi.createNote(
+        String(it.title ?? "无标题"),
+        String(it.content ?? ""),
+        cat?.id ?? null,
+        ctx.defaultNoteAiAccess,
+      );
       created.push({ id: r.id, title: r.title });
     }
     return { success: true, count: created.length, created };
@@ -675,7 +686,12 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   createNote: async (args, ctx) => {
     const cat = args.categoryName ? await findWritableCategoryByName(args.categoryName, ctx.access) : null;
     if (args.categoryName && !cat) return { error: `分组「${String(args.categoryName)}」不存在，或对 AI 不可写（可能被设为只读/禁止）` };
-    const r = await notesApi.createNote(String(args.title || ""), String(args.content || ""), cat?.id ?? null);
+    const r = await notesApi.createNote(
+      String(args.title || ""),
+      String(args.content || ""),
+      cat?.id ?? null,
+      ctx.defaultNoteAiAccess,
+    );
     return { id: r.id, title: r.title };
   },
   updateNote: async (args, ctx) => {
@@ -716,7 +732,10 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     await notesApi.moveToTrash(nid);
     return { deleted: true, id: nid, title: before?.title ?? "", toTrash: true };
   },
-  createCategory: async (args) => { const r = await categoriesApi.createCategory(String(args.name)); return { id: r.id, name: r.name }; },
+  createCategory: async (args, ctx) => {
+    const r = await categoriesApi.createCategory(String(args.name), ctx.defaultCategoryAiAccess);
+    return { id: r.id, name: r.name };
+  },
   renameCategory: async (args, ctx) => {
     const cid = Number(args.categoryId);
     const cats = await categoriesApi.getCategories();
@@ -851,10 +870,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   const traceTools = showToolTrace && msgTools ? msgTools : [];
   /** 还有工具没跑完：父折叠上直接标"执行中…" */
   const toolRunning = traceTools.some((t) => t.ok === null || t.ok === undefined);
-  /** 父折叠右侧的摘要：有工具就说几步，没有就借思考的第一行当预览 */
-  const tracePreview = traceTools.length > 0
-    ? `${traceTools.length} 个工具调用`
-    : (msgThinking ? firstLine(msgThinking) : "");
   /** 只要思考或工具轨迹存在，就把它们统一收进一个「深度思考」父折叠 */
   const hasTrace = !!msgThinking || traceTools.length > 0;
   /** 底部元信息：时间 · 用时 · token（AI 回复的 token 含思考过程与工具调用） */
@@ -895,7 +910,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
           >
             <Icon name="ai-lightbulb" className="w-3 h-3 flex-shrink-0" />
             <span className="flex-shrink-0">分析</span>
-            {tracePreview ? (<><span className="text-faint-soft flex-shrink-0">·</span><span className="min-w-0 flex-1 truncate">{tracePreview}</span></>) : (<span className="min-w-0 flex-1" />)}
+            {/* 父折叠只留标题，不带思考预览：过程内容都在展开后的子折叠里 */}
+            <span className="min-w-0 flex-1" />
             {live || toolRunning ? (
               <span className="flex-shrink-0 text-[10.5px] text-primary-400">{toolRunning ? "执行中…" : "思考中…"}</span>
             ) : null}
@@ -1245,7 +1261,16 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [thoughtOpen, setThoughtOpen] = useState<Record<number, boolean>>({});
   /** 工具轨迹行的展开状态（key = 消息序号-工具序号），展开可看调用 JSON 与结果 */
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
-  const [pendingConfirm, setPendingConfirm] = useState<{calls: ToolCall[]; resolve: (v: boolean) => void} | null>(null);
+  /**
+   * 待确认的写操作：一次只问一条，`index/total` 就是右上角的「1/2」。
+   * 逐条问是为了保证执行顺序——用户不能跳着看，点「执行」才会走到下一条。
+   */
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    call: ToolCall;
+    index: number;
+    total: number;
+    resolve: (v: boolean) => void;
+  } | null>(null);
   /** 确认弹窗的 resolver 与超时定时器：保证"等待确认"一定会有结果，不会卡死发送锁 */
   const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
   const confirmTimerRef = useRef<number | null>(null);
@@ -1311,6 +1336,20 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   );
   const accessRef = useRef<AiAccessRules>(accessRules);
   useEffect(() => { accessRef.current = accessRules; }, [accessRules]);
+  /**
+   * 新建笔记 / 分组默认档位的快照：与 accessRef 同样在发送时读一次，
+   * 这样一轮工具执行到一半用户去改设置，也只影响下一轮。
+   */
+  const defaultAccessRef = useRef({
+    note: aiSettings.defaultNoteAiAccess,
+    category: aiSettings.defaultCategoryAiAccess,
+  });
+  useEffect(() => {
+    defaultAccessRef.current = {
+      note: aiSettings.defaultNoteAiAccess,
+      category: aiSettings.defaultCategoryAiAccess,
+    };
+  }, [aiSettings.defaultNoteAiAccess, aiSettings.defaultCategoryAiAccess]);
   /** 是否存在任何限制：用于决定要不要给模型加"看不见 / 改不了是正常的"说明 */
   const accessRestricted = useMemo(
     () => !accessRules.enabled || [...accessRules.categoryLevels.values()].some((lv) => lv < 2),
@@ -1418,18 +1457,21 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const beginConfirm = useCallback(() => { confirmSettledRef.current = false; }, []);
 
   /**
-   * 询问用户是否执行这批破坏性工具。
-   * 返回的 Promise 一定会 settle（确认/取消按钮、关闭面板、切换会话、点停止、超时），
+   * 询问用户是否执行某个破坏性工具（逐条问，保持顺序）。
+   * 返回的 Promise 一定会 settle（执行/取消按钮、关闭面板、切换会话、点停止、超时），
    * 否则 agentLoop 永不返回、发送锁永不释放，之后所有发送都会被静默吞掉。
    */
-  const confirmDestructive = useCallback((calls: ToolCall[]): Promise<boolean> => {
-    beginConfirm();
-    return new Promise<boolean>(resolve => {
-      confirmResolveRef.current = resolve;
-      setPendingConfirm({ calls, resolve: settleConfirm });
-      confirmTimerRef.current = window.setTimeout(() => settleConfirm(false), CONFIRM_TIMEOUT_MS);
-    });
-  }, [beginConfirm, settleConfirm]);
+  const confirmDestructive = useCallback(
+    (call: ToolCall, index: number, total: number): Promise<boolean> => {
+      beginConfirm();
+      return new Promise<boolean>((resolve) => {
+        confirmResolveRef.current = resolve;
+        setPendingConfirm({ call, index, total, resolve: settleConfirm });
+        confirmTimerRef.current = window.setTimeout(() => settleConfirm(false), CONFIRM_TIMEOUT_MS);
+      });
+    },
+    [beginConfirm, settleConfirm],
+  );
 
   /** 把一段结果说明写回对话：优先就地替换占位气泡，没有占位就追加 */
   const commitNotice = useCallback(async (sid: number, text: string, leftover: any) => {
@@ -1972,7 +2014,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             const access = accessRef.current;
             // 总开关关闭时所有笔记工具一律不执行：不光是"看不到"，写操作也不能穿透
             result = access.enabled
-              ? await TOOL_EXECUTORS[tc.name](tc.args, { currentNoteId: currentNoteIdRef.current, access })
+              ? await TOOL_EXECUTORS[tc.name](tc.args, {
+                  currentNoteId: currentNoteIdRef.current,
+                  access,
+                  defaultNoteAiAccess: defaultAccessRef.current.note,
+                  defaultCategoryAiAccess: defaultAccessRef.current.category,
+                })
               : { error: AI_ACCESS_DISABLED_NOTE };
             if (!access.enabled) success = false;
           } catch (e) {
@@ -1982,7 +2029,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           finishToolTrace({ name: tc.name, args: tc.args, result, success });
           results.push({ name: tc.name, args: tc.args, result, success });
         };
-        // 只读工具直接跑；需要确认的写操作先问一次，用户取消就逐条记为"已取消"
+        // 只读工具直接跑；需要确认的写操作逐条问（右上角 1/N 跟着走，用户不能跳序）
         // 每条执行前都检查轮次：用户点了停止就不再继续动数据
         for (const tc of readOnly) {
           if (isStale()) return;
@@ -1990,9 +2037,11 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         }
         if (destructive.length > 0) {
           // 总开关关闭时不必再弹确认：这些调用注定被拒，问了用户也只能看到失败
-          const confirmed = confirmMode && accessRef.current.enabled ? await confirmDestructive(destructive) : true;
-          for (const tc of destructive) {
+          const ask = confirmMode && accessRef.current.enabled;
+          for (let i = 0; i < destructive.length; i += 1) {
+            const tc = destructive[i];
             if (isStale()) return;
+            const confirmed = ask ? await confirmDestructive(tc, i + 1, destructive.length) : true;
             if (confirmed) {
               await runTool(tc);
             } else {
@@ -2598,7 +2647,17 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       {/* ---------- 输入区（Composer） ----------
           圆角卡片包住输入框与底部操作条：聚焦时整卡描边，输入变多自动长高，
           到达上限后内部滚动，上边缘可拖动调整高度。 */}
-      <div className={"composer-wrap flex-shrink-0" + (composerDragging ? " is-resizing" : "")}>
+      <div className={"composer-wrap relative flex-shrink-0" + (composerDragging ? " is-resizing" : "")}>
+        {pendingConfirm && (
+          <AiConfirmCard
+            call={pendingConfirm.call}
+            index={pendingConfirm.index}
+            total={pendingConfirm.total}
+            summary={summarizeToolCall(pendingConfirm.call)}
+            onRun={() => settleConfirm(true)}
+            onCancel={() => settleConfirm(false)}
+          />
+        )}
         <div
           className={"composer-resize" + (composerDragging ? " is-dragging" : "")}
           onMouseDown={(e) => {
@@ -2922,23 +2981,5 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         </div>
       </div>
     )}
-    {pendingConfirm && (<div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
-      <div className="relative bg-surface rounded-xl shadow-2xl border border-line w-80 p-4 animate-fade-in">
-        <h3 className="text-sm font-medium text-body mb-3">确认操作</h3>
-        <div className="space-y-1.5 mb-4">
-          {pendingConfirm.calls.map((c, i) => {
-            return (<div key={i} className="flex items-center gap-2 text-xs text-body">
-            <Icon name="ai-warning" className="w-3.5 h-3.5 flex-shrink-0 text-warning" />
-            <span>{summarizeToolCall(c)}</span>
-          </div>);
-          })}
-        </div>
-        <div className="flex items-center justify-end gap-2">
-          <button onClick={() => settleConfirm(false)} className="px-3 py-1.5 text-xs font-medium text-muted bg-surface-alt hover:bg-surface-strong rounded-lg transition-colors">取消</button>
-          <button onClick={() => settleConfirm(true)} className="px-3 py-1.5 text-xs font-medium text-on-accent bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors">确认执行</button>
-        </div>
-      </div>
-    </div>)}
   </>);
 };

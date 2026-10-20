@@ -35,7 +35,7 @@ export type NoteEditorMode = Exclude<MarkdownEditorMode, "render">;
 /** Tab 键行为：indent 缩进整行 | spaces 插入空格 | none 交给浏览器 */
 export type EditorTabKey = "indent" | "spaces" | "none";
 
-/** 分栏同步滚动策略：anchor 按源码行锚点插值 | ratio 按滚动比例 */
+/** 分栏同步滚动策略：anchor 按编辑行锚点插值 | ratio 按滚动比例 */
 export type EditorSyncScrollMode = "anchor" | "ratio";
 
 /** Mermaid 图表主题 */
@@ -47,6 +47,9 @@ export type EditorCodeTheme = CodeThemePreset;
 /** 预览正文对齐方式 */
 export type EditorTextAlign = "left" | "justify" | "start";
 
+/** 点击大纲后光标的落点：行首（`###` 前面）| 标题文字前（跳过 `### `） */
+export type EditorOutlineCaret = "lineStart" | "textStart";
+
 /**
  * 编辑器设置：自研编辑器（src/markdown-editor）全部可配项的扁平镜像。
  *
@@ -57,11 +60,11 @@ export type EditorTextAlign = "left" | "justify" | "start";
  */
 export interface EditorSettings {
   /* ---------- 视图 ---------- */
-  /** 打开笔记时的默认视图：分栏 / 源码 / 阅读 */
+  /** 打开笔记时的默认视图：分栏 / 编辑 / 阅读 */
   defaultMode: NoteEditorMode;
-  /** 工具栏是否显示视图切换（分栏 / 源码 / 阅读） */
+  /** 工具栏是否显示视图切换（分栏 / 编辑 / 阅读） */
   showModeSwitch: boolean;
-  /** 分栏视图下源码区占比（0-1） */
+  /** 分栏视图下编辑区占比（0-1） */
   splitRatio: number;
   /** 分栏分隔条可拖动 */
   splitResizable: boolean;
@@ -70,23 +73,31 @@ export interface EditorSettings {
   /** 同步滚动的对齐策略 */
   syncScrollMode: EditorSyncScrollMode;
 
-  /* ---------- 源码编辑 ---------- */
-  /** 编辑器默认正文字号（px）：滚轮可临时缩放，工具栏按钮恢复到该值 */
+  /* ---------- 编辑 ---------- */
+  /** 编辑器默认正文字号（px）：Ctrl/⌘ + `0` 与工具栏字号按钮恢复到该值 */
   fontSize: number;
-  /** 是否允许 Ctrl/Cmd + 滚轮缩放字号 */
+  /** 字号缩放（Ctrl/⌘ + 滚轮、Ctrl/⌘ + `=` / `-` / `0`）是否启用 */
   ctrlScrollZoom: boolean;
-  /** 源码行高（倍数） */
+  /** 每次加减字号的步长（px） */
+  zoomStep: number;
+  /** 编辑行高（倍数） */
   sourceLineHeight: number;
+  /**
+   * 编辑字间距（px）。
+   * 中英混排时字与字贴得太紧会显得糊成一团，加一点间距整块正文会松快不少；
+   * 0 表示不加，按字号缩放时会跟着排版一起重算。
+   */
+  letterSpacing: number;
   /**
    * 字体连字：开启后等宽字体会把 `->`、`==`、`<=` 画成单个符号。
    * 写 Markdown 时这些是语法记号，连成一坨会误读，默认关。
    */
   fontLigatures: boolean;
-  /** 源码区是否显示行号（纯源码模式与分栏左栏） */
+  /** 编辑区是否显示行号（编辑模式与分栏左栏） */
   lineNumbers: boolean;
   /** 点击行号是否选中整行 */
   gutterClickSelectsLine: boolean;
-  /** 源码自动换行（关闭后横向滚动） */
+  /** 编辑自动换行（关闭后横向滚动） */
   wrap: boolean;
   /** Tab 宽度，同时用作列表缩进 */
   tabSize: number;
@@ -104,6 +115,21 @@ export interface EditorSettings {
   spellCheck: boolean;
   /** 撤销栈上限（步） */
   historyLimit: number;
+  /** 光标所在行整行高亮（行号槽里同一格也跟着点亮） */
+  highlightActiveLine: boolean;
+  /** 自绘光标的宽度（px）：原生那根恒为 1px，高缩放下细得几乎看不见 */
+  caretWidth: number;
+  /** 自绘光标的高度（字号倍数）：1 = 与字同高，略大于 1 时上下各出头一点 */
+  caretHeight: number;
+  /**
+   * 编辑区代码块增强：识别围栏语言，给整块铺一层浅底并给 token 着色。
+   *
+   * 底色不是单独存的——它由主题强调色派生（见 config/markdownEditor.ts 的 sourceCodeBg），
+   * 这里只控制开与关。关闭后编辑区退化成纯文本的样子。
+   */
+  codeHighlight: boolean;
+  /** 滚到底部时额外留出的空白（px），方便继续往下写 */
+  scrollPaddingBottom: number;
 
   /* ---------- 预览渲染 ---------- */
   /** 输入到渲染的防抖（ms），0 = 同步 */
@@ -156,6 +182,14 @@ export interface EditorSettings {
   tableCompact: boolean;
   /** 表格撑满内容宽度 */
   tableFullWidth: boolean;
+  /** 点击图片放大预览（窗口级浮层，滚轮缩放、拖动平移） */
+  imagePreview: boolean;
+  /** 放大预览每格滚轮的倍率（>1，缩小取倒数） */
+  imageZoomStep: number;
+  /** 放大预览的最小倍率 */
+  imageZoomMin: number;
+  /** 放大预览的最大倍率 */
+  imageZoomMax: number;
 
   /* ---------- 预览排版 ---------- */
   /** 预览行高（倍数） */
@@ -192,6 +226,8 @@ export interface EditorSettings {
   toolbarHoverCloseDelay: number;
   /** 滚轮纵向滚动转换为工具栏横向滚动 */
   toolbarScrollWheel: boolean;
+  /** 尾部按钮（视图切换 / 大纲 / 全屏 / 复制）窄窗时钉在右缘 */
+  toolbarPinTail: boolean;
 
   /* ---------- 状态栏 ---------- */
   /** 是否显示底部状态栏 */
@@ -222,6 +258,10 @@ export interface EditorSettings {
   outlineMaxDepth: number;
   /** 大纲项按层级缩进 */
   outlineIndent: boolean;
+  /** 点击大纲后光标落在标题行的哪里 */
+  outlineCaretTarget: EditorOutlineCaret;
+  /** 点击大纲后把目标标题高亮一下（光标移到别处自动撤掉） */
+  outlineFlashTarget: boolean;
 
   /* ---------- 查找 / 替换 ---------- */
   /** 启用查找框与 Ctrl/⌘+F */
@@ -232,14 +272,20 @@ export interface EditorSettings {
   searchCaseSensitive: boolean;
   /** 初始：正则表达式 */
   searchRegex: boolean;
-  /** 源码区高亮全部命中 */
+  /** 初始：替换串也按正则展开（替换串里原样写下的查找正则 = 整个命中） */
+  searchRegexReplace: boolean;
+  /** 编辑区高亮全部命中 */
   searchHighlightAll: boolean;
+  /** 预览 / 阅读视图同样铺命中高亮（分栏时左右各铺各的） */
+  searchHighlightPreview: boolean;
   /** 跳到末尾后再按下一个时回到开头 */
   searchLoop: boolean;
   /** 打开时把当前选区文本填进查找框 */
   searchSeedFromSelection: boolean;
   /** 最多统计 / 高亮多少个命中 */
   searchMaxMatches: number;
+  /** 焦点在编辑器内时挡掉浏览器的原生查找条 / 快捷键（F3、Ctrl+F 等） */
+  searchBlockHostFind: boolean;
 
   /* ---------- 主题与其他 ---------- */
   /** 代码块配色预设 */

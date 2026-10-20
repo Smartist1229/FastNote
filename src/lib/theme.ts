@@ -32,6 +32,8 @@ import {
   THEME_PRESETS,
 } from "@/config/themes";
 import { setActiveThemeTokens } from "@/lib/themeRuntime";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /* ---------- 颜色工具 ---------- */
 
@@ -286,6 +288,21 @@ const STYLE_ATTR = "data-theme";
 let appliedSettings: ThemeSettings | null = null;
 let systemListenerBound = false;
 
+/**
+ * 原生窗口底色（不是网页背景）。
+ *
+ * 窗口里那层底色只在"网页还没画出第一帧"时可见：启动、改窗口大小、从托盘恢复……
+ * 系统会先拿它填一帧。让它等于主题的 appBg，这些瞬间就不会闪出白底或黑底。
+ * 同一个颜色只下发一次，避免拖色盘时每帧一次 IPC。
+ */
+let syncedWindowBg = "";
+const syncWindowBackground = (appBg: string): void => {
+  if (appBg === syncedWindowBg) return;
+  syncedWindowBg = appBg;
+  if (!isTauri()) return;
+  void getCurrentWindow().setBackgroundColor(appBg).catch(() => undefined);
+};
+
 /** 真正写 DOM：变量逐条 setProperty，同时更新 data-theme 与 color-scheme */
 const writeVars = (settings: ThemeSettings): ResolvedThemeMode => {
   const resolved = resolveMode(settings.mode);
@@ -300,6 +317,7 @@ const writeVars = (settings: ThemeSettings): ResolvedThemeMode => {
   root.style.colorScheme = resolved;
   // 令牌对外留一份可读副本：Markdown 编辑器要拿它换算自己的配色（CSS 变量读不出来）
   setActiveThemeTokens(tokens);
+  syncWindowBackground(tokens.appBg);
   return resolved;
 };
 

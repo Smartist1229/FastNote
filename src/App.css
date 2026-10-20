@@ -329,7 +329,7 @@ body,
 input,
 textarea,
 select,
-[contenteditable="true"],
+[contenteditable],
 pre,
 code,
 kbd,
@@ -407,7 +407,11 @@ li.task-list-item input[type="checkbox"] { vertical-align: middle; margin-right:
 
 /* ---------- 文本选择：控件白名单（与上方全局禁选互补） ---------- */
 button, select, .select-none { user-select: none; }
-input, textarea, [contenteditable="true"],
+/*
+ * 编辑区是 contenteditable="plaintext-only"，所以这里用属性存在性选择器；
+ * 写成 [contenteditable="true"] 会漏掉它（虽然 .mde-root * 兜住了，但意图就不对了）。
+ */
+input, textarea, [contenteditable],
 .mde-root, .mde-root * { user-select: text; }
 
 /* 兜底：拖动过程中（JS 给 body 加 is-dragging-scrollbar）禁止选中 */
@@ -728,6 +732,44 @@ button:focus-visible {
 }
 .modal-content {
   animation: scaleIn var(--duration-slow) var(--ease-out-soft) backwards;
+}
+
+/*
+ * 非模态浮窗（设置窗）：没有遮罩，只能靠自己"立"起来。
+ *
+ * 分区手段是**扩散阴影**，不是加深描边——描边一深就变成硬边，反而更像主窗口的一部分。
+ * - 亮色：surface(#fff) 与页面底色(#f8fafc) 几乎同色，靠四层逐渐放大的黑色投影做"空气层"：
+ *   0 1px 贴边压住轮廓，12px / 32px / 64px 三层依次变淡变大，边缘往外是一段渐变过渡，
+ *   眼睛读到的是"浮起来"而不是"画了个框"。
+ * - 暗色：投影几乎看不见，改为在描边外再垫一圈 40px 的深色光晕（surface 本身比 app 亮一档）。
+ * 描边始终是 `--color-border` 这一档：它只负责给高光收边，不参与"分层"。
+ */
+.floating-panel {
+  border: 1px solid var(--color-border);
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 0.06),
+    0 4px 10px -2px rgb(15 23 42 / 0.08),
+    0 12px 28px -8px rgb(15 23 42 / 0.12),
+    0 28px 56px -14px rgb(15 23 42 / 0.16),
+    0 56px 100px -30px rgb(15 23 42 / 0.2);
+}
+
+html[data-theme="dark"] .floating-panel {
+  border-color: color-mix(in srgb, var(--color-text) 16%, var(--color-border));
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.45),
+    0 6px 16px -4px rgb(0 0 0 / 0.5),
+    0 20px 44px -10px rgb(0 0 0 / 0.6),
+    0 44px 84px -26px rgb(0 0 0 / 0.7);
+}
+
+/* 非模态浮窗拖动中：别选中文字，光标统一成抓取态（含浮窗内的按钮） */
+body.is-dragging-panel {
+  user-select: none;
+  cursor: grabbing;
+}
+body.is-dragging-panel * {
+  cursor: grabbing !important;
 }
 
 /* ---------- 分类列表项：hover 才显形右侧操作按钮 ---------- */
@@ -1723,6 +1765,11 @@ button:focus-visible {
    组件的 radius 配置能力保留，其它嵌入场景（demo、AI 渲染）不受影响。 */
 .editor-container .mde-root {
   border: none;
+}
+/* 编辑器查找框压到软件弹窗（Modal / 设置浮窗等，z-index: 50）之下。
+   查找框是编辑器内部的临时面板，弹窗打开时不该浮在弹窗上面。 */
+.editor-container .mde-search {
+  z-index: 40;
 }
 /* 弹窗里的代码块头部压到 0，避免突破 Modal 的遮罩层（z-index: 50） */
 .modal-overlay .mde-code-head,

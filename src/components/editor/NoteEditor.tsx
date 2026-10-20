@@ -9,7 +9,7 @@
  * 编辑器（src/markdown-editor）是受控的：内容与模式都由这里持有，
  * 配色由 config/markdownEditor.ts 从软件主题令牌换算后注入，跟随设置与主题实时变化。
  */
-import { lazy, Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import type { NoteEditorProps } from "@/interface/editor";
 import type { MarkdownEditorMode } from "@/markdown-editor";
 import { buildNoteEditorConfig } from "@/config/markdownEditor";
@@ -86,38 +86,30 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   /** 外部文件写回失败标记：顶部提示条显示「保存失败」 */
   const [saveError, setSaveError] = useState(false);
   const { showToast } = useToast();
-  /** 设置里的默认字号：滚轮缩放只临时改覆盖值，点工具栏可还原到它 */
+  /** 设置里的默认字号：Ctrl/⌘ + 0 与工具栏的字号按钮都还原到它 */
   const defaultFontSize = Math.min(
     FONT_SIZE_MAX,
     Math.max(FONT_SIZE_MIN, settings.fontSize ?? FONT_SIZE_FALLBACK),
   );
-  /** 滚轮临时缩放出来的字号；null 表示当前就是设置的默认字号 */
+  /** 缩放出来的临时字号；null 表示当前就是设置的默认字号 */
   const [fontSizeOverride, setFontSizeOverride] = useState<number | null>(null);
   const editorFontSize = Math.min(
     FONT_SIZE_MAX,
     Math.max(FONT_SIZE_MIN, fontSizeOverride ?? defaultFontSize),
   );
-  const editorWrapRef = useRef<HTMLDivElement>(null);
 
   // 设置里改了默认字号时，放弃临时缩放值，直接采用新的默认字号
   useEffect(() => {
     setFontSizeOverride(null);
   }, [defaultFontSize]);
 
-  // Ctrl/⌘ + 滚轮缩放：必须用非 passive 监听，否则阻止不了 WebView 自身的页面缩放
-  // 只改临时的当前字号，不写设置；点工具栏字号按钮可还原为设置的默认字号
-  useEffect(() => {
-    const el = editorWrapRef.current;
-    if (!el || !settings.ctrlScrollZoom) return;
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      e.preventDefault();
-      const step = e.deltaY < 0 ? 1 : -1;
-      setFontSizeOverride(Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, editorFontSize + step)));
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [settings.ctrlScrollZoom, editorFontSize]);
+  /**
+   * 字号缩放由编辑器自己做（Ctrl/⌘ + 滚轮、Ctrl/⌘ + = / - / 0）：
+   * 这里只接住结果，不写设置——缩放是临时的，点工具栏的字号按钮或按 Ctrl+0 回到默认。
+   */
+  const handleFontSizeChange = useCallback((size: number | null) => {
+    setFontSizeOverride(size === defaultFontSize ? null : size);
+  }, [defaultFontSize]);
 
   /**
    * 编辑器配置：行为来自软件设置的「编辑器」分区，配色由当前主题令牌换算。
@@ -225,8 +217,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   /**
    * 切换笔记：整块重置本地状态、脏标记与防抖计时器，避免串稿；
    * 同一 id 的内容更新不在这里处理，交给下面的同步 effect。
+   *
+   * 必须是 useLayoutEffect：普通 effect 在首帧画完之后才跑，
+   * 换笔记时会先拿上一篇的内容画一帧，看起来就是整块闪一下。
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (note) {
       if (lastNoteIdRef.current !== note.id) {
         // 先把上一篇没存完的输入补写掉，再切换（用切换前的 id，不能用 note.id）
@@ -636,7 +631,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
       {/* 编辑器 */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        <div ref={editorWrapRef} className="editor-container h-full">
+        <div className="editor-container h-full">
           <Suspense
             fallback={
               <div className="h-full flex items-center justify-center text-sm text-faint">
@@ -651,6 +646,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               onModeChange={setMode}
               config={editorConfig}
               onChange={handleContentChange}
+              onFontSizeChange={handleFontSizeChange}
               onLinkClick={(href) => {
                 // 页内锚点（脚注 ↔ 正文）留在编辑器里滚动，不能交给浏览器
                 if (href.startsWith("#")) return true;

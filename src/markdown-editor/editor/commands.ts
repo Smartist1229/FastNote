@@ -2,7 +2,7 @@
  * 编辑命令层：`EditState` → `EditState` 的纯函数。
  *
  * 为什么单独抽出来：工具栏、快捷键、命令式 API 都走同一套命令，
- * 而它们都不该关心光标在 textarea 还是实时预览的块编辑框里。
+ * 而它们都不该关心光标在 contenteditable 编辑区还是预览区里。
  * 纯函数也方便写回归测试（见 scripts/markdown-editor.test.mjs 的命令部分）。
  *
  * 约定：

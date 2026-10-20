@@ -76,6 +76,26 @@ const normalizeValue = (
 };
 
 /**
+ * 调整过出厂默认值的设置项：老库里如果还停在**旧默认值**上，读取时顺手升级一次。
+ *
+ * 判定条件是「值恰好等于旧默认值」：用户自己调过的（哪怕只调到 1.8）不会被覆盖。
+ * 升级后写一个 `app.migrations.*` 标记，避免用户手动改回旧值、下次启动又被顶上去；
+ * 这类标记键不以 `app.config.` 开头，不会被下面的「清理下线键」逻辑误删。
+ */
+const DEFAULT_UPGRADES = [
+  { category: "editor", field: "sourceLineHeight", from: 1.75, to: 1.9, flag: "app.migrations.editorLineHeight" },
+  /*
+   * 命中上限 2000 → 20000：四万字左右的笔记里查一个常用字就会超过 2000，
+   * 后半段的命中既高亮不出来也跳不过去，看着像「搜索坏了」。老库停在这个默认值上的一并升级。
+   */
+  { category: "editor", field: "searchMaxMatches", from: 2000, to: 20000, flag: "app.migrations.searchMaxMatches" },
+  /*
+   * 编辑字间距 0.5 → 1：中英混排贴得太紧，光标夹在两个字符中间时视觉上更挤，放宽一点。
+   */
+  { category: "editor", field: "letterSpacing", from: 0.5, to: 1, flag: "app.migrations.editorLetterSpacing" },
+] as const;
+
+/**
  * 读取全部软件设置。
  *
  * 每个分类先展开默认值，再用库里通过校验的字段覆盖，因此返回值永远是完整对象；
@@ -118,6 +138,17 @@ export const loadAppSettings = async (): Promise<AppSettings> => {
     }
 
     out[category] = merged;
+  }
+
+  // 出厂默认值调整过的键：还停在旧默认值上的老库升级一次（用户改过的不动）
+  for (const rule of DEFAULT_UPGRADES) {
+    if (rows[rule.flag]) continue;
+    const bucket = out[rule.category] as unknown as Record<string, unknown>;
+    if (bucket[rule.field] === rule.from) {
+      bucket[rule.field] = rule.to;
+      pending.push(saveAppSetting(rule.category, rule.field as never, rule.to as never));
+    }
+    pending.push(settingsApi.setAppSetting(rule.flag, "true").catch(() => undefined));
   }
 
   if (pending.length > 0) void Promise.all(pending);
