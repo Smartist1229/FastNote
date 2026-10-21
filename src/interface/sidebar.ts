@@ -4,6 +4,7 @@ import type * as React from "react";
 
 import type { Category, Note } from "./note";
 import type { ExportTarget } from "./exportCategory";
+import type { NoteSearchHit } from "@/lib/noteSearch";
 
 /**
  * 单个可展开抽屉（一个分组 / 全部笔记 / 未分类）的 Props。
@@ -31,6 +32,11 @@ export interface CategoryDrawerProps {
   headerTitle?: string;
   /** 覆盖抽屉图标名 */
   headerIcon?: string;
+  /**
+   * 搜索视图的命中信息：note.id → 命中区间与上下文片段。
+   * 只有搜索视图传；没传时列表按普通笔记渲染（省掉逐条分段的开销）。
+   */
+  hits?: Map<number, NoteSearchHit>;
 }
 
 /** 侧边栏 Props：分组列表 + 收藏视图 + 搜索/排序状态 + 各类右键菜单回调 */
@@ -47,6 +53,22 @@ export interface SidebarProps {
   focusNoteId: number | null;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
+  /**
+   * 搜索框是否按正则匹配（软件设置「笔记搜索支持正则」）。
+   * 传给 lib/noteSearch 决定解释方式；正则非法时按零结果处理并在界面上提示。
+   */
+  useRegex?: boolean;
+  /**
+   * 一次搜索被"执行"（回车 / 选中历史）时的回调，用于把查询词记进搜索历史。
+   * 逐字符输入不触发：历史里塞满同一个词的各种前缀就没什么用了。
+   */
+  onCommitSearch?: (query: string) => void;
+  /** 搜索历史（最近用过的查询词），为空时不显示下拉 */
+  searchHistory?: string[];
+  /** 划掉某一条搜索历史 */
+  onRemoveSearchHistory?: (query: string) => void;
+  /** 清空搜索历史 */
+  onClearSearchHistory?: () => void;
   /** 排序字段（透传 ViewSettings.sortBy：updated_at / created_at / title） */
   sortBy: string;
   onSortByChange: (value: string) => void;

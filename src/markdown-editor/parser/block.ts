@@ -201,6 +201,54 @@ const isTableStart = (lines: SourceLine[], i: number): boolean => {
 
 const HTML_BLOCK = /^ {0,3}(?:<!--|<\?|<!\[CDATA\[|<![A-Z]|<\/?[a-zA-Z][a-zA-Z0-9-]*(?:[\s/>]|$))/;
 
+/**
+ * 短语级（inline）标签：它们出现在**行首**时不该把整行吞成 HTML 块。
+ *
+ * 典型的翻车现场是给标题上色：`<font style="color:red"># 标题</font>`。
+ * 按 HTML_BLOCK 的老规则这整行算 HTML 块——所以标题既没了字号也没了行内解析，
+ * 看起来就是「套了颜色之后标题失效」。`<u>`、`<span>` 同理。
+ * 真正的 HTML 块（`<div>`、`<table>`、注释、doctype）不受影响。
+ */
+const INLINE_HTML_TAGS = new Set([
+  "a",
+  "abbr",
+  "b",
+  "bdi",
+  "bdo",
+  "cite",
+  "code",
+  "data",
+  "del",
+  "dfn",
+  "em",
+  "font",
+  "i",
+  "ins",
+  "kbd",
+  "label",
+  "mark",
+  "q",
+  "rp",
+  "rt",
+  "ruby",
+  "s",
+  "samp",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "time",
+  "u",
+  "var",
+]);
+const HTML_LEAD_TAG = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)/;
+const isHtmlBlockStart = (text: string): boolean => {
+  const lead = HTML_LEAD_TAG.exec(text);
+  if (lead && INLINE_HTML_TAGS.has(lead[1].toLowerCase())) return false;
+  return HTML_BLOCK.test(text);
+};
+
 const ALERTS: AlertKind[] = ["note", "tip", "important", "warning", "caution"];
 
 /**
@@ -374,7 +422,7 @@ const startsNewBlock = (lines: SourceLine[], i: number): boolean => {
   )
     return true;
   if (/^ {0,3}\$\$/.test(text)) return true;
-  if (HTML_BLOCK.test(text)) return true;
+  if (isHtmlBlockStart(text)) return true;
   if (isTableStart(lines, i)) return true;
   if (/^ {0,3}\[\[?toc\]?\]\s*$/i.test(text)) return true;
   return false;
@@ -734,7 +782,7 @@ const parseBlocks = (lines: SourceLine[], st: ParseState, depth: number): BlockN
     }
 
     // HTML 块
-    if (st.allowHtml && HTML_BLOCK.test(text)) {
+    if (st.allowHtml && isHtmlBlockStart(text)) {
       const startOffset = cur.offset;
       let j = i;
       let endOffset = cur.offset + text.length;

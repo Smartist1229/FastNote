@@ -5,6 +5,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "@/App";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
@@ -149,6 +150,31 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
  */
 const splash = document.getElementById("splash");
 const appWindow = isTauri() ? getCurrentWindow() : null;
+
+/**
+ * 从托盘恢复时的兜底重绘。
+ *
+ * WebView2 在窗口隐藏期间会暂停合成，恢复后偶发只显示空白帧；Rust 侧已做尺寸抖动，
+ * 但最大化窗口的尺寸由系统托管，这里再改一帧透明度（0.999 视觉上不可见），
+ * 促使合成器提交新帧。监听 Rust 的恢复事件，同时兼顾 Page Visibility 变化。
+ */
+const forceRepaint = () => {
+  const { body } = document;
+  if (!body) return;
+  const prevOpacity = body.style.opacity;
+  body.style.opacity = "0.999";
+  void body.offsetHeight;
+  requestAnimationFrame(() => {
+    body.style.opacity = prevOpacity;
+  });
+};
+
+if (isTauri()) {
+  void listen("fastnote://window-restored", forceRepaint);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") forceRepaint();
+  });
+}
 
 const revealWindow = () => {
   let revealed = false;

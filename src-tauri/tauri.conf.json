@@ -19,7 +19,8 @@
         "minHeight": 750,
         "dragDropEnabled": true,
         "visible": false,
-        "backgroundColor": "#f8fafc"
+        "backgroundColor": "#f8fafc",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
       }
     ],
     "security": {

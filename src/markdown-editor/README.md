@@ -216,6 +216,9 @@ export const Demo = () => {
 | `scrollable` | `boolean` | `true` | 溢出横向滚动 |
 | `scrollWheel` | `boolean` | `true` | 滚轮纵向滚动转为横向 |
 | `pinTail` | `boolean` | `true` | 尾部组（视图切换 / 大纲 / 全屏 / 复制）钉在右缘 |
+| `colorSwatches` | `string[]` | 16 个预设色 | 文字颜色 / 底色菜单里的色块，数组整体替换 |
+| `textColorFallback` | `string` | `"#e03131"` | 文字颜色取色器的起始色（`#rrggbb`） |
+| `backgroundColorFallback` | `string` | `"#ffe066"` | 底色取色器的起始色（`#rrggbb`） |
 | `openOnHover` | `boolean` | `true` | 悬停即展开下拉菜单 |
 | `hoverOpenDelay` | `number` | `140` | 悬停展开延迟 ms |
 | `hoverCloseDelay` | `number` | `220` | 移出后关闭延迟 ms |
@@ -230,13 +233,36 @@ type ToolbarEntry = ToolbarItemName | "|" | { group: ToolbarItemName[] };
 内置工具名：
 
 ```
-undo redo | heading bold italic strike underline mark sup sub inlineCode codeBlock
+undo redo | heading bold italic strike textColor bgColor underline mark sup sub inlineCode codeBlock
 | quote alert callout bulletList orderedList taskList indent outdent
 | link image table hr math mathBlock mermaid footnote toc
 | mode outline fullscreen copy
 ```
 
-预设：`TOOLBAR_PRESETS.full`（33 项）、`.default`（21 项）、`.minimal`（6 项）。
+预设：`TOOLBAR_PRESETS.full`（35 项）、`.default`（34 项）、`.minimal`（6 项）。
+
+其中 `textColor` / `bgColor` 是**带色盘的下拉**（`toolbar.colorSwatches` 给出的预设色块 + 自绘 HSV 取色器 + 清除），
+给选区套一层 `<font style="color:…">` / `<font style="background-color:…">`——
+Markdown 没有颜色语法，只能落到行内 HTML，因此这两项依赖 `preview.allowHtml`。
+
+改色是**接管而不是叠加**：选区落在已有颜色标签内部、跨过标签边界，或连续拖动取色器改色，
+都只会在选区覆盖到的字符上生成一层新标签，不会出现同属性标签互相嵌套。
+选区外原有的标签按原样恢复，其他样式属性（如同时存在的文字色与底色）保留。
+命令执行后选区仍只圈住原来的文字，新插入的开、闭标签不进入选区，连续改色不会把闭合标签当成选中内容。
+`清除` 会从选区覆盖到的所有颜色标签里摘掉对应属性，属性删空时连标签一起删除。
+取色器的起始色由 `toolbar.textColorFallback` / `toolbar.backgroundColorFallback` 决定。
+
+用 `<font>` 而不是 `<span>` 是踩出来的：行首出现短语级标签时，块解析器原本会把整行判成 HTML 块，
+`<span…># 标题</span>` 于是连标题都不是了。现在这类标签（`span`/`font`/`u`/`mark`/`a`…）在行首一律放行
+（见 `parser/block.ts` 的 `INLINE_HTML_TAGS`），而且上色时行首块标记（`# `、`> `、`- [ ] `、`1. `）会被
+留在标签外面 —— 整行标题上完色仍然是标题。
+
+取色器是自己画的（SV 面板 + 色相滑杆 + 十六进制输入），**不**用原生 `<input type="color">`：
+它在 WebView2 里弹的是系统对话框，而且拖动过程中会连续发 change，外层一接到就套色、菜单一关，
+表现就是「碰一下就定了、滑杆拖不动」。自绘版按下时抢占指针（拖到面板外也不掉），
+拖动只更新面板预览，**松手才落到文档**——一次拖动 = 一次编辑，不是几百次。
+十六进制输入框可以直接编辑（`#66dbff` 或 `66dbff`，聚焦时自动全选），回车或失焦时提交，
+Esc 放弃本次输入，非法值回退到面板当前色。
 
 自定义工具：
 
@@ -345,6 +371,10 @@ searchMatchBg searchMatchBorder searchMatchActiveBg searchMatchActiveBorder
 activeLineBg jumpFlashBg sourceCodeBg imageViewerBg
 ```
 
+多数颜色通过 `--mde-*` 变量生效，但查找命中与大纲跳转的高亮走 `::highlight()`，
+该伪元素不认自定义属性，因此 `searchMatchBg` / `searchMatchActiveBg` / `jumpFlashBg`
+会由组件拼成字面量规则注入；要改这三种颜色请改配置，覆盖 CSS 变量无效。
+
 ### 3.10 文案键（labels）
 
 工具名同名键（`bold`、`italic`、`quote`…）、`mode.split/code/read`、`heading1..6`、`paragraph`、
@@ -352,7 +382,8 @@ activeLineBg jumpFlashBg sourceCodeBg imageViewerBg
 `outlineEmpty`、`copySuccess`、`tocTitle`、`frontmatter`、`footnotes`、`placeholderLink`、`placeholderImage`、
 `placeholderText`、`code`、`expandCode`、`collapseCode`、`expandCodeLines`、`searchPlaceholder`、
 `replacePlaceholder`、`searchToggleReplace`、`searchCaseSensitive`、`searchRegex`、`searchPrev`、`searchNext`、
-`searchClose`、`searchReplace`、`searchReplaceAll`、`searchNoResult`。
+`searchClose`、`searchReplace`、`searchReplaceAll`、`searchNoResult`、
+色盘的 `colorCustom`、`colorClear`。
 
 ```tsx
 config={{ labels: { bold: "Bold", empty: "Type something…" } }}

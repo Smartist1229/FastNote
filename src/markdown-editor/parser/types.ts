@@ -33,7 +33,19 @@ export type InlineNode =
   | { type: "image"; src: string; title?: string; alt: string }
   | { type: "math"; value: string }
   | { type: "break"; hard: boolean }
+  /**
+   * 落单的行内标签（找不到配对、或本来就不需要配对的自闭合标签）。
+   * 只有闭标签、半句话刚打完 `<u>` 这类中间态都落到这里。
+   */
   | { type: "html"; value: string }
+  /**
+   * 成对的行内标签：`<u>…</u>`、`<font style="color:red">…</font>`。
+   *
+   * 配对待打交道的是「嵌套」——所以必须在**解析期**就做成树：
+   * 渲染期只能看到自己那一层的兄弟节点，`==<font …>x</font>==` 这种跨节点包夹
+   * 根本配不上（此前就是这么丢色的）。`tag` 小写、`attrs` 是开标签里除标签名以外的原文。
+   */
+  | { type: "htmlInline"; tag: string; attrs: string; raw: string; children: InlineNode[] }
   | { type: "footnoteRef"; id: string; index: number };
 
 /** 任务列表勾选状态：null = 普通列表项 */

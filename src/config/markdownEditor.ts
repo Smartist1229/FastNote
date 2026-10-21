@@ -15,7 +15,7 @@ import type {
   MarkdownEditorConfig,
   MarkdownThemeColors,
 } from "@/markdown-editor";
-import { hexToRgba } from "@/lib/theme";
+import { hexToRgba, normalizeHex, normalizeHexList } from "@/lib/theme";
 import type { ResolvedThemeMode, ThemeTokens } from "@/interface/theme";
 import type { EditorSettings } from "@/interface/settings";
 import { APP_MONO_FONT_STACK, APP_UI_FONT_STACK, FONT_SIZE_MAX, FONT_SIZE_MIN } from "@/config/appDefaults";
@@ -279,6 +279,9 @@ export const buildNoteEditorConfig = (
       openOnHover: settings.toolbarOpenOnHover,
       hoverOpenDelay: settings.toolbarHoverOpenDelay,
       hoverCloseDelay: settings.toolbarHoverCloseDelay,
+      colorSwatches: normalizeHexList(settings.toolbarColorSwatches),
+      textColorFallback: normalizeHex(settings.toolbarTextColorFallback) ?? "#e03131",
+      backgroundColorFallback: normalizeHex(settings.toolbarBackgroundColorFallback) ?? "#ffe066",
     },
     statusBar: {
       show: settings.showStatusBar,
@@ -333,8 +336,15 @@ export const buildNoteEditorConfig = (
  *
  * 用 `render` 模式：没有工具栏 / 状态栏 / 查找框，高度随内容增长。
  * 排版对齐聊天面板（13px、行距 1.75、无内边距、不限宽），代码高亮与公式照常支持。
+ *
+ * 代码块的观感跟随「编辑器」分区的设置：配色预设、语言标签、行号、行高亮、折叠阈值、
+ * 复制/换行按钮、圆角都取 EditorSettings——设置面板里「代码块配色」的文案就是这么承诺的，
+ * AI 气泡里的代码块必须与笔记里是同一套外观。
+ * 排版类（字号/行距/宽度）不跟随：气泡比笔记窄太多，硬套编辑器字号会撑破布局。
+ * 「长代码块默认折叠」也不跟随：聊天里代码本来就是答案主体，默认收起等于把回答藏起来。
  */
 export const buildAiRenderConfig = (
+  settings: EditorSettings,
   tokens: ThemeTokens,
   themeMode: ResolvedThemeMode,
 ): DeepPartial<MarkdownEditorConfig> => ({
@@ -342,11 +352,20 @@ export const buildAiRenderConfig = (
   mode: { defaultMode: "render", available: [], showSwitch: false },
   preview: {
     debounce: 0,
-    highlight: true,
-    showCodeLineNumbers: false,
+    highlight: settings.highlight,
+    showCodeLineNumbers: settings.codeLineNumbers,
+    showCodeLanguage: settings.showCodeLanguage,
     codeCollapsible: true,
+    codeCollapseThreshold: settings.codeCollapseThreshold,
+    codeCollapseHeight: settings.codeCollapseHeight,
+    codeHighlightLines: settings.codeHighlightLines,
+    codeActions: {
+      copy: settings.codeCopyButton,
+      wrap: settings.codeWrapButton,
+    },
     math: true,
     mermaid: true,
+    mermaidTheme: settings.mermaidTheme,
     taskInteractive: false,
     linkTarget: "_self",
     typography: {
@@ -367,7 +386,9 @@ export const buildAiRenderConfig = (
     monoFontFamily: APP_MONO_FONT_STACK,
     mode: themeMode,
     colors: buildEditorColors(tokens, themeMode),
-    codeTheme: "atom",
-    radius: tokens.radius,
+    // 代码块的配色预设：与笔记编辑器同源，含「跟随主题」（follow）——那一模式需要的
+    // 语义色已经由上面的 buildEditorColors 提供，换 AI 气泡皮肤不需要额外处理
+    codeTheme: settings.codeTheme,
+    radius: clamp(settings.radius, 0, 24),
   },
 });

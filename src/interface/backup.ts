@@ -1,8 +1,9 @@
 /**
  * 数据备份与分组导出的类型。
  *
- * 两者都不落库：备份是整库导出的 JSON 文件（format / version / exported_at / data），
- * 分组导出是 zip 或电子书。字段名与 Rust 侧 BackupSummary、NoteFormatSpec 对齐。
+ * 两者都不落库：备份是整库导出的 JSON 或 SQLite 文件（JSON 带 format / version /
+ * exported_at / data），分组导出是 zip 或电子书。字段名与 Rust 侧 BackupSummary、
+ * NoteFormatSpec 对齐。
  */
 
 /** export_backup / import_backup 的返回值：各类数据的行数与备份时间 */

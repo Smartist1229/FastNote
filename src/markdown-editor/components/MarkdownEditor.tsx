@@ -24,7 +24,7 @@ import {
 } from "react";
 import "../styles.css";
 import { ALL_MODES, resolveConfig, resolveLabels } from "../defaults";
-import { buildSyntaxRules, buildThemeVars } from "../theme";
+import { buildHighlightRules, buildSyntaxRules, buildThemeVars } from "../theme";
 import { parseMarkdown } from "../parser/block";
 import {
   applyAdmonition,
@@ -33,6 +33,8 @@ import {
   computeCursor,
   computeDocStats,
   detectFormats,
+  applyInlineColor,
+  type InlineColorProp,
   runCommand,
   type ActiveFormats,
   type EditState,
@@ -425,6 +427,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    */
   const syntaxRules = useMemo(() => buildSyntaxRules(config, resolvedTheme), [config, resolvedTheme]);
 
+  /**
+   * 查找命中 / 跳转目标的高亮规则：颜色同样取自 theme.colors，
+   * 但 `::highlight()` 不认 CSS 变量，只能拼成字面量随主题重算。
+   * 编辑区与预览区共用，必须始终注入（预览区也可能在查找）。
+   */
+  const highlightRules = useMemo(() => buildHighlightRules(config, resolvedTheme), [config, resolvedTheme]);
+
   /* ---------- 值 / 模式 ---------- */
   const isControlled = valueProp !== undefined;
   const [innerValue, setInnerValue] = useState(defaultValue);
@@ -758,6 +767,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       applyToTarget(resolved.target, applyAdmonition(resolved.state, kind));
     },
     [applyToTarget, resolveTarget],
+  );
+
+  /**
+   * 色盘：给选区套 / 改 / 清一层带颜色的标签（`value` 为 null 即清除）。
+   * 命令读的是选区快照而非 DOM 焦点，所以点原生取色器（会短暂抢焦点）也不会丢选区。
+   */
+  const applyInlineColorTo = useCallback(
+    (prop: InlineColorProp, value: string | null) => {
+      const resolved = resolveTarget();
+      if (!resolved) return;
+      const next = applyInlineColor(resolved.state, prop, value, labels.placeholderText || "文本");
+      applyToTarget(resolved.target, next);
+    },
+    [applyToTarget, labels, resolveTarget],
   );
 
   /* ---------- 撤销 / 重做（整篇快照） ---------- */
@@ -1565,7 +1588,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       previous.quote === next.quote &&
       previous.bulletList === next.bulletList &&
       previous.orderedList === next.orderedList &&
-      previous.taskList === next.taskList
+      previous.taskList === next.taskList &&
+      previous.textColor === next.textColor &&
+      previous.bgColor === next.bgColor
     ) {
       return previous;
     }
@@ -1661,6 +1686,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         编辑区没挂出来时不注入，省掉一份用不到的样式表。
       */}
       {sourceVisible && config.editor.codeHighlight && <style>{syntaxRules}</style>}
+      <style>{highlightRules}</style>
       {config.toolbar.show && chromeVisible && (
         <Toolbar
           config={config}
@@ -1684,6 +1710,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
           onToggleOutline={() => toggleOutline()}
           onToggleFullscreen={() => toggleFullscreen()}
           onCopyAll={copyAll}
+          onColor={applyInlineColorTo}
           onCustomTool={handleCustomTool}
         />
       )}

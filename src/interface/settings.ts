@@ -27,6 +27,11 @@ export interface GeneralSettings {
    * 只在启动时读取：关掉后可以同时开多个进程，多个进程会同时写同一个库文件。
    */
   singleInstance: boolean;
+  /**
+   * 侧边栏「搜索笔记」是否按正则匹配。
+   * 开启后 `*`、`(` 这类字符会被当成正则元字符；写不出合法正则时本次搜索不报错、直接零结果。
+   */
+  noteSearchRegex: boolean;
 }
 
 /** 笔记编辑器可选的默认视图（render 是给 AI 回复用的纯渲染模式，不作为笔记的默认视图） */
@@ -228,6 +233,12 @@ export interface EditorSettings {
   toolbarScrollWheel: boolean;
   /** 尾部按钮（视图切换 / 大纲 / 全屏 / 复制）窄窗时钉在右缘 */
   toolbarPinTail: boolean;
+  /** 文字颜色 / 底色菜单里的预设色块：逗号分隔的十六进制颜色 */
+  toolbarColorSwatches: string;
+  /** 文字颜色取色器的起始色（没有选中已上色文本时） */
+  toolbarTextColorFallback: string;
+  /** 底色取色器的起始色（没有选中已上色文本时） */
+  toolbarBackgroundColorFallback: string;
 
   /* ---------- 状态栏 ---------- */
   /** 是否显示底部状态栏 */

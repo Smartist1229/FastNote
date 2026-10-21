@@ -11,7 +11,7 @@ import type { ThemeColorKey, ThemePreset, ThemeSettings, ThemeTokens } from "@/i
 
 /* ---------- 默认令牌：极简（浅色 slate + indigo） ---------- */
 
-/** 亮色默认令牌：与改造前的 :root 色值完全一致，保证老用户升级后观感不变 */
+/** 亮色默认令牌：色值与改造前的 :root 一致；圆角基准统一为 4px（微圆） */
 export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
   appBg: "#f8fafc",
   surface: "#ffffff",
@@ -31,7 +31,7 @@ export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
   warning: "#f59e0b",
   success: "#10b981",
   info: "#0ea5e9",
-  radius: 8,
+  radius: 4,
 };
 
 /** 暗色默认令牌：石墨底 + 同一支 indigo；文字亮度分五档，弱化项不会糊成一片 */
@@ -54,7 +54,7 @@ export const DEFAULT_DARK_TOKENS: ThemeTokens = {
   warning: "#fbbf24",
   success: "#34d399",
   info: "#38bdf8",
-  radius: 8,
+  radius: 4,
 };
 
 /* ---------- 预设 ---------- */

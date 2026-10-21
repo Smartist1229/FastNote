@@ -63,7 +63,11 @@ export type EditorSettingSpec =
     })
   | (SpecBase & { kind: "segment"; options: EnumOption[] })
   /** 选项多（6 个以上）时用下拉而不是分段按钮，避免一行排不下 */
-  | (SpecBase & { kind: "select"; options: EnumOption[] });
+  | (SpecBase & { kind: "select"; options: EnumOption[] })
+  /** 单个十六进制颜色：用自绘取色器，松手才提交 */
+  | (SpecBase & { kind: "color" })
+  /** 逗号分隔的十六进制颜色列表 */
+  | (SpecBase & { kind: "colorList"; placeholder?: string });
 
 /**
  * 全部编辑器设置项。
@@ -810,6 +814,34 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "尾部按钮常驻",
     desc: "窗口变窄时把「视图切换 / 大纲 / 全屏 / 复制」钉在工具栏右缘，前面的按钮被滚走也不影响它们。",
     keywords: "工具栏 吸附 固定 常驻 视图切换 大纲 全屏 pin sticky",
+    disabledWhen: (s) => !s.showToolbar,
+  },
+  {
+    field: "toolbarColorSwatches",
+    group: "工具栏",
+    kind: "colorList",
+    title: "色盘预设色",
+    desc: "文字颜色 / 底色菜单里直接点选的色块，用逗号分隔十六进制颜色（如 #e03131, #1c7ed6），最多 32 个；保存时会去重并丢弃非法色值。",
+    keywords: "颜色 色盘 预设 色块 调色板 color swatch palette 工具栏",
+    placeholder: "#e03131, #1c7ed6, #2f9e44",
+    disabledWhen: (s) => !s.showToolbar,
+  },
+  {
+    field: "toolbarTextColorFallback",
+    group: "工具栏",
+    kind: "color",
+    title: "文字颜色起始色",
+    desc: "没有选中已上色文本时，文字颜色取色器默认停在这个颜色。",
+    keywords: "颜色 文字色 取色器 起始色 color picker default 工具栏",
+    disabledWhen: (s) => !s.showToolbar,
+  },
+  {
+    field: "toolbarBackgroundColorFallback",
+    group: "工具栏",
+    kind: "color",
+    title: "底色起始色",
+    desc: "没有选中已上色文本时，文字底色取色器默认停在这个颜色。",
+    keywords: "颜色 底色 背景色 高亮 取色器 起始色 background picker 工具栏",
     disabledWhen: (s) => !s.showToolbar,
   },
 

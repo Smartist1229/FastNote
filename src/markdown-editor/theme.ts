@@ -115,6 +115,32 @@ export const buildSyntaxRules = (config: MarkdownEditorConfig, resolved: "light"
     .join("\n");
 };
 
+/**
+ * 查找命中 / 大纲跳转高亮的规则文本。
+ *
+ * 这类高亮走 `::highlight()`，只认字面量属性值（自定义属性不保证可用），
+ * 所以和代码 token 一样把当前配色拼进规则。颜色取自 `theme.colors`，
+ * 外部改配置即可换色；拼之前过一遍白名单，避免配置值提前闭合规则块。
+ */
+export const buildHighlightRules = (config: MarkdownEditorConfig, resolved: "light" | "dark"): string => {
+  const { colors } = resolvePalette(config, resolved);
+  const base = resolved === "dark" ? DARK_COLORS : LIGHT_COLORS;
+  const safe = (value: string, fallback: string): string =>
+    /^[#a-zA-Z0-9(),.%\s/+-]+$/.test(value) ? value : fallback;
+  return (
+    [
+      ["mde-find-hit", "searchMatchBg"],
+      ["mde-find-current", "searchMatchActiveBg"],
+      ["mde-flash", "jumpFlashBg"],
+    ] as const
+  )
+    .map(
+      ([name, key]) =>
+        `::highlight(${name}) { background-color: ${safe(colors[key], base[key])}; }`,
+    )
+    .join("\n");
+};
+
 export const buildThemeVars = (config: MarkdownEditorConfig, resolved: "light" | "dark"): ThemeResult => {
   const { colors, code } = resolvePalette(config, resolved);
   const typography = config.preview.typography;

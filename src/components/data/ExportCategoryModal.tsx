@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { Note } from "@/interface/note";
 import type { CategoryEbookFormat, NoteFormatSpec } from "@/interface/backup";
@@ -30,7 +30,9 @@ const errorText = (e: unknown) => (typeof e === 'string' ? e : e instanceof Erro
 
 /**
  * 分组导出弹窗：把 target.notes 导出为「压缩包」（一篇笔记一个文件）
- * 或「电子书」（整组合成一个文件）。章节顺序为创建时间正序，章节名即笔记标题。
+ * 或「电子书」（整组合成一个文件）。压缩包内按创建时间正序；
+ * 电子书章节默认也按创建时间正序，但可在列表里拖动调整，导出顺序以拖拽结果为准。
+ * 章节名即笔记标题。
  *
  * - target：真实分组 / 默认分组 / 搜索结果分组都归一成同一结构，为 null 时不展示内容
  * - onDone：导出成功后通知外部刷新；随后 onClose 关闭弹窗
@@ -53,6 +55,17 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
   const [otherExts, setOtherExts] = useState<Record<number, string>>({});
   /** 正在挑后缀的笔记，以及浮层贴着的位置 */
   const [pickerFor, setPickerFor] = useState<{ noteId: number; anchor: DOMRect } | null>(null);
+  /**
+   * 电子书章节顺序（笔记 id）。压缩包仍用 notes 的创建时间顺序，
+   * 因此这里单独维护，切换格式时不会把压缩包的顺序也改掉。
+   */
+  const [ebookOrder, setEbookOrder] = useState<number[]>([]);
+  /** 拖拽中的笔记 / 当前悬停的目标行，仅用于视觉反馈 */
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [dragOverId, setDragOverId] = useState<number | null>(null);
+  // 指针事件回调里要读最新值，state 在同一轮事件中可能还没刷新
+  const dragRef = useRef<{ pointerId: number; startY: number; active: boolean; noteId: number } | null>(null);
+  const dragOverRef = useRef<number | null>(null);
 
   // 每次打开都回到默认选项，避免上次的选择让人困惑
   useEffect(() => {
@@ -69,24 +82,96 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
       (a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id
     );
     setNotes(sorted);
+    setEbookOrder(sorted.map((n) => n.id));
     setSelectedIds(new Set(sorted.map((n) => n.id)));
+    setDraggingId(null);
+    setDragOverId(null);
+    dragRef.current = null;
+    dragOverRef.current = null;
   }, [target]);
 
-  const allSelected = notes.length > 0 && notes.every((n) => selectedIds.has(n.id));
+  const isZip = mode === 'zip';
+
+  /** 列表展示顺序 = 导出顺序：压缩包按创建时间，电子书按拖拽后的 ebookOrder */
+  const noteById = useMemo(() => new Map(notes.map((n) => [n.id, n])), [notes]);
+  const orderedNotes = useMemo(() => {
+    if (isZip) return notes;
+    const ordered = ebookOrder
+      .map((id) => noteById.get(id))
+      .filter((note): note is Note => !!note);
+    // 顺序表尚未同步时把漏掉的笔记补在末尾，避免列表短暂丢行
+    if (ordered.length !== notes.length) {
+      const seen = new Set(ordered.map((note) => note.id));
+      for (const note of notes) {
+        if (!seen.has(note.id)) ordered.push(note);
+      }
+    }
+    return ordered;
+  }, [isZip, notes, ebookOrder, noteById]);
+
+  const allSelected = orderedNotes.length > 0 && orderedNotes.every((n) => selectedIds.has(n.id));
   const toggleAll = () => {
     if (allSelected) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(notes.map((n) => n.id)));
+      setSelectedIds(new Set(orderedNotes.map((n) => n.id)));
     }
   };
 
-  // 过滤后仍是创建时间正序：这个顺序就是压缩包/电子书里的章节顺序
-  const selectedNoteIds = notes
+  // 过滤后的顺序就是导出顺序：压缩包按创建时间，电子书按用户拖拽结果
+  const selectedNoteIds = orderedNotes
     .filter((n) => selectedIds.has(n.id))
     .map((n) => n.id);
 
-  const isZip = mode === 'zip';
+  /** 电子书章节拖拽：指针拖动比 HTML5 DnD 稳（窗口开启了 Tauri 原生文件拖放，会干扰 DnD） */
+  const beginEbookDrag = (event: React.PointerEvent<HTMLElement>, noteId: number) => {
+    if (isZip) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, startY: event.clientY, active: false, noteId };
+  };
+
+  const moveEbookDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.active) {
+      if (Math.abs(event.clientY - drag.startY) < 4) return;
+      drag.active = true;
+      setDraggingId(drag.noteId);
+    }
+    const row = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>('[data-ebook-drag-id]');
+    const raw = row?.dataset.ebookDragId;
+    const overId = raw ? Number(raw) : null;
+    const next = overId !== null && overId !== drag.noteId ? overId : null;
+    dragOverRef.current = next;
+    setDragOverId(next);
+  };
+
+  const endEbookDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const targetId = dragOverRef.current;
+    dragOverRef.current = null;
+    setDraggingId(null);
+    setDragOverId(null);
+    if (!drag.active || targetId === null || targetId === drag.noteId) return;
+    setEbookOrder((prev) => {
+      const from = prev.indexOf(drag.noteId);
+      const to = prev.indexOf(targetId);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
   /** 压缩包逐篇自选后缀：每篇笔记可能不一样 */
   const isOtherExt = isZip && zipFormat === 'other';
   const noteExt = (id: number) => otherExts[id] ?? DEFAULT_TEXT_EXT;
@@ -136,7 +221,11 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
       <div className="space-y-4">
         <p className="text-xs text-muted">
           分组：<span className="font-medium text-body">{target?.name}</span>
-          <span className="ml-2 text-faint">章节按创建时间正序，最早创建的笔记在最前面</span>
+          <span className="ml-2 text-faint">
+            {isZip
+              ? '压缩包内按创建时间正序，最早创建的笔记在最前面'
+              : '电子书章节按下方列表顺序排列，可拖动左侧手柄调整'}
+          </span>
         </p>
 
         {/* 文件名：默认填好分组对应的名称，可改，也可一键填回默认 */}
@@ -246,13 +335,44 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
           </div>
 
           <div className="max-h-48 overflow-y-auto border border-line rounded-lg bg-app">
-            {notes.map((note) => {
+            {orderedNotes.map((note, index) => {
               const checked = selectedIds.has(note.id);
               return (
                 <div
                   key={note.id}
-                  className="flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-surface-alt transition-colors first:rounded-t-lg last:rounded-b-lg"
+                  data-ebook-drag-id={isZip ? undefined : note.id}
+                  className={`flex items-center gap-2 px-2.5 py-1.5 text-xs transition-colors first:rounded-t-lg last:rounded-b-lg ${
+                    draggingId === note.id ? 'opacity-50 bg-primary-50' : 'hover:bg-surface-alt'
+                  } ${dragOverId === note.id ? 'bg-primary-50 ring-1 ring-inset ring-primary-300' : ''}`}
                 >
+                  {/* 电子书可拖动排序；压缩包保持创建时间顺序，不显示手柄 */}
+                  {!isZip && (
+                    <>
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        title="拖动调整章节顺序"
+                        aria-label={`拖动调整《${note.title || '无标题笔记'}》的章节顺序`}
+                        onPointerDown={(e) => beginEbookDrag(e, note.id)}
+                        onPointerMove={moveEbookDrag}
+                        onPointerUp={endEbookDrag}
+                        onPointerCancel={endEbookDrag}
+                        className="flex-shrink-0 px-0.5 py-1 cursor-grab active:cursor-grabbing text-faint-soft hover:text-muted touch-none"
+                      >
+                        <svg viewBox="0 0 8 14" className="w-2 h-3.5" fill="currentColor" aria-hidden>
+                          <circle cx="2" cy="2" r="1.1" />
+                          <circle cx="6" cy="2" r="1.1" />
+                          <circle cx="2" cy="7" r="1.1" />
+                          <circle cx="6" cy="7" r="1.1" />
+                          <circle cx="2" cy="12" r="1.1" />
+                          <circle cx="6" cy="12" r="1.1" />
+                        </svg>
+                      </span>
+                      <span className="w-4 flex-shrink-0 text-right text-[10px] text-faint-soft tabular-nums">
+                        {index + 1}
+                      </span>
+                    </>
+                  )}
                   <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
                     <input
                       type="checkbox"

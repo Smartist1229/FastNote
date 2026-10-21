@@ -76,7 +76,8 @@ export interface RowBase {
 /**
  * 设置项行模型，按 kind 决定渲染的控件与取值类型：
  * toggle = 开关；number = 数值输入（min/max 必填）；
- * segment = 分段按钮组（选项少）；select = 下拉框（选项多，一行放不下时用）。
+ * segment = 分段按钮组（选项少）；select = 下拉框（选项多，一行放不下时用）；
+ * color = 自绘取色器（松手提交）；colorList = 逗号分隔的十六进制色值列表。
  */
 export type SettingRow =
   | (RowBase & { kind: "toggle"; value: boolean; onChange: (v: boolean) => void })
@@ -102,6 +103,13 @@ export type SettingRow =
       value: string;
       options: EnumOption[];
       onChange: (v: string) => void;
+    })
+  | (RowBase & { kind: "color"; value: string; onChange: (v: string) => void })
+  | (RowBase & {
+      kind: "colorList";
+      value: string;
+      placeholder?: string;
+      onChange: (v: string) => void;
     });
 
 /** 设置窗口 Props：软件设置与 AI 设置分别由父级持有，这里只做展示与回调 */
@@ -119,6 +127,10 @@ export interface SettingsModalProps {
   ) => void;
   /** 恢复软件设置默认值（只删 app.config.* 键，不影响 AI 设置） */
   onResetAppSettings: () => void;
+  /** 只恢复编辑器设置，不影响其他软件设置、主题与 AI 设置 */
+  onResetEditorSettings: () => void;
+  /** 只恢复主题设置，不影响其他软件设置与 AI 设置 */
+  onResetThemeSettings: () => void;
   aiSettings: AiSettings;
   /** AI 设置整对象回写（与对话面板的 patch 形式不同） */
   onAiSettingsChange: (next: AiSettings) => void;

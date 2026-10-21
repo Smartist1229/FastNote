@@ -6,6 +6,7 @@
 import type { AiAccessLevel, AiAccessRules } from "./aiAccess";
 import type { AiPromptEntry, AiSettings } from "./ai";
 import type { Category } from "./note";
+import type { EditorSettings } from "./settings";
 
 /**
  * 对话面板 Props。会话列表、消息与流式状态都由面板内部持有，
@@ -38,6 +39,8 @@ export interface AIChatPanelProps {
   aiSettings: AiSettings;
   /** 设置里可改的项通过这个回调回写（例如拖动输入区高度） */
   onAiSettingsChange?: (patch: Partial<AiSettings>) => void;
+  /** 「编辑器」分区的设置：AI 回复里的代码块配色 / 行号 / 语言标签等与它保持一致 */
+  editorSettings?: EditorSettings;
   onClose?: () => void;
   /** 是否开启 AI 能力：关闭时不显示 AI 功能相关的提示 */
   enableAI?: boolean;

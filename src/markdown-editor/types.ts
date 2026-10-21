@@ -50,6 +50,10 @@ export type ToolbarItemName =
   | "strike"
   | "underline"
   | "mark"
+  /** 文字颜色（前景）：色盘选择一个颜色，套一层带 color 的行内 span */
+  | "textColor"
+  /** 文字底色（背景）：同一个色盘，套一层带 background-color 的行内 span */
+  | "bgColor"
   | "sup"
   | "sub"
   | "inlineCode"
@@ -474,6 +478,12 @@ export interface MarkdownToolbarConfig {
    * 窗口变窄、前面的按钮被滚走时它们始终点得到。关掉就整排一起滚。
    */
   pinTail: boolean;
+  /** 文字颜色 / 底色菜单里的预设色块（CSS 颜色值），数组顺序即显示顺序 */
+  colorSwatches: string[];
+  /** 没有选中已上色文本时，文字颜色取色器的起始色（`#rrggbb`） */
+  textColorFallback: string;
+  /** 没有选中已上色文本时，底色取色器的起始色（`#rrggbb`） */
+  backgroundColorFallback: string;
   /** 鼠标悬停即展开下拉菜单（标题 / 提示块 / 警告提示块） */
   openOnHover: boolean;
   /** 悬停展开的延迟（ms），避免扫过工具栏时菜单乱闪 */

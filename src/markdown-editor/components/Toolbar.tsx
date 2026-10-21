@@ -34,14 +34,17 @@ import type {
   ToolbarEntry,
   ToolbarItemName,
 } from "../types";
-import type { ActiveFormats } from "../editor/commands";
+import type { ActiveFormats, InlineColorProp } from "../editor/commands";
 import { MdeIcon, PathIcon } from "../icons";
+import { ColorPicker } from "./ColorPicker";
 
 const MUTATING: ToolbarItemName[] = [
   "bold",
   "italic",
   "strike",
   "underline",
+  "textColor",
+  "bgColor",
   "mark",
   "sup",
   "sub",
@@ -77,8 +80,14 @@ const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
  */
 const PIN_TAIL_ITEMS = new Set<ToolbarItemName>(["mode", "outline", "fullscreen", "copy"]);
 
-/** 带下拉的三种工具 */
-type MenuKind = "heading" | "alert" | "callout";
+/** 带下拉的工具：标题 / 提示块 / 警告提示块 / 文字颜色 / 文字底色 */
+type MenuKind = "heading" | "alert" | "callout" | "textColor" | "bgColor";
+
+/** 色盘类菜单对应的 style 属性 */
+const COLOR_PROP: Partial<Record<MenuKind, InlineColorProp>> = {
+  textColor: "color",
+  bgColor: "background-color",
+};
 
 interface ToolbarProps {
   config: MarkdownEditorConfig;
@@ -104,6 +113,8 @@ interface ToolbarProps {
   onToggleOutline: () => void;
   onToggleFullscreen: () => void;
   onCopyAll: () => void;
+  /** 色盘选了颜色：`value` 为 null 表示「清除颜色」 */
+  onColor: (prop: InlineColorProp, value: string | null) => void;
   onCustomTool: (tool: MarkdownCustomTool) => void;
 }
 
@@ -236,6 +247,7 @@ export const Toolbar = memo<ToolbarProps>(({
   onToggleOutline,
   onToggleFullscreen,
   onCopyAll,
+  onColor,
   onCustomTool,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuKind | null>(null);
@@ -376,6 +388,10 @@ export const Toolbar = memo<ToolbarProps>(({
         return formats.taskList;
       case "heading":
         return formats.heading !== null;
+      case "textColor":
+        return formats.textColor !== null;
+      case "bgColor":
+        return formats.bgColor !== null;
       case "outline":
         return outlineOpen;
       case "fullscreen":
@@ -462,6 +478,64 @@ export const Toolbar = memo<ToolbarProps>(({
       </button>
     ));
 
+  /**
+   * 色盘：预设色网格 + 自绘 HSV 取色器 + 清除。
+   *
+   * 预设色是各自独立的 `<button>`，一行 8 个才不至于让菜单长成一条；点一下即套上也即关菜单。
+   * 取色器相反：拖动期间只更新面板预览、松手才落到文档，所以**拖完不关菜单**——
+   * 中途关掉等于把面板从指针底下抽走，用户连微调第二次的机会都没有。
+   */
+  const renderColorMenu = (kind: "textColor" | "bgColor") => {
+    const prop = COLOR_PROP[kind];
+    if (!prop) return null;
+    const current = (kind === "textColor" ? formats.textColor : formats.bgColor) ?? "";
+
+    return (
+      <>
+        <div className="mde-color-grid" role="group" aria-label={labels[kind] ?? kind}>
+          {toolbar.colorSwatches.map((swatch) => (
+            <button
+              key={swatch}
+              type="button"
+              role="menuitem"
+              title={swatch}
+              aria-label={swatch}
+              className={`mde-color-swatch${current.toLowerCase() === swatch.toLowerCase() ? " is-active" : ""}`}
+              style={{ background: swatch }}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onColor(prop, swatch);
+                closeMenu();
+              }}
+            />
+          ))}
+        </div>
+        <div className="mde-menu-sep" />
+        <ColorPicker
+          value={current || null}
+          fallback={kind === "textColor" ? toolbar.textColorFallback : toolbar.backgroundColorFallback}
+          labelCustom={labels.colorCustom}
+          labelClear={labels.colorClear}
+          onPick={(hex) => onColor(prop, hex)}
+          onClear={() => {
+            onColor(prop, null);
+            closeMenu();
+          }}
+        />
+      </>
+    );
+  };
+
+  /** 当前展开的菜单内容：按 kind 取，避免每种菜单重复写一份 FloatingMenu */
+  const renderMenuBody = () => {
+    if (openMenu === "heading") return renderHeadingMenu();
+    if (openMenu === "alert") return renderAlertMenu((kind) => kind.toUpperCase(), onAlert);
+    if (openMenu === "callout") return renderAlertMenu(() => "!!!", onCallout);
+    if (openMenu === "textColor") return renderColorMenu("textColor");
+    if (openMenu === "bgColor") return renderColorMenu("bgColor");
+    return null;
+  };
+
   /** 带下拉的工具：悬停展开 + 点击切换；菜单走 portal */
   const renderMenuSlot = (kind: MenuKind, icon: string) => {
     const item = kind as ToolbarItemName;
@@ -523,6 +597,8 @@ export const Toolbar = memo<ToolbarProps>(({
     if (item === "heading") return renderMenuSlot("heading", "heading");
     if (item === "alert") return renderMenuSlot("alert", "alert");
     if (item === "callout") return renderMenuSlot("callout", "callout");
+    if (item === "textColor") return renderMenuSlot("textColor", "textColor");
+    if (item === "bgColor") return renderMenuSlot("bgColor", "bgColor");
 
     if (item === "outline") {
       return (
@@ -685,7 +761,7 @@ export const Toolbar = memo<ToolbarProps>(({
         )}
       </div>
 
-      {openMenu === "heading" && (
+      {openMenu && (
         <FloatingMenu
           anchor={anchor}
           nodeRef={menuNode}
@@ -694,31 +770,7 @@ export const Toolbar = memo<ToolbarProps>(({
           onMouseEnter={cancelClose}
           onMouseLeave={scheduleClose}
         >
-          {renderHeadingMenu()}
-        </FloatingMenu>
-      )}
-      {openMenu === "alert" && (
-        <FloatingMenu
-          anchor={anchor}
-          nodeRef={menuNode}
-          themeVars={themeVars}
-          resolvedTheme={resolvedTheme}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
-        >
-          {renderAlertMenu((kind) => kind.toUpperCase(), onAlert)}
-        </FloatingMenu>
-      )}
-      {openMenu === "callout" && (
-        <FloatingMenu
-          anchor={anchor}
-          nodeRef={menuNode}
-          themeVars={themeVars}
-          resolvedTheme={resolvedTheme}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
-        >
-          {renderAlertMenu(() => "!!!", onCallout)}
+          {renderMenuBody()}
         </FloatingMenu>
       )}
     </div>

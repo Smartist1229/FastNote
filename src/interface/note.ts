@@ -40,6 +40,22 @@ export interface Category {
 }
 
 /**
+ * tags 表的一行（跨分组的主题词）。
+ *
+ * `source` 表示**这个词最初是谁建的**，只用于 UI 区分样式与操作权限；
+ * 真正决定"谁能删"的是 `note_tags.source`（同一篇笔记上 user / ai 可以是两个来源）。
+ */
+export interface Tag {
+  id: number;
+  name: string;
+  /** "user" 用户手动添加 | "ai" AI 生成 */
+  source: "user" | "ai";
+  created_at: string;
+  /** 关联了多少篇**未删除**的笔记 */
+  note_count: number;
+}
+
+/**
  * 直接编辑电脑上的文本文件时，编辑器里承载的内容。
  * 不落库：读取走 read_text_file，保存走 write_text_file。
  */

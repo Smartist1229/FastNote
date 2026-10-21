@@ -10,12 +10,37 @@
 import { useEffect, useRef } from 'react';
 import type { Note } from "@/interface/note";
 import type { CategoryDrawerProps } from "@/interface/sidebar";
+import type { MatchRange, NoteSearchHit } from "@/lib/noteSearch";
 import { Icon } from '@/components/common/Icon';
 
 /**
  * 抽屉内的单条笔记卡片；收藏视图也用它渲染扁平列表（此时 showIcon 为 true）。
  * 删除 / 收藏按钮都要 stopPropagation——否则会连带触发整行的"打开笔记"。
  */
+/**
+ * 把一段文本按命中区间切成「普通 / 命中」交替的片段数组。
+ *
+ * 用下标切片 + <mark> 而不是往 текст 里塞 HTML 字符串：
+ * 正文里本来就可能含 `<`、`&`，拼串渲染既不安全也容易错位。
+ */
+const highlightSegments = (text: string, ranges: MatchRange[]): React.ReactNode[] => {
+  if (ranges.length === 0) return [text];
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((r, i) => {
+    // 区间来自 Markdown（含可选扩展块）原始下标，超出长度切片会被 JS 自动夹住，不会抛错
+    if (r.start > cursor) out.push(text.slice(cursor, r.start));
+    out.push(
+      <mark key={`h-${i}`} className="search-hit">
+        {text.slice(r.start, r.end)}
+      </mark>,
+    );
+    cursor = r.end;
+  });
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return out;
+};
+
 export const DrawerNoteItem: React.FC<{
   note: Note;
   isSelected: boolean;
@@ -27,7 +52,12 @@ export const DrawerNoteItem: React.FC<{
   /** 收藏聚合视图：在标题前显示星标图标 */
   showIcon?: boolean;
   onContextMenu?: (e: React.MouseEvent, note: Note) => void;
-}> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onTogglePin, showIcon = false, onContextMenu }) => {
+  /**
+   * 搜索命中信息：给了就在标题 / 摘要上高亮关键词。
+   * 只在搜索视图传入——非搜索视图不给，省掉每条笔记都走一次分段。
+   */
+  hit?: NoteSearchHit;
+}> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onTogglePin, showIcon = false, onContextMenu, hit }) => {
   const itemRef = useRef<HTMLDivElement>(null);
 
   // AI 打开笔记时聚焦高亮：延迟 60ms 再滚动，等抽屉展开动画把元素位置定下来，否则会滚偏
@@ -66,8 +96,18 @@ export const DrawerNoteItem: React.FC<{
               isSelected ? 'text-on-accent' : 'text-body'
             }`}
           >
-            {note.title || '无标题'}
+            {hit ? highlightSegments(note.title || '无标题', hit.titleRanges) : note.title || '无标题'}
           </h4>
+          {/* 搜索视图才有的上下文行：大部分命中都在正文中间，只显示标题等于没告诉用户为什么命中 */}
+          {hit && !hit.titleOnly && hit.snippet && (
+            <p
+              className={`mt-0.5 text-[10.5px] leading-snug truncate ${
+                isSelected ? 'text-on-accent/80' : 'text-faint'
+              }`}
+            >
+              {highlightSegments(hit.snippet, hit.snippetRanges)}
+            </p>
+          )}
         </div>
         <button
           onClick={(e) => {
@@ -128,6 +168,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   onNoteContextMenu,
   headerTitle,
   headerIcon,
+  hits,
 }) => {
   // 搜索视图存在多个 category 为 null 的虚拟分组，用 headerIcon 保证 list id 唯一
   const noteListId = `drawer-notes-${category ? category.id : headerIcon ?? 'all'}`;
@@ -219,6 +260,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
                     onDeleteNote={onDeleteNote}
                     onTogglePin={onTogglePin}
                     onContextMenu={onNoteContextMenu}
+                    hit={hits?.get(note.id)}
                   />
                 ))}
               </div>

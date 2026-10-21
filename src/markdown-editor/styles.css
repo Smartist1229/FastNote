@@ -431,6 +431,16 @@
   color: var(--mde-text);
 }
 
+.mde-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mde-menu-item:disabled:hover {
+  background: transparent;
+  color: var(--mde-text-body);
+}
+
 .mde-menu-item.is-active {
   color: var(--mde-accent);
   background: var(--mde-accent-soft);
@@ -467,6 +477,185 @@
 }
 .mde-alert-dot.is-caution {
   background: var(--mde-caution-color);
+}
+
+/* ---------- 色盘（文字颜色 / 文字底色） ---------- */
+/*
+ * 一行 8 个色块：再多一列菜单就要跟工具栏一样宽。
+ * 色块自己就是按钮，用 outline 而不是 box-shadow 画选中环——后者会被相邻色块盖住一半。
+ */
+.mde-color-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  padding: 5px;
+}
+
+.mde-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgb(0 0 0 / 0.16);
+  border-radius: 5px;
+  background-clip: padding-box;
+  cursor: pointer;
+  transition: transform 90ms ease;
+}
+
+.mde-color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.mde-color-swatch.is-active {
+  outline: 2px solid var(--mde-accent);
+  outline-offset: 1px;
+}
+
+/* 菜单里的行分隔：比按钮之间的留白更明确的「下面换一组」 */
+.mde-menu-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--mde-menu-border);
+}
+
+/* ============ 自绘取色器（SV 面板 + 色相滑杆） ============ */
+/*
+ * 拖动靠 JS 抢占指针，CSS 只负责「能拖」这件事的手感：
+ * - `touch-action: none`：不然触屏会被当成页面滚动，手指一动画面就跑了；
+ * - `user-select: none`：拖动时别顺带选中面板里的字。
+ */
+.mde-picker {
+  padding: 6px 8px 8px;
+  touch-action: none;
+  user-select: none;
+}
+
+.mde-picker-sv {
+  position: relative;
+  width: 100%;
+  height: 96px;
+  overflow: hidden;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* 两层渐变叠在纯色相底上：横向白→透明（饱和度），纵向透明→黑（明度） */
+.mde-picker-sv-white,
+.mde-picker-sv-black {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mde-picker-sv-white {
+  background: linear-gradient(to right, #fff, rgb(255 255 255 / 0));
+}
+
+.mde-picker-sv-black {
+  background: linear-gradient(to top, #000, rgb(0 0 0 / 0));
+}
+
+.mde-picker-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mde-picker-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.mde-picker-hue {
+  position: relative;
+  flex: 1;
+  height: 12px;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 6px;
+  cursor: pointer;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+}
+
+.mde-picker-hue-handle {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mde-picker-preview {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 5px;
+}
+
+.mde-picker-hex {
+  /* 至少容得下 #rrggbb；不能沿用 flex: 1 的 0 基准，否则会被右侧按钮挤没 */
+  flex: 1 1 88px;
+  min-width: 76px;
+  height: 24px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 5px;
+  background: var(--mde-input-bg, transparent);
+  color: inherit;
+  font-family: var(--mde-mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  /* 取色器整体禁用了选中；输入框里要能正常点选、全选、粘贴色值 */
+  user-select: text;
+  cursor: text;
+}
+
+/*
+ * 焦点态只留一圈软光晕。必须同时压住宿主全局的
+ * `input:focus-visible { box-shadow: 0 0 0 2px …, 0 0 0 4px … }`，
+ * 那是按普通表单控件调的双层焦点环，套在这个 24px 小输入框上又粗又脏。
+ */
+.mde-picker-hex:focus,
+.mde-picker-hex:focus-visible {
+  outline: none;
+  border-color: var(--mde-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mde-accent) 16%, transparent);
+}
+
+/* 菜单里的一颗行内小按钮（清除颜色） */
+
+.mde-menu-item.is-inline {
+  /* .mde-menu-item 是 width:100% 的整行菜单项；放进 flex 行必须按内容收窄，
+     否则会把十六进制输入框挤成 0 宽，自己再溢出菜单右缘 */
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 24px;
+  padding: 0 8px;
+  white-space: nowrap;
+  font-size: 12px;
 }
 
 /* ============ 查找 / 替换（VSCode 风格悬浮框） ============ */
@@ -868,31 +1057,15 @@
 }
 
 /*
- * 查找命中的高亮：走 CSS 自定义高亮（见 editor/highlights.ts），
+ * 查找命中 / 大纲跳转的高亮：走 CSS 自定义高亮（见 editor/highlights.ts），
  * 只往注册表里塞 Range，不改 DOM。编辑区与预览区共用这几个名字，观感一致。
  *
  * 铺出来就是命中那一段**文字**的范围（高度随字形盒，折行时每段各自铺），
  * 不是整行——整行色带看着像选中了整行，也和预览区对不上。
  *
- * 颜色写成字面量而不是 var(--mde-search-match-bg)：`::highlight()` 只认少数几个属性，
- * 自定义属性在它里面不保证可用（取不到时会退化成透明，等于没高亮）。
- * 这里的值与 --mde-search-match-bg 的出厂值一致，改那个变量时记得同步这里。
+ * 颜色规则由 theme.ts 的 buildHighlightRules 按 theme.colors 生成后注入
+ * （`::highlight()` 不认自定义属性，只能写成一整条字面量规则）。
  */
-::highlight(mde-find-hit) {
-  background-color: rgba(255, 197, 66, 0.42);
-}
-
-::highlight(mde-find-current) {
-  background-color: rgba(234, 92, 0, 0.5);
-}
-
-/*
- * 大纲跳转的目标：只给标题文字本身铺一层底色（含 `###`），不铺整块。
- * 编辑区与预览区同一个名字（编辑区区间是目标行的文字范围）。
- */
-::highlight(mde-flash) {
-  background-color: rgba(99, 102, 241, 0.28);
-}
 
 /*
  * 光标所在行。
@@ -1535,7 +1708,8 @@
   padding: 0.06em 0.2em;
   border-radius: 3px;
   background: var(--mde-mark-bg);
-  color: var(--mde-mark-text);
+  /* 外层上过字色时让位给它（`<font style="color:red">==x==</font>`），否则用高亮自带的深色 */
+  color: var(--mde-ink, var(--mde-mark-text));
 }
 
 .mde-root del {

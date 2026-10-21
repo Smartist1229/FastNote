@@ -86,7 +86,34 @@ const glyph = (d: string, viewBox = "0 0 1024 1024") =>
 const QUOTE_MARK =
   "M6.1 16.9c-2 0-3.4-1.4-3.4-3.4 0-3.3 2-5.8 5.2-6.9l.8 1.6c-2 .9-3.2 2.2-3.5 3.5.3-.1.6-.2 1-.2 1.6 0 2.7 1.1 2.7 2.7 0 1.6-1.2 2.7-2.8 2.7z";
 
+/**
+ * 颜色类图标共用的一条彩虹渐变。
+ *
+ * 这两个图标非要「带颜色」不可：纯 currentColor 的图标说服不了任何人它是颜色工具。
+ * 渐变而不是固定色板 → 亮暗主题里都不会被误读成某个具体色值；
+ * id 固定不变 → 同一文档里多处引用都命中第一份定义，视觉一致（内容本来也相同）。
+ */
+const RAINBOW_BAR = (
+  <defs>
+    <linearGradient id="mde-rainbow-bar" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stopColor="#e03131" />
+      <stop offset="34%" stopColor="#f59f00" />
+      <stop offset="67%" stopColor="#2f9e44" />
+      <stop offset="100%" stopColor="#1c7ed6" />
+    </linearGradient>
+  </defs>
+);
+
 const ICONS: Record<string, (size: number, className?: string) => ReactNode> = {
+  /** 水滴：色盘里的「自定义颜色」用 */
+  droplet: (s, c) =>
+    stroke(
+      <>
+        <path d="M12 3.4 6.6 11.2a6 6 0 1 0 10.8 0z" />
+      </>,
+      s,
+      c,
+    ),
   undo: (s, c) =>
     stroke(
       <>
@@ -163,6 +190,35 @@ const ICONS: Record<string, (size: number, className?: string) => ReactNode> = {
       s,
       c,
     ),
+  /*
+   * 文字颜色：字母 A + 底下一条彩虹色条。
+   * 「颜色」这件事必须由色彩表达，所以唯一的非 currentColor 部分就是那条色条；
+   * A 仍保持线性描边，和同排图标的粗细一致。
+   */
+  textColor: (s, c) => (
+    <svg viewBox="0 0 24 24" width={s} height={s} className={c} aria-hidden="true" focusable="false">
+      {RAINBOW_BAR}
+      <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+        <path d="M7.6 4.6 12 16.2l4.4-11.6" />
+        <path d="M9.6 10.9h4.8" />
+      </g>
+      <rect x="4.2" y="18.1" width="15.6" height="3.4" rx="1.7" fill="url(#mde-rainbow-bar)" />
+    </svg>
+  ),
+  /*
+   * 文字底色：一块填满彩虹色的底板 + 压在上面的两行文字。
+   * 与「文字颜色」的区分是「色块在上 / 色条在下」：一个是填满背景，一个是压在文字下面的一条杠。
+   */
+  bgColor: (s, c) => (
+    <svg viewBox="0 0 24 24" width={s} height={s} className={c} aria-hidden="true" focusable="false">
+      {RAINBOW_BAR}
+      <rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.8" fill="url(#mde-rainbow-bar)" />
+      <g fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round">
+        <path d="M7.6 10.2h8.8" />
+        <path d="M7.6 14.2h5.6" />
+      </g>
+    </svg>
+  ),
   mark: (s, c) =>
     stroke(
       <>

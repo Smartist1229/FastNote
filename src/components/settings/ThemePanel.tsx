@@ -27,6 +27,7 @@ import {
 import { getPreset, getTokenPair, getTokensForMode, hexToCss, normalizeHex, resolveMode } from "@/lib/theme";
 import { Icon } from "@/components/common/Icon";
 import { useToast } from "@/components/common/Toast";
+import { ColorPicker } from "@/components/settings/ColorPicker";
 
 /* ---------- 局部小图标：太阳 / 月亮 / 跟随系统 ---------- */
 
@@ -53,7 +54,10 @@ const SystemIcon = () => (
 /* ---------- 取色控件 ---------- */
 
 /**
- * 单个颜色项：色块（点开系统取色盘）+ 中文名 + 说明 + 十六进制输入。
+ * 单个颜色项：色块（点开自绘取色器）+ 中文名 + 说明 + 十六进制输入。
+ *
+ * 色块用自绘取色器：原生 input[type=color] 拖动时会连续回调，
+ * 主题每帧整页换色，卡顿明显；自绘版松手才提交一次。
  *
  * 十六进制框自己存一份草稿：用户敲到 "#6" 时不能立刻回调，
  * 只有凑齐 6 位且合法才写回，否则输入过程会被顶回原值。
@@ -74,19 +78,12 @@ const ColorField: React.FC<{
 
   return (
     <div className="flex items-center gap-2.5 py-1.5">
-      <label
-        className="relative w-7 h-7 rounded-lg border border-line-strong/60 shadow-inner flex-shrink-0 cursor-pointer overflow-hidden"
-        style={{ background: value }}
-        title={`取色：${meta.label}`}
-      >
-        <input
-          type="color"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="absolute -inset-2 w-[calc(100%+16px)] h-[calc(100%+16px)] opacity-0 cursor-pointer"
-          aria-label={`${meta.label}取色`}
-        />
-      </label>
+      <ColorPicker
+        value={value}
+        onChange={onChange}
+        label={`${meta.label}取色`}
+        className="w-7 h-7 flex-shrink-0 rounded-lg border border-line-strong/60 shadow-inner"
+      />
       <div className="min-w-0 flex-1">
         <p className="text-[11.5px] font-medium text-body leading-tight">{meta.label}</p>
         <p className="text-[10.5px] text-faint leading-tight mt-0.5 truncate" title={meta.hint}>

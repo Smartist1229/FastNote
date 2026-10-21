@@ -41,13 +41,14 @@ export {
   applyHeading,
   applyCallout,
   applyAdmonition,
+  applyInlineColor,
   computeStats,
   detectFormats,
   continueMarkdownOnEnter,
   autoPairOnInput,
 } from "./editor/commands";
 
-export type { EditState, CommandOptions, ActiveFormats } from "./editor/commands";
+export type { EditState, CommandOptions, ActiveFormats, InlineColorProp } from "./editor/commands";
 
 export type {
   MarkdownEditorProps,

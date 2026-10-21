@@ -3,7 +3,7 @@
  *
  * 为什么单独抽出来：工具栏、快捷键、命令式 API 都走同一套命令，
  * 而它们都不该关心光标在 contenteditable 编辑区还是预览区里。
- * 纯函数也方便写回归测试（见 scripts/markdown-editor.test.mjs 的命令部分）。
+ * 纯函数也方便直接写回归测试。
  *
  * 约定：
  * - `start` / `end` 是选区字符偏移，折叠光标时两者相等；
@@ -298,6 +298,474 @@ const applyFootnote = (state: EditState): EditState => {
   const nextText = insertion + (hasTrailingNewline ? "" : "\n") + definition;
   const caret = state.start + ref.length;
   return { text: nextText, start: caret, end: caret };
+};
+
+/* ---------------- 文字颜色 / 底色 ---------------- */
+/*
+ * 颜色没有 Markdown 语法，只能落到行内 HTML。这里固定在一种写法：
+ * `<font style="color:#e03131">文字</font>` / `<font style="background-color:#ffe066">文字</font>`。
+ *
+ * 用 `<font>` 而不是 `<span>` 的理由：行首出现标签时块解析器原本会整行当成 HTML 块
+ * （和 `<div>` 同一路），于是 `<span…># 标题</span>` 既丢了标题样式也丢了行内解析——
+ * 看起来就是「上了色标题没了」。这类短语级标签现在统一放行（见 parser/block.ts 的
+ * INLINE_HTML_TAGS），标记留在标签**外面**，标题仍是标题。
+ *
+ * 依赖 `preview.allowHtml`（关掉时标签会原文显示）。后续的「改色 / 清色」全靠这条固定写法识别；
+ * 读的时候顺带兼容早期写进笔记里的 `<span style="…">`（改色时就换成 `<font>`）。
+ */
+export type InlineColorProp = "color" | "background-color";
+
+const COLOR_WRAP = "font";
+/** 读取时兼容的标签名（写入永远只用 `<font>`） */
+const COLOR_TAGS = "(?:font|span)";
+const COLOR_OPEN_G = new RegExp(`<${COLOR_TAGS}\\s+style="([^"]*)">`, "g");
+const COLOR_CLOSE_G = new RegExp(`</${COLOR_TAGS}\\s*>`, "g");
+
+type ColorTagName = "font" | "span";
+
+interface ColorFrame {
+  name: ColorTagName;
+  style: string;
+  raw: string;
+}
+
+interface LocatedColorFrame extends ColorFrame {
+  openStart: number;
+  openEnd: number;
+}
+
+/** 从标签属性串里取 style（双引号、单引号都认）；没有 style 返回 null */
+const styleAttrOf = (attrs: string): string | null => {
+  const found = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
+  return found ? found[1] ?? found[2] ?? "" : null;
+};
+
+/** 把当前颜色标签栈摊平成一条 style，并覆写 / 删除目标属性 */
+const mergedFrameStyle = (stack: ColorFrame[], prop: InlineColorProp, value: string | null): string => {
+  const props = new Map<string, string>();
+  for (const frame of stack) {
+    for (const entry of frame.style.split(";")) {
+      const colon = entry.indexOf(":");
+      if (colon < 0) continue;
+      const key = entry.slice(0, colon).trim().toLowerCase();
+      const val = entry.slice(colon + 1).trim();
+      if (key && val) props.set(key, val);
+    }
+  }
+  if (value) props.set(prop, value);
+  else props.delete(prop);
+  return [...props].map(([key, val]) => `${key}:${val}`).join(";");
+};
+
+/** 从 style 串里读出某个属性的值 */
+const readStyleProp = (style: string, prop: InlineColorProp): string | null => {
+  const found = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?:;|$)`).exec(style);
+  return found ? found[1] : null;
+};
+
+/**
+ * 往 style 串里写属性（已有同名则替换），`value` 为 null 表示删掉这一条。
+ * 返回改写后的结果；整串为空说明这个标签已经没有存在的意义，可以整块摘掉。
+ */
+const writeStyleProp = (style: string, prop: InlineColorProp, value: string | null): string => {
+  const kept = style
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "" && !new RegExp(`^${prop}\\s*:`).test(entry));
+  if (value) kept.push(`${prop}:${value}`);
+  return kept.join(";");
+};
+
+/**
+ * 行首的块标记：`# `、`> `、`- [ ] `、`1. ` 以及它们的叠加（`> - `、`> # `）。
+ * 给整行上色时必须把它留在颜色标签**外面**，否则标记进了标签，它就不再是标记了。
+ */
+const BLOCK_MARKER =
+  /^(?:(?:[ \t]{0,3}>[ \t]*)*(?:(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+)(?:\[[ xX]\][ \t]+)?|#{1,6}[ \t]+)?)/;
+
+/**
+ * 行内标签处理完后，去掉「刚闭合又原样重开」留下的空壳标签。
+ * 被删掉的标签会改变后面的字符偏移，所以传入的标记点要跟着左移；
+ * 标记点若落在被删标签内部，就收到这个标签的起始位置（标签本身不属于选中文字）。
+ */
+const stripEmptyColorPairs = (text: string, marks: number[]): { text: string; marks: number[] } => {
+  const emptyPair = /<(font|span)\b[^>]*><\/\1>/gi;
+  let current = text;
+  let points = marks;
+
+  for (let pass = 0; pass < 4; pass += 1) {
+    const removed: { start: number; end: number }[] = [];
+    let next = "";
+    let cursor = 0;
+    for (const match of current.matchAll(emptyPair)) {
+      if (!/style\s*=/i.test(match[0])) continue;
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      next += current.slice(cursor, start);
+      cursor = end;
+      removed.push({ start, end });
+    }
+    if (!removed.length) break;
+    next += current.slice(cursor);
+    points = points.map((point) => {
+      let shift = 0;
+      for (const range of removed) {
+        if (point >= range.end) shift += range.end - range.start;
+        else if (point > range.start) shift += point - range.start;
+      }
+      return point - shift;
+    });
+    current = next;
+  }
+
+  return { text: current, marks: points };
+};
+
+/**
+ * 只改一行里 [from, to) 这一段的颜色。
+ *
+ * 核心不是「再给选区套一层」，而是**让位再接管**：
+ * 进入选区时把还开着的颜色标签临时闭合，选区内按目标颜色重新发标签，
+ * 离开选区时再把此刻仍然有效的原标签按原样打开。
+ * 于是选区落在已有标签中间、跨过标签边界、连续改色，都不会出现同属性标签嵌套；
+ * 选区内原有的颜色标签被吸收（非颜色样式保留），选区外一个字符都不动。
+ *
+ * 返回的 start / end 是选区在新行里的落点：只圈住原来的文字，
+ * 新插入的开、闭标签留在选区外面——否则下一次改色会把闭合标签当成选中内容。
+ */
+const restyleLineColors = (
+  line: string,
+  from: number,
+  to: number,
+  prop: InlineColorProp,
+  value: string | null,
+): { text: string; start: number; end: number } => {
+  if (from >= to || !line) return { text: line, start: from, end: to };
+
+  const stack: ColorFrame[] = [];
+  const out: string[] = [];
+  let length = 0;
+  let overlay: string | null = null;
+  let detached = false;
+  let mappedStart: number | null = null;
+  let mappedEnd: number | null = null;
+
+  const push = (chunk: string) => {
+    out.push(chunk);
+    length += chunk.length;
+  };
+
+  const closeOverlay = () => {
+    if (overlay === null) return;
+    push(`</${COLOR_WRAP}>`);
+    overlay = null;
+  };
+
+  const ensureOverlay = () => {
+    const style = mergedFrameStyle(stack, prop, value);
+    if (style === (overlay ?? "")) return;
+    closeOverlay();
+    if (style) {
+      push(`<${COLOR_WRAP} style="${style}">`);
+      overlay = style;
+    }
+  };
+
+  /** 进入选区：外层颜色标签先让位 */
+  const enter = () => {
+    if (detached) return;
+    for (let i = stack.length - 1; i >= 0; i -= 1) push(`</${stack[i].name}>`);
+    detached = true;
+  };
+
+  /** 离开选区：把此刻仍有效的标签重新打开 */
+  const leave = () => {
+    if (!detached) return;
+    // 选区终点在收尾标签之前：先记下位置，再把临时标签关掉、原标签重开
+    if (mappedEnd === null) mappedEnd = length;
+    closeOverlay();
+    for (const frame of stack) push(frame.raw);
+    detached = false;
+  };
+
+  const pushRaw = (raw: string) => {
+    if (!raw) return;
+    // 原始行内标签可能和临时颜色标签交叉：先收临时标签，标签之后再按需重开
+    if (detached) closeOverlay();
+    push(raw);
+  };
+
+  const emitChunk = (chunk: string, chunkStart: number) => {
+    if (!chunk) return;
+    const cuts = [from, to]
+      .filter((point) => point > chunkStart && point < chunkStart + chunk.length)
+      .sort((a, b) => a - b);
+
+    const emitPiece = (piece: string, pieceStart: number) => {
+      if (!piece) return;
+      if (pieceStart < from) {
+        pushRaw(piece);
+        return;
+      }
+      if (pieceStart >= to) {
+        leave();
+        pushRaw(piece);
+        return;
+      }
+      enter();
+      ensureOverlay();
+      // 第一个被选中的字符：记在新建的开标签之后
+      if (mappedStart === null) mappedStart = length;
+      push(piece);
+    };
+
+    let offset = 0;
+    for (const cut of cuts) {
+      emitPiece(chunk.slice(offset, cut - chunkStart), chunkStart + offset);
+      offset = cut - chunkStart;
+    }
+    emitPiece(chunk.slice(offset), chunkStart + offset);
+  };
+
+  const tagRe = /<(\/?)(font|span)\b([^>]*)>/gi;
+  let cursor = 0;
+  for (const match of line.matchAll(tagRe)) {
+    const index = match.index ?? 0;
+    emitChunk(line.slice(cursor, index), cursor);
+    cursor = index + match[0].length;
+
+    const name = match[2].toLowerCase() as ColorTagName;
+    const inside = index >= from && index < to;
+
+    if (match[1]) {
+      const open = stack.map((frame) => frame.name).lastIndexOf(name);
+      if (inside) {
+        enter();
+        if (open >= 0) stack.splice(open, 1);
+      } else {
+        leave();
+        pushRaw(match[0]);
+        if (open >= 0) stack.splice(open, 1);
+      }
+      continue;
+    }
+
+    const style = styleAttrOf(match[3]);
+    if (style === null) {
+      // 不带 style 的 font / span 与颜色无关，原样保留
+      pushRaw(match[0]);
+      continue;
+    }
+
+    if (inside) {
+      enter();
+      stack.push({ name, style, raw: match[0] });
+    } else {
+      leave();
+      pushRaw(match[0]);
+      stack.push({ name, style, raw: match[0] });
+    }
+  }
+  emitChunk(line.slice(cursor), cursor);
+  leave();
+
+  // 选区结束在标签边界时，重开又立刻闭合会留下空壳，顺手收掉；
+  // 清理会挪动偏移，选区落点一起跟着修
+  const cleaned = stripEmptyColorPairs(out.join(""), [mappedStart ?? 0, mappedEnd ?? 0]);
+  return { text: cleaned.text, start: cleaned.marks[0], end: cleaned.marks[1] };
+};
+
+/** 光标所在的、带某个颜色属性的最内层标签 */
+const enclosingColorFrame = (
+  text: string,
+  pos: number,
+  prop: InlineColorProp,
+): LocatedColorFrame | null => {
+  const from = lineStartOf(text, pos);
+  const segment = text.slice(from, pos);
+  const stack: LocatedColorFrame[] = [];
+
+  for (const match of segment.matchAll(/<(\/?)(font|span)\b([^>]*)>/gi)) {
+    if (match[1]) {
+      const name = match[2].toLowerCase();
+      const open = stack.map((frame) => frame.name).lastIndexOf(name as ColorTagName);
+      if (open >= 0) stack.splice(open, 1);
+      continue;
+    }
+    const style = styleAttrOf(match[3]);
+    if (style === null) continue;
+    const index = match.index ?? 0;
+    stack.push({
+      name: match[2].toLowerCase() as ColorTagName,
+      style,
+      raw: match[0],
+      openStart: from + index,
+      openEnd: from + index + match[0].length,
+    });
+  }
+
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    if (readStyleProp(stack[i].style, prop)) return stack[i];
+  }
+  return null;
+};
+
+/** 从 pos 往后找该标签的闭合标签 */
+const closingTagAfter = (
+  text: string,
+  pos: number,
+  name: ColorTagName,
+): { start: number; end: number } | null => {
+  const re = new RegExp(`</${name}\\s*>`, "gi");
+  re.lastIndex = pos;
+  const match = re.exec(text);
+  return match ? { start: match.index, end: match.index + match[0].length } : null;
+};
+
+/** 折叠光标：在已有颜色里改属性就改整个标签，否则插入一段带色占位文本 */
+const applyCollapsedColor = (
+  state: EditState,
+  prop: InlineColorProp,
+  value: string | null,
+  placeholder: string,
+): EditState => {
+  const { text, start } = state;
+  const frame = enclosingColorFrame(text, start, prop);
+
+  if (!frame) {
+    if (value === null) return state;
+    return wrapInline(state, `<${COLOR_WRAP} style="${prop}:${value}">`, `</${COLOR_WRAP}>`, placeholder);
+  }
+
+  const close = closingTagAfter(text, start, frame.name);
+  const nextStyle = writeStyleProp(frame.style, prop, value);
+
+  if (!nextStyle) {
+    // 属性删空：摘掉标签但保留中间的文字
+    const openLength = frame.openEnd - frame.openStart;
+    let nextText = text.slice(0, frame.openStart) + text.slice(frame.openEnd);
+    let caret = start - openLength;
+    if (close) {
+      const closeStart = close.start - openLength;
+      const closeEnd = close.end - openLength;
+      nextText = nextText.slice(0, closeStart) + nextText.slice(closeEnd);
+      if (caret >= closeStart) caret -= close.end - close.start;
+    }
+    const safe = Math.max(0, caret);
+    return { text: nextText, start: safe, end: safe };
+  }
+
+  const open = `<${COLOR_WRAP} style="${nextStyle}">`;
+  const delta = open.length - (frame.openEnd - frame.openStart);
+  let nextText = text.slice(0, frame.openStart) + open + text.slice(frame.openEnd);
+  let caret = start + delta;
+  if (close) {
+    const closeStart = close.start + delta;
+    const closeEnd = close.end + delta;
+    const replaced = `</${COLOR_WRAP}>`;
+    nextText = nextText.slice(0, closeStart) + replaced + nextText.slice(closeEnd);
+    if (caret > closeStart) caret += replaced.length - (close.end - close.start);
+  }
+  return { text: nextText, start: caret, end: caret };
+};
+
+/**
+ * 给选区改 / 清颜色。
+ *
+ * 选区按行切开：行首块标记（`# `、`> `、`- [ ] `、`1. `）留在颜色标签外面，
+ * 每行只改与选区相交的那一段，标签永远不会跨行。`value === null` 表示清除：
+ * 无论颜色是这一次刚上的还是文档里本来就有的，都会从选区覆盖到的标签里摘掉。
+ */
+export const applyInlineColor = (
+  state: EditState,
+  prop: InlineColorProp,
+  value: string | null,
+  placeholder: string,
+): EditState => {
+  const { text, start, end } = state;
+  if (start === end) return applyCollapsedColor(state, prop, value, placeholder);
+
+  /** 拖选常常多带一个换行符，先摘掉再判断（不能把行尾 `\n` 包进标签） */
+  const stop = text[end - 1] === "\n" ? end - 1 : end;
+  if (start >= stop) return state;
+
+  const from = lineStartOf(text, start);
+  let lineStart = from;
+  let replacement = "";
+  /** 新文本里的选区落点：只圈住原来的文字，不含这次插入的标签 */
+  let nextStart: number | null = null;
+  let nextEnd: number | null = null;
+
+  while (lineStart <= stop) {
+    const lineEnd = lineEndOf(text, lineStart);
+    const line = text.slice(lineStart, lineEnd);
+    const visibleFrom = Math.max(start, lineStart);
+    const visibleTo = Math.min(stop, lineEnd);
+
+    if (visibleFrom < visibleTo) {
+      const marker = BLOCK_MARKER.exec(line)?.[0] ?? "";
+      const contentStart = lineStart + marker.length;
+      const relFrom = Math.max(visibleFrom, contentStart) - contentStart;
+      const relTo = Math.max(0, visibleTo - contentStart);
+      const restyled = restyleLineColors(line.slice(marker.length), relFrom, relTo, prop, value);
+      const base = from + replacement.length + marker.length;
+      if (nextStart === null) nextStart = base + restyled.start;
+      nextEnd = base + restyled.end;
+      replacement += marker + restyled.text;
+    } else {
+      replacement += line;
+    }
+
+    if (lineEnd >= stop || lineEnd === text.length) break;
+    replacement += "\n";
+    lineStart = lineEnd + 1;
+  }
+
+  const replaceEnd = lineEndOf(text, stop);
+  const nextText = text.slice(0, from) + replacement + text.slice(replaceEnd);
+  return {
+    text: nextText,
+    start: clamp(nextStart ?? start, 0, nextText.length),
+    end: clamp(nextEnd ?? end, 0, nextText.length),
+  };
+};
+
+/**
+ * 光标（或选区起点）连带处在哪些颜色标签里：返回那个属性的值，没有则 null。
+ *
+ * 只做一次前行内的标签配对——从行首扫到光标，开标签入栈、闭标签出栈；
+ * 然后**自内向外**找第一个写了该属性的标签：底色在外层、字色在内层时两个都要能识别出来。
+ * 这里刻意**不看后面有没有闭合**：半句话刚打完开标签的原始状态也该算「正带着这个颜色」。
+ */
+const detectInlineColor = (text: string, pos: number, prop: InlineColorProp): string | null => {
+  const before = text.slice(lineStartOf(text, pos), pos);
+  const stack: string[] = [];
+  let cursor = 0;
+
+  COLOR_OPEN_G.lastIndex = 0;
+  COLOR_CLOSE_G.lastIndex = 0;
+  while (cursor < before.length) {
+    COLOR_OPEN_G.lastIndex = cursor;
+    COLOR_CLOSE_G.lastIndex = cursor;
+    const open = COLOR_OPEN_G.exec(before);
+    const close = COLOR_CLOSE_G.exec(before);
+    if (!open && !close) break;
+    if (close && (!open || close.index < open.index)) {
+      stack.pop();
+      cursor = close.index + close[0].length;
+    } else if (open) {
+      stack.push(open[1]);
+      cursor = open.index + open[0].length;
+    } else {
+      break;
+    }
+  }
+
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const value = readStyleProp(stack[i], prop);
+    if (value) return value;
+  }
+  return null;
 };
 
 /** 命令入口：返回 null 表示交给组件处理 */
@@ -635,6 +1103,10 @@ export interface ActiveFormats {
   bulletList: boolean;
   orderedList: boolean;
   taskList: boolean;
+  /** 光标处生效的文字颜色；null = 当前没有上色 */
+  textColor: string | null;
+  /** 光标处生效的文字底色 */
+  bgColor: string | null;
 }
 
 export const detectFormats = (text: string, start: number, end: number): ActiveFormats => {
@@ -663,5 +1135,9 @@ export const detectFormats = (text: string, start: number, end: number): ActiveF
     bulletList: /^[-*+][ \t]+/.test(line),
     orderedList: /^\d{1,9}[.)][ \t]+/.test(line),
     taskList: /^[-*+][ \t]+\[[ xX]\][ \t]+/.test(line),
+    // 颜色不在 `wrapped()` 那套定界符里：它们是带属性的标签，得单独做标签配对。
+    // 有选区时看最后一个字符所在的位置：选中整段带色文字时，选区终点往往已经越过闭标签。
+    textColor: detectInlineColor(text, start !== end ? end - 1 : end, "color"),
+    bgColor: detectInlineColor(text, start !== end ? end - 1 : end, "background-color"),
   };
 };

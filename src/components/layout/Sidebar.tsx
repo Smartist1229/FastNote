@@ -22,6 +22,7 @@ import { AiSparkleIcon } from '@/components/common/icons';
 import { Icon } from '@/components/common/Icon';
 import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/contextMenus';
 import type { GroupMenuKind } from '@/config/contextMenus';
+import { searchNotes } from '@/lib/noteSearch';
 /** 排序选项：value 直接作为后端排序字段使用 */
 const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' }];
 /** 排序浮层宽度（px）：定位时用它把浮层夹在视口内 */
@@ -64,6 +65,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   focusNoteId,
   searchQuery,
   onSearchQueryChange,
+  useRegex = false,
+  onCommitSearch,
+  searchHistory = [],
+  onRemoveSearchHistory,
+  onClearSearchHistory,
   sortBy,
   onSortByChange,
   sortOrder,
@@ -124,6 +130,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [dragGhost, setDragGhost] = useState<{ x: number; y: number; title: string } | null>(null);
   /** 指针拖拽当前悬停的分组 id（内部拖拽高亮） */
   const [dragHoverCategoryId, setDragHoverCategoryId] = useState<number | null>(null);
+  /** 搜索历史下拉是否展开（聚焦时展开，失焦延后收起） */
+  const [historyOpen, setHistoryOpen] = useState(false);
   const isSearching = searchQuery.trim().length > 0;
   /** 停止自动滚动并清空指针坐标 */
   const stopAutoScroll = () => {
@@ -165,7 +173,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
     autoScrollRafRef.current = requestAnimationFrame(loop);
   };
-  const query = searchQuery.trim().toLowerCase();
   /** 分组 id → 笔记列表；额外的一桶（ORPHAN_GROUP_ID）收留分组已删除的孤儿笔记 */
   const categorized = useMemo(() => {
     const map = new Map<number, Note[]>();
@@ -192,21 +199,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const favoriteNotes = useMemo(() => notes.filter((n) => n.is_pinned), [notes]);
   /**
    * 搜索：主列表已经带正文，直接在 notes 上匹配，不再额外拉数据。
+   *
+   * 匹配、片段、命中区间统一由 lib/noteSearch 计算（是否正则也在这里生效），
+   * 三个虚拟分组共用同一批结果，避免"标题组和正文组判定不一致"这种不一致。
    */
-  /** 搜索视图「全部搜索结果」：标题或正文命中即可，保持后端排序 */
-  const searchMatches = useMemo(
-    () => notes.filter((n) => n.title.toLowerCase().includes(query) || n.content.toLowerCase().includes(query)),
-    [notes, query]
+  const { hits: searchHits, invalid: invalidRegex } = useMemo(
+    () => searchNotes(notes, searchQuery.trim(), useRegex),
+    [notes, searchQuery, useRegex],
   );
-  /** 搜索视图「标题命中」：标题包含关键词的笔记 */
+  /** 搜索视图「全部搜索结果」：按命中顺序 */
+  const searchMatches = useMemo(() => searchHits.map((h) => h.note), [searchHits]);
+  /** id → 命中信息，给列表做关键词高亮与上下文片段 */
+  const hitMap = useMemo(() => new Map(searchHits.map((h) => [h.note.id, h])), [searchHits]);
+  /** 搜索视图「标题命中」：标题里有命中的笔记 */
   const titleMatches = useMemo(
-    () => notes.filter((n) => n.title.toLowerCase().includes(query)),
-    [notes, query]
+    () => searchHits.filter((h) => h.titleRanges.length > 0).map((h) => h.note),
+    [searchHits],
   );
   /** 搜索视图「正文命中」：标题未命中、但正文包含关键词的笔记（与标题命中互补，避免重复） */
   const contentMatches = useMemo(
-    () => notes.filter((n) => !n.title.toLowerCase().includes(query) && n.content.toLowerCase().includes(query)),
-    [notes, query]
+    () => searchHits.filter((h) => h.titleRanges.length === 0).map((h) => h.note),
+    [searchHits],
   );
   /** 搜索视图内三个默认分组的展开状态：默认展开，结果立即可见 */
   const [searchGroupOpen, setSearchGroupOpen] = useState({ all: true, title: true, content: true });
@@ -515,9 +528,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
             <input
               type="text"
-              placeholder="搜索笔记..."
+              placeholder={useRegex ? "正则搜索笔记..." : "搜索笔记..."}
               value={searchQuery}
               onChange={(e) => onSearchQueryChange(e.target.value)}
+              onFocus={() => setHistoryOpen(searchHistory.length > 0)}
+              onBlur={() => {
+                // 延后关闭：早于 click 收起的话，历史条目还没来得及响应点击就没了
+                window.setTimeout(() => setHistoryOpen(false), 120);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  // 回车视为"这次搜索定了"：同时折叠下拉，避免它盖住刚出的结果
+                  setHistoryOpen(false);
+                  onCommitSearch?.(searchQuery);
+                }
+                if (e.key === 'Escape') setHistoryOpen(false);
+              }}
               className="w-full pl-8 pr-7 py-1.5 text-xs input-modern"
             />
             {isSearching && (
@@ -528,6 +554,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 <Icon name="sidebar-close" className="w-3.5 h-3.5" />
               </button>
+            )}
+            {/* 历史下拉：聚焦时出现；历史为空或已开始输入都不打扰 */}
+            {historyOpen && searchHistory.length > 0 && !isSearching && (
+              <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-line bg-surface shadow-card-hover overflow-hidden">
+                <div className="flex items-center justify-between px-2.5 pt-1.5 pb-1">
+                  <span className="text-[10px] text-faint">搜索历史</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClearSearchHistory?.();
+                      setHistoryOpen(false);
+                    }}
+                    className="text-[10px] text-faint-soft hover:text-danger transition-colors"
+                  >
+                    清空
+                  </button>
+                </div>
+                {searchHistory.map((item) => (
+                  <div
+                    key={item}
+                    className="group flex items-center gap-1 px-1 pb-0.5 last:pb-1"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSearchQueryChange(item);
+                        setHistoryOpen(false);
+                        onCommitSearch?.(item);
+                      }}
+                      className="flex-1 min-w-0 flex items-center gap-1.5 px-1.5 py-1 rounded-md text-left hover:bg-surface-alt transition-colors"
+                    >
+                      <Icon name="welcome-clock" className="w-3 h-3 flex-shrink-0 text-faint-soft" />
+                      <span className="truncate text-[11px] text-muted">{item}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveSearchHistory?.(item)}
+                      title="删除这条历史"
+                      className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-faint-soft opacity-0 group-hover:opacity-100 transition-opacity hover:text-danger hover:bg-danger-soft"
+                    >
+                      <Icon name="sidebar-close" className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
           <button
@@ -654,7 +725,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Icon name="sidebar-search" className="w-5 h-5 text-faint-soft" />
               </div>
               <p className="text-xs text-faint">无匹配笔记</p>
-              <p className="text-[10px] text-faint-soft mt-1">换个关键词试试</p>
+              {/* 开了正则最容易"什么都不出来"—至少说清楚是表达式本身没通过编译，而不是库里没有 */}
+              {invalidRegex ? (
+                <p className="text-[10px] text-warning mt-1 text-center px-2">
+                  这不是合法的正则表达式，换个写法或在设置里关掉「笔记搜索支持正则」
+                </p>
+              ) : (
+                <p className="text-[10px] text-faint-soft mt-1">换个关键词试试</p>
+              )}
             </div>
           ) : (
             <div className="space-y-0.5">
@@ -666,6 +744,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 isAllNotes={true}
                 headerTitle="全部搜索结果"
                 headerIcon="sidebar-search"
+                hits={hitMap}
                 selectedNoteId={selectedNoteId}
                 focusNoteId={focusNoteId}
                 onToggle={() => toggleSearchGroup('all')}
@@ -686,6 +765,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 isAllNotes={true}
                 headerTitle="标题命中"
                 headerIcon="sidebar-note"
+                hits={hitMap}
                 selectedNoteId={selectedNoteId}
                 focusNoteId={focusNoteId}
                 onToggle={() => toggleSearchGroup('title')}
@@ -706,6 +786,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 isAllNotes={true}
                 headerTitle="正文命中"
                 headerIcon="sidebar-list"
+                hits={hitMap}
                 selectedNoteId={selectedNoteId}
                 focusNoteId={focusNoteId}
                 onToggle={() => toggleSearchGroup('content')}

@@ -185,6 +185,56 @@ const mergeText = (nodes: InlineNode[]): InlineNode[] => {
 };
 
 /** 入口：解析一段行内文本 */
+/**
+ * 行内标签配对：从 `src[from]`（开标签之后）找到与之配对的闭标签。
+ *
+ * 同名标签要压深度计数，否则 `<font><font>x</font></font>` 会在第一个闭合就收工；
+ * 找不到就返回 -1 —— 宁可不配对让它按原文显示，也不要把后面的内容吞进一个假标签。
+ */
+const findTagClose = (src: string, from: number, tag: string): number => {
+  const name = tag.toLowerCase();
+  const openRe = new RegExp(`<${name}(?:\\s[^<>]*)?>`, "gi");
+  const closeRe = new RegExp(`</${name}\\s*>`, "gi");
+  let depth = 0;
+  let cursor = from;
+  while (cursor < src.length) {
+    openRe.lastIndex = cursor;
+    closeRe.lastIndex = cursor;
+    const open = openRe.exec(src);
+    const close = closeRe.exec(src);
+    if (!open && !close) return -1;
+    if (close && (!open || close.index < open.index)) {
+      if (depth === 0) return close.index;
+      depth -= 1;
+      cursor = close.index + close[0].length;
+    } else if (open) {
+      depth += 1;
+      cursor = open.index + open[0].length;
+    } else {
+      return -1;
+    }
+  }
+  return -1;
+};
+
+/** 不需要配对的行内标签（自闭合 / 空元素） */
+const VOID_INLINE_TAGS = new Set([
+  "br",
+  "hr",
+  "img",
+  "input",
+  "wbr",
+  "source",
+  "embed",
+  "track",
+  "area",
+  "col",
+  "param",
+  "base",
+  "meta",
+  "link",
+]);
+
 export function parseInline(src: string, ctx: InlineContext): InlineNode[] {
   const out: InlineNode[] = [];
   let buf = "";
@@ -369,6 +419,23 @@ export function parseInline(src: string, ctx: InlineContext): InlineNode[] {
       const tag = /^<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?\/?>/.exec(src.slice(i));
       const comment = /^<!--[\s\S]*?-->/.exec(src.slice(i));
       if (ctx.allowHtml && (comment || tag)) {
+        // 成对的行内标签：连闭标签一起吃下，内部照常解析 Markdown（粗体、链接、高亮都在）
+        const open = tag && /^<([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^<>]*)?)>$/.exec(tag[0]);
+        if (open && !VOID_INLINE_TAGS.has(open[1].toLowerCase())) {
+          const close = findTagClose(src, i + open[0].length, open[1]);
+          if (close > 0) {
+            flush();
+            out.push({
+              type: "htmlInline",
+              tag: open[1].toLowerCase(),
+              attrs: open[2] ?? "",
+              raw: open[0],
+              children: parseInline(src.slice(i + open[0].length, close), ctx),
+            });
+            i = close + src.slice(close).indexOf(">") + 1;
+            continue;
+          }
+        }
         flush();
         out.push({ type: "html", value: (comment || tag)![0] });
         i += (comment || tag)![0].length;
@@ -509,6 +576,7 @@ export function inlineToText(nodes: InlineNode[]): string {
       case "mark":
       case "sup":
       case "sub":
+      case "htmlInline":
         text += inlineToText(node.children);
         break;
       default:

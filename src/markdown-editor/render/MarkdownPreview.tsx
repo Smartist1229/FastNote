@@ -60,6 +60,52 @@ const blockAttrs = (node: BlockNode, topLevel: boolean) =>
   topLevel ? { "data-line": node.line, "data-offset": node.start } : {};
 
 /**
+ * 行内标签的属性（`<u>` / `<font style="color:red">` 的开标签里那段）→ React props。
+ *
+ * 属性**不信 HTML 字符串**：自己解析一遍，只放行排版相关的几个，
+ * 事件属性（`on*`）与危险协议一律丢弃——比先拼字符串再净化更不容易出漏子。
+ *
+ * 额外埋一个 CSS 变量 `--mde-ink`：这是「默认文字色」的逃生舱。
+ * `.mde-mark`（`==高亮==`）自带深色字以便压在黄底上看清，但它同时也是 li-marker 之外的
+ * 任何祖先的子元素 —— 一旦外层 `<font style="color:red">` 上了色，这份自带色就把用户的颜色顶掉。
+ * 变量沿 DOM 继承下去，`.mde-mark` 改成 `color: var(--mde-ink, 默认值)`，
+ * 于是「没指定色 → 用高亮自己的字色」「指定了色 → 跟随用户的颜色」，两个诉求不再打架。
+ */
+/** 允许透传的普通属性（其余一律丢弃） */
+const PASSTHROUGH_ATTRS = new Set(["id", "title", "lang", "dir"]);
+const DANGEROUS_VALUE = /expression\s*\(|javascript\s*:|vbscript\s*:/i;
+
+/** `"color:#f00;background-color:#fff"` → React style 对象（顺便滤掉危险值） */
+const parseInlineStyle = (style: string): CSSProperties => {
+  const out: Record<string, string> = {};
+  for (const part of style.split(";")) {
+    const at = part.indexOf(":");
+    if (at <= 0) continue;
+    const name = part.slice(0, at).trim();
+    const value = part.slice(at + 1).trim();
+    if (!name || DANGEROUS_VALUE.test(value)) continue;
+    out[name.replace(/-([a-z])/g, (_, ch: string) => ch.toUpperCase())] = value;
+  }
+  return out as CSSProperties;
+};
+
+const parseTagAttrs = (attrString: string): Record<string, unknown> => {
+  const props: Record<string, unknown> = {};
+  const pairs = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = pairs.exec(attrString))) {
+    const name = match[1].toLowerCase();
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    if (name.startsWith("on")) continue;
+    if (DANGEROUS_VALUE.test(value)) continue;
+    if (name === "class") props.className = value;
+    else if (name === "style") props.style = parseInlineStyle(value);
+    else if (PASSTHROUGH_ATTRS.has(name)) props[name] = value;
+  }
+  return props;
+};
+
+/**
  * 行内节点渲染。
  *
  * `keyBase` 只用来保证兄弟之间不撞名，**绝不能掺进 `line` / `start` 这类编辑坐标**：
@@ -68,102 +114,116 @@ const blockAttrs = (node: BlockNode, topLevel: boolean) =>
  * 这里统一用固定的族名 + 下标，坐标再怎么变 key 都不动。
  */
 export const renderInline = (nodes: InlineNode[], ctx: PreviewContextValue, keyBase: string): ReactNode[] =>
-  nodes.map((node, index) => {
-    const key = `${keyBase}-${index}`;
-    switch (node.type) {
-      case "text":
-        return <Fragment key={key}>{node.value}</Fragment>;
-      case "strong":
-        return <strong key={key}>{renderInline(node.children, ctx, key)}</strong>;
-      case "em":
-        return <em key={key}>{renderInline(node.children, ctx, key)}</em>;
-      case "del":
-        return <del key={key}>{renderInline(node.children, ctx, key)}</del>;
-      case "mark":
-        return (
-          <mark key={key} className="mde-mark">
-            {renderInline(node.children, ctx, key)}
-          </mark>
-        );
-      case "sup":
-        return <sup key={key}>{renderInline(node.children, ctx, key)}</sup>;
-      case "sub":
-        return <sub key={key}>{renderInline(node.children, ctx, key)}</sub>;
-      case "code":
-        return (
-          <code key={key} className="mde-inline-code">
-            {node.value}
-          </code>
-        );
-      case "math":
-        return <MathInline key={key} code={node.value} enabled={ctx.config.preview.math} />;
-      case "break":
-        return node.hard ? <br key={key} /> : <Fragment key={key}> </Fragment>;
-      case "link":
-        return (
-          <a
-            key={key}
-            href={node.href}
-            title={node.title}
-            className="mde-link"
-            onClick={(event) => {
-              const href = node.href;
-              if (href.startsWith("#")) {
-                // 页内锚点：留给浏览器/预览容器处理
-                return;
-              }
-              const verdict = ctx.onLinkClick?.(href, event);
-              if (verdict === false) {
-                event.preventDefault();
-                return;
-              }
-              if (!ctx.onLinkClick) {
-                event.preventDefault();
-                window.open(href, ctx.config.preview.linkTarget, "noopener,noreferrer");
-              }
-            }}
-          >
-            {renderInline(node.children, ctx, key)}
-          </a>
-        );
-      case "image":
-        return (
-          <img
-            key={key}
-            src={node.src}
-            alt={node.alt}
-            title={node.title}
-            className={`mde-image${ctx.config.preview.imagePreview ? " is-zoomable" : ""}`}
-            loading="lazy"
-            draggable={false}
-            onClick={
-              ctx.config.preview.imagePreview
-                ? () => {
-                    // 宿主传了 onImageClick 就完全交给它（例如换成自己的灯箱）
-                    if (ctx.onImageClick) ctx.onImageClick(node.src, node.alt);
-                    else ctx.showImage?.(node.src, node.alt);
-                  }
-                : undefined
+  nodes.map((node, index) => renderInlineNode(node, ctx, `${keyBase}-${index}`));
+
+const renderInlineNode = (node: InlineNode, ctx: PreviewContextValue, key: string): ReactNode => {
+  switch (node.type) {
+    case "text":
+      return <Fragment key={key}>{node.value}</Fragment>;
+    case "strong":
+      return <strong key={key}>{renderInline(node.children, ctx, key)}</strong>;
+    case "em":
+      return <em key={key}>{renderInline(node.children, ctx, key)}</em>;
+    case "del":
+      return <del key={key}>{renderInline(node.children, ctx, key)}</del>;
+    case "mark":
+      return (
+        <mark key={key} className="mde-mark">
+          {renderInline(node.children, ctx, key)}
+        </mark>
+      );
+    case "sup":
+      return <sup key={key}>{renderInline(node.children, ctx, key)}</sup>;
+    case "sub":
+      return <sub key={key}>{renderInline(node.children, ctx, key)}</sub>;
+    case "code":
+      return (
+        <code key={key} className="mde-inline-code">
+          {node.value}
+        </code>
+      );
+    case "math":
+      return <MathInline key={key} code={node.value} enabled={ctx.config.preview.math} />;
+    case "break":
+      return node.hard ? <br key={key} /> : <Fragment key={key}> </Fragment>;
+    case "link":
+      return (
+        <a
+          key={key}
+          href={node.href}
+          title={node.title}
+          className="mde-link"
+          onClick={(event) => {
+            const href = node.href;
+            if (href.startsWith("#")) {
+              // 页内锚点：留给浏览器/预览容器处理
+              return;
             }
-          />
-        );
-      case "footnoteRef":
-        return (
-          <sup key={key} className="mde-fn-ref">
-            <a href={`#mde-fn-${node.index}`} id={`mde-fnref-${node.index}`}>
-              {node.index}
-            </a>
-          </sup>
-        );
-      case "html": {
-        if (!ctx.config.preview.allowHtml) return <Fragment key={key}>{node.value}</Fragment>;
-        const html = ctx.config.preview.sanitizeHtml ? sanitizeHtml(node.value) : node.value;
-        return <span key={key} dangerouslySetInnerHTML={{ __html: html }} />;
-      }
-      default:
-        return null;
+            const verdict = ctx.onLinkClick?.(href, event);
+            if (verdict === false) {
+              event.preventDefault();
+              return;
+            }
+            if (!ctx.onLinkClick) {
+              event.preventDefault();
+              window.open(href, ctx.config.preview.linkTarget, "noopener,noreferrer");
+            }
+          }}
+        >
+          {renderInline(node.children, ctx, key)}
+        </a>
+      );
+    case "image":
+      return (
+        <img
+          key={key}
+          src={node.src}
+          alt={node.alt}
+          title={node.title}
+          className={`mde-image${ctx.config.preview.imagePreview ? " is-zoomable" : ""}`}
+          loading="lazy"
+          draggable={false}
+          onClick={
+            ctx.config.preview.imagePreview
+              ? () => {
+                  // 宿主传了 onImageClick 就完全交给它（例如换成自己的灯箱）
+                  if (ctx.onImageClick) ctx.onImageClick(node.src, node.alt);
+                  else ctx.showImage?.(node.src, node.alt);
+                }
+              : undefined
+          }
+        />
+      );
+    case "footnoteRef":
+      return (
+        <sup key={key} className="mde-fn-ref">
+          <a href={`#mde-fn-${node.index}`} id={`mde-fnref-${node.index}`}>
+            {node.index}
+          </a>
+        </sup>
+      );
+    case "html": {
+      if (!ctx.config.preview.allowHtml) return <Fragment key={key}>{node.value}</Fragment>;
+      const html = ctx.config.preview.sanitizeHtml ? sanitizeHtml(node.value) : node.value;
+      return <span key={key} dangerouslySetInnerHTML={{ __html: html }} />;
     }
-  });
+    /**
+     * 成对标签：内部 Markdown 已由解析器展开成 children，这里照常递归渲染。
+     *
+     * 优先级落在 CSS 自己的层叠上：`<font style="color:red">**粗体**</font>` 里色在祖先、
+     * 粗细在子，天然不打架；`==高亮==` 的黄底同理（底色由上色的祖先给，mark 只管自己的一块）。
+     * 唯一需要人工干预的是 mark 自带的那份字色 —— 靠 `--mde-ink` 变量让位，见 parseTagAttrs。
+     */
+    case "htmlInline": {
+      const attrs = parseTagAttrs(node.attrs) as Record<string, unknown>;
+      const style = (attrs.style ?? {}) as Record<string, string>;
+      if (typeof style.color === "string") attrs.style = { ...style, "--mde-ink": style.color };
+      return createElement(node.tag, { key, ...attrs }, renderInline(node.children, ctx, key));
+    }
+    default:
+      return null;
+  }
+};
 
 /** 列表项内容：紧凑列表不包 <p>，避免行距被段间距撑开 */
 const renderListItemContent = (item: ListItemNode, ctx: PreviewContextValue, key: string): ReactNode[] => {

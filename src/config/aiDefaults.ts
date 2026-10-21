@@ -85,6 +85,14 @@ export const TOOL_DEFS = [
   { name: "deleteCategory", desc: "删除分组", args: { categoryId: "分组ID", deleteNotes: "是否同时把组内笔记移入回收站(可选)" }, needsConfirm: true },
   { name: "moveNote", desc: "移动笔记到其他分组", args: { noteId: "笔记ID", categoryId: "目标分组ID" }, needsConfirm: true },
   { name: "selectNote", desc: "选择并打开指定笔记", args: { noteId: "笔记ID" }, needsConfirm: false },
+  { name: "listTags", desc: "列出全部标签及各标签的笔记数", args: {}, needsConfirm: false },
+  { name: "getNoteTags", desc: "读取某篇笔记的标签", args: { noteId: "笔记ID" }, needsConfirm: false },
+  { name: "findNotesByTag", desc: "按标签查找笔记", args: { tagName: "标签名", limit: "条数(可选)" }, needsConfirm: false },
+  { name: "addNoteTags", desc: "给笔记添加标签", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: true },
+  { name: "removeNoteTags", desc: "移除笔记上的标签（仅限 AI 自己添加的）", args: { noteId: "笔记ID", names: "['标签1']" }, needsConfirm: true },
+  { name: "setNoteTags", desc: "整体重写某篇笔记的 AI 标签（旧的 AI 标签会被替换）", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: true },
+  { name: "renameTag", desc: "重命名标签（全局生效）", args: { tagName: "原标签名", newName: "新标签名" }, needsConfirm: true },
+  { name: "deleteTag", desc: "删除标签（仅限 AI 自己创建的，连带所有笔记上的关联）", args: { tagName: "标签名" }, needsConfirm: true },
 ];
 
 /* ---------- 系统提示词 ---------- */
@@ -124,6 +132,21 @@ export const AI_SYSTEM_PROMPT = `You are the FastNote smart note assistant. You 
 - renameCategory: rename a category. {"categoryId":"分组ID","name":"新名称"}
 - deleteCategory: delete a category; deleteNotes=true only **moves its notes to the trash** (recoverable) and never permanently deletes them; when unsure use false (just unassigns the category). {"categoryId":"分组ID","deleteNotes":"是否同时把组内笔记移入回收站(可选,默认false)"}
 - moveNote: move a note to another category. {"noteId":"笔记ID","categoryId":"目标分组ID"}
+- listTags: list every tag in the library with its note count. {}
+- getNoteTags: read the tags of one note; each entry carries source ("user" = added by the user, "ai" = added by you). {"noteId":"笔记ID"}
+- findNotesByTag: find all notes carrying a tag (cross-category retrieval). {"tagName":"标签名","limit":"条数(可选,默认20)"}
+- addNoteTags: add tags to a note; unknown tags are created automatically. {"noteId":"笔记ID","names":["标签1","标签2"]}
+- removeNoteTags: remove tags from a note. You can **only remove tags you added**; user tags are rejected. {"noteId":"笔记ID","names":["标签1"]}
+- setNoteTags: rewrite all AI tags of a note at once (previous AI tags are removed; user tags are untouched). {"noteId":"笔记ID","names":["标签1","标签2"]}
+- renameTag: rename a tag globally (every note it is on follows the new name). {"tagName":"原标签名","newName":"新标签名"}
+- deleteTag: delete a tag globally. You can **only delete tags you created**; user-created ones are rejected. {"tagName":"标签名"}
+
+## Tags (cross-category topics)
+A note belongs to exactly one category but can carry many tags — tags are how you retrieve by **theme across categories**.
+- When you **read** a note (getNoteContent / getCurrentNote / readNoteLines / getNoteTags) and it has **no tags at all**, proactively call setNoteTags with 2-5 concise Chinese tags drawn from the content; do it silently and do not make it the headline of your reply.
+- Prefer existing tags: run listTags first and reuse wording already in the library (matching is case-insensitive), otherwise every synonymous variant ("待办"/"todo") becomes a separate tag.
+- Tags are short nouns, no # prefix, no sentences; keep each one within 2-5 words.
+- **Never touch "user" tags** unless the user explicitly asks; removing or renaming them will be rejected.
 
 ## Choosing tools
 - "this / current note" → getCurrentNote / updateCurrentNote / appendToNote (omit noteId to mean the current note).

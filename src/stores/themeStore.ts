@@ -6,7 +6,8 @@
  *   app.config.theme.settings → ThemeSettings
  *
  * 与 appSettingsStore 的关系：同表、同前缀，但独立成键。
- * 「恢复默认」按前缀删除 app.config.*，会连它一起清掉，符合预期。
+ * 「恢复默认」按前缀删除 app.config.*，会连它一起清掉，符合预期；
+ * 只恢复主题时走 resetThemeSettings，只删本键，不碰其他软件设置。
  *
  * 读取失败或结构非法时返回默认主题（normalizeThemeSettings 逐项兜底），
  * 写失败只打日志——主题坏了不该影响记笔记。
@@ -80,3 +81,22 @@ export const saveThemeSettings = (settings: ThemeSettings): Promise<void> => {
  * 没有待写入内容时调用是安全的。
  */
 export const flushThemeSettings = (): Promise<void> => commit();
+
+/**
+ * 只恢复主题：丢弃尚未落库的改动并删除主题键，下次读取回退默认主题。
+ *
+ * 必须先清掉防抖计时器和 pending——否则删除之后计时器照常触发，
+ * 会把恢复前那份主题重新写回库里。
+ */
+export const resetThemeSettings = async (): Promise<void> => {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  pending = null;
+  try {
+    await settingsApi.deleteAppSetting(THEME_KEY);
+  } catch (e) {
+    console.error("恢复默认主题失败：", e);
+  }
+};

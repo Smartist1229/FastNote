@@ -16,10 +16,12 @@ import { Icon } from "@/components/common/Icon";
 import { AiConfirmCard } from "@/components/ai/AiConfirmCard";
 import * as notesApi from "@/api/notes";
 import * as categoriesApi from "@/api/categories";
+import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
 import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai";
 import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/aiChat";
 import type { ToolCall, ToolTrace } from "@/interface/aiOutput";
+import type { EditorSettings } from "@/interface/settings";
 import { finalReplyText, parseResponse, parseStreamContent } from "@/lib/aiParse/parse";
 import { isThinkingDeepEnough, shouldRetryForShallowThinking, streamStartsWithThinking } from "@/lib/aiParse/thinking";
 import { compressTranscript, estimateTokens, localSummaryFallback, selectContextWindow } from "@/lib/aiParse/context";
@@ -101,6 +103,14 @@ const TOOL_LABELS: Record<string, string> = {
   deleteCategory: "删除分组",
   moveNote: "移动笔记",
   selectNote: "打开笔记",
+  listTags: "列出标签",
+  getNoteTags: "读取标签",
+  findNotesByTag: "按标签查找",
+  addNoteTags: "添加标签",
+  removeNoteTags: "移除标签",
+  setNoteTags: "重写标签",
+  renameTag: "重命名标签",
+  deleteTag: "删除标签",
 };
 
 /**
@@ -217,6 +227,41 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
       const shown = Array.isArray(r.notes) ? r.notes.length : NaN;
       return [scope, Number.isFinite(total) ? `${total} 篇${Number.isFinite(shown) ? `（列出 ${shown}）` : ""}` : ""].filter(Boolean).join(" · ");
     }
+    /* ---- 标签：轨迹要能看出"加了哪几个词"，光一个数字看不出做了什么 ---- */
+    case "listTags": {
+      const total = num(r.total);
+      const list = Array.isArray(r.tags) ? (r.tags as { name?: unknown }[]) : [];
+      const names = list.slice(0, 3).map((t) => clip(t.name, 8)).join("、");
+      return [Number.isFinite(total) ? `${total} 个标签` : "", names ? `：${names}${list.length > 3 ? "…" : ""}` : ""].filter(Boolean).join("");
+    }
+    case "getNoteTags": {
+      const list = Array.isArray(r.tags) ? (r.tags as { name?: unknown }[]) : [];
+      return [target, list.length > 0 ? list.slice(0, 4).map((t) => clip(t.name, 8)).join("、") : "暂无标签"].filter(Boolean).join(" · ");
+    }
+    case "findNotesByTag": {
+      const tag = args.tagName ? `「${clip(args.tagName, 14)}」` : "";
+      const total = num(r.total);
+      return [tag, Number.isFinite(total) ? `${total} 篇` : ""].filter(Boolean).join(" · ") || failure;
+    }
+    case "addNoteTags": {
+      const added = Array.isArray(r.added) ? (r.added as unknown[]) : [];
+      return [target, added.length > 0 ? `加「${added.slice(0, 4).map((t) => clip(t, 8)).join("、")}」` : "未新增"].filter(Boolean).join(" · ");
+    }
+    case "setNoteTags": {
+      const tags = Array.isArray(r.aiTags) ? (r.aiTags as unknown[]) : [];
+      return [target, tags.length > 0 ? `标签：${tags.slice(0, 4).map((t) => clip(t, 8)).join("、")}` : "已清空"].filter(Boolean).join(" · ");
+    }
+    case "removeNoteTags": {
+      const removed = Array.isArray(r.removed) ? (r.removed as unknown[]) : [];
+      const skipped = Array.isArray(r.skipped) ? (r.skipped as unknown[]) : [];
+      const parts = [target, removed.length > 0 ? `移除「${removed.slice(0, 4).map((t) => clip(t, 8)).join("、")}」` : "没有可移除的"];
+      if (skipped.length > 0) parts.push(`${skipped.length} 个跳过（用户标签）`);
+      return parts.filter(Boolean).join(" · ");
+    }
+    case "renameTag":
+      return args.tagName ? `「${clip(args.tagName, 10)}」→「${clip(args.newName, 10)}」` : failure;
+    case "deleteTag":
+      return [args.tagName ? `「${clip(args.tagName, 14)}」` : "", "已删除（连带所有笔记）"].filter(Boolean).join(" ") || failure;
     case "listTrash": {
       const total = num(r.total);
       return Number.isFinite(total) ? `${total} 篇` : "";
@@ -368,6 +413,24 @@ const findWritableCategoryByName = async (categoryName: unknown, access: AiAcces
   if (!name) return null;
   const cats = await categoriesApi.getCategories();
   return cats.find((c: any) => c.name === name && canAiWriteCategory(access, c)) || null;
+};
+
+/**
+ * 标签名归一化：模型经常把 names 写成 `"标签1, 标签2"` 这种字符串，甚至带 `#` 前缀。
+ * 统一拆成一个干净的数组，去空去重（大小写不敏感），交给 Rust 侧落库。
+ */
+const normalizeTagNames = (raw: unknown): string[] => {
+  const list = Array.isArray(raw)
+    ? raw.map((x) => String(x ?? ""))
+    : String(raw ?? "").split(/[,，、;；\n]+/);
+  const out: string[] = [];
+  for (const item of list) {
+    // 去掉行首的 # 与空白：`#待办` 和 `待办` 是同一个标签
+    const name = item.trim().replace(/^#+/, "").trim().slice(0, 30);
+    if (!name) continue;
+    if (!out.some((x) => x.toLowerCase() === name.toLowerCase())) out.push(name);
+  }
+  return out;
 };
 
 /**
@@ -804,6 +867,167 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     window.dispatchEvent(new CustomEvent('fastnote-select-note', { detail: { noteId: nid } }));
     return { selected: true, noteId: nid, title: note.title };
   },
+
+  /* ---------------- 标签 ----------------
+   * 权限上有一条硬线：AI 只能动 source="ai" 的标签，用户手打的一个也碰不到。
+   * 这条线落在 Rust 侧（按 source 过滤 DELETE / UPDATE），前端这里是同一套意图的第二道保险。
+   */
+
+  /** 全部标签及各标签的笔记数：让模型优先复用库里已有的词，而不是每次都造同义的新词 */
+  listTags: async () => {
+    const tags = await tagsApi.listTags();
+    return {
+      total: tags.length,
+      tags: tags.slice(0, 60).map((t) => ({ id: t.id, name: t.name, source: t.source, note_count: t.note_count })),
+      hint: "source=user 的是用户手打的标签。请优先复用已有标签名，避免造出同义词。",
+    };
+  },
+
+  /** 某篇笔记的标签；顺带回答"这篇有没有标签"，决定是否自动补打 */
+  getNoteTags: async (args, ctx) => {
+    const nid = Number(args.noteId ?? ctx.currentNoteId);
+    if (!Number.isFinite(nid) || nid <= 0) return { error: "缺少 noteId，且当前没有打开的笔记" };
+    const n: any = await fetchNoteById(nid, ctx.access);
+    if (!n) return { error: `未找到 ID 为 ${nid} 的笔记` };
+    const tags = await tagsApi.listNoteTags(nid);
+    const user = tags.filter((t) => t.source !== "ai").map((t) => t.name);
+    const ai = tags.filter((t) => t.source === "ai").map((t) => t.name);
+    return {
+      id: nid,
+      title: n.title,
+      total: tags.length,
+      tags: tags.map((t) => ({ id: t.id, name: t.name, source: t.source })),
+      userTags: user,
+      aiTags: ai,
+      ...(tags.length === 0
+        ? { empty: true, hint: "这篇还没有任何标签。读完正文后可调用 setNoteTags 补上 2-5 个简短标签（先用 listTags 复用已有词）。" }
+        : { hint: "source=user 的是用户手打的，不能删除或改名；source=ai 的才是你可以调整的。" }),
+    };
+  },
+
+  /** 按标签查找笔记：标签的意义就是跨分组检索 */
+  findNotesByTag: async (args, ctx) => {
+    const name = String(args.tagName ?? args.name ?? "").trim();
+    if (!name) return { error: "缺少 tagName" };
+    const all = await tagsApi.listNotesByTag(name);
+    // 与别处一致：未授权的笔记连出现在结果里都不行
+    const visible = all.filter((n: any) => canAiReadNote(ctx.access, n));
+    const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
+    const categories = await categoriesApi.getCategories();
+    const nameOf = (id: number | null) => categories.find((c) => c.id === id)?.name || "未分类";
+    return {
+      tag: name,
+      total: visible.length,
+      notes: visible.slice(0, limit).map((n: any) => ({
+        id: n.id,
+        title: n.title,
+        category: nameOf(n.category_id),
+        updated_at: n.updated_at,
+        preview: String(n.content || "").replace(/\s+/g, " ").slice(0, 60),
+      })),
+      ...(visible.length === 0
+        ? { hint: `没有笔记带标签「${name}」。先用 listTags 看看库里有哪些。` }
+        : {}),
+    };
+  },
+
+  /**
+   * 添加标签。
+   * 写操作要过权限（canAiWriteNote），但两种来源可以共存：同一篇笔记上允许同时挂 user / ai 标签。
+   */
+  addNoteTags: async (args, ctx) => {
+    const nid = Number(args.noteId ?? ctx.currentNoteId);
+    if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
+    const n: any = await fetchNoteById(nid, ctx.access);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
+    const names = normalizeTagNames(args.names ?? args.name);
+    if (names.length === 0) return { success: false, error: "names 为空，需要 ['标签1','标签2']" };
+    const next = await tagsApi.addNoteTags(nid, names.slice(0, 10), "ai");
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      added: names,
+      tags: next.map((t) => ({ id: t.id, name: t.name, source: t.source })),
+    };
+  },
+
+  /** 移除标签：Rust 侧按 source="ai" 过滤，用户手打的删不掉，返回的最新列表也不会变 */
+  removeNoteTags: async (args, ctx) => {
+    const nid = Number(args.noteId ?? ctx.currentNoteId);
+    if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
+    const n: any = await fetchNoteById(nid, ctx.access);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
+    const names = normalizeTagNames(args.names ?? args.name);
+    if (names.length === 0) return { success: false, error: "names 为空" };
+    const next = await tagsApi.removeNoteTags(nid, names, "ai");
+    const still = new Set(next.map((t) => t.name.toLowerCase()));
+    // 有一部分没删掉：多半是用户创建的，明确告诉模型别再重试
+    const skipped = names.filter((x) => still.has(x.toLowerCase()));
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      removed: names.filter((x) => !still.has(x.toLowerCase())),
+      tags: next.map((t) => ({ id: t.id, name: t.name, source: t.source })),
+      ...(skipped.length > 0
+        ? { skipped, note: `「${skipped.join("、")}」未被移除：它们可能不是 AI 添加的，或已不存在。用户手动添加的标签无法由你删除。` }
+        : {}),
+    };
+  },
+
+  /**
+   * 整体重写这篇笔记的 AI 标签。
+   * 用它而不是逐条增删：这是"重新看一遍这篇笔记"的结果，留旧标签等于把两轮判断混在一起。
+   */
+  setNoteTags: async (args, ctx) => {
+    const nid = Number(args.noteId ?? ctx.currentNoteId);
+    if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
+    const n: any = await fetchNoteById(nid, ctx.access);
+    if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
+    if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
+    const names = normalizeTagNames(args.names ?? args.name);
+    if (names.length === 0) return { success: false, error: "names 为空，至少给一个标签" };
+    const next = await tagsApi.setNoteTags(nid, names.slice(0, 10), "ai");
+    return {
+      success: true,
+      id: nid,
+      title: n.title,
+      aiTags: next.filter((t) => t.source === "ai").map((t) => t.name),
+      tags: next.map((t) => ({ id: t.id, name: t.name, source: t.source })),
+    };
+  },
+
+  /** 标签改名（全局）：按名字定位是因为模型手里通常只有词、没有 id */
+  renameTag: async (args) => {
+    const from = String(args.tagName ?? args.name ?? "").trim();
+    const to = String(args.newName ?? "").trim();
+    if (!from) return { success: false, error: "缺少 tagName" };
+    if (!to) return { success: false, error: "缺少 newName" };
+    const tags = await tagsApi.listTags();
+    const hit = tags.find((t) => t.name.toLowerCase() === from.toLowerCase());
+    if (!hit) return { success: false, error: `库里没有标签「${from}」，先用 listTags 确认` };
+    const next = await tagsApi.renameTag(hit.id, to);
+    return { success: true, id: hit.id, from: hit.name, to, tags: next.map((t) => ({ id: t.id, name: t.name })) };
+  },
+
+  /** 删除标签（全局）：连带它在所有笔记上的关联，AI 建的才能删 */
+  deleteTag: async (args) => {
+    const name = String(args.tagName ?? args.name ?? "").trim();
+    if (!name) return { success: false, error: "缺少 tagName" };
+    const tags = await tagsApi.listTags();
+    const hit = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (!hit) return { success: false, error: `库里没有标签「${name}」` };
+    try {
+      await tagsApi.deleteTag(hit.id, "ai");
+      return { success: true, id: hit.id, name: hit.name, deleted: true };
+    } catch (error) {
+      // Rust 侧的归属校验会抛错，这里翻成人话告诉模型，别让它再试一次
+      return { success: false, id: hit.id, name: hit.name, error: `无法删除「${hit.name}」：${error}` };
+    }
+  },
 };
 
 
@@ -839,7 +1063,7 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
  * 因此父组件传入的回调都做了稳定化，工具展开状态也按行拆分（toolOpen）。
  */
 const ChatMessageRow = memo(function ChatMessageRow({
-  msg, index, expanded, thoughtOpen, toolOpen, live, isSending, showToolTrace, onToggleGroup, onToggleThought, onToggleTool, onInsertText, onReplaceContent, onCopyText, onOpenInEditor,
+  msg, index, expanded, thoughtOpen, toolOpen, live, isSending, showToolTrace, editorSettings, onToggleGroup, onToggleThought, onToggleTool, onInsertText, onReplaceContent, onCopyText, onOpenInEditor,
 }: {
   msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number };
   index: number;
@@ -854,6 +1078,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
   isSending: boolean;
   /** 是否显示工具执行轨迹（设置里可关） */
   showToolTrace: boolean;
+  /** 「编辑器」分区的设置：传给 AiMarkdown，让代码块外观与笔记一致 */
+  editorSettings?: EditorSettings;
   onToggleGroup: (i: number, open: boolean) => void;
   onToggleThought: (i: number) => void;
   onToggleTool: (key: string) => void;
@@ -986,7 +1212,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       ) : null}
       {msg.content ? (
         <div className="text-[13px] leading-[1.75] text-body">
-          <AiMarkdown content={msg.content} />
+          <AiMarkdown content={msg.content} editorSettings={editorSettings} />
         </div>
       ) : null}
       {/* 时间 + 操作按钮：同一行固定展示（与用户消息对称，AI 这条在左下角） */}
@@ -1218,7 +1444,7 @@ const formatMessageTime = (at?: number): string => {
  * 副作用：写 chat_sessions / chat_messages，并派发 fastnote-data-changed、
  * fastnote-select-note 通知外部刷新列表与切换笔记。
  */
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, onClose, enableAI, isExternalFile }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, editorSettings, onClose, enableAI, isExternalFile }) => {
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
   const [sessions, setSessions] = useState<AiChatSession[]>([]);
@@ -2588,6 +2814,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             live={i === liveRowIndex}
             isSending={isSending}
             showToolTrace={aiSettings.showToolTrace}
+            editorSettings={editorSettings}
             onToggleGroup={toggleGroup}
             onToggleThought={toggleThought}
             onToggleTool={toggleToolTrace}

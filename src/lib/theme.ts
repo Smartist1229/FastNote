@@ -58,6 +58,18 @@ export const normalizeHex = (value: unknown): string | null => {
   return long ? `#${long[1].toLowerCase()}` : null;
 };
 
+/** 解析逗号 / 空白分隔的十六进制色值列表：去重、保留前 limit 个 */
+export const normalizeHexList = (value: string, limit = 32): string[] => {
+  const seen = new Set<string>();
+  for (const token of value.split(/[,，\s]+/)) {
+    const hex = normalizeHex(token);
+    if (!hex || seen.has(hex)) continue;
+    seen.add(hex);
+    if (seen.size >= limit) break;
+  }
+  return [...seen];
+};
+
 const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
   const safe = normalizeHex(hex) ?? "#000000";
   return {
@@ -235,7 +247,7 @@ export const buildThemeVars = (
 
   // 圆角：一个基准推导整套阶梯。用比例而不是固定的 +4/+6/+8 加法，
   // 这样基准调到 0 时整档都是 0（真正的直角风），加法会让 lg 以上仍有 4~12px 的圆角。
-  // 基准 8 时展开为 6/8/12/14/16/20，与改造前的默认值完全一致。
+  // 基准 4 时展开为 3/4/6/7/8/10（微圆）。
   const r = clamp(Math.round(tokens.radius), 0, 20);
   vars["--radius-sm"] = `${Math.round(r * 0.75)}px`;
   vars["--radius-md"] = `${r}px`;

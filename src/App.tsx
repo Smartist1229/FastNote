@@ -21,7 +21,7 @@
  */
 import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "@/App.css";
-import type { Category, ExternalTextFile, Note } from "@/interface/note";
+import type { Category, ExternalTextFile, Note, Tag } from "@/interface/note";
 import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
 import type { AppSettings } from "@/interface/settings";
 import type { ExportTarget } from "@/interface/exportCategory";
@@ -32,7 +32,7 @@ import type { ThemeSettings } from "@/interface/theme";
 import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
 import { applyTheme, cacheTheme, readCachedTheme } from "@/lib/theme";
 import { setResolvedThemeMode } from "@/lib/themeRuntime";
-import { flushThemeSettings, loadThemeSettings, saveThemeSettings } from "@/stores/themeStore";
+import { flushThemeSettings, loadThemeSettings, resetThemeSettings, saveThemeSettings } from "@/stores/themeStore";
 import type { PropertiesTarget } from "@/interface/ui";
 import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
 import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
@@ -42,11 +42,13 @@ import {
   saveAllAppSettings,
   saveAppSetting,
   resetAppSettings,
+  resetEditorSettings,
 } from "@/stores/appSettingsStore";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import * as notesApi from "@/api/notes";
 import * as categoriesApi from "@/api/categories";
+import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
 import * as settingsApi from "@/api/settings";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -61,6 +63,8 @@ import { SettingsModal } from "@/components/settings/SettingsModal";
 import { ExportCategoryModal } from "@/components/data/ExportCategoryModal";
 import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
+import { useRecentFiles } from "@/lib/recentFiles";
+import { useSearchHistory } from "@/lib/searchHistory";
 import { Icon } from "@/components/common/Icon";
 
 /** 编辑器依赖 CodeMirror，体积较大：懒加载让首屏先出侧栏与欢迎页，Suspense 负责占位 */
@@ -94,6 +98,10 @@ function AppContent() {
   const flushExternalRef = useRef<(() => void) | null>(null);
   /** 系统文件拖拽经过时命中的分组 id（用于侧边栏高亮） */
   const [hoverDropCategoryId, setHoverDropCategoryId] = useState<number | null>(null);
+  /** 最近打开的电脑文件路径清单（欢迎页展示，由 lib/recentFiles 负责持久化） */
+  const { recentFiles, pushRecentFile, removeRecentFile } = useRecentFiles();
+  /** 侧边栏搜索历史（最近用过的查询词，同样不带 app.config. 前缀，不被重置清掉） */
+  const { searchHistory, pushSearchQuery, removeSearchQuery, clearSearchHistory } = useSearchHistory();
   /** 是否有系统文件正拖拽在窗口上方（用于显示落点提示） */
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   /** 分组列表的镜像 ref：拖拽回调里拿分组名做确认提示，避免频繁重注册监听 */
@@ -139,6 +147,8 @@ function AppContent() {
   const [sidebarView, setSidebarView] = useState<'groups' | 'favorites'>('groups');
   /** 右键「属性」查看的对象：null 表示弹窗关闭 */
   const [propertiesTarget, setPropertiesTarget] = useState<PropertiesTarget | null>(null);
+  /** 属性窗里当前笔记的标签；跟着目标笔记走，切歌即清空避免串到别篇上去 */
+  const [noteTags, setNoteTags] = useState<Tag[]>([]);
   /** AI 打开笔记时用于聚焦高亮的笔记 ID（变化即触发一次动画） */
   const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
   /** 分组侧边栏是否折叠（腾出宽度给编辑器/AI 面板） */
@@ -378,18 +388,48 @@ function AppContent() {
       danger: true,
     });
     if (!ok) return;
+    // 先清掉主题的防抖写入，避免删除后计时器又把旧主题写回去
+    await resetThemeSettings();
     await resetAppSettings();
     const d = DEFAULT_APP_SETTINGS;
     setAppSettings(d);
     // 默认值也写回库：库里始终保有一份完整设置，读库时不必每次都补写
     await saveAllAppSettings(d);
-    // 主题也存在 app.config.* 前缀下，已被 resetAppSettings 删掉，运行时同步回默认
+    // 主题也存在 app.config.* 前缀下，已被删除，运行时同步回默认
     setTheme(DEFAULT_THEME_SETTINGS);
     // 排序是实时生效项，立即同步；布局是启动项，只落默认值、下次启动才应用
     setSortBy(d.view.sortBy);
     setSortOrder(d.view.sortOrder);
     showToast("已恢复软件默认设置", "success");
   }, [confirm, showToast, saveAllAppSettings]);
+
+  /** 只恢复编辑器设置：其他软件设置、主题与 AI 设置都不动 */
+  const handleResetEditorSettings = useCallback(async () => {
+    const ok = await confirm({
+      title: "恢复编辑器默认设置",
+      message: "将把字号、行高、间距、工具栏、颜色预设等编辑器选项恢复为默认值。主题、其他软件设置与 AI 设置不受影响。",
+      confirmText: "恢复默认",
+      danger: true,
+    });
+    if (!ok) return;
+    await resetEditorSettings();
+    setAppSettings((prev) => ({ ...prev, editor: { ...DEFAULT_APP_SETTINGS.editor } }));
+    showToast("已恢复编辑器默认设置", "success");
+  }, [confirm, showToast]);
+
+  /** 只恢复主题设置：其他软件设置与 AI 设置都不动 */
+  const handleResetThemeSettings = useCallback(async () => {
+    const ok = await confirm({
+      title: "恢复主题默认设置",
+      message: "将把明暗模式、预设配色、自定义取色与「我的主题」恢复为默认值。其他软件设置与 AI 设置不受影响。",
+      confirmText: "恢复默认",
+      danger: true,
+    });
+    if (!ok) return;
+    await resetThemeSettings();
+    setTheme(DEFAULT_THEME_SETTINGS);
+    showToast("已恢复主题默认设置", "success");
+  }, [confirm, showToast]);
 
   /* ---------- 运行时状态 ↔ 设置同步 ---------- */
 
@@ -592,10 +632,12 @@ function AppContent() {
       // 打开文件是最新的用户动作：先收起 AI 预览，笔记作为底层保留
       setTempNote(null);
       setExternalFile({ id: externalFileIdRef.current, ...file });
+      // 读成功了才记进最近列表：打不开的文件不值得占一个位置
+      pushRecentFile(path, file.name);
     } catch (e) {
       showToast(typeof e === "string" ? e : "打开文件失败", "error");
     }
-  }, [showToast]);
+  }, [showToast, pushRecentFile]);
 
   /** 关闭电脑文件：先 flush 写入，再露出下面一层（原笔记，或欢迎页） */
   const handleCloseExternalFile = useCallback(() => {
@@ -1031,6 +1073,43 @@ function AppContent() {
     }
   };
 
+  /* ---------------- 标签 ----------------
+   * 属性窗自己不发请求：只在目标笔记变化时拉一次，之后的增删改都让 Rust 回传最新列表，
+   * 用回传值覆盖本地 state——避免"写入成功了但列表还是旧的"这类要再刷一次才对得上的情况。
+   */
+  const handleAddTags = async (note: Note, names: string[]) => {
+    try {
+      const next = await tagsApi.addNoteTags(note.id, names, "user");
+      setNoteTags(next);
+      showToast(names.length > 1 ? `已添加 ${names.length} 个标签` : `已添加标签「${names[0]}」`, "success");
+    } catch (error) {
+      showToast("添加标签失败：" + error, "error");
+    }
+  };
+
+  const handleRemoveTag = async (note: Note, name: string) => {
+    try {
+      // 不传 source：用户在自己的属性窗里操作，看到的都是自己能删的（AI 标签没有删除按钮）
+      const next = await tagsApi.removeNoteTags(note.id, [name]);
+      setNoteTags(next);
+      showToast(`已移除标签「${name}」`, "success");
+    } catch (error) {
+      showToast("移除标签失败：" + error, "error");
+    }
+  };
+
+  /** 标签改名是全局的（改的是"词"），改完重拉当前笔记的标签以刷新计数与合并结果 */
+  const handleRenameTag = async (id: number, name: string) => {
+    try {
+      await tagsApi.renameTag(id, name);
+      const noteId = propertiesTargetLive?.kind === "note" ? propertiesTargetLive.note.id : null;
+      if (noteId != null) setNoteTags(await tagsApi.listNoteTags(noteId));
+      showToast("已重命名标签", "success");
+    } catch (error) {
+      showToast("重命名失败：" + error, "error");
+    }
+  };
+
   /**
    * 确认删除分组：deleteCategoryNotes=true 时组内笔记一并移入回收站，
    * 否则由后端把这些笔记改为未分类；删的是当前分组时立刻取消选中。
@@ -1058,6 +1137,31 @@ function AppContent() {
         : propertiesTarget.kind === "category"
           ? { kind: "category", category: categories.find((c) => c.id === propertiesTarget.category.id) ?? propertiesTarget.category }
           : propertiesTarget;
+
+  /**
+   * 打开属性窗（或切换目标笔记）时拉一次标签。
+   * 依赖用 `note.id` 而不是整个 target 对象：target 每次渲染都是新对象，
+   * 按对象比较会一直重发请求，输入框里的草稿也会被反复冲掉。
+   */
+  const propertiesNoteId = propertiesTarget?.kind === "note" ? propertiesTarget.note.id : null;
+  useEffect(() => {
+    if (propertiesNoteId === null) {
+      setNoteTags([]);
+      return;
+    }
+    let alive = true;
+    void (async () => {
+      try {
+        const list = await tagsApi.listNoteTags(propertiesNoteId);
+        if (alive) setNoteTags(list);
+      } catch {
+        if (alive) setNoteTags([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [propertiesNoteId]);
 
   /**
    * 当前笔记的生效档位 = min(笔记, 所属分组)；没有打开笔记时按"完全"处理（不限制面板本身）。
@@ -1096,6 +1200,11 @@ function AppContent() {
             focusNoteId={focusNoteId}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
+            useRegex={appSettings.general.noteSearchRegex}
+            onCommitSearch={pushSearchQuery}
+            searchHistory={searchHistory}
+            onRemoveSearchHistory={removeSearchQuery}
+            onClearSearchHistory={clearSearchHistory}
             sortBy={sortBy}
             onSortByChange={handleSortByChange}
             sortOrder={sortOrder}
@@ -1214,6 +1323,9 @@ function AppContent() {
                   categoryCount={categories.length}
                   trashCount={trashNotes.length}
                   recentNotes={recentNotes}
+                  recentFiles={recentFiles}
+                  onOpenRecentFile={(path) => void openExternalFile(path)}
+                  onRemoveRecentFile={removeRecentFile}
                   onCreateNote={() => handleCreateNote()}
                   onOpenTrash={handleOpenTrash}
                   onOpenTextFile={handleOpenTextFileDialog}
@@ -1240,6 +1352,7 @@ function AppContent() {
             aiPrompts={aiPrompts}
             aiSettings={aiSettings}
             onAiSettingsChange={(patch) => setAiSettings((prev) => ({ ...prev, ...patch }))}
+            editorSettings={appSettings.editor}
             onOpenAiMemory={() => openSettings("memory")}
             onInsertText={handleAiInsertText}
             onReplaceContent={handleAiReplaceContent}
@@ -1382,6 +1495,8 @@ function AppContent() {
         appSettings={appSettings}
         onAppSettingChange={applyAppSetting}
         onResetAppSettings={handleResetAppSettings}
+        onResetEditorSettings={handleResetEditorSettings}
+        onResetThemeSettings={handleResetThemeSettings}
         aiSettings={aiSettings}
         onAiSettingsChange={setAiSettings}
         aiProviders={providerModalProviders}
@@ -1420,6 +1535,10 @@ function AppContent() {
         onSetNoteAiAccess={handleSetNoteAiAccess}
         onSetCategoryAiAccess={handleSetCategoryAiAccess}
         enableAI={appSettings.general.enableAI}
+        tags={noteTags}
+        onAddTags={handleAddTags}
+        onRemoveTag={handleRemoveTag}
+        onRenameTag={handleRenameTag}
       />
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}

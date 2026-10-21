@@ -54,6 +54,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   enableAI: false,
   /** 是否启用单例模式：默认开启，关掉后允许多开（多进程同时写库有风险，故标为不建议修改） */
   singleInstance: true, 
+  /** 搜索笔记是否支持正则：默认关（普通用户输入的 `*`、`(` 往往是字面意思） */
+  noteSearchRegex: false,
 };
 
 /* ---------- Editor ---------- */
@@ -225,6 +227,16 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   toolbarScrollWheel: true,
   /** 尾部按钮常驻右缘（视图切换 / 大纲 / 全屏 / 复制） */
   toolbarPinTail: true,
+  /**
+   * 色盘预设色：与编辑器默认值对齐（src/markdown-editor/defaults.ts）。
+   * 明度压在中段——纯亮色在浅底预览里看不出轮廓，纯深色在暗色主题里会和正文糊在一起。
+   */
+  toolbarColorSwatches:
+    "#e03131, #f06595, #f76707, #f59f00, #f2c037, #a9e34b, #2f9e44, #0ca678, #1098ad, #1c7ed6, #4c6ef5, #7048e8, #ae3ec9, #862e9c, #495057, #868e96",
+  /** 文字颜色取色器起始色：常用红 */
+  toolbarTextColorFallback: "#e03131",
+  /** 底色取色器起始色：常用高亮黄 */
+  toolbarBackgroundColorFallback: "#ffe066",
 
   /* 状态栏 */
   /** 状态栏默认关闭，把空间留给正文 */

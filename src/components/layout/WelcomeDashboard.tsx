@@ -13,6 +13,7 @@
  */
 import type { Note } from "@/interface/note";
 import type { WelcomeDashboardProps } from "@/interface/welcome";
+import type { RecentFile } from "@/lib/recentFiles";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
 
@@ -216,11 +217,54 @@ const RecentRow: React.FC<{ note: Note; onSelect: (note: Note) => void }> = ({ n
   </button>
 );
 
+/**
+ * 最近打开文件的一行：文件名 + 相对时间 + 完整路径（title 兜底）。
+ *
+ * 末尾的移除按钮只在 hover 时出现——这个列表是"历史痕迹"，
+ * 平时不该让用户看到一排叉号，只有当文件早已不在时才需要手动划掉。
+ */
+const RecentFileRow: React.FC<{
+  file: RecentFile;
+  onOpen: (path: string) => void;
+  onRemove: (path: string) => void;
+}> = ({ file, onOpen, onRemove }) => (
+  <div className="group flex w-full items-center gap-3 pl-4 pr-2 py-2.5 transition-colors duration-200 first:rounded-t-xl last:rounded-b-xl hover:bg-app">
+    <span className="flex h-7 w-7 flex-none items-center justify-center rounded-md bg-surface-alt text-faint transition-colors duration-200 group-hover:bg-primary-50 group-hover:text-primary-600">
+      <Icon name="ai-file-text" className="h-3.5 w-3.5" />
+    </span>
+    <button
+      type="button"
+      onClick={() => onOpen(file.path)}
+      title={file.path}
+      className="min-w-0 flex-1 text-left"
+    >
+      <span className="block truncate text-[13px] font-medium text-body transition-colors duration-200 group-hover:text-ink">
+        {file.name}
+      </span>
+      <span className="mt-0.5 block truncate text-[11px] text-faint">{file.path}</span>
+    </button>
+    <span className="flex-none text-[11px] tabular-nums text-faint-soft" title={formatAbsolute(file.openedAt)}>
+      {formatRelative(file.openedAt)}
+    </span>
+    <button
+      type="button"
+      onClick={() => onRemove(file.path)}
+      title="从列表中移除"
+      className="flex-none w-6 h-6 flex items-center justify-center rounded-md text-faint-soft opacity-0 group-hover:opacity-100 transition-opacity hover:text-danger hover:bg-danger-soft"
+    >
+      <Icon name="modal-close" className="h-3 w-3" />
+    </button>
+  </div>
+);
+
 export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   totalNotes,
   categoryCount,
   trashCount,
   recentNotes,
+  recentFiles = [],
+  onOpenRecentFile,
+  onRemoveRecentFile,
   onCreateNote,
   onOpenTrash,
   onOpenTextFile,
@@ -232,6 +276,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   const dateLine = `${now.getMonth() + 1}月${now.getDate()}日 · 周${WEEKDAYS[now.getDay()]}`;
   const hasNotes = totalNotes > 0;
   const recent = recentNotes.slice(0, 5);
+  /** 最多展示 6 条：再多会挤掉「最近更新」，而它是更常用的入口 */
+  const recentFileList = recentFiles.slice(0, 6);
 
   const actions: React.ReactNode[] = [
     <ActionTile
@@ -326,6 +372,23 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
             <div className="mt-3 divide-y divide-line overflow-hidden rounded-xl border border-line-soft bg-surface">
               {recent.map((note) => (
                 <RecentRow key={note.id} note={note} onSelect={onSelectNote} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* 最近打开的电脑文件：开了又关就得重新找，这里一次性列出来，点一下即加载 */}
+        {recentFileList.length > 0 && (
+          <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.18s" }}>
+            <SectionTitle title="最近打开的文件" meta={`${recentFileList.length} 个`} />
+            <div className="mt-3 divide-y divide-line overflow-hidden rounded-xl border border-line-soft bg-surface">
+              {recentFileList.map((file) => (
+                <RecentFileRow
+                  key={file.path}
+                  file={file}
+                  onOpen={(p) => onOpenRecentFile?.(p)}
+                  onRemove={(p) => onRemoveRecentFile?.(p)}
+                />
               ))}
             </div>
           </section>

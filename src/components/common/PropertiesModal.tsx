@@ -4,7 +4,7 @@
  * group 指默认分组或搜索视图的虚拟分组：没有 id、也没有可写回的对象，因此全部只读。
  */
 import { useEffect, useState } from "react";
-import type { Category, Note } from "@/interface/note";
+import type { Category, Note, Tag } from "@/interface/note";
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import type { PropertiesTarget } from "@/interface/ui";
@@ -70,6 +70,55 @@ const RowInput: React.FC<{ value: string; onChange: (value: string) => void; onC
   />
 );
 
+/** 标签编辑态：新建时为 null（草稿输入框），改名为其标签 id */
+type TagEdit = { kind: "new" | "rename"; id: number | null; draft: string } | null;
+
+/**
+ * 单个标签徽标。
+ *
+ * 两种来源外观不同：用户的是实底、AI 的是虚线描边——不是为了好看，
+ * 是因为**删除 / 改名按钮只挂在用户添加的标签上**，一眼要能看出哪个能点。
+ */
+const TagChip: React.FC<{
+  tag: Tag;
+  editable: boolean;
+  onRemove: () => void;
+  onStartRename: () => void;
+}> = ({ tag, editable, onRemove, onStartRename }) => {
+  const byAi = tag.source === "ai";
+  return (
+    <span
+      className={`group inline-flex items-center gap-1 max-w-full px-2 py-0.5 rounded-md text-[12px] leading-5 ${
+        byAi ? "border border-dashed border-line text-faint bg-transparent" : "bg-surface-alt text-body"
+      }`}
+      title={byAi ? `AI 生成（${tag.note_count} 篇），不可手动修改` : `用户添加（${tag.note_count} 篇）`}
+    >
+      <Icon name="shared-tag" className="w-3 h-3 flex-none opacity-60" />
+      <span className="truncate">{tag.name}</span>
+      {editable && !byAi && (
+        <span className="flex items-center gap-0.5 ml-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            type="button"
+            title="重命名标签（全局生效）"
+            onClick={onStartRename}
+            className="w-4 h-4 rounded flex items-center justify-center text-faint-soft hover:text-primary-500 hover:bg-primary-50"
+          >
+            <Icon name="sidebar-edit" className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            title="移除此标签"
+            onClick={onRemove}
+            className="w-4 h-4 rounded flex items-center justify-center text-faint-soft hover:text-danger hover:bg-danger-soft"
+          >
+            <Icon name="modal-close" className="w-3 h-3" />
+          </button>
+        </span>
+      )}
+    </span>
+  );
+};
+
 /** 属性弹窗：右键菜单「笔记属性 / 分组属性」进入，可修改的字段带行内编辑按钮 */
 export const PropertiesModal: React.FC<{
   target: PropertiesTarget | null;
@@ -89,7 +138,28 @@ export const PropertiesModal: React.FC<{
   onSetCategoryAiAccess?: (category: Category, level: AiAccessLevel) => void | Promise<void>;
   /** AI 能力总开关：关闭时整行隐藏（此时 AI 不存在，权限设置没有意义） */
   enableAI?: boolean;
-}> = ({ target, categories, onClose, onRenameNote, onMoveNote, onTogglePin, onRenameCategory, onSetNoteAiAccess, onSetCategoryAiAccess, enableAI = false }) => {
+  /** 这篇笔记当前的标签；属性窗自身不发请求，由调用方加载后传入 */
+  tags?: Tag[];
+  /** 添加标签 / 移除标签 / 标签改名——均返回操作后的最新列表，由父组件回写 */
+  onAddTags?: (note: Note, names: string[]) => void | Promise<void>;
+  onRemoveTag?: (note: Note, name: string) => void | Promise<void>;
+  onRenameTag?: (id: number, name: string) => void | Promise<void>;
+}> = ({
+  target,
+  categories,
+  onClose,
+  onRenameNote,
+  onMoveNote,
+  onTogglePin,
+  onRenameCategory,
+  onSetNoteAiAccess,
+  onSetCategoryAiAccess,
+  enableAI = false,
+  tags = [],
+  onAddTags,
+  onRemoveTag,
+  onRenameTag,
+}) => {
   const note: Note | null = target?.kind === "note" ? target.note : null;
   const category: Category | null = target?.kind === "category" ? target.category : null;
   const virtualGroup = target?.kind === "group" ? target : null;
@@ -108,6 +178,9 @@ export const PropertiesModal: React.FC<{
   useEffect(() => {
     setEditing(null);
     setGroupMenu((m) => ({ ...m, open: false }));
+    setAddingTag(false);
+    setTagDraft("");
+    setTagEdit(null);
   }, [targetKey]);
 
   /**
@@ -135,6 +208,37 @@ export const PropertiesModal: React.FC<{
   const limitedByGroup = note != null && groupLevel !== null && groupLevel < note.ai_access;
 
   const startEdit = (field: "noteTitle" | "categoryName", draft: string) => setEditing({ field, draft });
+
+  /* ---------------- 标签 ---------------- */
+  /** 新建草稿输入框：show=false 时只留一个「+」按钮 */
+  const [addingTag, setAddingTag] = useState(false);
+  const [tagDraft, setTagDraft] = useState("");
+  /** 正在改名的标签（行内输入框替掉徽标），与新建互斥 */
+  const [tagEdit, setTagEdit] = useState<TagEdit>(null);
+  const canEditTags = !!onAddTags && !!onRemoveTag;
+
+  /** 新建草稿提交：支持逗号 / 顿号 / 分号 / 空格分隔一次加多个，已存在的词跳过 */
+  const commitTagDraft = () => {
+    if (!note) return;
+    // 逗号 / 顿号 / 分号分隔，一次能加好几个
+    const names = tagDraft
+      .split(/[,，、;；\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s && !tags.some((t) => t.name.toLowerCase() === s.toLowerCase()));
+    setTagDraft("");
+    setAddingTag(false);
+    if (names.length) void onAddTags?.(note, names);
+  };
+
+  const commitTagRename = () => {
+    const draft = tagEdit?.draft.trim();
+    const id = tagEdit?.id ?? null;
+    setTagEdit(null);
+    if (!draft || id === null) return;
+    const current = tags.find((t) => t.id === id)?.name;
+    if (!current || draft === current) return;
+    void onRenameTag?.(id, draft);
+  };
   /** 提交行内编辑：草稿为空或与原值相同则不回调，避免把标题改空、也省掉一次无谓写库 */
   const commitEdit = () => {
     if (!editing) return;
@@ -185,6 +289,69 @@ export const PropertiesModal: React.FC<{
               content={categoryName}
               action={<RowButton icon="sidebar-edit" title="移动到其他分组" onClick={openGroupMenu} />}
             />
+            <div className="py-2 border-b border-line-soft min-h-[38px]">
+              <div className="flex items-start gap-3">
+                <span className="w-[68px] flex-shrink-0 text-xs text-faint mt-1">标签</span>
+                <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
+                  {tags.length === 0 && !addingTag && (
+                    <span className="text-[13px] text-muted leading-5">暂无标签</span>
+                  )}
+                  {tags.map((tag) =>
+                    tagEdit?.kind === "rename" && tagEdit.id === tag.id ? (
+                      <input
+                        key={tag.id}
+                        autoFocus
+                        value={tagEdit.draft}
+                        onChange={(e) => setTagEdit({ kind: "rename", id: tag.id, draft: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitTagRename();
+                          if (e.key === "Escape") setTagEdit(null);
+                        }}
+                        onBlur={commitTagRename}
+                        className="w-28 px-2 py-0.5 text-[12px] text-body rounded-md border border-primary-200 bg-surface outline-none focus:border-primary-400"
+                      />
+                    ) : (
+                      <TagChip
+                        key={tag.id}
+                        tag={tag}
+                        editable={canEditTags}
+                        onRemove={() => note && void onRemoveTag?.(note, tag.name)}
+                        onStartRename={() => setTagEdit({ kind: "rename", id: tag.id, draft: tag.name })}
+                      />
+                    ),
+                  )}
+                  {addingTag ? (
+                    <input
+                      autoFocus
+                      value={tagDraft}
+                      placeholder="标签名，可一次输入多个"
+                      onChange={(e) => setTagDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitTagDraft();
+                        if (e.key === "Escape") {
+                          setTagDraft("");
+                          setAddingTag(false);
+                        }
+                      }}
+                      onBlur={commitTagDraft}
+                      className="w-44 px-2 py-0.5 text-[12px] text-body rounded-md border border-primary-200 bg-surface outline-none focus:border-primary-400"
+                    />
+                  ) : (
+                    canEditTags && (
+                      <button
+                        type="button"
+                        title="添加标签"
+                        onClick={() => setAddingTag(true)}
+                        className="inline-flex items-center gap-0.5 px-1.5 h-[24px] rounded-md text-[12px] text-faint-soft hover:text-primary-500 hover:bg-primary-50 transition-colors"
+                      >
+                        <Icon name="sidebar-plus" className="w-3 h-3" />
+                        <span>标签</span>
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
             <Row
               label="收藏状态"
               content={<span className={note.is_pinned ? "text-primary-500" : "text-muted"}>{note.is_pinned ? "已收藏" : "未收藏"}</span>}

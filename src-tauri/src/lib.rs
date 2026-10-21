@@ -36,6 +36,22 @@ pub struct Category {
     pub ai_access: i64,
 }
 
+/// 标签。
+///
+/// `source` 区分是谁加的：`user` 是用户在属性窗里加的，`ai` 是 AI 通过工具生成的。
+/// 前端据此分样式，并且只允许删除自己那一类 —— AI 生成的标签用户动不了（反过来也一样）。
+/// 名称用 NOCASE 唯一：大写/小写写法不同但语义相同的标签不该共存两条。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    /// "user" / "ai"
+    pub source: String,
+    pub created_at: String,
+    /// 关联了多少篇**未删除**的笔记（列表里展示 "3" 这种计数）
+    pub note_count: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AiProvider {
     pub id: i64,
@@ -83,6 +99,17 @@ pub struct AiChatDbMessage {
 
 struct AppState {
     conn: Mutex<Connection>,
+}
+
+/// 判断某张表是否存在（用于读取可选的数据表）
+fn has_table(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![table],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        > 0
 }
 
 /// 判断某张表是否已有指定列（用于幂等迁移）
@@ -199,6 +226,38 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )",
+        [],
+    )?;
+
+    /*
+     * ---- 标签（跨分组的主题检索）----
+     * 一篇笔记只能进一个分组，标签是第二条维度：多对多，用来回答「所有和 X 相关的笔记」。
+     *
+     * `source` 记在**关联表**上而不是标签上：同一个词（比如「待办」）可能用户自己打过、
+     * 也被 AI 打过，把它拆成两个 tag 行会让计数与去重都变得很难解释。
+     * 标签行的 source 表示「这个词最初是谁建的」，只用于展示；删除与否看关联表。
+     */
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            source TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_tags (
+            note_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (note_id, tag_id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id)",
         [],
     )?;
 
@@ -718,6 +777,33 @@ fn export_backup(
         },
     )?;
 
+    // 标签与其关联单独成表导出：笔记是被恢复的，标签如果不在备份里，恢复后就只剩"没打标签的笔记"
+    let tags = query_rows(
+        &conn,
+        "SELECT id, name, source, created_at FROM tags ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "source": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        },
+    )?;
+
+    let note_tags = query_rows(
+        &conn,
+        "SELECT note_id, tag_id, source, created_at FROM note_tags ORDER BY note_id, tag_id",
+        |row| {
+            Ok(json!({
+                "note_id": row.get::<_, i64>(0)?,
+                "tag_id": row.get::<_, i64>(1)?,
+                "source": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        },
+    )?;
+
     let exported_at = Local::now().to_rfc3339();
     let summary = BackupSummary {
         notes: notes.len(),
@@ -741,6 +827,8 @@ fn export_backup(
             "sessions": sessions,
             "messages": messages,
             "settings": settings,
+            "tags": tags,
+            "note_tags": note_tags,
         }
     });
 
@@ -767,6 +855,9 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
     let sessions = json_arr(data, "sessions");
     let messages = json_arr(data, "messages");
     let settings = json_arr(data, "settings");
+    // 老备份没有这两张表 → json_arr 返回空数组，等价于"这次不恢复标签"，不会挂
+    let tags = json_arr(data, "tags");
+    let note_tags = json_arr(data, "note_tags");
 
     let mut conn = state
         .conn
@@ -803,6 +894,8 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
     for sql in [
         "DELETE FROM ai_chat_messages",
         "DELETE FROM ai_chat_sessions",
+        "DELETE FROM note_tags",
+        "DELETE FROM tags",
         "DELETE FROM notes",
         "DELETE FROM categories",
         "DELETE FROM ai_providers",
@@ -932,6 +1025,35 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         .map_err(|e| e.to_string())?;
     }
 
+    // 标签必须在 notes 之后写：这里的 INSERT 没有外键检查，
+    // 顺序反了也不会报错，但会留下一批指向不存在笔记的孤儿关联。
+    for t in tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO tags (id, name, source, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                json_i64(t, "id"),
+                json_str(t, "name"),
+                normalize_source(Some(json_str(t, "source"))),
+                non_empty_or_now(json_str(t, "created_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for nt in note_tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id, source, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                json_i64(nt, "note_id"),
+                json_i64(nt, "tag_id"),
+                normalize_source(Some(json_str(nt, "source"))),
+                non_empty_or_now(json_str(nt, "created_at"))
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     tx.commit().map_err(|e| e.to_string())?;
 
     Ok(BackupSummary {
@@ -945,6 +1067,725 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
             .get("exported_at")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+    })
+}
+
+/* ---------------- SQLite 备份与恢复 ----------------
+ * 与 JSON 备份互补：SQLite 是整库快照，恢复时直接按表写回，适合本机快速备份；
+ * JSON 带字段级兼容逻辑，更适合跨版本 / 换机迁移。
+ *
+ * 快照用 VACUUM INTO 生成，是独立、一致的 .db 文件（不是正在使用的库文件副本）；
+ * 文件内附一张 fastnote_backup_meta 标记表，导入时据此拒绝来路不明的数据库。
+ * API Key 的处理：
+ *   - 不勾选备份 Key：快照里的 api_key 全部清空；
+ *   - 勾选：保留本机加密值（密钥文件不随备份走，换机后无法解密，恢复时会尝试沿用本机同名服务商的 Key）。
+ */
+
+const SQLITE_BACKUP_FORMAT: &str = "fastnote-sqlite-backup";
+const SQLITE_BACKUP_META: &str = "fastnote_backup_meta";
+const SQLITE_BACKUP_VERSION: u32 = 1;
+
+fn count_rows(conn: &Connection, table: &str) -> usize {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .unwrap_or(0) as usize
+}
+
+#[tauri::command]
+fn export_sqlite_backup(
+    state: State<AppState>,
+    path: String,
+    include_api_keys: bool,
+    app: AppHandle,
+) -> Result<BackupSummary, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+
+    let exported_at = Local::now().to_rfc3339();
+    let summary = BackupSummary {
+        notes: count_rows(&conn, "notes"),
+        categories: count_rows(&conn, "categories"),
+        providers: count_rows(&conn, "ai_providers"),
+        sessions: count_rows(&conn, "ai_chat_sessions"),
+        messages: count_rows(&conn, "ai_chat_messages"),
+        settings: count_rows(&conn, "app_settings"),
+        exported_at: Some(exported_at.clone()),
+    };
+
+    let target = std::path::PathBuf::from(&path);
+    let parent = target.parent().ok_or("备份路径不可用".to_string())?;
+    // 保存对话框给出的目标可能已存在，而 VACUUM INTO 要求目标不存在：
+    // 先写同目录临时文件，成功后再替换，避免中途失败留下半个备份。
+    let tmp = parent.join(format!(".fastnote-sqlite-{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+
+    let result = (|| -> Result<(), String> {
+        conn.execute(
+            "VACUUM INTO ?1",
+            params![tmp.to_string_lossy().to_string()],
+        )
+        .map_err(|e| format!("生成数据库快照失败：{e}"))?;
+
+        {
+            let snap = Connection::open(&tmp).map_err(|e| format!("打开数据库快照失败：{e}"))?;
+            // 快照必须是单文件：切回 DELETE 日志模式，不把 -wal / -shm 留给用户
+            let _ = snap.execute_batch("PRAGMA journal_mode=DELETE;");
+            snap.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {SQLITE_BACKUP_META} (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );"
+            ))
+            .map_err(|e| format!("写入备份标记失败：{e}"))?;
+
+            {
+                let mut stmt = snap
+                    .prepare(&format!(
+                        "INSERT OR REPLACE INTO {SQLITE_BACKUP_META} (key, value) VALUES (?1, ?2)"
+                    ))
+                    .map_err(|e| e.to_string())?;
+                let meta = [
+                    ("format", SQLITE_BACKUP_FORMAT.to_string()),
+                    ("version", SQLITE_BACKUP_VERSION.to_string()),
+                    ("exported_at", exported_at.clone()),
+                    ("app_version", app.package_info().version.to_string()),
+                    (
+                        "api_keys",
+                        if include_api_keys { "encrypted" } else { "none" }.to_string(),
+                    ),
+                ];
+                for (key, value) in meta {
+                    stmt.execute(params![key, value])
+                        .map_err(|e| format!("写入备份标记失败：{e}"))?;
+                }
+            }
+
+            if !include_api_keys {
+                snap.execute("UPDATE ai_providers SET api_key = ''", [])
+                    .map_err(|e| format!("清除快照中的 API Key 失败：{e}"))?;
+            }
+        }
+
+        // Windows 的 rename 不会覆盖已有文件，先删除旧目标
+        if target.exists() {
+            std::fs::remove_file(&target).map_err(|e| format!("覆盖已有备份文件失败：{e}"))?;
+        }
+        std::fs::rename(&tmp, &target).map_err(|e| format!("保存备份文件失败：{e}"))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result?;
+    Ok(summary)
+}
+
+/** SQLite 快照读出的数据：字段与当前库结构对齐，缺失的列由读取 SQL 补默认值 */
+#[derive(Default)]
+struct SqliteBackupData {
+    categories: Vec<SqliteCategoryRow>,
+    notes: Vec<SqliteNoteRow>,
+    providers: Vec<SqliteProviderRow>,
+    sessions: Vec<SqliteSessionRow>,
+    messages: Vec<SqliteMessageRow>,
+    settings: Vec<SqliteSettingRow>,
+    tags: Vec<SqliteTagRow>,
+    note_tags: Vec<SqliteNoteTagRow>,
+    exported_at: Option<String>,
+}
+
+struct SqliteCategoryRow {
+    id: i64,
+    name: String,
+    created_at: String,
+    ai_access: i64,
+}
+
+struct SqliteNoteRow {
+    id: i64,
+    title: String,
+    content: String,
+    category_id: Option<i64>,
+    created_at: String,
+    updated_at: String,
+    is_deleted: i64,
+    deleted_at: Option<String>,
+    is_pinned: i64,
+    ai_access: i64,
+}
+
+struct SqliteProviderRow {
+    id: i64,
+    name: String,
+    provider_type: String,
+    api_base_url: String,
+    api_key: String,
+    api_path: Option<String>,
+    enabled_model: Option<String>,
+    enabled_models: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+struct SqliteSessionRow {
+    id: i64,
+    title: String,
+    provider_id: i64,
+    model: String,
+    created_at: String,
+    updated_at: String,
+}
+
+struct SqliteMessageRow {
+    id: i64,
+    session_id: i64,
+    role: String,
+    content: String,
+    created_at: String,
+}
+
+struct SqliteSettingRow {
+    key: String,
+    value: String,
+    updated_at: String,
+}
+
+struct SqliteTagRow {
+    id: i64,
+    name: String,
+    source: String,
+    created_at: String,
+}
+
+struct SqliteNoteTagRow {
+    note_id: i64,
+    tag_id: i64,
+    source: String,
+    created_at: String,
+}
+
+/// 读取并校验 SQLite 备份。表结构必须包含当前版本的核心列；
+/// 后加的列（置顶、AI 档位、多选模型等）缺失时用默认值补齐。
+fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
+    if !has_table(conn, SQLITE_BACKUP_META) {
+        return Err("这不是 FastNote 导出的 SQLite 备份文件".to_string());
+    }
+    let format: Option<String> = conn
+        .query_row(
+            &format!("SELECT value FROM {SQLITE_BACKUP_META} WHERE key = 'format'"),
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    if format.as_deref() != Some(SQLITE_BACKUP_FORMAT) {
+        return Err("这不是 FastNote 导出的 SQLite 备份文件".to_string());
+    }
+    let version: Option<String> = conn
+        .query_row(
+            &format!("SELECT value FROM {SQLITE_BACKUP_META} WHERE key = 'version'"),
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    if version
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+        > SQLITE_BACKUP_VERSION
+    {
+        return Err("备份由更新版本的 FastNote 创建，请先升级软件再恢复".to_string());
+    }
+
+    let required: [(&str, &[&str]); 6] = [
+        ("categories", &["id", "name", "created_at"]),
+        (
+            "notes",
+            &["id", "title", "content", "category_id", "created_at", "updated_at"],
+        ),
+        (
+            "ai_providers",
+            &["id", "name", "provider_type", "api_base_url", "api_key", "created_at", "updated_at"],
+        ),
+        (
+            "ai_chat_sessions",
+            &["id", "title", "provider_id", "model", "created_at", "updated_at"],
+        ),
+        (
+            "ai_chat_messages",
+            &["id", "session_id", "role", "content", "created_at"],
+        ),
+        ("app_settings", &["key", "value", "updated_at"]),
+    ];
+    for (table, columns) in required {
+        if !has_table(conn, table) {
+            return Err(format!("SQLite 备份缺少数据表 {table}"));
+        }
+        for column in columns {
+            if !has_column(conn, table, column) {
+                return Err(format!("SQLite 备份的表 {table} 缺少列 {column}"));
+            }
+        }
+    }
+
+    // 后加的列缺失时补默认值，兼容较早导出的快照
+    let col = |table: &str, column: &str, fallback: &str| {
+        if has_column(conn, table, column) {
+            column.to_string()
+        } else {
+            fallback.to_string()
+        }
+    };
+    let ai_access = |table: &str| col(table, "ai_access", "2");
+
+    let mut out = SqliteBackupData {
+        exported_at: conn
+            .query_row(
+                &format!("SELECT value FROM {SQLITE_BACKUP_META} WHERE key = 'exported_at'"),
+                [],
+                |row| row.get(0),
+            )
+            .ok(),
+        ..Default::default()
+    };
+
+    {
+        let sql = format!(
+            "SELECT id, name, created_at, {} FROM categories ORDER BY id",
+            ai_access("categories")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteCategoryRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    ai_access: row.get::<_, i64>(3)?.clamp(0, 2),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.categories.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    {
+        let sql = format!(
+            "SELECT id, title, content, category_id, created_at, updated_at, {}, {}, {}, {}
+             FROM notes ORDER BY id",
+            col("notes", "is_deleted", "0"),
+            col("notes", "deleted_at", "NULL"),
+            col("notes", "is_pinned", "0"),
+            ai_access("notes")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteNoteRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    category_id: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    is_deleted: row.get(6)?,
+                    deleted_at: row.get(7)?,
+                    is_pinned: row.get(8)?,
+                    ai_access: row.get::<_, i64>(9)?.clamp(0, 2),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.notes.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    {
+        let sql = format!(
+            "SELECT id, name, provider_type, api_base_url, api_key, {}, {}, {},
+                    created_at, updated_at
+             FROM ai_providers ORDER BY id",
+            col("ai_providers", "api_path", "NULL"),
+            col("ai_providers", "enabled_model", "NULL"),
+            col("ai_providers", "enabled_models", "NULL")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteProviderRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    provider_type: row.get(2)?,
+                    api_base_url: row.get(3)?,
+                    api_key: row.get(4)?,
+                    api_path: row.get(5)?,
+                    enabled_model: row.get(6)?,
+                    enabled_models: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.providers.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, provider_id, model, created_at, updated_at
+                 FROM ai_chat_sessions ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteSessionRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    model: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.sessions.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, session_id, role, content, created_at
+                 FROM ai_chat_messages ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteMessageRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.messages.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare("SELECT key, value, updated_at FROM app_settings ORDER BY key")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteSettingRow {
+                    key: row.get(0)?,
+                    value: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.settings.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    // 标签是后加的功能：老快照没有这两张表时按空数组处理
+    if has_table(conn, "tags")
+        && ["id", "name", "source", "created_at"]
+            .iter()
+            .all(|column| has_column(conn, "tags", column))
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, name, source, created_at FROM tags ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteTagRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    source: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.tags.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+    if has_table(conn, "note_tags")
+        && ["note_id", "tag_id", "source", "created_at"]
+            .iter()
+            .all(|column| has_column(conn, "note_tags", column))
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT note_id, tag_id, source, created_at
+                 FROM note_tags ORDER BY note_id, tag_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteNoteTagRow {
+                    note_id: row.get(0)?,
+                    tag_id: row.get(1)?,
+                    source: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.note_tags.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSummary, String> {
+    let source = std::path::PathBuf::from(&path);
+    if !source.is_file() {
+        return Err("备份文件不存在".to_string());
+    }
+    let source_canonical =
+        std::fs::canonicalize(&source).map_err(|e| format!("读取备份文件失败：{e}"))?;
+
+    let bak = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("无法打开 SQLite 备份文件：{e}"))?;
+    // 先做完整性检查，再读表结构；坏文件不进入覆盖流程
+    let quick_check: String = bak
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| format!("无法校验 SQLite 备份文件：{e}"))?;
+    if quick_check != "ok" {
+        return Err("SQLite 备份文件已损坏，无法恢复".to_string());
+    }
+    let data = read_sqlite_backup(&bak)?;
+    drop(bak);
+
+    let mut conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    if conn
+        .path()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .map(|p| p == source_canonical)
+        .unwrap_or(false)
+    {
+        return Err("不能用当前正在使用的数据库文件恢复".to_string());
+    }
+
+    // 先记下本机现有的 Key 密文，供备份里没有可用 Key 时按「名称+类型+地址」接回
+    let mut local_keys: std::collections::HashMap<(String, String, String), String> =
+        std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT name, provider_type, api_base_url, api_key FROM ai_providers")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    (
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows.flatten() {
+            local_keys.insert(row.0, row.1);
+        }
+    }
+
+    // 加密操作需要不可变的 &Connection，必须在开启事务前算好最终密文
+    let mut provider_keys: Vec<String> = Vec::with_capacity(data.providers.len());
+    for p in &data.providers {
+        let fallback = || {
+            local_keys
+                .get(&(p.name.clone(), p.provider_type.clone(), p.api_base_url.clone()))
+                .cloned()
+                .unwrap_or_default()
+        };
+        if p.api_key.is_empty() {
+            provider_keys.push(fallback());
+        } else if is_encrypted(&p.api_key) {
+            // 同机备份能用当前密钥解开：原样保留；解不开（换机/换用户）则沿用本机同名服务商的 Key
+            if decrypt_secret(&conn, &p.api_key).is_ok() {
+                provider_keys.push(p.api_key.clone());
+            } else {
+                provider_keys.push(fallback());
+            }
+        } else {
+            provider_keys.push(encrypt_secret(&conn, &p.api_key)?);
+        }
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for sql in [
+        "DELETE FROM ai_chat_messages",
+        "DELETE FROM ai_chat_sessions",
+        "DELETE FROM note_tags",
+        "DELETE FROM tags",
+        "DELETE FROM notes",
+        "DELETE FROM categories",
+        "DELETE FROM ai_providers",
+        "DELETE FROM app_settings",
+    ] {
+        tx.execute(sql, []).map_err(|e| e.to_string())?;
+    }
+
+    for c in &data.categories {
+        tx.execute(
+            "INSERT INTO categories (id, name, created_at, ai_access) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                c.id,
+                c.name,
+                non_empty_or_now(c.created_at.clone()),
+                c.ai_access
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for n in &data.notes {
+        tx.execute(
+            "INSERT INTO notes (id, title, content, category_id, created_at, updated_at, is_deleted,
+                                deleted_at, is_pinned, ai_access)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                n.id,
+                n.title,
+                n.content,
+                n.category_id,
+                non_empty_or_now(n.created_at.clone()),
+                non_empty_or_now(n.updated_at.clone()),
+                if n.is_deleted != 0 { 1 } else { 0 },
+                n.deleted_at,
+                if n.is_pinned != 0 { 1 } else { 0 },
+                n.ai_access
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for (i, p) in data.providers.iter().enumerate() {
+        let enabled_models = p
+            .enabled_models
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| "[]".to_string());
+        tx.execute(
+            "INSERT INTO ai_providers (id, name, provider_type, api_base_url, api_key, api_path,
+                                       enabled_model, enabled_models, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                p.id,
+                p.name,
+                p.provider_type,
+                p.api_base_url,
+                provider_keys[i],
+                p.api_path,
+                p.enabled_model,
+                enabled_models,
+                non_empty_or_now(p.created_at.clone()),
+                non_empty_or_now(p.updated_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for s in &data.sessions {
+        tx.execute(
+            "INSERT INTO ai_chat_sessions (id, title, provider_id, model, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                s.id,
+                s.title,
+                s.provider_id,
+                s.model,
+                non_empty_or_now(s.created_at.clone()),
+                non_empty_or_now(s.updated_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for m in &data.messages {
+        tx.execute(
+            "INSERT INTO ai_chat_messages (id, session_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                m.id,
+                m.session_id,
+                m.role,
+                m.content,
+                non_empty_or_now(m.created_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for s in &data.settings {
+        tx.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            params![
+                s.key,
+                s.value,
+                non_empty_or_now(s.updated_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for t in &data.tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO tags (id, name, source, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                t.id,
+                t.name,
+                normalize_source(Some(t.source.clone())),
+                non_empty_or_now(t.created_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for nt in &data.note_tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id, source, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                nt.note_id,
+                nt.tag_id,
+                normalize_source(Some(nt.source.clone())),
+                non_empty_or_now(nt.created_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(BackupSummary {
+        notes: data.notes.len(),
+        categories: data.categories.len(),
+        providers: data.providers.len(),
+        sessions: data.sessions.len(),
+        messages: data.messages.len(),
+        settings: data.settings.len(),
+        exported_at: data.exported_at,
     })
 }
 
@@ -1664,6 +2505,388 @@ fn set_category_ai_access(id: i64, level: i64, state: State<AppState>) -> Result
     Ok(())
 }
 
+/* ---------------- 标签 ---------------- */
+
+/// 取某个标签 id（没有就按 source 建一条），失败时返回 Err。
+/// 名称统一 trim：`" 待办 "` 和 `"待办"` 是同一个标签。
+fn ensure_tag(conn: &Connection, name: &str, source: &str) -> Result<i64, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("标签名不能为空".to_string());
+    }
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+        params![name],
+        |row| row.get::<_, i64>(0),
+    ) {
+        return Ok(id);
+    }
+    conn.execute(
+        "INSERT INTO tags (name, source, created_at) VALUES (?1, ?2, ?3)",
+        params![name, source, Local::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 清掉已失效的关联与空标签。
+///
+/// 没有开 `PRAGMA foreign_keys`（开了会影响既有删除逻辑的执行计划），
+/// 级联删除不会自动发生 —— 彻底删除笔记、恢复备份之后都靠这一步收尾，
+/// 否则 tags 里会留下永远数不到笔记的孤儿行。
+fn prune_tag_links(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM note_tags WHERE note_id NOT IN (SELECT id FROM notes)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM note_tags)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/** 某篇笔记的标签（含计数），按名称排序 */
+fn tags_of_note(conn: &Connection, note_id: i64) -> Result<Vec<Tag>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, nt.source, t.created_at
+             FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+             WHERE nt.note_id = ?1
+             ORDER BY t.name COLLATE NOCASE",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![note_id], |row| {
+            let id = row.get::<_, i64>(0)?;
+            let used: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id
+                     WHERE nt.tag_id = ?1 AND n.is_deleted = 0",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            Ok(Tag {
+                id,
+                name: row.get::<_, String>(1)?,
+                source: row.get::<_, String>(2)?,
+                created_at: row.get::<_, String>(3)?,
+                note_count: used,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 参数里的 source 归一化：只允许 "user" / "ai"，别的写法（含空串）一律当 user。
+fn normalize_source(source: Option<String>) -> String {
+    match source.as_deref().map(|s| s.trim().to_lowercase()) {
+        Some(s) if s == "ai" => "ai".to_string(),
+        _ => "user".to_string(),
+    }
+}
+
+/** 全部标签 + 每篇用了多少：给属性窗的候选、AI 查标签用 */
+#[tauri::command]
+fn list_tags(state: State<AppState>) -> Result<Vec<Tag>, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, t.source, t.created_at,
+                    (SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id
+                      WHERE nt.tag_id = t.id AND n.is_deleted = 0) AS note_count
+             FROM tags t
+             ORDER BY note_count DESC, t.name COLLATE NOCASE",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                source: row.get(2)?,
+                created_at: row.get(3)?,
+                note_count: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/** 某篇笔记的标签列表 */
+#[tauri::command]
+fn list_note_tags(note_id: i64, state: State<AppState>) -> Result<Vec<Tag>, String> {
+    let conn = state.conn.lock().unwrap();
+    tags_of_note(&conn, note_id)
+}
+
+/**
+ * 给笔记加标签（词不存在会自动创建），返回加完之后这篇笔记的完整标签列表。
+ *
+ * 一律返回完整列表是有意的：UI 与 AI 都不用再发一次 GET，
+ * 也就不会出现"加成功了但列表没刷新"这种假失败。
+ */
+#[tauri::command]
+fn add_note_tags(
+    note_id: i64,
+    names: Vec<String>,
+    source: Option<String>,
+    state: State<AppState>,
+) -> Result<Vec<Tag>, String> {
+    let src = normalize_source(source);
+    let conn = state.conn.lock().unwrap();
+    for raw in names {
+        let name = raw.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let tag_id = ensure_tag(&conn, &name, &src)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id, source, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![note_id, tag_id, src, Local::now().to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())?;
+        // 已存在但来源是另一方的（用户先打了、AI 又打一遍）：保留先来的一方，
+        // 因为删除权限按 source 判定，贸然改写会把别人的标签变成自己的。
+    }
+    tags_of_note(&conn, note_id)
+}
+
+/**
+ * 摘掉笔记上的标签。
+ *
+ * `source` 传了就只摘那一种来源 —— AI 工具固定传 "ai"，于是 AI 删不到用户手打的标签；
+ * 不传则不限来源（属性窗侧的兜底由 UI 负责：按钮本来就只出现在用户标签上）。
+ */
+#[tauri::command]
+fn remove_note_tags(
+    note_id: i64,
+    names: Vec<String>,
+    source: Option<String>,
+    state: State<AppState>,
+) -> Result<Vec<Tag>, String> {
+    let conn = state.conn.lock().unwrap();
+    let filter_src = source.clone().map(|s| normalize_source(Some(s)));
+    for raw in names {
+        let name = raw.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let sql = match filter_src {
+            Some(_) => {
+                "DELETE FROM note_tags
+                  WHERE note_id = ?1 AND source = ?2
+                    AND tag_id IN (SELECT id FROM tags WHERE name = ?3 COLLATE NOCASE)"
+            }
+            None => {
+                "DELETE FROM note_tags
+                  WHERE note_id = ?1
+                    AND tag_id IN (SELECT id FROM tags WHERE name = ?3 COLLATE NOCASE)"
+            }
+        };
+        if let Some(src) = &filter_src {
+            conn.execute(sql, params![note_id, src, name])
+                .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(sql, params![note_id, name])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    prune_tag_links(&conn)?;
+    tags_of_note(&conn, note_id)
+}
+
+/**
+ * 整体替换笔记在某个来源下的标签：`source="ai"` 时只改 AI 那一批，用户手打的不受影响。
+ * AI 打标签是"重新看一遍这篇笔记"的结果，用整体替换而不是逐条增删，避免出现重复思考两轮的残留。
+ */
+#[tauri::command]
+fn set_note_tags(
+    note_id: i64,
+    names: Vec<String>,
+    source: Option<String>,
+    state: State<AppState>,
+) -> Result<Vec<Tag>, String> {
+    let src = normalize_source(source);
+    let conn = state.conn.lock().unwrap();
+    // 先清掉这个来源在这篇笔记上的旧关联
+    conn.execute(
+        "DELETE FROM note_tags WHERE note_id = ?1 AND source = ?2",
+        params![note_id, src],
+    )
+    .map_err(|e| e.to_string())?;
+    for raw in names {
+        let name = raw.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let tag_id = ensure_tag(&conn, &name, &src)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id, source, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![note_id, tag_id, src, Local::now().to_rfc3339()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    prune_tag_links(&conn)?;
+    tags_of_note(&conn, note_id)
+}
+
+/// 全局改名：标签在所有笔记上的关联一并跟着走（改的是"这个词"，不是某篇的关联）。
+#[tauri::command]
+fn rename_tag(id: i64, name: String, state: State<AppState>) -> Result<Vec<Tag>, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("标签名不能为空".to_string());
+    }
+    let conn = state.conn.lock().unwrap();
+    // 目标名已被别的标签占用：直接合并到它下面，避免改名把一条关系弄丢
+    let clash: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE AND id <> ?2",
+            params![name, id],
+            |row| row.get(0),
+        )
+        .ok();
+    let surviving = match clash {
+        // 目标名已被别的标签占用：把关联并入它，返回它作为"改名后的那个词"
+        Some(target) => {
+            conn.execute(
+                "UPDATE OR IGNORE note_tags SET tag_id = ?1 WHERE tag_id = ?2",
+                params![target, id],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM note_tags WHERE tag_id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM tags WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+            target
+        }
+        None => {
+            conn.execute(
+                "UPDATE tags SET name = ?1 WHERE id = ?2",
+                params![name, id],
+            )
+            .map_err(|e| e.to_string())?;
+            id
+        }
+    };
+    list_tags_by_ids(&conn, vec![surviving])
+}
+
+/// 删标签（连带它在所有笔记上的关联）。`source` 传了就只删那一种来源 additions 的标签，
+/// 用来保证 AI 删不到用户自己打的标签。
+#[tauri::command]
+fn delete_tag(id: i64, source: Option<String>, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let owned: bool = match source.clone() {
+        Some(s) => {
+            let want = normalize_source(Some(s));
+            conn.query_row(
+                "SELECT COUNT(*) FROM tags WHERE id = ?1 AND source = ?2",
+                params![id, want],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+                > 0
+        }
+        None => true,
+    };
+    if !owned {
+        return Err("只能删除自己添加的标签".to_string());
+    }
+    conn.execute("DELETE FROM note_tags WHERE tag_id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM tags WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 内部：`list_tags` 的过滤版（改名后只回访受影响的行，减少无谓序列化）
+fn list_tags_by_ids(conn: &Connection, ids: Vec<i64>) -> Result<Vec<Tag>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, t.source, t.created_at,
+                    (SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id
+                      WHERE nt.tag_id = t.id AND n.is_deleted = 0) AS note_count
+             FROM tags t ORDER BY t.name COLLATE NOCASE",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                source: row.get(2)?,
+                created_at: row.get(3)?,
+                note_count: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let tag = row.map_err(|e| e.to_string())?;
+        if ids.contains(&tag.id) {
+            out.push(tag);
+        }
+    }
+    Ok(out)
+}
+
+/** 按标签找笔记（多对多的反面：给这个词，捞所有带它的笔记） */
+#[tauri::command]
+fn list_notes_by_tag(name: String, state: State<AppState>) -> Result<Vec<Note>, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("标签名不能为空".to_string());
+    }
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.id, n.title, n.content, n.category_id, n.created_at, n.updated_at,
+                    n.is_deleted, n.deleted_at, n.is_pinned, n.ai_access
+             FROM notes n
+               JOIN note_tags nt ON nt.note_id = n.id
+               JOIN tags t ON t.id = nt.tag_id
+             WHERE t.name = ?1 COLLATE NOCASE AND n.is_deleted = 0
+             ORDER BY n.updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![name], |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                category_id: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                is_deleted: row.get::<_, i64>(6)? != 0,
+                deleted_at: row.get(7)?,
+                is_pinned: row.get::<_, i64>(8)? != 0,
+                ai_access: row.get::<_, i64>(9)?.clamp(0, 2),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 fn pin_note(id: i64, pinned: bool, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
@@ -1731,7 +2954,10 @@ fn delete_note_permanently(id: i64, state: State<AppState>) -> Result<(), String
         "DELETE FROM notes WHERE id = ?1",
         params![id],
     ).map_err(|e| e.to_string())?;
-    
+
+    // 没开级联外键，笔记没了标签关联会留成孤儿（list_tags 的计数会飘）
+    prune_tag_links(&conn)?;
+
     Ok(())
 }
 
@@ -1745,7 +2971,9 @@ fn delete_multiple_notes_permanently(ids: Vec<i64>, state: State<AppState>) -> R
             params![id],
         ).map_err(|e| e.to_string())?;
     }
-    
+
+    prune_tag_links(&conn)?;
+
     Ok(())
 }
 
@@ -1759,7 +2987,9 @@ fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
         "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1",
         params![threshold],
     ).map_err(|e| e.to_string())?;
-    
+
+    prune_tag_links(&conn)?;
+
     Ok(())
 }
 
@@ -2823,13 +4053,54 @@ fn should_show_on_startup(app: AppHandle) -> bool {
     !(launched_from_autostart() && minimize_to_tray && tray_on)
 }
 
-/// 显示、取消最小化并聚焦主窗口（第二个实例 / 托盘左键 / 托盘菜单共用）
+/// 从托盘 / 单实例唤出窗口。
+///
+/// WebView2 在窗口隐藏或最小化期间会暂停合成，直接 show() 有概率只呈现一帧空白。
+/// 处理顺序：先解除最小化 → 显示 → 聚焦；确实是从隐藏/最小化恢复时，
+/// 再在后台做一次「1px 尺寸抖动」，逼 WebView2 重新分配渲染表面。
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let was_hidden = !window.is_visible().unwrap_or(true);
+        let was_minimized = window.is_minimized().unwrap_or(false);
+
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+
+        if was_hidden || was_minimized {
+            nudge_webview_repaint(window);
+        }
+    }
+}
+
+/// 延迟重绘兜底：只在窗口仍然可见时执行，避免用户又把它藏起来后被强行唤出。
+fn nudge_webview_repaint(window: tauri::WebviewWindow) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        if !window.is_visible().unwrap_or(false) {
+            return;
+        }
+
+        // 最小化/隐藏后偶发失去焦点，再补一次
         let _ = window.show();
         let _ = window.unminimize();
+
+        // 1px 尺寸变化是让 WebView2 重建渲染表面最可靠的方式；
+        // 最大化/全屏时尺寸由系统托管，跳过尺寸抖动，交给前端的强制重排兜底。
+        if !window.is_maximized().unwrap_or(false) && !window.is_fullscreen().unwrap_or(false) {
+            if let Ok(size) = window.outer_size() {
+                if size.width > 1 && size.height > 1 {
+                    let _ = window.set_size(tauri::PhysicalSize::new(size.width + 1, size.height + 1));
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                    let _ = window.set_size(tauri::PhysicalSize::new(size.width, size.height));
+                }
+            }
+        }
+
         let _ = window.set_focus();
-    }
+        // 通知前端做一次强制重排（最大化窗口尤其依赖这一层）
+        let _ = window.emit("fastnote://window-restored", ());
+    });
 }
 
 /// 创建托盘图标（已存在则跳过）
@@ -3020,6 +4291,14 @@ pub fn run() {
             update_note,
             set_note_ai_access,
             set_category_ai_access,
+            list_tags,
+            list_note_tags,
+            add_note_tags,
+            remove_note_tags,
+            set_note_tags,
+            rename_tag,
+            delete_tag,
+            list_notes_by_tag,
             pin_note,
             move_to_trash,
             restore_note,
@@ -3045,6 +4324,8 @@ pub fn run() {
             delete_app_setting,
             export_backup,
             import_backup,
+            export_sqlite_backup,
+            import_sqlite_backup,
             export_category_zip,
             export_category_ebook,
             export_notes_zip,

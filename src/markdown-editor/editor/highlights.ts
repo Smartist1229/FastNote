@@ -20,11 +20,11 @@
  */
 import { buildSearchRegExp, type SearchOptions } from "./search";
 
-/** 普通命中的高亮名（与 styles.css 里的 `::highlight(mde-find-hit)` 对应） */
+/** 普通命中的高亮名（规则由 theme.ts 的 buildHighlightRules 生成） */
 const HIT_NAME = "mde-find-hit";
-/** 当前命中的高亮名（与 `::highlight(mde-find-current)` 对应） */
+/** 当前命中的高亮名（规则由 theme.ts 的 buildHighlightRules 生成） */
 const CURRENT_NAME = "mde-find-current";
-/** 大纲跳转目标的高亮名（与 `::highlight(mde-flash)` 对应） */
+/** 大纲跳转目标的高亮名（规则由 theme.ts 的 buildHighlightRules 生成） */
 const FLASH_NAME = "mde-flash";
 
 /**

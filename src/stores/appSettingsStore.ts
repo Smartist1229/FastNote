@@ -3,6 +3,7 @@ import type { AppSettings, EditorSettings } from "@/interface/settings";
 import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
 import { EDITOR_SPEC_BY_FIELD } from "@/config/editorSettingSpecs";
 import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
+import { normalizeHex, normalizeHexList } from "@/lib/theme";
 
 /**
  * 软件设置的持久化层（模块内无 React 状态）。
@@ -21,7 +22,8 @@ import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
  *       后续新增设置项也会在下次启动时自动补上。
  *       反过来，已下线的设置项（不再出现在默认值里）会在读取时被清掉，避免废弃键越积越多。
  * 写入：只写被改的那一个键，由 App.tsx 在用户操作时立即调用。
- * 重置：删除全部 app.config.* 键（下次启动重新回退并补写默认），不碰 AI 设置的键。
+ * 重置：删除全部 app.config.* 键（下次启动重新回退并补写默认），不碰 AI 设置的键；
+ *       也可以只重置 editor 分类，其他分类与主题保持不动。
  */
 
 const PREFIX = "app.config.";
@@ -71,6 +73,15 @@ const normalizeValue = (
   if (spec.kind === "number") {
     if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
     return Math.min(spec.max, Math.max(spec.min, value));
+  }
+  if (spec.kind === "color") {
+    const hex = typeof value === "string" ? normalizeHex(value) : null;
+    return hex ?? undefined;
+  }
+  if (spec.kind === "colorList") {
+    if (typeof value !== "string") return undefined;
+    const list = normalizeHexList(value);
+    return list.length ? list.join(", ") : undefined;
   }
   return typeof value === "string" && spec.options.some((o) => o.value === value) ? value : undefined;
 };
@@ -183,14 +194,13 @@ export const saveAllAppSettings = async (settings: AppSettings): Promise<void> =
 };
 
 /**
- * 删除全部 app.config.* 键，下次启动自动回退默认值。
- * 存储层只有单键删除接口，所以先取整表再按前缀筛选；
- * 只匹配本前缀，AI 设置（ai.setting.* / ai.prompts）不受影响。
+ * 按前缀删除键。存储层只有单键删除接口，所以先取整表再筛选。
+ * 单个键删除失败只记日志，不中断其余键。
  */
-export const resetAppSettings = async (): Promise<void> => {
+const deleteByPrefix = async (prefix: string): Promise<void> => {
   const rows: Record<string, string> = await settingsApi.getAppSettings().catch(() => ({}));
   for (const key of Object.keys(rows)) {
-    if (!key.startsWith(PREFIX)) continue;
+    if (!key.startsWith(prefix)) continue;
     try {
       await settingsApi.deleteAppSetting(key);
     } catch (e) {
@@ -198,3 +208,20 @@ export const resetAppSettings = async (): Promise<void> => {
     }
   }
 };
+
+/**
+ * 只恢复编辑器分类：先删掉 app.config.editor.* 的全部键（含已下线字段），
+ * 再把默认值逐项写回；其他软件设置、主题与 AI 设置都不受影响。
+ */
+export const resetEditorSettings = async (): Promise<void> => {
+  await deleteByPrefix(configKey("editor", ""));
+  for (const [field, value] of Object.entries(DEFAULT_APP_SETTINGS.editor)) {
+    await saveAppSetting("editor", field as never, value as never);
+  }
+};
+
+/**
+ * 删除全部 app.config.* 键（含主题），下次启动自动回退默认值。
+ * 只匹配本前缀，AI 设置（ai.setting.* / ai.prompts）不受影响。
+ */
+export const resetAppSettings = (): Promise<void> => deleteByPrefix(PREFIX);

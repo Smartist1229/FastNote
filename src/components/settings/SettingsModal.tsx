@@ -38,6 +38,7 @@ import {
 } from "@/config/about";
 import { AiProviderSettings } from "@/components/ai/AiProviderModal";
 import { ThemePanel } from "@/components/settings/ThemePanel";
+import { ColorPicker } from "@/components/settings/ColorPicker";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
 import { useDraggable } from "@/components/common/useDraggable";
@@ -45,7 +46,9 @@ import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
-import { exportBackup, importBackup } from "@/api/backup";
+import { exportBackup, exportSqliteBackup, importBackup, importSqliteBackup } from "@/api/backup";
+import { flushThemeSettings } from "@/stores/themeStore";
+import { normalizeHexList } from "@/lib/theme";
 
 /* ---------- 分区定义 ---------- */
 
@@ -182,6 +185,71 @@ const NumberInput: React.FC<{
  * 枚举设置项：分段按钮组而不是原生 select —— 选项少（2~3 个）时更直观，
  * 且样式跟随主题，不再是浏览器默认的下拉框。
  */
+/**
+ * 色值列表：逗号分隔的十六进制颜色。
+ *
+ * 输入过程中保留原样（允许敲到一半），失焦或回车时才规范化：
+ * 丢弃非法项、去重、最多 32 个；一个合法色都没有时回退原值。
+ */
+const ColorListInput: React.FC<{
+  value: string;
+  placeholder?: string;
+  disabled?: boolean;
+  onChange: (v: string) => void;
+}> = ({ value, placeholder, disabled, onChange }) => {
+  const [text, setText] = useState(value);
+
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  const commit = () => {
+    const list = normalizeHexList(text);
+    if (!list.length) {
+      setText(value);
+      return;
+    }
+    const next = list.join(", ");
+    setText(next);
+    if (next !== value) onChange(next);
+  };
+
+  const preview = normalizeHexList(text).slice(0, 16);
+  const total = normalizeHexList(text).length;
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <input
+        type="text"
+        value={text}
+        placeholder={placeholder}
+        disabled={disabled}
+        spellCheck={false}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") {
+            setText(value);
+            event.currentTarget.blur();
+          }
+        }}
+        className="w-[280px] px-2 py-1 text-[11px] font-mono input-modern bg-app/60 focus:bg-surface transition-colors"
+      />
+      <div className="flex items-center gap-1 h-3.5 max-w-[280px] overflow-hidden">
+        {preview.map((hex) => (
+          <span
+            key={hex}
+            className="w-3.5 h-3.5 flex-none rounded-[3px] border border-line"
+            style={{ background: hex }}
+            title={hex}
+          />
+        ))}
+        {total > preview.length && <span className="text-[10px] text-faint">+{total - preview.length}</span>}
+      </div>
+    </div>
+  );
+};
 /**
  * 选项色卡：底色铺满，token 色画成小色点，让用户不点开也能看出这套配色长什么样。
  * 没有 swatch 的选项（绝大多数）返回 null，不占位置。
@@ -407,6 +475,24 @@ const RowView = memo(function RowView({ row }: { row: SettingRow }) {
             onChange={row.onChange}
           />
         )}
+        {row.kind === "color" && (
+          <ColorPicker
+            value={row.value}
+            onChange={row.onChange}
+            disabled={row.disabled}
+            label={row.title}
+            showValue
+            className="min-w-[104px]"
+          />
+        )}
+        {row.kind === "colorList" && (
+          <ColorListInput
+            value={row.value}
+            placeholder={row.placeholder}
+            disabled={row.disabled}
+            onChange={row.onChange}
+          />
+        )}
       </div>
     </div>
   );
@@ -485,6 +571,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   appSettings,
   onAppSettingChange,
   onResetAppSettings,
+  onResetEditorSettings,
+  onResetThemeSettings,
   aiSettings,
   onAiSettingsChange,
   aiProviders,
@@ -546,8 +634,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   /* 备份操作的进行中状态：非 null 时禁用导出/导入按钮，防止并发 */
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(null);
   const [lastExport, setLastExport] = useState<{ summary: BackupSummary; path: string } | null>(null);
-  /** 导出备份时是否一并写入（解密后的）AI 服务商 API Key */
+  /** 导出备份时是否一并写入 AI 服务商 API Key（JSON 为明文，SQLite 为本机加密值） */
   const [backupIncludeApiKey, setBackupIncludeApiKey] = useState(false);
+  /** 备份格式：JSON 适合换机迁移，SQLite 是整库快照、适合本机快速备份 */
+  const [backupFormat, setBackupFormat] = useState<"json" | "sqlite">("json");
 
   /* 顶部「已保存」提示：平时隐藏，发生修改后短暂出现 */
   const [savedFlash, setSavedFlash] = useState(false);
@@ -625,6 +715,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           onChange: (v: number) => setApp("editor", spec.field, v),
         };
       }
+      if (spec.kind === "color") {
+        return {
+          ...base,
+          kind: "color",
+          value: editor[spec.field] as string,
+          onChange: (v: string) => setApp("editor", spec.field, v),
+        };
+      }
+      if (spec.kind === "colorList") {
+        return {
+          ...base,
+          kind: "colorList",
+          value: editor[spec.field] as string,
+          placeholder: spec.placeholder,
+          onChange: (v: string) => setApp("editor", spec.field, v),
+        };
+      }
       // segment 与 select 的行形状相同（value + options），只是渲染控件不同
       return {
         ...base,
@@ -656,6 +763,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         keywords: "单例 多开 多进程 实例 single instance 单实例 重复启动",
         value: appSettings.general.singleInstance,
         onChange: (v) => setApp("general", "singleInstance", v),
+      },
+      {
+        section: "general",
+        kind: "toggle",
+        scope: "live",
+        title: "笔记搜索支持正则",
+        desc: "开启后，侧边栏「搜索笔记」的输入框按正则表达式匹配标题与正文（例如 `^周报\\\\d+$`、待办|备忘）。输入的正则不合法时搜索不会报错，只是没有任何结果。关闭时按普通文本匹配，`*`、`(` 等字符当作字面量。",
+        keywords: "搜索 正则 regex 匹配 search 查找",
+        value: appSettings.general.noteSearchRegex,
+        onChange: (v) => setApp("general", "noteSearchRegex", v),
       },
       {
         section: "general",
@@ -998,7 +1115,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       memory: "记忆 提示词 prompt 长期记忆 前置 要求 memory",
       access: "访问 权限 分组 笔记 ai 隐私 限制 禁止 只读 完全 三档 access permission privacy readonly category note",
       reset: "恢复默认 重置 出厂值 reset default",
-      backup: "备份 恢复 导出 导入 数据 json 迁移 backup restore",
+      backup: "备份 恢复 导出 导入 数据 json sqlite db 数据库 快照 迁移 backup restore",
       about:
         "关于 版本 作者 应用名 图标 开源项目 开源 about version author name iconfont opensource",
     }),
@@ -1218,19 +1335,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   /** 导出：先让用户选保存路径（取消则返回），再交给后端写文件；失败只弹提示 */
   const handleExport = async () => {
+    const isSqlite = backupFormat === "sqlite";
     try {
       const path = await save({
-        defaultPath: `fastnote-backup-${fileStamp()}.json`,
-        filters: [{ name: "FastNote 备份", extensions: ["json"] }],
+        defaultPath: `fastnote-backup-${fileStamp()}.${isSqlite ? "db" : "json"}`,
+        filters: [
+          isSqlite
+            ? { name: "SQLite 数据库备份", extensions: ["db", "sqlite"] }
+            : { name: "FastNote 备份", extensions: ["json"] },
+        ],
       });
       if (!path) return;
+      // 主题落库有防抖：导出前把最后一次改动冲下去，避免备份里少了刚改的主题
+      await flushThemeSettings();
       setBackupBusy("export");
-      const summary = await exportBackup(path, backupIncludeApiKey);
+      const summary = isSqlite
+        ? await exportSqliteBackup(path, backupIncludeApiKey)
+        : await exportBackup(path, backupIncludeApiKey);
       setLastExport({ summary, path });
-      showToast(
-        `已导出 ${summary.notes} 篇笔记${backupIncludeApiKey ? "（含 API Key）" : ""}`,
-        "success",
-      );
+      const keyNote = backupIncludeApiKey
+        ? isSqlite
+          ? "（含本机加密 Key）"
+          : "（含 API Key）"
+        : "";
+      showToast(`已导出 ${summary.notes} 篇笔记${keyNote}`, "success");
     } catch (e) {
       showToast(`导出失败：${errorText(e)}`, "error");
     } finally {
@@ -1247,20 +1375,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: "FastNote 备份", extensions: ["json"] }],
+        filters: [{ name: "FastNote 备份", extensions: ["json", "db", "sqlite"] }],
       });
       if (!selected || typeof selected !== "string") return;
 
+      const lower = selected.toLowerCase();
+      const isSqlite = lower.endsWith(".db") || lower.endsWith(".sqlite");
+      const formatLabel = isSqlite ? "SQLite 数据库" : "JSON";
       const ok = await confirm({
         title: "从备份恢复",
-        message: `恢复会用备份文件覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：${baseName(selected)}`,
+        message: `恢复会用${formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：${baseName(selected)}`,
         confirmText: "覆盖并恢复",
         danger: true,
       });
       if (!ok) return;
 
+      // 主题有防抖写入：先冲掉旧改动，导入后再由备份内容覆盖，避免旧主题回写
+      await flushThemeSettings();
       setBackupBusy("import");
-      const summary = await importBackup(selected);
+      const summary = isSqlite
+        ? await importSqliteBackup(selected)
+        : await importBackup(selected);
       showToast(`恢复完成：${summary.notes} 篇笔记，界面即将刷新`, "success");
       setTimeout(() => window.location.reload(), 800);
     } catch (e) {
@@ -1780,14 +1915,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
-                      {/* 恢复默认：软件设置与 AI 设置互相独立，互不影响 */}
+                      {/* 恢复默认：编辑器 / 主题 / 软件 / AI 四块互相独立，按需单独恢复 */}
                       {s.key === "reset" && (
                         <div className="space-y-2.5 pt-1">
                           <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
+                              <p className="text-xs font-medium text-body">恢复编辑器默认设置</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
+                                字号、行高、间距、工具栏与颜色预设等编辑器选项回到默认值，不影响主题与 AI 设置。
+                              </p>
+                            </div>
+                            <button
+                              onClick={onResetEditorSettings}
+                              className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
+                            >
+                              恢复
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-body">恢复主题默认设置</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
+                                明暗模式、预设配色、自定义取色与「我的主题」回到默认，不影响其他软件设置。
+                              </p>
+                            </div>
+                            <button
+                              onClick={onResetThemeSettings}
+                              className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
+                            >
+                              恢复
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
+                            <div className="min-w-0">
                               <p className="text-xs font-medium text-body">恢复软件默认设置</p>
                               <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
-                                通用、编辑器、笔记列表、界面布局回到默认值，不影响 AI 设置。
+                                通用、编辑器、笔记列表、界面布局与主题回到默认值，不影响 AI 设置。
                               </p>
                             </div>
                             <button
@@ -1815,22 +1980,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
-                      {/* 备份与恢复：导出为 JSON 文件 / 用备份文件覆盖当前数据 */}
+                      {/* 备份与恢复：JSON / SQLite 两种整库备份，恢复时覆盖当前数据 */}
                       {s.key === "backup" && (
                         <div className="space-y-3">
                           <p className="text-[11px] text-faint leading-relaxed">
-                            备份内容包含笔记、分组、回收站、AI 对话记录与设置；可选择是否一并备份
-                            AI 服务商的 API Key。
+                            备份内容包含笔记、分组、回收站、标签、AI 对话记录与全部设置（含编辑器与主题），
+                            支持 JSON 与 SQLite 两种格式。
                           </p>
 
-                          {/* API Key 会以明文写入备份文件，默认关闭，避免密钥被误带到网盘 */}
+                          {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照 */}
+                          <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
+                            <div className="min-w-0">
+                              <span className="text-xs font-medium text-body">备份格式</span>
+                              <p className="text-[11px] text-faint leading-relaxed mt-1">
+                                {backupFormat === "sqlite"
+                                  ? "SQLite 是整库快照（.db），恢复更快，适合本机定期备份。"
+                                  : "JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。"}
+                              </p>
+                            </div>
+                            <SegmentedInput
+                              value={backupFormat}
+                              options={[
+                                { value: "json", label: "JSON" },
+                                { value: "sqlite", label: "SQLite" },
+                              ]}
+                              onChange={(v) => setBackupFormat(v === "sqlite" ? "sqlite" : "json")}
+                            />
+                          </div>
+
+                          {/* API Key 默认不备份，避免密钥被误带到网盘 */}
                           <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
                             <div className="min-w-0">
                               <span className="text-xs font-medium text-body">备份 API Key</span>
                               <p className="text-[11px] text-faint leading-relaxed mt-1">
-                                勾选后会把服务商的 API Key 解密成
+                                勾选后备份文件会保留 API Key：JSON 里是
                                 <b className="text-muted">明文</b>
-                                写入备份文件（请妥善保管）；不勾选则只保留服务商配置、不含 Key。
+                                （请妥善保管），SQLite 里保持本机加密（换机可能解不开）；不勾选则只保留服务商配置、不含 Key。
                               </p>
                             </div>
                             <div className="flex-shrink-0 pt-0.5">
@@ -1845,7 +2030,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-body">导出备份</p>
                               <p className="text-[11px] text-faint mt-0.5">
-                                保存为一个 JSON 文件，可放到网盘或 U 盘带走。
+                                {backupFormat === "sqlite"
+                                  ? "保存为一个 SQLite 数据库文件（.db），可放到 U 盘或备份目录。"
+                                  : "保存为一个 JSON 文件，可放到网盘或 U 盘带走。"}
                               </p>
                               {lastExport && (
                                 <p className="text-[11px] text-success mt-1 truncate" title={lastExport.path}>
@@ -1870,7 +2057,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-body">从备份恢复</p>
                               <p className="text-[11px] text-faint mt-0.5">
-                                选择备份文件后覆盖当前数据；备份里带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。
+                                支持 .json 与 .db 备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。
                               </p>
                             </div>
                             <button
