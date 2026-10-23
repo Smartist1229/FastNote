@@ -7,6 +7,9 @@
 export { MarkdownEditor } from "./components/MarkdownEditor";
 export { MarkdownPreview } from "./render/MarkdownPreview";
 
+/** 默认键位表：软件层的「设置 → 快捷键」直接读它，避免文档与实际键位漂移 */
+export { DEFAULT_SHORTCUTS, FORMAT_ACTIONS, SHORTCUTS_BY_ACTION } from "./shortcuts";
+
 export { parseMarkdown } from "./parser/block";
 export { parseCodeMeta, parseLineRanges } from "./render/codeMeta";
 export { parseInline, inlineToText } from "./parser/inline";

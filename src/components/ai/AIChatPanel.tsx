@@ -19,6 +19,7 @@ import * as categoriesApi from "@/api/categories";
 import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
 import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai";
+import type { Tag } from "@/interface/note";
 import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/aiChat";
 import type { ToolCall, ToolTrace } from "@/interface/aiOutput";
 import type { EditorSettings } from "@/interface/settings";
@@ -472,6 +473,11 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
       ...(duplicateTitles.length > 0
         ? { warning: `存在同名笔记（${duplicateTitles.join("、")}）。标题无法唯一定位，必须让用户确认要操作哪一个 ID。` }
         : {}),
+      // 关键词只在标题/正文里找。用户说的常常是主题而不是原话，这时换标签检索才对路，
+      // 否则模型只会换个词再硬搜一次。
+      ...(hits.length === 0
+        ? { hint: "没有命中。关键词只在标题与正文里匹配：若用户说的是主题（而不是原文用词），改用 listTags 看库里有哪些标签，再用 findNotesByTag 检索；也可以换成 2-4 个字的短关键词再搜一次。" }
+        : {}),
     };
   },
   getNoteContent: async (args, ctx) => {
@@ -905,11 +911,32 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     };
   },
 
-  /** 按标签查找笔记：标签的意义就是跨分组检索 */
+  /**
+   * 按标签查找笔记：标签的意义就是跨分组检索。
+   * 精确名没命中时退一步用"包含关系"再找一遍（「读书」→「读书笔记」「读书方法」）：
+   * 标签是用户/模型自己起的词，很难和用户的说法一字不差，直接回"没有"等于让
+   * 模型放弃标签这条路、回去硬搜关键词。
+   */
   findNotesByTag: async (args, ctx) => {
     const name = String(args.tagName ?? args.name ?? "").trim();
     if (!name) return { error: "缺少 tagName" };
-    const all = await tagsApi.listNotesByTag(name);
+    let all: any[] = await tagsApi.listNotesByTag(name);
+    /** 退一步时实际用到的标签名（回给模型核对，避免它以为「读书」这个标签本身存在） */
+    const matchedTags: string[] = [];
+    if (all.length === 0) {
+      const library = await tagsApi.listTags().catch(() => [] as Tag[]);
+      const near = library
+        .filter((t) => t.name.toLowerCase().includes(name.toLowerCase()))
+        .slice(0, 5);
+      for (const t of near) {
+        const notes = await tagsApi.listNotesByTag(t.name).catch(() => []);
+        matchedTags.push(t.name);
+        for (const n of notes) if (!all.some((x: any) => x.id === n.id)) all.push(n);
+      }
+      if (matchedTags.length > 0) {
+        all.sort((a: any, b: any) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
+      }
+    }
     // 与别处一致：未授权的笔记连出现在结果里都不行
     const visible = all.filter((n: any) => canAiReadNote(ctx.access, n));
     const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
@@ -917,6 +944,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const nameOf = (id: number | null) => categories.find((c) => c.id === id)?.name || "未分类";
     return {
       tag: name,
+      ...(matchedTags.length > 0 ? { matchedTags } : {}),
       total: visible.length,
       notes: visible.slice(0, limit).map((n: any) => ({
         id: n.id,
@@ -927,7 +955,9 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
       })),
       ...(visible.length === 0
         ? { hint: `没有笔记带标签「${name}」。先用 listTags 看看库里有哪些。` }
-        : {}),
+        : matchedTags.length > 0
+          ? { hint: `库里没有叫「${name}」的标签，以上是包含关系匹配到的标签（${matchedTags.join("、")}）下的笔记。` }
+          : {}),
     };
   },
 
@@ -1000,7 +1030,13 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     };
   },
 
-  /** 标签改名（全局）：按名字定位是因为模型手里通常只有词、没有 id */
+  /**
+   * 标签改名（全局）：按名字定位是因为模型手里通常只有词、没有 id。
+   *
+   * 改名已免确认，而 Rust 的 rename_tag 不按 source 过滤（它要同时服务属性窗的用户改名），
+   * 所以"只能改自己创建的标签"这条线由这里守住：放过去就等于让 AI 无声改掉用户
+   * 所有笔记上的同一个词。deleteTag 有 Rust 侧的 source 校验，不需要这道。
+   */
   renameTag: async (args) => {
     const from = String(args.tagName ?? args.name ?? "").trim();
     const to = String(args.newName ?? "").trim();
@@ -1009,6 +1045,9 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const tags = await tagsApi.listTags();
     const hit = tags.find((t) => t.name.toLowerCase() === from.toLowerCase());
     if (!hit) return { success: false, error: `库里没有标签「${from}」，先用 listTags 确认` };
+    if (hit.source !== "ai") {
+      return { success: false, error: `「${hit.name}」是用户创建的标签，你无法重命名（只能改自己创建的 AI 标签）` };
+    }
     const next = await tagsApi.renameTag(hit.id, to);
     return { success: true, id: hit.id, from: hit.name, to, tags: next.map((t) => ({ id: t.id, name: t.name })) };
   },
@@ -1392,11 +1431,35 @@ const NOTE_READ_MAX_LINES = 800;
  * 长笔记绝不整篇回传（那是上下文爆炸和"改一行读全文"的根源）：
  * 带行号返回窗口内容，并明确告诉模型总行数与后续怎么读。
  */
-const readNoteWindow = (n: any, startLineArg?: unknown, lineCountArg?: unknown) => {
+/**
+ * 读标签失败也不能连累"读笔记"本身：标签只是附带信息，缺了它顶多是不自动打标签。
+ */
+const safeNoteTags = async (noteId: number): Promise<Tag[]> => {
+  try {
+    return await tagsApi.listNoteTags(noteId);
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * 读取窗口的统一产出。
+ * 一定带上 tags / aiTags：模型是看着这份结果决定"要不要顺手补标签"的，
+ * 结果里没有这个字段，提示词里写再多"读完要打标签"也没有判断依据。
+ */
+const readNoteWindow = async (n: any, startLineArg?: unknown, lineCountArg?: unknown) => {
   const content = String(n.content ?? "");
   const startLine = Math.max(1, Math.floor(Number(startLineArg) || 1));
   const lineCount = Math.min(Math.max(Math.floor(Number(lineCountArg) || NOTE_READ_LINES), 1), NOTE_READ_MAX_LINES);
   const { totalLines, from, to, numbered } = sliceNoteLines(content, startLine, lineCount);
+  const tags = await safeNoteTags(Number(n.id));
+  const aiTags = tags.filter((t) => t.source === "ai").map((t) => t.name);
+  const rangeHint = to < totalLines
+    ? `本笔记共 ${totalLines} 行，本次只返回第 ${from}-${to} 行；继续读取请调用 getNoteContent/readNoteLines 并带 startLine=${to + 1}。修改请用 replaceLines/insertLines/deleteLines，不要整篇覆盖。`
+    : "已返回全部内容（行号仅用于定位，不要写进正文）。";
+  const tagHint = aiTags.length === 0
+    ? "这篇还没有 AI 标签：读完正文后在同一轮用 setNoteTags 补 2-5 个简短标签（先用 listTags 复用库里已有的词），直接执行、不必询问用户。"
+    : "";
   return {
     id: n.id,
     title: n.title,
@@ -1405,9 +1468,9 @@ const readNoteWindow = (n: any, startLineArg?: unknown, lineCountArg?: unknown) 
     totalChars: content.length,
     lines: `${from}-${to}`,
     content: numbered,
-    ...(to < totalLines
-      ? { hint: `本笔记共 ${totalLines} 行，本次只返回第 ${from}-${to} 行；继续读取请调用 getNoteContent/readNoteLines 并带 startLine=${to + 1}。修改请用 replaceLines/insertLines/deleteLines，不要整篇覆盖。` }
-      : { hint: "已返回全部内容（行号仅用于定位，不要写进正文）。" }),
+    tags: tags.map((t) => t.name),
+    aiTags,
+    hint: [rangeHint, tagHint].filter(Boolean).join(" "),
   };
 };
 
@@ -1470,6 +1533,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 本次会话发送过的内容，供 ↑ 键快速召回 */
   const sentHistoryRef = useRef<string[]>([]);
   const [isSending, setIsSending] = useState(false);
+  /**
+   * 本轮对话是否"还没正式结束"。
+   *
+   * 与 isSending 分工不同：isSending 只表示"有流式请求在飞"，工具执行与三类纠错重来
+   * 期间它会短暂变 false（流已经停了、下一轮还没发），但那一轮**并没有结束**。
+   * 「分析」折叠要看的是后者——否则多轮工具调用时它会每一轮闪一下收起再展开。
+   * 只有最终答复落地 / 报错收尾 / 用户点停止，才置 false（那时折叠自动收起）。
+   */
+  const [turnActive, setTurnActive] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   /** 面板父容器（主内容区）的实际宽度：用它算上限，自动包含侧栏折叠、窗口缩放等所有布局变化 */
@@ -1941,8 +2013,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     } catch {}
   };
   const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
-  const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); draftsRef.current[activeSessionId] = input; setActiveSessionId(sid); setInput(draftsRef.current[sid] || ''); resetStreaming(); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
-  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); setGroupOpen({}); setThoughtOpen({}); setExpandedTools({}); titleGenRef.current = null; };
+  const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); draftsRef.current[activeSessionId] = input; setActiveSessionId(sid); setInput(draftsRef.current[sid] || ''); resetStreaming(); setTurnActive(false); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
+  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); setTurnActive(false); setGroupOpen({}); setThoughtOpen({}); setExpandedTools({}); titleGenRef.current = null; };
   /**
    * 自动生成对话标题，只对仍叫"新对话"的会话生效。
    * titleGenRef 记住已生成过的会话 ID，保证每个会话只请求一次标题模型；
@@ -2161,6 +2233,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         // ---------- 无工具调用：这是最终回复 ----------
         if (toolCalls.length === 0) {
           setIsSending(false);
+          // 这一轮到此为止：最终答复落地，「分析」折叠随即收起
+          setTurnActive(false);
           resetStreaming();
           // 正文已剥离全部标签（含未闭合片段），工具调用只会出现在思考区
           const finalReply = finalReplyText(parsed);
@@ -2300,6 +2374,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         // 失败原因必须写进对话：只 console.error 的话，用户只会看到"没反应"并反复重发
         console.error(e);
         setIsSending(false);
+        setTurnActive(false);
         resetStreaming();
         const leftover: any = placeholderRef.current;
         placeholderRef.current = null;
@@ -2314,6 +2389,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     // ---------- 循环结束仍未产出最终回复（多半是轮数用完） ----------
     // 必须留下可见结论，否则工具跑了一堆、界面却没有一句话，用户不知道是否结束。
     setIsSending(false);
+    setTurnActive(false);
     resetStreaming();
     const leftover: any = placeholderRef.current;
     placeholderRef.current = null;
@@ -2483,6 +2559,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       // 立刻把高亮切到这条新提问（其锚点序号 = 之前已有的用户消息数），不必等下一帧滚动同步
       setActiveAnchor(messages.filter(m => m.role === 'user').length);
       setIsSending(true);
+      // 本轮开始：从这一刻到"正式结束"之间，「分析」折叠保持展开（中间的工具轮不再闪）
+      setTurnActive(true);
       const sid = await ensureSession();
       try { await aiApi.saveChatMessage(sid, "user", prompt); } catch {}
       await agentLoop(sid, [...messages, userMsg], prompt);
@@ -2490,7 +2568,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       try { window.dispatchEvent(new CustomEvent('fastnote-data-changed')); } catch {}
     } finally {
       // 只有"自己仍是当前轮次"时才释放锁：旧循环收尾不能把新一轮的锁放掉
-      if (runIdRef.current === myRun) sendLockRef.current = false;
+      if (runIdRef.current === myRun) {
+        sendLockRef.current = false;
+        // 兜底复位：agentLoop 的每个出口都会自己置 false，这里是"无论如何都要收起"的保险，
+        // 例如中途抛到 agentLoop 之外的异常。新一轮已经开跑时不能动它。
+        setTurnActive(false);
+      }
     }
   };
 
@@ -2518,6 +2601,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       return idx >= 0 ? [...m.slice(0, idx), stopped] : [...m, stopped];
     });
     setIsSending(false);
+    // 用户点了停止：这一轮到此为止，「分析」折叠收起
+    setTurnActive(false);
     resetStreaming();
     if (activeSessionId) aiApi.saveChatMessage(activeSessionId, 'assistant', '已停止').catch(()=>{});
   };
@@ -2594,14 +2679,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     : messages;
 
   /**
-   * 本轮对话是否还在进行（思考中 / 正在跑工具）。
-   * 「深度思考」父折叠用它决定默认状态：进行中就展开，等最终答复落地（isSending 变 false、
-   * 也没有"执行中"的工具）就自动收起 —— 不需要额外的定时器或手动清理。
-   * 工具轮之间 isSending 会短暂变 false，所以还要看最后一条消息里是否有未完成的工具，
-   * 否则思考到一半会闪一下收起。
+   * 本轮对话是否还在进行。
+   * 「深度思考」父折叠用它决定默认状态：进行中就一直展开，等这一轮**正式结束**
+   * （最终答复落地 / 报错收尾 / 用户停止）才自动收起 —— 不需要额外的定时器或手动清理。
+   *
+   * 判据必须是 turnActive 而不是 isSending：多轮工具调用时，每轮之间流式已停、
+   * 下一轮请求还没发，isSending 会短暂变 false，用它会看到「分析」反复展开又收起。
+   * isSending 仍保留在判据里，只是给"turnActive 尚未置位时已经开始流式"兜底。
    */
-  const lastRow = allMsgs[allMsgs.length - 1] as (AiChatMessage & { tools?: ToolTrace[] }) | undefined;
-  const turnInProgress = isSending || !!lastRow?.tools?.some((t) => t.ok === null || t.ok === undefined);
+  const turnInProgress = turnActive || isSending;
   /** 正在进行中的那一行：它的父折叠默认展开 */
   const liveRowIndex = turnInProgress ? allMsgs.length - 1 : -1;
 

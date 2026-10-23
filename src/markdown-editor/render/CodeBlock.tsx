@@ -6,11 +6,11 @@
  *
  * Mermaid 渲染是异步的，失败时退回普通代码块，不让一句写错的图语句把整篇预览拖崩。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BlockNode, MarkdownEditorConfig } from "../types";
 import { MdeIcon } from "../icons";
 import { parseCodeMeta } from "./codeMeta";
-import { highlightCode, renderMermaid, splitHighlightedLines } from "./highlight";
+import { escapeHtml, highlightCode, renderMermaid, splitHighlightedLines } from "./highlight";
 
 type CodeNode = Extract<BlockNode, { type: "code" }>;
 
@@ -20,12 +20,56 @@ interface CodeBlockProps {
   labels: Record<string, string>;
 }
 
+/**
+ * 高亮任务串行化。
+ *
+ * 代码块随滚动进入预取范围时，多个任务会在同一轮微任务里一起开跑，
+ * highlight.js 是同步的，几十个块叠在一起就是一次几十到上百毫秒的长任务，
+ * 正好把滚动的帧顶掉。这里每次空闲（或下一轮宏任务）只放一个任务进去，
+ * 单个块的耗时仍会体现在一帧里，但不会再堆成山。
+ */
+const highlightQueue: Array<() => void> = [];
+let highlightScheduled = false;
+
+const pumpHighlight = () => {
+  highlightScheduled = false;
+  const job = highlightQueue.shift();
+  if (!job) return;
+  job();
+  if (highlightQueue.length) scheduleHighlight();
+};
+
+const scheduleHighlight = () => {
+  if (highlightScheduled) return;
+  highlightScheduled = true;
+  const idle = (
+    globalThis as unknown as {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    }
+  ).requestIdleCallback;
+  if (idle) idle(pumpHighlight, { timeout: 120 });
+  else globalThis.setTimeout(pumpHighlight, 16);
+};
+
+const enqueueHighlight = (job: () => void) => {
+  highlightQueue.push(job);
+  scheduleHighlight();
+};
+
 /** 内核：语法高亮 + 行号 + 复制 + 折叠 */
 const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
-  const [lines, setLines] = useState<string[]>(() => [node.code]);
+  /*
+   * 首帧一律先放转义后的纯文本：高亮是异步的，代码原文绝不能直接进 innerHTML
+   * （`<img onerror=…>` 这类片段会在高亮结果回来之前先执行一遍）。
+   */
+  const plain = useMemo(() => splitHighlightedLines(escapeHtml(node.code)), [node.code]);
+  const codeKey = `${node.lang}\u0000${node.code}`;
+  const [colored, setColored] = useState<{ key: string; lines: string[] } | null>(null);
+  const lines = colored && colored.key === codeKey ? colored.lines : plain;
   const [copied, setCopied] = useState(false);
   const [wrap, setWrap] = useState(false);
   const timer = useRef<number | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   const lineCount = node.code ? node.code.split("\n").length : 0;
   const meta = parseCodeMeta(node.meta);
@@ -39,15 +83,43 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
   // 不再因写了行高亮就强制开行号——否则同一篇文档里的代码块会出现两套观感
   const showNumbers = meta.lineNumbers ?? config.preview.showCodeLineNumbers;
 
+  /*
+   * 高亮推迟到代码块接近视口时再做。
+   *
+   * 百万字文档里可能有几千个代码块：挂载时全部丢给 highlight.js，主线程会被
+   * 一口气占住好几秒（懒加载的 highlight.js 一到，所有等待中的任务同时开跑）。
+   * 纯文本已经先画出来了，预取 800px 再上色，观感上没有空窗。
+   */
   useEffect(() => {
+    if (!config.preview.highlight) return;
     let alive = true;
-    highlightCode(node.code, node.lang, config.preview.highlight).then((html) => {
-      if (alive) setLines(splitHighlightedLines(html));
-    });
+    const run = () => {
+      if (!alive) return;
+      highlightCode(node.code, node.lang, true).then((html) => {
+        if (alive) setColored({ key: codeKey, lines: splitHighlightedLines(html) });
+      });
+    };
+    const element = rootRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      enqueueHighlight(run);
+      return () => {
+        alive = false;
+      };
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        enqueueHighlight(run);
+      },
+      { rootMargin: "800px 0px" },
+    );
+    observer.observe(element);
     return () => {
       alive = false;
+      observer.disconnect();
     };
-  }, [node.code, node.lang, config.preview.highlight]);
+  }, [codeKey, node.code, node.lang, config.preview.highlight]);
 
   useEffect(
     () => () => {
@@ -68,7 +140,7 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
   }, [node.code]);
 
   return (
-    <div className={`mde-code${wrap ? " is-wrapped" : ""}`} data-lang={node.lang}>
+    <div className={`mde-code${wrap ? " is-wrapped" : ""}`} data-lang={node.lang} ref={rootRef}>
       <div className="mde-code-head">
         {/* 折叠开关放在语言名前面：它对应的就是「这段代码」，读起来是「收起 · python」，比藏在右侧工具里直观 */}
         {canCollapse && (

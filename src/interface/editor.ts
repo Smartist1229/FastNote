@@ -2,6 +2,20 @@
 
 import type { Category, Note } from "./note";
 import type { EditorSettings } from "./settings";
+import type { MarkdownEditorMode } from "@/markdown-editor";
+
+/**
+ * 编辑器对外暴露的命令式动作（命令面板用）。
+ * 只是把编辑器实例的几个方法包一层：调用方不必知道 `MarkdownEditorInstance` 的存在，
+ * 编辑器没挂载（没打开笔记）时注册进来的是 null，命令据此置灰。
+ */
+export interface NoteEditorActions {
+  setMode: (mode: Exclude<MarkdownEditorMode, "render">) => void;
+  toggleFullscreen: () => void;
+  /** withReplace=true 时同时展开替换行（阅读视图下无效） */
+  openSearch: (withReplace?: boolean) => void;
+  focus: () => void;
+}
 
 /**
  * 笔记编辑器 Props。
@@ -45,4 +59,6 @@ export interface NoteEditorProps {
   onRegisterFlushExternal?: (flush: (() => void) | null) => void;
   /** 是否开启 AI 能力：关闭时，外部文件模式下显示提示 */
   enableAI?: boolean;
+  /** 把编辑器的命令式动作暴露给上层（命令面板的切换视图 / 全屏 / 查找） */
+  onRegisterActions?: (actions: NoteEditorActions | null) => void;
 }

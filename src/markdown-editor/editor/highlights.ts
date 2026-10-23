@@ -85,6 +85,15 @@ const flush = (name: string, ranges: Range[]): void => {
   else registry.delete(name);
 };
 
+/**
+ * 上一次发布过的 token 高亮名。
+ *
+ * 注册表是全局的：所有容器里都不再有 `mde-syn-keyword` 时，这一次的 `tokens`
+ * 里就不会出现这个名字——只发布「还在的」等于把上一批旧区间永远留在注册表里。
+ * 每次发布后对名字做一次差集，把消失的名字显式删掉。
+ */
+let publishedTokens = new Set<string>();
+
 /** 把所有容器的区间并起来重新发布一次（注册表里每个名字只有一个高亮） */
 const publish = (): void => {
   const hit: Range[] = [];
@@ -109,9 +118,13 @@ const publish = (): void => {
   flush(CURRENT_NAME, current);
   flush(FLASH_NAME, flash);
   for (const [name, ranges] of tokens) flush(name, ranges);
+  for (const name of publishedTokens) {
+    if (!tokens.has(name)) flush(name, []);
+  }
+  publishedTokens = new Set(tokens.keys());
 };
 
-/** 清掉某个容器的高亮（关闭查找 / 切模式 / 卸载时调用） */
+/** 清掉某个容器的查找高亮（关闭查找 / 切模式时调用；token 与跳转高亮各有自己的清理入口） */
 export const clearHighlights = (container: HTMLElement): void => {
   if (!buckets.delete(container)) return;
   publish();

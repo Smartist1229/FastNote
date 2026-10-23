@@ -1242,6 +1242,16 @@
   outline: none;
 }
 
+/* 切到编辑视图时预览只隐藏，DOM 保留，切回来不必重建几万个节点 */
+.mde-preview-pane.is-hidden {
+  display: none;
+}
+
+/* 阅读视图里编辑区只隐藏，光标、选区、行号测量都留着 */
+.mde-source.is-hidden {
+  display: none;
+}
+
 .mde-preview {
   min-height: 100%;
 }
@@ -1260,15 +1270,26 @@
 }
 
 /*
- * 超长文档：让浏览器跳过屏外块的布局与绘制。
+ * 超长文档：按分片让浏览器跳过屏外内容的布局与绘制。
  *
- * `contain-intrinsic-size` 的 `auto` 前缀会让浏览器记住上次渲染出的真实高度，
- * 滚动条才不会因为占位值而反复抽动。只对块数超过阈值的文档加 `is-large`：
- * 短文档开了没收益，反而会让分栏滚动同步把屏外块的高度读成占位值。
+ * 不能给每个顶层块都开 `content-visibility`：滚动时浏览器要为每个块单独判定
+ * 是否接近视口，上万个块就是每滚一下几百毫秒。包成一百多个分片后判定量降两个数量级，
+ * 而 DOM 仍是整篇，框选/复制/页内查找都不受影响。
+ *
+ * `contain-intrinsic-size` 的 `auto` 会让浏览器记住分片实测过的高度，
+ * 滚动条不会反复抽动；首次占位高度由 React 按块数写在行内样式上。
  */
-.mde-preview.is-large .mde-preview-content > * {
+.mde-preview.is-large .mde-chunk {
   content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
+}
+
+/* 分片边界不影响标题的段间距（首个分片的第一块仍按原样贴顶） */
+.mde-preview.is-large .mde-chunk > .mde-h:first-child {
+  margin-top: var(--mde-heading-top);
+}
+
+.mde-preview.is-large .mde-chunk:first-child > .mde-h:first-child {
+  margin-top: 0;
 }
 
 .mde-preview-empty {

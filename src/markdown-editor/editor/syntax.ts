@@ -139,6 +139,77 @@ export const scanFences = (lines: string[]): CodeFence[] => {
   return fences;
 };
 
+/** 切行结果的变化区间（0 基，`oldEnd` / `newEnd` 不含） */
+export interface LineChange {
+  first: number;
+  oldEnd: number;
+  newEnd: number;
+}
+
+/**
+ * 比较两次切行结果。
+ *
+ * 增量切行（`lines.ts`）会复用公共前后缀的行字符串，所以这里比较的是引用，
+ * 两万行文档也只有两万次指针比较。
+ */
+export const changedLineRange = (prev: string[], next: string[]): LineChange => {
+  const shared = Math.min(prev.length, next.length);
+  let first = 0;
+  while (first < shared && prev[first] === next[first]) first += 1;
+  let suffix = 0;
+  while (suffix < shared - first && prev[prev.length - 1 - suffix] === next[next.length - 1 - suffix]) {
+    suffix += 1;
+  }
+  return { first, oldEnd: prev.length - suffix, newEnd: next.length - suffix };
+};
+
+/**
+ * 增量更新围栏表。
+ *
+ * 只要变化行里（新旧两侧）都没有围栏标记，围栏的「开/关」状态就不可能改变：
+ * 受影响的范围之外的围栏只是整体平移了下标，直接复用。
+ * 返回 null 表示需要全文重扫（改到了标记行，或前后状态无法确认）。
+ */
+export const updateFences = (
+  prevLines: string[],
+  nextLines: string[],
+  prevFences: CodeFence[],
+): CodeFence[] | null => {
+  const change = changedLineRange(prevLines, nextLines);
+  const delta = nextLines.length - prevLines.length;
+  if (change.oldEnd === change.first && change.newEnd === change.first && delta === 0) return prevFences;
+  for (let i = change.first; i < change.oldEnd; i += 1) {
+    if (FENCE_RE.test(prevLines[i] ?? "")) return null;
+  }
+  for (let i = change.first; i < change.newEnd; i += 1) {
+    if (FENCE_RE.test(nextLines[i] ?? "")) return null;
+  }
+  const out: CodeFence[] = new Array(prevFences.length);
+  for (let i = 0; i < prevFences.length; i += 1) {
+    const fence = prevFences[i];
+    if (!fence.closed) {
+      // 未闭合围栏一直延伸到文末：起始行按需平移，结束行永远跟到最后
+      out[i] = {
+        ...fence,
+        open: fence.open >= change.oldEnd ? fence.open + delta : fence.open,
+        close: Math.max(0, nextLines.length - 1),
+      };
+      continue;
+    }
+    if (fence.open >= change.oldEnd) {
+      out[i] = { ...fence, open: fence.open + delta, close: fence.close + delta };
+      continue;
+    }
+    // 变化落在围栏内部：起始行不变，结束行跟着整体平移
+    if (fence.close >= change.oldEnd) {
+      out[i] = { ...fence, close: fence.close + delta };
+      continue;
+    }
+    out[i] = fence;
+  }
+  return out;
+};
+
 /** 某一行的围栏归属：`open` / `close` 是围栏行本身，`body` 是代码行 */
 export type FenceRole = "open" | "body" | "close";
 

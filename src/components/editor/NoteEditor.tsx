@@ -10,8 +10,8 @@
  * 配色由 config/markdownEditor.ts 从软件主题令牌换算后注入，跟随设置与主题实时变化。
  */
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
-import type { NoteEditorProps } from "@/interface/editor";
-import type { MarkdownEditorMode } from "@/markdown-editor";
+import type { NoteEditorProps, NoteEditorActions } from "@/interface/editor";
+import type { MarkdownEditorInstance, MarkdownEditorMode } from "@/markdown-editor";
 import { buildNoteEditorConfig } from "@/config/markdownEditor";
 import { FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -28,6 +28,17 @@ const MarkdownEditor = lazy(() =>
 
 /** 编辑器正文字号的兜底值（设置在读取失败时使用） */
 const FONT_SIZE_FALLBACK = DEFAULT_EDITOR_SETTINGS.fontSize;
+
+/**
+ * 底部统计（非空白字符数 / 行数）。
+ *
+ * 百万字文档上 `replace(/\s/g)` + `split("\n")` 是十几毫秒的全文扫描，
+ * 不能跟着每个按键跑：这里按 250ms 防抖算一次，输入过程中数字保持上一次的值。
+ */
+const countContent = (text: string): { chars: number; lines: number } => ({
+  chars: text ? text.replace(/\s/g, "").length : 0,
+  lines: text ? text.split("\n").length : 0,
+});
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
@@ -47,10 +58,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onSaveExternalToNote,
   onCloseExternal,
   onRegisterFlushExternal,
+  onRegisterActions,
   enableAI,
 }) => {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [contentCounts, setContentCounts] = useState(() => countContent(""));
+  useEffect(() => {
+    const timer = window.setTimeout(() => setContentCounts(countContent(content)), 250);
+    return () => window.clearTimeout(timer);
+  }, [content]);
   /** 由 externalFilePath 派生：该模式下标题只读、内容写回原文件而不写库 */
   const isExternal = externalFilePath != null;
   /** 输入法组合中：拼音等未上屏的中间态不该触发保存 */
@@ -170,6 +187,29 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     onRegisterExport?.(handleExport);
     return () => onRegisterExport?.(null);
   }, [onRegisterExport, handleExport]);
+
+  /**
+   * 编辑器实例：命令面板的「切换视图 / 全屏 / 查找」通过它执行。
+   * 编辑器是懒加载的，`onReady` 之前 ref 为空——动作里每次现取 ref，
+   * 所以注册得早也没关系，调用时拿不到就当没这个命令。
+   */
+  const editorApiRef = useRef<MarkdownEditorInstance | null>(null);
+  const handleEditorReady = useCallback((api: MarkdownEditorInstance) => {
+    editorApiRef.current = api;
+  }, []);
+  useEffect(() => {
+    const actions: NoteEditorActions = {
+      setMode: (next) => editorApiRef.current?.setMode(next),
+      toggleFullscreen: () => editorApiRef.current?.toggleFullscreen(),
+      openSearch: (withReplace) => editorApiRef.current?.openSearch(undefined, withReplace),
+      focus: () => editorApiRef.current?.focus(),
+    };
+    onRegisterActions?.(actions);
+    return () => {
+      editorApiRef.current = null;
+      onRegisterActions?.(null);
+    };
+  }, [onRegisterActions]);
 
   const handleCopyContent = useCallback(async () => {
     try {
@@ -419,8 +459,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     scheduleSave();
   };
 
-  const wordCount = content ? content.replace(/\s/g, "").length : 0;
-  const lineCount = content ? content.split("\n").length : 0;
+  const wordCount = contentCounts.chars;
+  const lineCount = contentCounts.lines;
   /** 已保存时间戳只显示 时:分；非法日期返回空串（new Date 不抛错，必须显式判断 Invalid Date） */
   const formatSavedTime = (t: string | null) => {
     if (!t) return "";
@@ -646,6 +686,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               onModeChange={setMode}
               config={editorConfig}
               onChange={handleContentChange}
+              onReady={handleEditorReady}
               onFontSizeChange={handleFontSizeChange}
               onLinkClick={(href) => {
                 // 页内锚点（脚注 ↔ 正文）留在编辑器里滚动，不能交给浏览器

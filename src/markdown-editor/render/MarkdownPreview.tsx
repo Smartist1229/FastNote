@@ -8,7 +8,7 @@
  *
  * 每个顶层块保留原始偏移（data-offset），实时预览整块替换时用它切编辑区文本。
  */
-import { createElement, Fragment, memo, useMemo, useState } from "react";
+import { createElement, Fragment, memo, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type {
   AlertKind,
@@ -39,6 +39,13 @@ const ALERT_LABEL_KEY: Record<AlertKind, string> = {
  * 短文档用不上这套（还会把分栏滚动同步的块高度读成占位值），所以按量开。
  */
 const LARGE_DOC_BLOCKS = 240;
+
+/**
+ * 屏外分片的占位高度（每块）：只影响首次估算的滚动条总高，
+ * 分片真正排过一次后浏览器会记住实测值（`contain-intrinsic-size: auto`）。
+ * 96px 来自长文档实测的块均高，偏差在十几个百分点内。
+ */
+const CHUNK_BLOCK_ESTIMATE = 96;
 
 /** `!!!` 提示块的图标：按类型区分，比纯色块更容易扫读 */
 const CALLOUT_ICON: Record<AlertKind, string> = {
@@ -266,6 +273,67 @@ const TocBody: React.FC = () => {
  * 没有这层的话 2800 个块连同子树会被全量重渲染。
  * 上层按「文本变化区间」把没被碰到的块换回旧对象，这层就能把它们整个跳过。
  */
+/**
+ * 块内容是否相同（忽略 start / end）。
+ *
+ * 增量解析为了维持正确的绝对偏移，会把尾部块的 start/end 平移后生成新对象；
+ * 换行时还会一起平移 line。只要内容与 line 没变就不该重画——`data-offset`
+ * 允许滞后（见 blockAttrs 的说明），而 `data-line` 是滚动同步的锚点，变了必须重画。
+ * 任务项的 taskOffset 会随平移变化，`items` 数组引用因此不同，会正常触发重画。
+ */
+const sameBlockNode = (a: BlockNode, b: BlockNode): boolean => {
+  if (a === b) return true;
+  if (a.type !== b.type || a.line !== b.line) return false;
+  switch (a.type) {
+    case "heading": {
+      const prev = a;
+      const next = b as typeof prev;
+      return prev.level === next.level && prev.id === next.id && prev.children === next.children;
+    }
+    case "paragraph": {
+      const next = b as typeof a;
+      return a.children === next.children;
+    }
+    case "code": {
+      const next = b as typeof a;
+      return a.lang === next.lang && a.meta === next.meta && a.code === next.code && a.fence === next.fence;
+    }
+    case "math":
+      return a.code === (b as typeof a).code;
+    case "blockquote": {
+      const next = b as typeof a;
+      return a.alert === next.alert && a.children === next.children;
+    }
+    case "callout": {
+      const next = b as typeof a;
+      return (
+        a.kind === next.kind &&
+        a.title === next.title &&
+        a.fold === next.fold &&
+        a.open === next.open &&
+        a.children === next.children
+      );
+    }
+    case "list": {
+      const next = b as typeof a;
+      return (
+        a.ordered === next.ordered &&
+        a.startNumber === next.startNumber &&
+        a.tight === next.tight &&
+        a.items === next.items
+      );
+    }
+    case "table": {
+      const next = b as typeof a;
+      return a.align === next.align && a.header === next.header && a.rows === next.rows;
+    }
+    case "html":
+      return a.raw === (b as typeof a).raw;
+    default:
+      return true;
+  }
+};
+
 const BlockViewBase: React.FC<BlockViewProps> = ({ node, topLevel = false }) => {
   const ctx = usePreview();
   const { config, labels } = ctx;
@@ -422,7 +490,10 @@ const BlockViewBase: React.FC<BlockViewProps> = ({ node, topLevel = false }) => 
   }
 };
 
-export const BlockView = memo(BlockViewBase);
+export const BlockView = memo(
+  BlockViewBase,
+  (prev, next) => prev.topLevel === next.topLevel && sameBlockNode(prev.node, next.node),
+);
 
 /** front matter 元信息卡 */
 export const FrontmatterCard: React.FC<{ doc: ParsedDocument; labels: Record<string, string> }> = ({ doc, labels }) => {
@@ -473,25 +544,152 @@ export interface MarkdownPreviewProps {
   style?: CSSProperties;
   /** 主题变量：图片放大浮层 portal 到 body 后需要它来继承配色 */
   themeVars?: Record<string, string>;
+  /**
+   * 整篇替换的代次：换笔记 / 整篇粘贴 / 首次挂载时变化，普通打字保持不变。
+   * 变化就意味着「这一整篇 DOM 都要重造」，预览据此分批铺（见 `useProgressiveBlocks`）。
+   */
+  generation?: number;
   onLinkClick?: (href: string, event: ReactMouseEvent) => boolean | void;
   onTaskToggle?: (taskOffset: number, checked: boolean) => void;
   onImageClick?: (src: string, alt: string) => boolean | void;
 }
 
+/** 首批铺多少块：够盖住两三屏，再多半点意义都没有 */
+const FIRST_PAINT_BLOCKS = 320;
+/** 空闲帧里每批补多少块 */
+const FILL_STEP_BLOCKS = 512;
+
 /**
- * 顶层块列表：key 一律用下标。
+ * 分批把顶层块铺进 DOM，返回这一趟要铺的块数。
  *
- * 同理不能用 `node.start` 当 key——打字会让后面每一块的 start 平移，
+ * 长文档的预览是整篇 DOM：一次性提交七千多个块在中低端机器上就是两秒多的白屏，
+ * 而这期间用户什么也看不到。这里先只铺够盖住一屏的量，剩下的交给空闲帧补齐——
+ * 屏外分片本来就带 `content-visibility`，补进来也不排版，滚动条高度由
+ * `contain-intrinsic-size` 先顶着，所以补齐过程中画面不会跳。
+ *
+ * 只有 `generation` 变化（整篇替换）才重新计数：打字时块对象本来就被复用，
+ * 一次提交只动真正改过的那一两块，分批反而会让人看着正文一段段长出来。
+ */
+const useProgressiveBlocks = (total: number, generation: number): number => {
+  const [shown, setShown] = useState(() =>
+    total > LARGE_DOC_BLOCKS ? Math.min(total, FIRST_PAINT_BLOCKS) : total,
+  );
+  const [seen, setSeen] = useState(generation);
+  // 渲染期同步把计数压回首批：等 effect 再压的话，这一帧已经把整篇铺完了
+  if (generation !== seen) {
+    setSeen(generation);
+    setShown(total > LARGE_DOC_BLOCKS ? Math.min(total, FIRST_PAINT_BLOCKS) : total);
+  }
+  useEffect(() => {
+    if (shown >= total) return;
+    const idle = (
+      globalThis as unknown as {
+        requestIdleCallback?: (cb: () => void, options?: { timeout: number }) => number;
+        cancelIdleCallback?: (handle: number) => void;
+      }
+    ).requestIdleCallback;
+    const cancel = (
+      globalThis as unknown as { cancelIdleCallback?: (handle: number) => void }
+    ).cancelIdleCallback;
+    const pump = () => setShown((value) => Math.min(total, value + FILL_STEP_BLOCKS));
+    const handle = idle ? idle(pump, { timeout: 200 }) : globalThis.setTimeout(pump, 16);
+    return () => {
+      if (idle && cancel) cancel(handle);
+      else globalThis.clearTimeout(handle);
+    };
+  }, [shown, total]);
+  return Math.min(shown, total);
+};
+
+/**
+ * 顶层块按固定大小分片。
+ *
+ * 分片是为了挡住「一个块变了、一万个块跟着重渲染」：分片自身是 memo 的，
+ * 只要这一片里的块对象都没变，React 就不必往下走那 128 个 BlockView。
+ * 解析复用块对象（见 MarkdownEditor 的 shareBlocks / 增量解析）时，
+ * 一次按键只有真正动过的那一片会重建。
+ *
+ * 片内 key 仍用全文下标：增删块会让后续分片整体错位再重建，
+ * 但这只发生在换行/删除整块时，且 DOM 结果与不下标 key 的旧行为一致。
+ */
+const BLOCK_CHUNK = 128;
+
+const BlockChunk = memo(
+  function BlockChunk({
+    blocks,
+    start,
+    topLevel,
+    contained,
+  }: {
+    blocks: BlockNode[];
+    start: number;
+    topLevel: boolean;
+    /** 长文档：整片作为一个 `content-visibility` 容器，屏外时整片跳过排版 */
+    contained: boolean;
+  }) {
+    const body = blocks.map((node, index) => (
+      <BlockView key={start + index} node={node} topLevel={topLevel} />
+    ));
+    if (!contained) return <>{body}</>;
+    /*
+     * 包一层而不是给每个块都开 `content-visibility`：后者会让浏览器在每次滚动时
+     * 对上万个块逐个做「是否接近视口」的判定，百万字文档上一滚一个几百毫秒的长任务。
+     * 按分片包起来后判定对象只剩一百多个，屏外照旧跳过排版，DOM 却完整保留
+     * ——框选、复制、页内查找都还是整篇。
+     */
+    return (
+      <div
+        className="mde-chunk"
+        data-line={blocks[0]?.line}
+        style={{ containIntrinsicSize: `auto ${blocks.length * CHUNK_BLOCK_ESTIMATE}px` }}
+      >
+        {body}
+      </div>
+    );
+  },
+  (prev, next) => {
+    if (prev.topLevel !== next.topLevel || prev.start !== next.start) return false;
+    if (prev.contained !== next.contained) return false;
+    if (prev.blocks.length !== next.blocks.length) return false;
+    for (let index = 0; index < prev.blocks.length; index += 1) {
+      if (!sameBlockNode(prev.blocks[index], next.blocks[index])) return false;
+    }
+    return true;
+  },
+);
+
+/**
+ * 顶层块列表：按片渲染，未变的分片整片跳过。
+ *
+ * 不能用 `node.start` 当 key——打字会让后面每一块的 start 平移，
  * 于是整篇块被判定成「换了一批元素」而全部重挂。用下标则打字时 key 纹丝不动，
  * 只有真正增删块时尾部才会重建，这在文档里是少数情况。
  */
-const BlockList: React.FC<{ doc: ParsedDocument }> = ({ doc }) => {
-  if (!doc.blocks.length) return null;
-  return <>{doc.blocks.map((node, index) => <BlockView key={index} node={node} topLevel />)}</>;
+const BlockList: React.FC<{ doc: ParsedDocument; contained: boolean; limit: number }> = ({
+  doc,
+  contained,
+  limit,
+}) => {
+  const total = Math.min(doc.blocks.length, limit);
+  if (!total) return null;
+  const chunks = [];
+  for (let index = 0; index < total; index += BLOCK_CHUNK) {
+    const end = Math.min(total, index + BLOCK_CHUNK);
+    chunks.push(
+      <BlockChunk
+        key={index}
+        blocks={doc.blocks.slice(index, end)}
+        start={index}
+        topLevel
+        contained={contained}
+      />,
+    );
+  }
+  return <>{chunks}</>;
 };
 
-/** 只读渲染整篇文档 */
-export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
+/** 只读渲染整篇文档（memo：doc / 配置不变时整棵预览直接跳过） */
+const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
   doc,
   config,
   labels,
@@ -499,11 +697,14 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
   className,
   style,
   themeVars,
+  generation = 0,
   onLinkClick,
   onTaskToggle,
   onImageClick,
 }) => {
   const hasFrontmatter = config.preview.showFrontmatter && doc.frontmatter;
+  const large = doc.blocks.length > LARGE_DOC_BLOCKS;
+  const shown = useProgressiveBlocks(doc.blocks.length, generation);
   const empty = config.preview.emptyText || labels.empty;
   /*
    * 宿主没接管图片点击时，预览自己弹放大浮层。
@@ -533,7 +734,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
     <PreviewCtx.Provider value={ctx}>
       <OutlineCtx.Provider value={doc.outline}>
         <div
-          className={`mde-preview${doc.blocks.length > LARGE_DOC_BLOCKS ? " is-large" : ""}${
+          className={`mde-preview${large ? " is-large" : ""}${
             className ? ` ${className}` : ""
           }`}
           style={style}
@@ -543,7 +744,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
             {doc.blocks.length === 0 ? (
               <div className="mde-preview-empty">{empty}</div>
             ) : (
-              <BlockList doc={doc} />
+              <BlockList doc={doc} contained={large} limit={shown} />
             )}
             {config.preview.showFootnotes && <Footnotes doc={doc} labels={labels} />}
           </div>
@@ -561,6 +762,8 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
     </PreviewCtx.Provider>
   );
 };
+
+export const MarkdownPreview = memo(MarkdownPreviewBase);
 
 /** 供实时预览渲染单个块时复用上下文 */
 export const PreviewProvider = PreviewCtx.Provider;

@@ -53,13 +53,16 @@ import * as aiApi from "@/api/ai";
 import * as settingsApi from "@/api/settings";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
+import { CommandPalette } from "@/components/common/CommandPalette";
+import type { PaletteCommand, PaletteMode } from "@/components/common/CommandPalette";
+import type { NoteEditorActions } from "@/interface/editor";
 import { PropertiesModal } from "@/components/common/PropertiesModal";
 import { ToastProvider, useToast } from "@/components/common/Toast";
 
 import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
 
-import { SettingsModal } from "@/components/settings/SettingsModal";
+import { SettingsModal, SETTINGS_SECTIONS } from "@/components/settings/SettingsModal";
 import { ExportCategoryModal } from "@/components/data/ExportCategoryModal";
 import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
@@ -181,6 +184,23 @@ function AppContent() {
   /** 统一设置窗口：null 表示关闭，否则为打开时的分区 */
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+
+  /* ---------------- 命令面板 / 快速跳转 ----------------
+   * Ctrl+P 跳转笔记、Ctrl+Shift+P 命令面板（Ctrl+K 留给编辑器的「插入链接」）。
+   * 面板是纯派生视图：笔记来自内存里的全量列表，命令表在下面按当前状态组装，
+   * 标签列表只在面板打开时才拉一次。paletteNonce 让每次打开都重新挂载，
+   * 免得上次的查询词、选中项、标签筛选残留下来。
+   */
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMode, setPaletteMode] = useState<PaletteMode>("jump");
+  const [paletteSeed, setPaletteSeed] = useState("");
+  const [paletteNonce, setPaletteNonce] = useState(0);
+  const [paletteTags, setPaletteTags] = useState<Tag[]>([]);
+  /** 编辑器的命令式动作（切换视图 / 全屏 / 查找），由 NoteEditor 挂载时注册 */
+  const editorActionsRef = useRef<NoteEditorActions | null>(null);
+  const registerEditorActions = useCallback((actions: NoteEditorActions | null) => {
+    editorActionsRef.current = actions;
+  }, []);
   /** 服务商列表与当前选中项：由本组件代持，设置弹窗只做展示与回调 */
   const [providerModalProviders, setProviderModalProviders] = useState<AiProvider[]>([]);
   const [providerModalSelectedId, setProviderModalSelectedId] = useState<number>(0);
@@ -378,6 +398,49 @@ function AppContent() {
     setSettingsSection(section);
     setShowSettings(true);
   }, []);
+
+  /** 打开命令面板；seed 用于预填查询词（「按标签筛选」直接进 # 模式） */
+  const openPalette = useCallback((mode: PaletteMode, seed = "") => {
+    setPaletteMode(mode);
+    setPaletteSeed(seed);
+    setPaletteNonce((nonce) => nonce + 1);
+    setPaletteOpen(true);
+  }, []);
+
+  /**
+   * 全局快捷键：Ctrl/⌘+P 跳转、Ctrl/⌘+Shift+P 命令面板。
+   *
+   * 挂在 window 捕获阶段是为了抢在编辑器之前——但**只 preventDefault、不 stopPropagation**：
+   * 编辑器自己那套 window 守卫还在，掐断事件会让别的键位一起失灵。
+   * 用 `code === "KeyP"` 而不是 `key`：中文输入法/非英文布局下 `key` 未必是 "p"。
+   */
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.code !== "KeyP" || event.isComposing) return;
+      event.preventDefault();
+      openPalette(event.shiftKey ? "command" : "jump");
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [openPalette]);
+
+  /** 标签列表：只在面板打开时拉一次（标签会随 AI 打标签变化，不值得常驻内存） */
+  useEffect(() => {
+    if (!paletteOpen) return;
+    let alive = true;
+    tagsApi
+      .listTags()
+      .then((list) => {
+        if (alive) setPaletteTags(list);
+      })
+      .catch(() => {
+        if (alive) setPaletteTags([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [paletteOpen]);
 
   /** 恢复软件默认设置：删库里全部 app.config.* 键，运行时状态同步回默认 */
   const handleResetAppSettings = useCallback(async () => {
@@ -1185,6 +1248,285 @@ function AppContent() {
     [notes],
   );
 
+  /**
+   * 命令面板的命令表。
+   *
+   * 刻意**不用 useMemo**：每条命令的 run 都闭包着当次渲染的状态（当前笔记、排序、主题），
+   * 缓存一份旧闭包反而会执行到过期数据；面板关闭时直接给空数组，开销为零。
+   * 每条都写 hint（面板里的说明行）与 keywords（别名 / 英文 / 拼音首字母），
+   * 保证「记得有这个功能但想不起叫什么」也能搜到。
+   */
+  const paletteCommands: PaletteCommand[] = paletteOpen
+    ? [
+        /* ---------- 笔记 ---------- */
+        {
+          id: "note.create",
+          title: "新建笔记",
+          hint: `在「${categories.find((c) => c.id === selectedCategoryId)?.name ?? "未分类"}」里新建一篇空笔记`,
+          group: "笔记",
+          icon: "sidebar-plus",
+          keywords: "new note 新建 创建 create",
+          run: () => void handleCreateNote(),
+        },
+        {
+          id: "note.createCategory",
+          title: "新建分组",
+          hint: "创建一个新的分组来归类笔记",
+          group: "笔记",
+          icon: "sidebar-folder-plus",
+          keywords: "new category 分组 分类 创建 folder",
+          run: handleCreateCategory,
+        },
+        {
+          id: "note.export",
+          title: "导出当前笔记",
+          hint: "另存为 Markdown 文件，与 Ctrl+S 等价",
+          group: "笔记",
+          icon: "editor-export",
+          keys: "mod+s",
+          keywords: "export 导出 保存 另存为 save file",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => exportNoteRef.current?.(),
+        },
+        {
+          id: "note.properties",
+          title: "当前笔记属性",
+          hint: "改标题、移动分组、管理标签、AI 访问权限",
+          group: "笔记",
+          icon: "ai-settings",
+          keywords: "properties 属性 详情 标签 权限",
+          disabled: !selectedNote || overlayActive,
+          disabledReason: overlayActive ? "AI 预览 / 电脑文件没有笔记属性" : "先打开一篇笔记",
+          run: () => {
+            if (selectedNote) setPropertiesTarget({ kind: "note", note: selectedNote });
+          },
+        },
+        {
+          id: "note.trash",
+          title: "打开回收站",
+          hint: "查看、还原或彻底删除已删除的笔记",
+          group: "笔记",
+          icon: "sidebar-trash",
+          keywords: "trash 回收站 删除 还原 recycle",
+          run: () => void handleOpenTrash(),
+        },
+        {
+          id: "note.openFile",
+          title: "打开电脑上的文本文件…",
+          hint: "直接在编辑器里编辑 md / txt，保存时写回原文件",
+          group: "笔记",
+          icon: "welcome-file-empty",
+          keywords: "open file 打开 电脑 本地 txt md 文件",
+          run: () => void handleOpenTextFileDialog(),
+        },
+
+        /* ---------- 视图 ---------- */
+        {
+          id: "view.sidebar",
+          title: isSidebarCollapsed ? "显示侧边栏" : "隐藏侧边栏",
+          hint: "分组与笔记列表",
+          group: "视图",
+          icon: "sidebar-list",
+          keywords: "sidebar 侧边栏 收起 展开 toggle",
+          run: () => setIsSidebarCollapsed((collapsed) => !collapsed),
+        },
+        {
+          id: "view.groups",
+          title: "切换到分组视图",
+          hint: "按分组浏览全部笔记",
+          group: "视图",
+          icon: "sidebar-folder",
+          keywords: "groups 分组 视图",
+          disabled: sidebarView === "groups",
+          disabledReason: "当前已经是分组视图",
+          run: () => setSidebarView("groups"),
+        },
+        {
+          id: "view.favorites",
+          title: "切换到收藏视图",
+          hint: "只看置顶 / 收藏的笔记",
+          group: "视图",
+          icon: "sidebar-star",
+          keywords: "favorites 收藏 置顶 star pinned",
+          disabled: sidebarView === "favorites",
+          disabledReason: "当前已经是收藏视图",
+          run: () => setSidebarView("favorites"),
+        },
+        {
+          id: "view.aiPanel",
+          title: aiPanelOpen ? "关闭 AI 面板" : "打开 AI 面板",
+          hint: "与 AI 对话，可读写当前笔记",
+          group: "视图",
+          icon: "ai-chat",
+          keywords: "ai 面板 chat 对话 助手",
+          disabled: !appSettings.general.enableAI,
+          disabledReason: "AI 能力已在设置里关闭",
+          run: toggleAiPanel,
+        },
+
+        /* ---------- 编辑器 ---------- */
+        {
+          id: "editor.code",
+          title: "编辑器：源码视图",
+          hint: "只看 Markdown 源文",
+          group: "编辑器",
+          icon: "ai-edit",
+          keywords: "mode code 源码 编辑 视图",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => editorActionsRef.current?.setMode("code"),
+        },
+        {
+          id: "editor.split",
+          title: "编辑器：分栏视图",
+          hint: "左边源码、右边预览",
+          group: "编辑器",
+          icon: "sidebar-edit-square",
+          keywords: "mode split 分栏 预览 视图",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => editorActionsRef.current?.setMode("split"),
+        },
+        {
+          id: "editor.read",
+          title: "编辑器：阅读视图",
+          hint: "只看渲染结果",
+          group: "编辑器",
+          icon: "sidebar-eye",
+          keywords: "mode read 阅读 预览 视图",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => editorActionsRef.current?.setMode("read"),
+        },
+        {
+          id: "editor.fullscreen",
+          title: "编辑器全屏 / 退出全屏",
+          hint: "隐藏侧边栏与 AI 面板，只留正文",
+          group: "编辑器",
+          icon: "sidebar-edit-square",
+          keys: "mod+alt+enter",
+          keywords: "fullscreen 全屏 沉浸",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => editorActionsRef.current?.toggleFullscreen(),
+        },
+        {
+          id: "editor.find",
+          title: "在笔记中查找",
+          hint: "Ctrl+F 也能打开",
+          group: "编辑器",
+          icon: "ai-search",
+          keys: "mod+f",
+          keywords: "find search 查找 搜索",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => editorActionsRef.current?.openSearch(false),
+        },
+        {
+          id: "editor.replace",
+          title: "查找并替换",
+          hint: "阅读视图下不可用",
+          group: "编辑器",
+          icon: "ai-replace",
+          keys: "mod+h",
+          keywords: "replace 替换 查找",
+          disabled: !editorNote,
+          disabledReason: "先打开一篇笔记",
+          run: () => editorActionsRef.current?.openSearch(true),
+        },
+
+        /* ---------- 排序 ---------- */
+        ...[
+          { id: "sort.updated", value: "updated_at", title: "按更新时间排序", hint: "最近改过的排在前面", keywords: "sort updated 排序 更新 时间" },
+          { id: "sort.created", value: "created_at", title: "按创建时间排序", hint: "按新建顺序排列", keywords: "sort created 排序 创建 时间" },
+          { id: "sort.title", value: "title", title: "按标题排序", hint: "按标题字母 / 拼音顺序", keywords: "sort title 排序 标题 名称" },
+        ].map<PaletteCommand>((option) => ({
+          id: option.id,
+          title: option.title,
+          hint: option.hint,
+          group: "排序",
+          icon: "sidebar-clock",
+          keywords: option.keywords,
+          disabled: sortBy === option.value,
+          disabledReason: "当前就是这种排序",
+          run: () => handleSortByChange(option.value),
+        })),
+        {
+          id: "sort.order",
+          title: sortOrder === "asc" ? "改为降序排列" : "改为升序排列",
+          hint: "在当前的排序字段上翻转方向",
+          group: "排序",
+          icon: "ai-arrow-down",
+          keywords: "order asc desc 升序 降序 排序",
+          run: handleToggleSortOrder,
+        },
+
+        /* ---------- 主题 ---------- */
+        ...[
+          { id: "theme.light", mode: "light" as const, title: "主题：明亮", hint: "浅色外观", keywords: "theme light 明亮 浅色 白色" },
+          { id: "theme.dark", mode: "dark" as const, title: "主题：暗黑", hint: "深色外观", keywords: "theme dark 暗黑 深色 夜间" },
+          { id: "theme.system", mode: "system" as const, title: "主题：跟随系统", hint: "随操作系统的深浅色切换", keywords: "theme system auto 跟随 系统 自动" },
+        ].map<PaletteCommand>((option) => ({
+          id: option.id,
+          title: option.title,
+          hint: option.hint,
+          group: "主题",
+          icon: "settings-theme",
+          keywords: option.keywords,
+          disabled: theme.mode === option.mode,
+          disabledReason: "当前就是这个主题",
+          run: () => handleThemeChange({ ...theme, mode: option.mode }),
+        })),
+
+        /* ---------- 标签 ---------- */
+        {
+          id: "tag.filter",
+          title: "按标签筛选笔记…",
+          hint: "也可以直接输入 # 加标签名",
+          group: "标签",
+          icon: "shared-tag",
+          keywords: "tag 标签 筛选 分类 主题",
+          run: () => openPalette("jump", "#"),
+        },
+
+        /* ---------- 设置 ---------- */
+        ...SETTINGS_SECTIONS.filter(
+          (section) => appSettings.general.enableAI || !["provider", "chat", "context", "memory", "access"].includes(section.key),
+        ).map<PaletteCommand>((section) => ({
+          id: `settings.${section.key}`,
+          title: `打开设置：${section.label}`,
+          hint: "打开设置窗口并定位到该分区",
+          group: "设置",
+          icon: section.icon,
+          keywords: `settings 设置 ${section.key}`,
+          run: () => openSettings(section.key),
+        })),
+
+        /* ---------- 数据 ---------- */
+        {
+          id: "data.refresh",
+          title: "刷新笔记列表",
+          hint: "重新从数据库读取分组与笔记",
+          group: "数据",
+          icon: "sidebar-refresh",
+          keywords: "refresh reload 刷新 重新加载",
+          run: () => void loadData(),
+        },
+        {
+          id: "data.clearSearch",
+          title: "清空侧边栏搜索",
+          hint: "把搜索框与搜索结果一起清掉",
+          group: "数据",
+          icon: "ai-close",
+          keywords: "clear 清空 搜索 search",
+          disabled: !searchQuery,
+          disabledReason: "当前没有搜索关键词",
+          run: () => setSearchQuery(""),
+        },
+      ]
+    : [];
+
   return (
     <div className="h-screen flex flex-col bg-app">
       <div className="relative flex flex-1 overflow-hidden">
@@ -1314,6 +1656,7 @@ function AppContent() {
                     onSaveExternalToNote={handleSaveExternalToNote}
                     onCloseExternal={handleCloseExternalFile}
                     onRegisterFlushExternal={registerFlushExternal}
+                    onRegisterActions={registerEditorActions}
                     enableAI={appSettings.general.enableAI}
                   />
                 </div>
@@ -1515,6 +1858,24 @@ function AppContent() {
         theme={theme}
         onThemeChange={handleThemeChange}
       />
+
+      {/* 命令面板 / 快速跳转：Ctrl+P 跳转、Ctrl+Shift+P 命令 */}
+      {paletteOpen && (
+        <CommandPalette
+          key={paletteNonce}
+          open={paletteOpen}
+          initialMode={paletteMode}
+          seedQuery={paletteSeed}
+          notes={notes}
+          categories={categories}
+          tags={paletteTags}
+          commands={paletteCommands}
+          currentNoteId={selectedNote?.id ?? null}
+          onClose={() => setPaletteOpen(false)}
+          onOpenNote={openNote}
+          onLoadTagNotes={(tag) => tagsApi.listNotesByTag(tag.name)}
+        />
+      )}
 
       {/* 导出分组：右键分组菜单进入，可导出为压缩包或电子书 */}
       <ExportCategoryModal

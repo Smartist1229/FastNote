@@ -225,7 +225,7 @@ const FloatingMenu: React.FC<{
  * memo 包一层：工具栏有几十个按钮，而它的 props 在打字时几乎不变
  * （格式状态由上层收敛成「值不变就复用旧引用」），没有这层就会每敲一个字全量重渲染。
  */
-export const Toolbar = memo<ToolbarProps>(({
+const ToolbarImpl = ({
   config,
   labels,
   mode,
@@ -249,7 +249,7 @@ export const Toolbar = memo<ToolbarProps>(({
   onCopyAll,
   onColor,
   onCustomTool,
-}) => {
+}: ToolbarProps) => {
   const [openMenu, setOpenMenu] = useState<MenuKind | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   /**
@@ -775,4 +775,12 @@ export const Toolbar = memo<ToolbarProps>(({
       )}
     </div>
   );
+};
+
+export const Toolbar = memo(ToolbarImpl, (previous: ToolbarProps, next: ToolbarProps) => {
+  const changed: string[] = [];
+  (Object.keys(previous) as (keyof ToolbarProps)[]).forEach((key) => {
+    if (previous[key] !== next[key]) changed.push(key);
+  });
+  return changed.length === 0;
 });

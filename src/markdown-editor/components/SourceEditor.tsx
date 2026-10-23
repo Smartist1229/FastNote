@@ -24,6 +24,7 @@
  */
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -50,6 +51,8 @@ import {
   highlightFenceRows,
   scanFences,
   syntaxHighlightName,
+  updateFences,
+  type CodeFence,
   type TokenSpan,
 } from "../editor/syntax";
 import { Gutter, type GutterHandle } from "../components/Gutter";
@@ -201,7 +204,7 @@ interface SourceEditorProps {
   flashLine?: number;
 }
 
-export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
+const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
   (
     {
       value,
@@ -329,6 +332,8 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       fontLigatures: config.editor.fontLigatures,
     });
     const { range, scroll, schedule, sync } = useVisibleRange(element, ruler, VIEW_PAD);
+    /** 本趟渲染所用的 ruler 版本：layout 阶段若已被 sync 推高，说明这一帧的 padding 还是旧表算的 */
+    const rulerVersion = ruler.getVersion();
     /** 订阅测量进度：渐进扫描每帧只动行号槽，不带整棵编辑器 */
     useSyncExternalStore(ruler.subscribe, ruler.getVersion);
 
@@ -360,14 +365,20 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     /* ---------- 围栏代码块 ---------- */
 
     /*
-     * 围栏是「全文状态」：这一行在不在代码块里，取决于它前面有没有开着的围栏，
-     * 所以得从头扫。只在文本变化时扫一次（`value` 变了，`lines` 才是新的）。
+     * 围栏是「全文状态」：这一行在不在代码块里，取决于它前面有没有开着的围栏。
+     * 但每次按键都从头扫一遍全文是白白花掉 O(行数)：改动行里没有围栏标记时，
+     * 整张围栏表只会整体平移，复用上一份即可（见 editor/syntax.ts 的 updateFences）。
      */
-    const fences = useMemo(
-      () => scanFences(lines),
+    const fenceCache = useRef<{ lines: string[]; fences: CodeFence[] } | null>(null);
+    const fences = useMemo(() => {
+      const previous = fenceCache.current;
+      const next = previous
+        ? updateFences(previous.lines, lines, previous.fences) ?? scanFences(lines)
+        : scanFences(lines);
+      fenceCache.current = { lines, fences: next };
+      return next;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- lines 每次都新建，按 value 记忆即可
-      [value],
-    );
+    }, [value]);
     /** 当前渲染区间内每一行的围栏归属（围栏行 / 代码行） */
     const fenceRows = useMemo(() => collectFenceRows(fences, first, last), [fences, first, last]);
 
@@ -379,26 +390,44 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
      */
     const [tokenTick, setTokenTick] = useState(0);
     const tokenRows = useRef(new Map<number, TokenSpan[]>());
+    /** 上一次真正送去着色的可见围栏内容：内容没变就不必再跑一遍 highlight.js */
+    const tokenKey = useRef("");
 
     useEffect(() => {
       const content = contentRef.current;
-      const cleared = new Map<number, TokenSpan[]>();
-      tokenRows.current = cleared;
       if (!content) return;
       if (config.editor.codeHighlight !== true || !fenceRows.size) {
+        tokenRows.current = new Map();
+        tokenKey.current = "";
         setTokenRanges(content, []);
         return;
       }
+      const visible = fences.filter((fence) => fence.close >= first && fence.open < last);
+      /*
+       * 打字只要没改到可见围栏里的内容，着色段就还是原样。
+       * 以前这里每次按键都把可见代码块重新高亮一遍，异步回来再抬一个 tick——
+       * 每敲一个字多一趟渲染，纯属白花。
+       */
+      const signature = visible
+        .map((fence) => {
+          const from = Math.max(first, fence.open + 1);
+          const to = Math.min(last, fence.close);
+          return `${fence.open}:${fence.close}:${fence.lang}:${lines[fence.open] ?? ""}:${lines.slice(from, to).join("\n")}`;
+        })
+        .join("\u0001");
+      if (signature === tokenKey.current) return;
+      tokenKey.current = signature;
+      const cleared = new Map<number, TokenSpan[]>();
+      tokenRows.current = cleared;
       let cancelled = false;
-      const jobs = fences
-        .filter((fence) => fence.close >= first && fence.open < last)
-        .map((fence) =>
-          highlightFenceRows(fence, lines, first, last, true).then((spans) => {
-            for (const [line, list] of spans) if (!cancelled) cleared.set(line, list);
-          }),
-        );
+      const jobs = visible.map((fence) =>
+        highlightFenceRows(fence, lines, first, last, true).then((spans) => {
+          for (const [line, list] of spans) if (!cancelled) cleared.set(line, list);
+        }),
+      );
       void Promise.all(jobs).then(() => {
-        if (!cancelled && cleared.size) setTokenTick((tick) => tick + 1);
+        // 即使一条 token 都没有也要抬 tick：得把上一次铺的旧区间清掉
+        if (!cancelled) setTokenTick((tick) => tick + 1);
       });
       return () => {
         cancelled = true;
@@ -413,6 +442,8 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
       let total = 0;
       for (const [line, spans] of tokenRows.current) {
         if (total >= MAX_TOKEN_RANGES) break;
+        // tokenRows 是异步算出的上一批结果：围栏刚被改掉时，这些行已经不是代码行
+        if (fenceRows.get(line) !== "body") continue;
         const row = content.querySelector<HTMLElement>(`.mde-line[data-line="${line}"]`);
         if (!row) continue;
         for (const span of spans) {
@@ -435,7 +466,7 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
         Array.from(groups, ([name, ranges]) => ({ name, ranges })),
       );
       return () => setTokenRanges(content, []);
-    }, [tokenTick, first, last, value]);
+    }, [tokenTick, fenceRows, first, last, value]);
 
     /* ---------- DOM ↔ 文档偏移 ---------- */
 
@@ -623,6 +654,11 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
      * 有选区、失焦、输入法组合中都交回浏览器：那时该画的是选区/候选框，不是光标。
      */
     const syncCaret = useCallback(() => {
+      // 已经排队的帧在本次同步测量后没有意义了，撤掉，避免一帧里量两遍
+      if (caretFrame.current) {
+        cancelAnimationFrame(caretFrame.current);
+        caretFrame.current = 0;
+      }
       const content = contentRef.current;
       const caret = caretRef.current;
       if (!content || !caret) return;
@@ -954,11 +990,39 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     }, [autoFocus, element, readOnly]);
 
     /** 每次渲染都立刻重算可视区间：文本变了、高度测出来了，都不能让行号慢一帧 */
+    const caretText = useRef(value);
+    const syncedInput = useRef<{ value: string; version: number } | null>(null);
     useLayoutEffect(() => {
       if (!element) return;
+      /*
+       * 这趟渲染用的还是旧偏移表（useVisualLineRows 的 sync 刚刚在本帧 layout 阶段
+       * 改了表并触发重渲染）。此刻的 padding 与新表对不上，量出来的区间会错，
+       * 交给紧随其后的那趟重渲染——它的 rulerVersion 与表一致。
+       */
+      if (ruler.getVersion() !== rulerVersion) return;
+      const previous = syncedInput.current;
+      syncedInput.current = { value, version: rulerVersion };
+      /*
+       * 纯区间变化（滚动把新区间算出来了）不需要再量一遍：
+       * scroll 的 rAF 刚刚量过，这里再 sync 就是同一帧里第二次强制排版，
+       * 窄分栏下每次要多付十几毫秒。只有文本或偏移表变了才必须重算。
+       */
+      if (previous && previous.value === value && previous.version === rulerVersion) {
+        scheduleCaret();
+        return;
+      }
       sync();
-      // 文本、字号、折行宽度变了都可能挪动光标：本帧内重新量一次
-      scheduleCaret();
+      /*
+       * 文本变了就把光标同步量掉：交给 rAF 的话，这一帧的 paint 已经把新字画出来了，
+       * 光标却要等下一帧才挪过去——大文档里排版一忙，看着就是「光标慢半拍」。
+       * 其余情况（滚动、尺寸变化）仍然合并到下一帧，避免每趟渲染都强制重排。
+       */
+      if (caretText.current !== value) {
+        caretText.current = value;
+        syncCaret();
+      } else {
+        scheduleCaret();
+      }
     });
 
     /** 记下这一帧渲染出来的行文本：组合结束后要靠它做差分 */
@@ -969,20 +1033,23 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     /* ---------- 编辑 ---------- */
 
     /**
-     * 跳转前的补测：把 [0, line] 这一段补齐。
+     * 跳转前的补测：把目标行附近的一段补齐。
      *
-     * 偏移表里的行数对没测过的行是「占位 1 行」，按它算出来的纵向位置会偏上，
-     * 偏多少取决于折行多不多——跳得越远错得越狠。宁可多花一次排版，
-     * 也不能让「跳到第 1800 行」落在第 1500 行。
+     * 偏移表对没测过的行按 1 视觉行估算，而渲染窗口的 padding 用同一张表算，
+     * 所以目标行落在「第几行」是准的；要补的是目标附近那段——窗口里每一行都得是实测值，
+     * 行号槽才不会被折行撑歪。不必从文首一路量过来：百万字文档那样做一次就是几十秒。
      */
     const measureUpTo = useCallback(
       (line: number) => {
         const content = contentRef.current;
         const count = ruler.lines.length;
-        if (!content || !count || ruler.frontier > line) return;
-        ruler.ensureVisible(content, Math.min(count, line + 1));
+        if (!content || !count) return;
+        const index = Math.max(0, Math.min(line, count - 1));
+        const unit = ruler.advance || ruler.unit || config.editor.fontSize * config.editor.lineHeight;
+        const rows = Math.ceil(Math.max(1, content.clientHeight) / Math.max(1, unit));
+        ruler.measureBand(content, Math.max(0, index - 2), Math.min(count, index + rows + 8));
       },
-      [ruler],
+      [config.editor.fontSize, config.editor.lineHeight, ruler],
     );
 
     /**
@@ -1481,6 +1548,15 @@ export const SourceEditor = forwardRef<SourceEditorHandle, SourceEditorProps>(
     );
   },
 );
+
+/**
+ * memo：解析结果落地、统计刷新、选区变化这些父级提交并不都改正文。
+ * 没有这层，每敲一个字会跟着重渲染三四趟编辑区。
+ */
+export const SourceEditor = memo(SourceEditorImpl, (previous, next) => {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  return keys.size === 0 || [...keys].every((key) => (previous as Record<string, unknown>)[key] === (next as Record<string, unknown>)[key]);
+});
 
 SourceEditor.displayName = "SourceEditor";
 

@@ -4,11 +4,10 @@
  * 行号槽与查找高亮层都要「只渲染看得见的那几十行」，所以区间计算放在一处共享，
  * 滚动监听也只挂一个。
  *
- * 两遍定位是这里的关键：
- * - 第一遍拿当前偏移（未测行按 1 行参与排版）粗估，并让 ruler 把那段补齐实测；
- * - 第二遍偏移已是真值，再精确定位。
- * 未测行的行数是下界，所以第一遍算出的行号只会偏大——宁可多测几行，
- * 也不能漏掉屏上正在显示的行（漏了偏移就是错的，行号会整体漂）。
+ * ruler 只实测视口附近的带（`measureBand`），未测行按 1 视觉行参与偏移计算。
+ * 实测会改动偏移表，所以量完要把锚点行钉回原来的位置：先记下锚点行与行内偏移，
+ * 等这一轮重渲染（`notify` 触发，padding 已换成新表）完成后再落 scrollTop，
+ * 否则向上滚进未测区时画面会跳一下。
  *
  * 滚动本身不触发重渲染：位置存 ref，只有跨过区间边界（上下各留 PAD 行余量）才 setState。
  */
@@ -40,14 +39,35 @@ export const useVisibleRange = (target: HTMLElement | null, ruler: LineRuler, pa
   const measure = useCallback(() => {
     const element = target;
     if (!element) return;
+
+    // 排版条件刚变过：消费方已按新表重渲染，现在把锚点行落回去
+    const anchor = ruler.takeAnchor();
+    if (anchor) {
+      const max = Math.max(0, element.scrollHeight - element.clientHeight);
+      element.scrollTop = Math.min(Math.max(0, ruler.offsetOf(anchor.line) + anchor.intra), max);
+    }
+
     const top = element.scrollTop;
     scroll.current = top;
     const view = Math.max(1, element.clientHeight);
     const limit = ruler.lines.length;
-    ruler.ensureVisible(element, Math.min(limit, ruler.lineAt(top + view) + pad + 1));
-    const first = Math.max(0, ruler.lineAt(top) - pad);
-    const last = Math.min(limit, ruler.lineAt(top + view) + pad + 1);
-    ruler.visibleEnd = last;
+    if (!limit) return;
+    const unit = Math.max(1, ruler.advance || ruler.unit || 1);
+    const visibleRows = Math.ceil(view / unit);
+    const before = pad + 2;
+    const anchorLine = Math.min(limit - 1, ruler.lineAt(top));
+    const intra = Math.max(0, top - ruler.offsetOf(anchorLine));
+    const from = Math.max(0, anchorLine - before);
+    const to = Math.min(limit, anchorLine + visibleRows + before + 4);
+
+    if (ruler.measureBand(element, from, to, true, true)) {
+      // 实测改了几个折行行数：偏移表变了，下一趟渲染后重新对准锚点
+      ruler.requestAnchor(anchorLine, intra);
+    }
+
+    const settled = element.scrollTop;
+    const first = Math.max(0, ruler.lineAt(settled) - pad);
+    const last = Math.min(limit, ruler.lineAt(settled + view) + pad + 1);
     const current = latest.current;
     if (current.first === first && current.last === last) return;
     latest.current = { first, last };

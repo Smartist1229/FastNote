@@ -4,10 +4,10 @@
  * 数据流：编辑区文本按 `\n` 切成逻辑行 → 塞进隐藏 mirror 排版 → 读回高度 / 单行高 →
  * 得到「这一逻辑行占几个视觉行」。行号槽据此决定每个行号占多高，折出的续行前面就没有数字。
  *
- * 真正的排版交给 `LineRuler`，这里只负责三件事：
+ * 真正的排版交给 `LineRuler`，这里只负责两件事：
  * - 从编辑区容器上读出排版本身依赖的可用宽度与行高（滚动条出现时 clientWidth 会变）；
- * - 在文本/尺寸变化后调用一次 `sync`，只保证可视窗口之前是实测值；
- * - 把剩下的测量摊到后续若干帧（`step`），并在全部测完后停下。
+ * - 在文本/尺寸变化后调用一次 `sync`：只同步改到的那几行或视口附近的一小段，
+ *   其余部分等滚到了再由 `LineRuler.measureBand` 补测。
  *
  * 返回的是 ruler 本身：消费方订阅它、按需取偏移，
  * 而不是每次测量都把整棵编辑器拖着重渲染一遍。
@@ -52,7 +52,6 @@ export const useVisualLineRows = (input: VisualLineRowsInput): LineRuler => {
   const rulerRef = useRef<LineRuler | null>(null);
   if (!rulerRef.current) rulerRef.current = new LineRuler();
   const ruler = rulerRef.current;
-  const frame = useRef(0);
 
   /** 容器宽度变化都要重测：窗口缩放、分栏拖拽都会改变一行能放多少字 */
   const [sizeTick, setSizeTick] = useState(0);
@@ -62,18 +61,6 @@ export const useVisualLineRows = (input: VisualLineRowsInput): LineRuler => {
     observer.observe(element);
     return () => observer.disconnect();
   }, [element]);
-
-  /** 逐帧扫描：没测完就一帧一帧推进，测完立刻停，帧循环不空转 */
-  const pump = () => {
-    frame.current = 0;
-    if (!element) return;
-    if (!ruler.step(element)) return;
-    frame.current = requestAnimationFrame(pump);
-  };
-  const kick = () => {
-    if (frame.current || !element) return;
-    frame.current = requestAnimationFrame(pump);
-  };
 
   // 用 layout effect：行号高度必须在这一帧里就跟上文本，否则滚动时会看到数字跳一下
   useLayoutEffect(() => {
@@ -87,17 +74,12 @@ export const useVisualLineRows = (input: VisualLineRowsInput): LineRuler => {
     const unit = parseFloat(style.lineHeight) || fallbackUnit;
     if (width <= 0 || unit <= 0) return;
 
-    ruler.sync(
-      target,
-      text,
-      {
-        width,
-        unit,
-        font: [fontFamily, fontSize, tabSize, fontLigatures, letterSpacing].join("|"),
-        wrap,
-      },
-    );
-    kick();
+    ruler.sync(target, text, {
+      width,
+      unit,
+      font: [fontFamily, fontSize, tabSize, fontLigatures, letterSpacing].join("|"),
+      wrap,
+    });
   }, [
     element,
     text,
@@ -113,14 +95,6 @@ export const useVisualLineRows = (input: VisualLineRowsInput): LineRuler => {
     sizeTick,
     ruler,
   ]);
-
-  useEffect(
-    () => () => {
-      if (frame.current) cancelAnimationFrame(frame.current);
-      frame.current = 0;
-    },
-    [],
-  );
 
   return ruler;
 };

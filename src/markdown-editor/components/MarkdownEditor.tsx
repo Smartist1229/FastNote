@@ -16,6 +16,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -23,9 +24,10 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import "../styles.css";
+import { DEFAULT_SHORTCUTS } from "../shortcuts";
 import { ALL_MODES, resolveConfig, resolveLabels } from "../defaults";
 import { buildHighlightRules, buildSyntaxRules, buildThemeVars } from "../theme";
-import { parseMarkdown } from "../parser/block";
+import { parseMarkdown, parseMarkdownIncremental } from "../parser/block";
 import {
   applyAdmonition,
   applyCallout,
@@ -47,7 +49,7 @@ import {
   setFlashRanges,
   type TextHighlightResult,
 } from "../editor/highlights";
-import { lineOffsets, splitLines } from "../editor/lines";
+import { diffLinesEdit, diffTextLines, lineOffsets, noteTextChange, quickTextEdit, quickTextEditNear, splitLines, type TextEdit } from "../editor/lines";
 import {
   expandReplacement,
   findMatches,
@@ -162,30 +164,6 @@ interface EditorTarget {
   apply: (next: EditState) => void;
 }
 
-/** 默认快捷键（键名用 KeyboardEvent.code 归一化后的结果） */
-const DEFAULT_SHORTCUTS: Record<string, string> = {
-  "mod+b": "bold",
-  "mod+i": "italic",
-  "mod+shift+x": "strike",
-  "mod+e": "inlineCode",
-  "mod+shift+e": "codeBlock",
-  "mod+k": "link",
-  "mod+shift+k": "image",
-  "mod+shift+.": "quote",
-  "mod+shift+7": "orderedList",
-  "mod+shift+8": "bulletList",
-  "mod+shift+9": "taskList",
-  "mod+shift+m": "math",
-  "mod+shift+f": "footnote",
-  "mod+alt+1": "heading1",
-  "mod+alt+2": "heading2",
-  "mod+alt+3": "heading3",
-  "mod+alt+4": "heading4",
-  "mod+alt+5": "heading5",
-  "mod+alt+6": "heading6",
-  "mod+alt+0": "heading0",
-};
-
 /** 跟随系统的明暗解析 */
 const useResolvedTheme = (mode: "light" | "dark" | "auto"): "light" | "dark" => {
   const [system, setSystem] = useState<"light" | "dark">(() => {
@@ -236,37 +214,54 @@ const splitColumns = (
 ): string =>
   split.resizable ? `${ratio}fr ${split.dividerWidth}px ${1 - ratio}fr` : `${ratio}fr ${1 - ratio}fr`;
 
-/** a → b 的文本变化区间 [lo, hi)：公共前缀 + 公共后缀之外就是真正动过的部分 */
-const changedRange = (a: string, b: string): [number, number] => {
-  const shared = Math.min(a.length, b.length);
-  let lo = 0;
-  while (lo < shared && a.charCodeAt(lo) === b.charCodeAt(lo)) lo += 1;
-  let hi = 0;
-  while (hi < shared - lo && a.charCodeAt(a.length - 1 - hi) === b.charCodeAt(b.length - 1 - hi)) hi += 1;
-  return [lo, a.length - hi];
-};
-
 /** 一份「源文本 + 解析选项 + 解析结果」的快照：三者必须成对流转 */
 interface ParsedSnapshot {
   text: string;
   allowHtml: boolean;
   breaks: boolean;
   doc: ParsedDocument;
+  /** 与 doc 配套的切行结果与行首偏移：增量解析、块复用直接拿去用，省掉每键一次全文切行 */
+  lines: string[];
+  offsets: Float64Array;
+  /** 相对 `editBase` 的整行差分；文本改动无法按行定位（CRLF）时为 null */
+  edit: TextEdit | null;
+  editBase: string | null;
+  /**
+   * 整篇替换的代次：换笔记 / 整篇粘贴 / 换解析选项时 +1，普通打字保持不变。
+   * 预览拿它判断要不要分批铺 DOM——整篇替换一次造几万个节点，
+   * 单帧提交在中低端机器上就是半秒以上的白屏；分批铺只让首屏先出来。
+   */
+  generation: number;
 }
 
 /** 变化跨度超过这个字符数就不再当成「敲字」：多半是换笔记或整篇粘贴 */
 const WHOLESALE_SPAN = 4096;
+
+/** 查找关闭时的空命中表：恒定引用，免得每次渲染都当新 prop 递给编辑区 */
+const NO_MATCHES: SearchMatch[] = [];
 
 /**
  * 这次改的是不是「整篇换掉」。
  *
  * 换笔记时两份文本几乎没有公共前后缀，变化跨度≈全文；这种改动要立刻解析、
  * 也不该拿去和上一篇复用块——否则预览会先停在上一篇，甚至把上一篇的块搬过来。
+ *
+ * 按行比较而不是按字符比较：行字符串在增量切行时是复用引用，两万行也只是两万次
+ * 指针比较；逐字符扫 40 万字符放在每次按键的渲染路径上就是几毫秒的固定开销。
  */
-const isWholesaleChange = (previous: string, next: string): boolean => {
+const isWholesaleChange = (
+  previous: string,
+  next: string,
+  edit: TextEdit | null = null,
+  hint?: number,
+): boolean => {
   if (!previous.length || !next.length) return true;
-  const [lo, hi] = changedRange(previous, next);
-  const span = hi - lo;
+  const change =
+    edit ??
+    (hint === undefined ? null : quickTextEditNear(previous, next, hint)) ??
+    diffTextLines(previous, next);
+  if (!change) return false;
+  const span = change.oldTo - change.from;
   if (span > WHOLESALE_SPAN) return true;
   // 跨度同时占了原文与新文的大半：不是在原有内容上改，而是换了内容
   return span * 2 > previous.length && span * 2 > next.length;
@@ -298,14 +293,18 @@ const hasTaskItem = (node: ParsedDocument["blocks"][number]): boolean => {
  *   行号变了的也不能复用（data-line 是滚动同步与「跳到编辑区」的锚点）。
  */
 const shareBlocks = (
-  next: { text: string; doc: ParsedDocument },
+  next: ParsedSnapshot,
   previous: { text: string; doc: ParsedDocument } | null,
 ): ParsedDocument => {
   if (!previous) return next.doc;
   if (previous.text === next.text) return previous.doc;
-  if (isWholesaleChange(previous.text, next.text)) return next.doc;
+  // 差分是解析快照构建时按行算好的；基准对不上（链断过）就不复用，正确性不受影响
+  const edit = next.editBase === previous.text ? next.edit : null;
+  if (!edit) return next.doc;
+  if (isWholesaleChange(previous.text, next.text, edit)) return next.doc;
 
-  const [lo, hi] = changedRange(previous.text, next.text);
+  const lo = edit.from;
+  const hi = edit.oldTo;
   const prevBlocks = previous.doc.blocks;
   const blocks = next.doc.blocks;
   const out = blocks.slice();
@@ -319,18 +318,33 @@ const shareBlocks = (
     for (let i = 0; i < head; i += 1) out[i] = prevBlocks[i];
   }
 
-  const prevTail = previous.text.length - hi;
+  /*
+   * `hi` 是变化区间在**旧文本**里的结束偏移；新文本里同一位置要加上整篇的长度差。
+   * 之前这里把「后缀长度」当成了新文本里的后缀起点，两个量纲混在一起，
+   * 比较条件永远不成立——尾部块从来没被复用成功过，每次解析整篇预览都会重渲染。
+   */
+  const delta = next.text.length - previous.text.length;
+  const nextHi = hi + delta;
   let i = blocks.length - 1;
   let j = prevBlocks.length - 1;
+  /**
+   * 旧块可能来自更早的一代解析：`data-offset` 本来就允许滞后（渲染只认 data-line），
+   * 所以不能拿 `old.start` 和新块逐块对齐。改成校验「同一段尾巴的平移量一致」：
+   * 从末尾起每对块的 `start` 差值必须相同，一旦变化说明中间还有别的改动，后面的配对不再可信。
+   * 不复用旧对象的话，后面每个分片都会被判定成变了，一次按键把整篇预览重画（十万字以上约一秒）。
+   */
+  let pairShift: number | null = null;
   while (i >= head && j >= prevHead) {
     const block = blocks[i];
     const old = prevBlocks[j];
     // 两边都得整块落在公共后缀里，跨在变化点上的块不能复用
-    if (block.start < hi || old.start < prevTail) break;
-    // 相对位置 / 长度 / 行号必须逐项对上：任一项不符说明后缀里的块已经配对错行，后面更早的也不可信
-    if (old.start - prevTail !== block.start - hi) break;
+    if (block.start < nextHi || old.start < hi) break;
+    // 长度 / 行号必须逐项对上：任一项不符说明后缀里的块已经配对错行，后面更早的也不可信
     if (old.end - old.start !== block.end - block.start) break;
     if (old.line !== block.line) break;
+    const shift = block.start - old.start;
+    if (pairShift === null) pairShift = shift;
+    else if (shift !== pairShift) break;
     // 任务项带着平移前的 taskOffset，复用会让勾选改到别的字符上
     if (!hasTaskItem(block)) out[i] = old;
     i -= 1;
@@ -443,7 +457,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     valueRef.current = value;
   }, [value]);
 
-  const available = config.mode.available.length ? config.mode.available : ALL_MODES;
+  // 配置里的数组引用若随宿主渲染变化，模式切换回调也会跟着失效，这里收敛成稳定引用
+  const available = useMemo(
+    () => (config.mode.available.length ? config.mode.available : ALL_MODES),
+    [config.mode.available],
+  );
   /** render 是「无外壳纯渲染」，不出现在模式切换里，因此不受 available 限制 */
   const isRenderMode = (value: MarkdownEditorMode) => value === "render";
   const [innerMode, setInnerMode] = useState<MarkdownEditorMode>(() => {
@@ -454,6 +472,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     modeProp && (isRenderMode(modeProp) || available.includes(modeProp)) ? modeProp : innerMode;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+
+  /*
+   * 大纲面板开合。声明在解析之前：解析要不要做（`needsDoc`）取决于它——
+   * 只开代码视图、大纲也收起时，解析结果没有任何去处，可以先不解析。
+   */
+  const [outlineOpen, setOutlineOpen] = useState(config.outline.show);
 
   const [selection, setSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
   const selectionRef = useRef(selection);
@@ -513,13 +537,52 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    * 之后每次都会命中这条错账（`previous.text === text` 直接返回旧 doc），
    * 表现就是换笔记后预览永远停在上一篇。
    */
+  /**
+   * 上一份「文本 + 选项 + AST」快照：增量解析拿它当基准。
+   *
+   * 只有和 doc 配套的那段文本、那套选项才能当复用基准；选项变了（例如关掉 HTML）
+   * 就整篇重来。增量不适用时（换笔记、改到标题/定义、窗口无法确认）自动退回整篇解析。
+   */
+  const lastSnapshot = useRef<ParsedSnapshot | null>(null);
   const makeSnapshot = useCallback(
-    (text: string, options: { allowHtml: boolean; breaks: boolean }): ParsedSnapshot => ({
-      text,
-      allowHtml: options.allowHtml,
-      breaks: options.breaks,
-      doc: parseMarkdown(text, options),
-    }),
+    (text: string, options: { allowHtml: boolean; breaks: boolean }): ParsedSnapshot => {
+      const previous = lastSnapshot.current;
+      const parseText = text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
+      const lines = splitLines(parseText);
+      const offsets = lineOffsets(parseText);
+      let edit: TextEdit | null = null;
+      let editBase: string | null = null;
+      let doc: ParsedDocument;
+      if (previous && previous.allowHtml === options.allowHtml && previous.breaks === options.breaks) {
+        if (parseText !== previous.text && !text.includes("\r") && !previous.text.includes("\r")) {
+          edit = diffLinesEdit(previous.lines, previous.offsets, lines, offsets);
+          editBase = previous.text;
+        }
+        doc = parseMarkdownIncremental(previous, text, options, { lines, offsets }) ?? parseMarkdown(text, options);
+      } else {
+        doc = parseMarkdown(text, options);
+      }
+      const optionsChanged =
+        previous !== null &&
+        (previous.allowHtml !== options.allowHtml || previous.breaks !== options.breaks);
+      const wholesale =
+        previous === null ||
+        optionsChanged ||
+        (parseText !== previous.text && isWholesaleChange(previous.text, parseText, edit));
+      const snapshot: ParsedSnapshot = {
+        text,
+        allowHtml: options.allowHtml,
+        breaks: options.breaks,
+        doc,
+        lines,
+        offsets,
+        edit,
+        editBase,
+        generation: (previous?.generation ?? 0) + (wholesale ? 1 : 0),
+      };
+      lastSnapshot.current = snapshot;
+      return snapshot;
+    },
     [],
   );
 
@@ -538,6 +601,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   const [composeTick, setComposeTick] = useState(0);
 
   /**
+   * 这一帧的解析结果有没有去处。
+   *
+   * 只开代码视图、大纲又收起、宿主也没订阅大纲时，`doc` 的唯一消费者预览与大纲都不在，
+   * 防抖到点再整篇重解析（百万字约 40ms）纯属白烧。此时让 doc 停在上一次快照上，
+   * 切回分栏 / 阅读 / 展开大纲时由下面的 effect 立刻补解析，不等防抖。
+   * `onOutlineChange` 是宿主的订阅口，传了就得保持大纲实时。
+   */
+  const needsDoc = mode !== "code" || outlineOpen || Boolean(onOutlineChange);
+
+  /**
    * 本次渲染要显示的解析结果。
    *
    * 防抖为 0（实时预览）时直接在渲染期解析：走 effect 的话一次按键是
@@ -546,22 +619,23 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    * 等 120ms 只会让人先看见上一篇的残留内容。
    */
   const parsed = useMemo<ParsedSnapshot>(() => {
+    if (!needsDoc) return debounced;
     if (composingRef.current) return debounced;
     const upToDate =
       debounced.text === value &&
       debounced.allowHtml === parseOptions.allowHtml &&
       debounced.breaks === parseOptions.breaks;
     if (upToDate) return debounced;
-    if (!config.preview.debounce || isWholesaleChange(debounced.text, value)) {
+    if (!config.preview.debounce || isWholesaleChange(debounced.text, value, null, selectionRef.current.start)) {
       return makeSnapshot(value, parseOptions);
     }
     return debounced;
-  }, [value, parseOptions, debounced, config.preview.debounce, composeTick, makeSnapshot]);
+  }, [needsDoc, value, parseOptions, debounced, config.preview.debounce, composeTick, makeSnapshot]);
 
   /** 防抖落地：到点把「这一帧显示的解析结果」写进防抖状态，与渲染期解析保持同一份 */
   useEffect(() => {
     const delay = config.preview.debounce;
-    if (!delay) return;
+    if (!delay || !needsDoc) return;
     // 组合期间不落库：否则等 120ms 的定时器正好在候选词中间把整篇重解析一遍
     if (composingRef.current) return;
     const committed =
@@ -579,7 +653,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       delay,
     );
     return () => window.clearTimeout(timer);
-  }, [value, parseOptions, config.preview.debounce, debounced, parsed, composeTick, makeSnapshot]);
+  }, [needsDoc, value, parseOptions, config.preview.debounce, debounced, parsed, composeTick, makeSnapshot]);
+
+  /**
+   * 从「不需要解析」切回「需要」时立刻补一次。
+   *
+   * 代码视图里可能积压了一串没解析的按键：若等防抖，切到分栏会先闪一帧旧预览；
+   * 展开大纲则会先按旧标题渲染。放在布局阶段补，改在首帧绘制前。
+   */
+  const docWantedRef = useRef(needsDoc);
+  useLayoutEffect(() => {
+    if (needsDoc && !docWantedRef.current) {
+      setDebounced((previous) =>
+        previous.text === value &&
+        previous.allowHtml === parseOptions.allowHtml &&
+        previous.breaks === parseOptions.breaks
+          ? previous
+          : makeSnapshot(value, parseOptions),
+      );
+    }
+    docWantedRef.current = needsDoc;
+  }, [needsDoc, value, parseOptions, makeSnapshot]);
 
   /**
    * 把「内容没被这次改动碰到」的块换回上一次的节点对象。
@@ -628,7 +722,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     () =>
       config.search.enabled && searchOpen && searchQuery
         ? findMatches(value, searchQuery, searchOptions, config.search.maxMatches)
-        : [],
+        : NO_MATCHES,
     [config.search.enabled, config.search.maxMatches, searchOpen, searchQuery, searchOptions, value],
   );
   const matchesRef = useRef(matches);
@@ -638,7 +732,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
 
   /* ---------- 布局状态 ---------- */
   const [fullscreen, setFullscreen] = useState(false);
-  const [outlineOpen, setOutlineOpen] = useState(config.outline.show);
   const [splitRatio, setSplitRatio] = useState(config.split.ratio);
   useEffect(() => {
     setSplitRatio(config.split.ratio);
@@ -653,11 +746,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    */
   const onImageClick = useCallback(
     (src: string, alt: string) => {
-      if (!config.preview.imagePreview || mode === "render") return undefined;
+      /*
+       * 当前模式从 ref 读，不能进依赖：这个回调会一路进预览的 memo 比较，
+       * 每次切视图换一次引用，整篇预览（几万个节点）就会全部重渲染一遍。
+       * 表现是「百万字文档切个视图卡半秒」，其实和视图本身没关系。
+       */
+      if (!config.preview.imagePreview || modeRef.current === "render") return undefined;
       setViewingImage({ src, alt });
       return true;
     },
-    [config.preview.imagePreview, mode],
+    [config.preview.imagePreview],
   );
   /* 切视图时清掉浮层，避免下次打开时残留 */
   useEffect(() => {
@@ -679,6 +777,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         updateSelection(caret, caret);
         return;
       }
+      // 先喂给切行缓存：一次按键的切行/行偏移都在这里增量完成
+      /*
+       * 输入类改动就在光标附近，带位置提示定位变化区间：
+       * 从文首扫公共前缀在万字之后必然撞上扫描上限，会让每次按键都退化成全文切行。
+       * 工具栏 / 整篇替换可能同时改多处，只信无提示的整段差分。
+       */
+      const hint = source === "input" || source === "task" ? caret : null;
+      noteTextChange(previous, next, (hint !== null ? quickTextEditNear(previous, next, hint) : null) ?? quickTextEdit(previous, next));
       history.record({ text: previous, caret: selectionRef.current.start }, source === "input");
       valueRef.current = next;
       if (!isControlled) setInnerValue(next);
@@ -810,30 +916,38 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   redoRef.current = redo;
 
   /* ---------- 模式 / 全屏 / 大纲 ---------- */
+  const modeChangeRef = useRef(onModeChange);
+  modeChangeRef.current = onModeChange;
   const changeMode = useCallback(
     (next: MarkdownEditorMode) => {
       if (next === modeRef.current || !available.includes(next)) return;
       modeRef.current = next;
       setInnerMode(next);
-      onModeChange?.(next);
+      modeChangeRef.current?.(next);
     },
-    [available, onModeChange],
+    [available],
   );
 
+  const fullscreenChangeRef = useRef(onFullscreenChange);
+  fullscreenChangeRef.current = onFullscreenChange;
   const toggleFullscreen = useCallback(
     (force?: boolean) => {
       setFullscreen((previous) => {
         const next = force ?? !previous;
-        onFullscreenChange?.(next);
+        fullscreenChangeRef.current?.(next);
         return next;
       });
     },
-    [onFullscreenChange],
+    [],
   );
 
   const toggleOutline = useCallback((force?: boolean) => {
     setOutlineOpen((previous) => force ?? !previous);
   }, []);
+
+  /* 工具栏回调必须恒定引用：内联箭头会让 Toolbar 的 memo 每渲染都失效 */
+  const handleToggleFullscreen = useCallback(() => toggleFullscreen(), [toggleFullscreen]);
+  const handleToggleOutline = useCallback(() => toggleOutline(), [toggleOutline]);
 
   /* ---------- 复制 / 图片 ---------- */
   const copyAll = useCallback(() => {
@@ -859,15 +973,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     [applyToTarget, resolveTarget],
   );
 
+  const imagePasteRef = useRef(onImagePaste);
+  imagePasteRef.current = onImagePaste;
   const handleImageFile = useCallback(
     async (file: File) => {
-      if (!onImagePaste) return;
-      const url = await onImagePaste(file);
+      const paste = imagePasteRef.current;
+      if (!paste) return;
+      const url = await paste(file);
       if (!url) return;
       const alt = file.name.replace(/\.[^.]+$/, "") || "image";
       insertMarkdown(`![${alt}](${url})`);
     },
-    [insertMarkdown, onImagePaste],
+    [insertMarkdown],
   );
 
   /* ---------- 任务勾选 ---------- */
@@ -1166,7 +1283,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   }, [doc, flash, mode]);
 
   useEffect(() => {
-    setFlash(null);
+    // 没有高亮时别再 setState 一次：无高亮的普通打字不该因此多渲染一趟
+    if (flashRef.current) setFlash(null);
   }, [value, mode]);
 
   /** 鼠标点到大纲以外的任何地方都算「去看别处了」 */
@@ -1201,6 +1319,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     const preview: HTMLElement | null =
       mode === "read" || mode === "split" ? previewRef.current : null;
     if (!editor && !preview) return;
+    // 大纲收起时没人看这个值，滚动就别再读几何、也别再为此重渲染
+    if (!outlineOpen) return;
 
     /** 视口顶部那一行：在偏移表里二分，找最后一个「起点不晚于 scrollTop」的行 */
     const lineAtEditorTop = (element: HTMLElement): number => {
@@ -1224,9 +1344,45 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       return best;
     };
 
-    /** 预览区顶部以下、最后一个已经贴上顶边的标题所在行 */
+    /**
+     * 预览区顶部那一行。
+     *
+     * 不能遍历全部标题量矩形：百万字文档可能有好几千个标题，而长文档的预览是分片
+     * `content-visibility` 的，每读一个屏外标题的矩形都会逼浏览器把整片排版一次，
+     * 一次滚动就能卡上一秒多。分片与块的位置都是单调的，二分到视口顶部所在的那一块即可。
+     * 返回的是该块的起始行：大纲按「最后一个不晚于此行的标题」定位，和原来等价。
+     */
     const lineAtPreviewTop = (element: HTMLElement): number => {
       const containerTop = element.getBoundingClientRect().top;
+      const chunks = element.querySelectorAll<HTMLElement>(".mde-chunk");
+      if (chunks.length) {
+        let lo = 0;
+        let hi = chunks.length - 1;
+        let index = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (chunks[mid].getBoundingClientRect().top - containerTop <= 8) {
+            index = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        const rows = chunks[index].querySelectorAll<HTMLElement>("[data-line]");
+        let line = Number(rows[0]?.dataset.line) || 1;
+        lo = 0;
+        hi = rows.length - 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (rows[mid].getBoundingClientRect().top - containerTop <= 8) {
+            line = Number(rows[mid].dataset.line) || line;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return line;
+      }
       let line = 1;
       element.querySelectorAll<HTMLElement>(".mde-h").forEach((node) => {
         if (node.getBoundingClientRect().top - containerTop <= 8) {
@@ -1262,7 +1418,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       preview?.removeEventListener("scroll", onPreviewScroll);
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [mode]);
+  }, [mode, outlineOpen]);
 
   /*
    * 阅读视图里编辑区整个卸载了，焦点往往掉在 body 上——不在 `.mde-root` 内，
@@ -1279,6 +1435,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     preview.focus({ preventScroll: true });
   }, [mode]);
 
+  /*
+   * 编辑区常驻之后，从阅读视图切回来不会再触发它的挂载自动聚焦。
+   * 原先每次切回编辑/分栏都会重新挂载并聚焦，这里把那个行为补上。
+   */
+  const previousModeRef = useRef(mode);
+  useLayoutEffect(() => {
+    if (previousModeRef.current === mode) return;
+    previousModeRef.current = mode;
+    if (autoFocus && (mode === "split" || mode === "code")) sourceRef.current?.focus();
+  }, [mode, autoFocus]);
+
   /* ---------- 对外回调 ---------- */
   useEffect(() => {
     onOutlineChange?.(doc.outline);
@@ -1288,11 +1455,30 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    * 统计拆成两档：「文档级」（字数/段数/阅读时长）只在文本变化时算，
    * 「光标行列」只依赖文本 + 光标偏移。这样按方向键挪光标时，
    * 文档级那部分直接命中 memo，只剩一次二分定位，不用再扫一遍全文。
+   *
+   * 文档级统计是全文 O(n) 扫描（百万字约十几毫秒），不能跟着每个按键跑：
+   * 输入过程中按 200ms 防抖算一次，停手 200ms 后状态栏给出新数字；
+   * 换笔记这类整篇变化（长度差很大）立刻算，不让状态栏停留在上一篇的统计上。
    */
-  const docStats = useMemo(
-    () => computeDocStats(value, config.statusBar.readingSpeed),
-    [value, config.statusBar.readingSpeed],
+  const [docStats, setDocStats] = useState(() =>
+    computeDocStats(value, config.statusBar.readingSpeed),
   );
+  const statsInput = useRef({ text: value, speed: config.statusBar.readingSpeed });
+  useEffect(() => {
+    const previous = statsInput.current;
+    const wholesale = Math.abs(value.length - previous.text.length) > WHOLESALE_SPAN;
+    const speedChanged = previous.speed !== config.statusBar.readingSpeed;
+    statsInput.current = { text: value, speed: config.statusBar.readingSpeed };
+    if (wholesale || speedChanged) {
+      setDocStats(computeDocStats(value, config.statusBar.readingSpeed));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setDocStats(computeDocStats(value, config.statusBar.readingSpeed));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [value, config.statusBar.readingSpeed]);
+
   const cursor = useMemo(() => computeCursor(value, selection.start), [value, selection.start]);
   const stats: MarkdownStats = useMemo(
     () => ({ ...docStats, cursor: { ...cursor, selection: selection.end - selection.start } }),
@@ -1307,6 +1493,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   statsRef.current = stats;
   const docRef = useRef(doc);
   docRef.current = doc;
+  const parsedRef = useRef(parsed);
+  parsedRef.current = parsed;
 
   /* ---------- 滚动到行 ---------- */
   /**
@@ -1521,7 +1709,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     getMode: () => modeRef.current,
     setMode: (next) => changeMode(next),
     getStats: () => statsRef.current,
-    getOutline: () => docRef.current.outline,
+    getOutline: () => {
+      // 代码视图可能刻意没解析：取大纲是显式请求，按当前文本现算一份，别给旧标题
+      if (parsedRef.current.text === valueRef.current) return docRef.current.outline;
+      return parseMarkdown(valueRef.current, {
+        allowHtml: config.preview.allowHtml,
+        breaks: config.preview.breaks,
+      }).outline;
+    },
     getDocument: () =>
       parseMarkdown(valueRef.current, { allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
     runCommand: (name) => runToolbar(name),
@@ -1658,6 +1853,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   const sourceVisible = mode === "split" || mode === "code";
   const chromeVisible = !renderOnly;
 
+  /**
+   * 预览一旦显示过就常驻，切到编辑视图时只隐藏、不卸载。
+   *
+   * 长文档的预览是整篇 DOM（分片只省排版，不省节点）。编辑视图里卸载再切回来，
+   * 等于让 React 把几万个节点重新造一遍——百万字文档上是秒级的长任务。
+   * 隐藏期间不解析、不刷新（`needsDoc` 仍按当前视图算），切回来时由下面的
+   * 布局阶段补一次最新解析，不会把旧内容画出来。
+   */
+  const [previewMounted, setPreviewMounted] = useState(previewVisible);
+  if (previewVisible && !previewMounted) setPreviewMounted(true);
+
+  /*
+   * 编辑区同理：显示过一次之后常驻，阅读视图里只隐藏。
+   * 重建编辑区本身不贵，贵的是重新挂载后行号测量器把可见区再排一遍、
+   * 代码着色再起一遍；常驻还能顺带保住光标、选区和滚动位置。
+   */
+  const [sourceMounted, setSourceMounted] = useState(sourceVisible);
+  if (sourceVisible && !sourceMounted) setSourceMounted(true);
+
   return (
     <div
       ref={rootRef}
@@ -1707,8 +1921,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
           onAlert={applyAlert}
           onCallout={applyCalloutBlock}
           onModeChange={changeMode}
-          onToggleOutline={() => toggleOutline()}
-          onToggleFullscreen={() => toggleFullscreen()}
+          onToggleOutline={handleToggleOutline}
+          onToggleFullscreen={handleToggleFullscreen}
           onCopyAll={copyAll}
           onColor={applyInlineColorTo}
           onCustomTool={handleCustomTool}
@@ -1762,7 +1976,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
           className="mde-panes"
           style={mode === "split" ? { gridTemplateColumns: splitColumns(splitRatio, config.split) } : undefined}
         >
-          {sourceVisible && (
+          {sourceMounted && (
             <SourceEditor
               ref={sourceRef}
               value={value}
@@ -1771,8 +1985,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
               config={config}
               readOnly={readOnly}
               placeholder={placeholder ?? config.editor.placeholder}
-              autoFocus={autoFocus}
-              className={mode === "code" ? "is-code-only" : undefined}
+              autoFocus={autoFocus && sourceVisible}
+              className={`${mode === "code" ? "is-code-only" : ""}${sourceVisible ? "" : " is-hidden"}`.trim() || undefined}
               onKeyDown={handleShortcut}
               onImageFile={handleImageFile}
               onElement={handleSourceElement}
@@ -1821,19 +2035,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
             />
           )}
 
-          {previewVisible && (
+          {previewMounted && (
             /*
              * `tabIndex={-1}`：阅读模式里预览区是唯一可点的地方，不给它能接收焦点的话，
              * 点过预览之后焦点会掉回 body，Ctrl/⌘+F 就再也传不到编辑器根节点上
              * ——表现为「预览视图里按 Ctrl+F 没反应」。
              */
-            <div className="mde-preview-pane" ref={previewRef} tabIndex={-1}>
+            <div
+              className={`mde-preview-pane${previewVisible ? "" : " is-hidden"}`}
+              ref={previewRef}
+              tabIndex={previewVisible ? -1 : undefined}
+              aria-hidden={previewVisible ? undefined : true}
+            >
               <MarkdownPreview
                 doc={doc}
                 config={config}
                 labels={labels}
                 readOnly={readOnly}
                 themeVars={themeVars}
+                generation={parsed.generation}
                 onLinkClick={stableLinkClick}
                 onTaskToggle={stableTaskToggle}
                 onImageClick={onImageClick}

@@ -6,10 +6,12 @@
  * AI 设置交给 App 的 effect 逐项 diff 后写库。两者都落在 SQLite 的 app_settings 表。
  *
  * 数据流：
- *   1. 打开时清空搜索、定位到 defaultSection，并向 Tauri 取应用名与版本；
- *   2. 设置项 = rows（通用/编辑器/列表/对话/上下文）+ 5 个自定义面板；
- *   3. 搜索同时匹配 rows 的 title/desc/keywords 与自定义面板的关键词表；
- *   4. scope=live 立即生效，scope=startup 只影响下次启动时的初始状态。
+ *   1. 打开时清空搜索、切到 defaultSection，并向 Tauri 取应用名与版本；
+ *   2. 设置项 = rows（通用/编辑器/列表/对话/上下文）+ 8 个自定义面板；
+ *   3. **一次只渲染一个分区**（目录点选切换）：几百行设置项全量挂载会让打开明显变慢，
+ *      ThemePanel / 服务商 / 访问权限这些子面板也会跟着空跑；
+ *   4. 搜索同时匹配 rows 的 title/desc/keywords 与自定义面板的关键词表，命中数标在目录上；
+ *   5. scope=live 立即生效，scope=startup 只影响下次启动时的初始状态。
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +40,7 @@ import {
 } from "@/config/about";
 import { AiProviderSettings } from "@/components/ai/AiProviderModal";
 import { ThemePanel } from "@/components/settings/ThemePanel";
+import { ShortcutPanel } from "@/components/settings/ShortcutPanel";
 import { ColorPicker } from "@/components/settings/ColorPicker";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
@@ -61,6 +64,7 @@ const SECTIONS: SectionMeta[] = [
   { key: "editor", label: "编辑器", icon: "ai-edit", group: "软件" },
   { key: "view", label: "笔记列表", icon: "sidebar-list", group: "软件" },
   { key: "layout", label: "界面布局", icon: "sidebar-edit-square", group: "软件" },
+  { key: "shortcuts", label: "快捷键", icon: "settings-shortcuts", group: "软件" },
   { key: "theme", label: "主题", icon: "settings-theme", group: "软件" },
   { key: "provider", label: "AI 服务商", icon: "settings-provider", group: "AI" },
   { key: "chat", label: "对话行为", icon: "settings-chat", group: "AI" },
@@ -75,6 +79,9 @@ const SECTIONS: SectionMeta[] = [
 /** 目录分组顺序：与 SECTIONS 里的 group 对应，空分组在渲染时自动跳过 */
 const ALL_GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
 
+/** 分区元数据对外只读：命令面板据此生成「打开设置：xxx」，免得标题两处各写一份 */
+export const SETTINGS_SECTIONS: readonly SectionMeta[] = SECTIONS;
+
 /** 关闭 AI 能力时，「AI」分组整体不渲染 */
 const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
   enableAI ? ALL_GROUPS : ["软件", "数据", "其他"];
@@ -83,7 +90,7 @@ const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
 const UNCATEGORIZED_KEY = -1;
 
 /** 自定义面板分区：内容不是数据驱动的行，但同样参与搜索 */
-const CUSTOM_KEYS: SettingsSection[] = ["theme", "provider", "memory", "access", "reset", "backup", "about"];
+const CUSTOM_KEYS: SettingsSection[] = ["theme", "shortcuts", "provider", "memory", "access", "reset", "backup", "about"];
 
 /* ---------- 基础控件 ---------- */
 
@@ -602,24 +609,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       else next.add(key);
       return next;
     });
-  /** 左侧目录当前高亮的分区；滚动时由 handleScroll 反查更新 */
-  const [active, setActive] = useState<SettingsSection>(defaultSection ?? "general");
   /**
-   * 目录里展开了哪些分区。默认全收起——设置项很多，全摊开要滚半天；
-   * 搜索时强制全展开，否则命中的二级项会被折叠藏起来。
+   * 当前显示的分区。**一次只渲染这一个**：设置项加起来有几百行，全量挂载既拖慢打开速度，
+   * 也会让 ThemePanel / 服务商 / 访问权限这些带副作用的子面板白白运行。
    */
-  const [expanded, setExpanded] = useState<Set<SettingsSection>>(new Set());
-  /** 当前高亮的分组（分区内的二级项），null 表示只高亮到分区一级 */
+  const [active, setActive] = useState<SettingsSection>(defaultSection ?? "general");
+  /** 当前分区里滚到的二级分组（目录里的子项高亮），null 表示还在最上面 */
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   /** 关于页：软件名与版本（版本由 Tauri 自动获取） */
   const [appName, setAppName] = useState(APP_NAME_FALLBACK);
   const [appVersion, setAppVersion] = useState("");
 
-  /** 右侧滚动容器：锚点定位与滚动反查高亮都以它为参照 */
+  /** 右侧滚动容器：切换分区时归零，也用于滚动反查二级分组 */
   const contentRef = useRef<HTMLDivElement>(null);
-  /** 各分区节点，供「点击目录滚动」与「滚动反查」读取 offsetTop */
-  const sectionRefs = useRef<Partial<Record<SettingsSection, HTMLElement | null>>>({});
-  /** 分区内各分组段的节点：二级目录跳转与高亮反查都靠它 */
+  /** 当前分区内各分组段的节点：二级目录跳转与高亮反查都靠它 */
   const groupRefs = useRef<Record<string, HTMLElement | null>>({});
   /** 左侧目录容器（高亮项自动滚进可视区） */
   const navRef = useRef<HTMLElement>(null);
@@ -973,8 +976,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         kind: "toggle",
         scope: "live",
         title: "默认开启操作确认",
-        desc: "写操作（创建/修改/删除）执行前先弹确认框，面板里仍可临时切换。",
-        keywords: "确认 confirm 操作",
+        desc: "写操作（创建/修改/删除）执行前先弹确认框，面板里仍可临时切换。标签操作不在此列：AI 打标签、删自己建的标签一律直接执行。",
+        keywords: "确认 confirm 操作 标签",
         value: aiSettings.confirmByDefault,
         onChange: (v) => setAi("confirmByDefault", v),
       },
@@ -1112,6 +1115,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         aiProviders.map((p) => p.name).join(" "),
       theme:
         "主题 配色 颜色 取色 色盘 暗黑 暗色 深色 浅色 夜间 预设 自定义 圆角 外观 theme color palette dark light appearance radius preset",
+      shortcuts:
+        "快捷键 键位 按键 组合键 键盘 ctrl cmd shift alt 跳转 命令面板 shortcut shortcuts keymap hotkey keyboard ctrl+p ctrl+shift+p",
       memory: "记忆 提示词 prompt 长期记忆 前置 要求 memory",
       access: "访问 权限 分组 笔记 ai 隐私 限制 禁止 只读 完全 三档 access permission privacy readonly category note",
       reset: "恢复默认 重置 出厂值 reset default",
@@ -1166,28 +1171,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [visibleRowsOf],
   );
 
-  /* 打开时：重置状态并定位到目标分区 */
+  /**
+   * 右侧实际渲染的分区：**只有一个**（当前选中的那个）。
+   * 搜索把当前分区过滤掉时先渲染第一个命中的，随后的 effect 会把 active 同步过去。
+   */
+  const shownSections = useMemo(() => {
+    const meta = visibleSections.find((s) => s.key === active) ?? visibleSections[0];
+    return meta ? [meta] : [];
+  }, [visibleSections, active]);
+
+  /* 打开时：重置搜索与滚动位置，并切到目标分区 */
   useEffect(() => {
     if (!isOpen) return;
     setQuery("");
     setSavedFlash(false);
-    const target = defaultSection ?? "general";
-    setActive(target);
-    // 等一帧，确保分区节点已挂载后再定位
-    const raf = requestAnimationFrame(() => {
-      const container = contentRef.current;
-      const el = sectionRefs.current[target];
-      if (container && el) container.scrollTop = Math.max(0, el.offsetTop - 8);
-    });
-    return () => cancelAnimationFrame(raf);
+    setActive(defaultSection ?? "general");
+    setActiveGroup(null);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [isOpen, defaultSection]);
-
-  /* 关闭时：把左侧目录里展开的二级项全部收起，下次打开回到干净的一级列表 */
-  useEffect(() => {
-    if (isOpen) return;
-    setExpanded((prev) => (prev.size ? new Set<SettingsSection>() : prev));
-    setActiveGroup((prev) => (prev === null ? prev : null));
-  }, [isOpen]);
 
   /* 关于页：打开设置时读取应用名与版本号 */
   useEffect(() => {
@@ -1214,76 +1215,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [visibleSections, isOpen, active]);
 
-  /* 滚动监听：左侧目录跟随高亮（分区 + 分区内的分组） */
+  /**
+   * 切换分区：右侧换内容、滚动位置归零。
+   * 只渲染当前分区，所以这里不需要"滚动到锚点"，只要把容器拉回顶部。
+   */
+  const selectSection = useCallback((key: SettingsSection) => {
+    setActive(key);
+    setActiveGroup(null);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, []);
+
+  /* 滚动监听：只反查当前分区内的二级分组，让目录里的子项高亮跟着走 */
   const handleScroll = useCallback(() => {
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
       const container = contentRef.current;
       if (!container) return;
+      const groups = groupsOf(active);
+      if (groups.length === 0) {
+        setActiveGroup(null);
+        return;
+      }
       const top = container.scrollTop + 20;
-      let current: SettingsSection | null = null;
-      for (const s of visibleSections) {
-        const el = sectionRefs.current[s.key];
-        if (el && el.offsetTop <= top) current = s.key;
-      }
-      // 滚到最底部时，兜底高亮最后一个分区（避免最后一段永远选不中）
-      if (container.scrollTop + container.clientHeight >= container.scrollHeight - 2) {
-        current = visibleSections[visibleSections.length - 1]?.key ?? current;
-      }
-      if (!current) return;
-      setActive(current);
-      // 同一分区内取「最后一个越过顶线的分组」；分区里没有分组就是 null
       let group: string | null = null;
-      for (const name of groupsOf(current)) {
-        const el = groupRefs.current[groupKey(current, name)];
+      for (const name of groups) {
+        const el = groupRefs.current[groupKey(active, name)];
         if (el && el.offsetTop <= top) group = name;
       }
       setActiveGroup(group);
     });
-  }, [visibleSections, groupsOf]);
+  }, [active, groupsOf]);
 
-  /**
-   * 点击目录跳转：直接跳到位，不做平滑滚动。
-   * 平滑滚动的耗时随距离增长（「编辑器」分区设置项多、内容很长），既拖慢手感，
-   * 滚动期间的高亮反查也会让目录高亮一路跳变，因此这里用瞬时滚动。
-   */
-  const scrollToSection = useCallback((key: SettingsSection) => {
-    const container = contentRef.current;
-    const el = sectionRefs.current[key];
-    if (!container || !el) return;
-    setActive(key);
-    setActiveGroup(null);
-    container.scrollTo({ top: Math.max(0, el.offsetTop - 8) });
-  }, []);
-
-  /** 二级目录：跳到分区里的某个分组 */
+  /** 二级目录：跳到当前分区里的某个分组 */
   const scrollToGroup = useCallback((section: SettingsSection, group: string) => {
     const container = contentRef.current;
     const el = groupRefs.current[groupKey(section, group)];
     if (!container || !el) return;
-    setActive(section);
     setActiveGroup(group);
     container.scrollTo({ top: Math.max(0, el.offsetTop - 8) });
-  }, []);
-
-  /** 展开 / 收起某个分区（只动目录，不改变右侧位置） */
-  const toggleSection = useCallback((key: SettingsSection) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
-  /**
-   * 右侧悬停：左侧目录跟着高亮（含二级项）。
-   * 只做高亮、不滚动右侧——鼠标划过就跳页会让内容抖得没法用。
-   */
-  const hoverSection = useCallback((section: SettingsSection, group: string | null) => {
-    setActive((prev) => (prev === section ? prev : section));
-    setActiveGroup(group);
   }, []);
 
   /** 高亮项自动滚进目录可视区（分组很多时，滚到下面的分区目录也能跟得上） */
@@ -1293,7 +1263,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const selector = activeGroup ? `[data-nav-key="${active}:${activeGroup}"]` : `[data-nav-key="${active}"]`;
     const el = nav?.querySelector<HTMLElement>(selector);
     el?.scrollIntoView({ block: "nearest" });
-  }, [active, activeGroup, expanded, isOpen]);
+  }, [active, activeGroup, isOpen]);
 
   /* 卸载时清掉挂起的 timer 与 rAF，避免回调打到已卸载的组件上 */
   useEffect(() => {
@@ -1476,68 +1446,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {group}
                       </div>
                       {items.map((s) => {
-                        const subGroups = groupsOf(s.key);
-                        // 搜索时强制展开：命中的二级项藏在折叠里等于搜不到
-                        const open = q ? true : expanded.has(s.key);
                         const isActive = active === s.key;
+                        // 二级项只列当前分区的：一次只显示一个分区，别的分区的子项没有落点
+                        const subGroups = isActive ? groupsOf(s.key) : [];
+                        // 搜索时把命中条数标在没被选中的分区上，省得一个个点开找
+                        const hits = q ? visibleRowsOf(s.key).length : 0;
                         return (
                           <div key={s.key}>
-                            {/* 折叠箭头必须只属于这一行：包住下面的二级列表会让它跑到整块的垂直中间 */}
-                            <div className="relative">
-                              <button
-                                data-nav-key={s.key}
-                                onClick={() => {
-                                  // 有二级项的分区：点一次展开并跳到该分区，再点一次收起
-                                  // （收起只动左栏，不把右侧拽回来——用户可能只是想合上目录）
-                                  if (subGroups.length === 0) {
-                                    scrollToSection(s.key);
-                                    return;
-                                  }
-                                  setExpanded((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(s.key)) next.delete(s.key);
-                                    else next.add(s.key);
-                                    return next;
-                                  });
-                                  if (!open) scrollToSection(s.key);
-                                }}
-                                className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg text-xs font-medium ${
-                                  subGroups.length > 0 ? "pr-7" : ""
-                                } ${
-                                  isActive
-                                    ? "bg-primary-50 text-primary-600"
-                                    : "text-muted hover:bg-surface-alt/70"
-                                }`}
-                              >
-                                <Icon
-                                  name={s.icon}
-                                  className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "opacity-100" : "opacity-70"}`}
-                                />
-                                <span className="truncate">{s.label}</span>
-                                {/* 没有二级项的叶子分区：用圆点标记当前项（有二级项的用折叠箭头） */}
-                                {isActive && subGroups.length === 0 && (
-                                  <span className="ml-auto w-1 h-1 rounded-full bg-primary-500 flex-shrink-0" />
-                                )}
-                              </button>
-                              {subGroups.length > 0 && (
-                                <button
-                                  type="button"
-                                  aria-label={open ? "收起二级目录" : "展开二级目录"}
-                                  aria-expanded={open}
-                                  onClick={() => toggleSection(s.key)}
-                                  className="absolute right-1 top-[15px] -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-md text-faint hover:text-body hover:bg-surface-alt/70"
-                                >
-                                  <Icon
-                                    name="sidebar-chevron-down"
-                                    className={`w-3 h-3 transition-transform ${open ? "" : "-rotate-90"}`}
-                                  />
-                                </button>
+                            <button
+                              data-nav-key={s.key}
+                              onClick={() => selectSection(s.key)}
+                              className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg text-xs font-medium ${
+                                isActive ? "bg-primary-50 text-primary-600" : "text-muted hover:bg-surface-alt/70"
+                              }`}
+                            >
+                              <Icon
+                                name={s.icon}
+                                className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "opacity-100" : "opacity-70"}`}
+                              />
+                              <span className="truncate">{s.label}</span>
+                              {hits > 0 && !isActive && (
+                                <span className="ml-auto flex-shrink-0 text-[10px] text-faint-soft">{hits}</span>
                               )}
-                            </div>
-                            {subGroups.length > 0 && open && (
+                              {/* 叶子分区用圆点标记当前项 */}
+                              {isActive && subGroups.length === 0 && (
+                                <span className="ml-auto w-1 h-1 rounded-full bg-primary-500 flex-shrink-0" />
+                              )}
+                            </button>
+                            {subGroups.length > 0 && (
                               <div className="mt-0.5 mb-1 ml-[18px] border-l border-line-soft pl-1.5">
                                 {subGroups.map((name) => {
-                                  const on = isActive && activeGroup === name;
+                                  const on = activeGroup === name;
                                   return (
                                     <button
                                       key={name}
@@ -1567,32 +1506,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </nav>
             </div>
 
-            {/* 右侧内容：滚动容器，onScroll 驱动左侧高亮；搜索无结果时显示空态 */}
+            {/* 右侧内容：只挂载当前分区；滚动时反查本分区内的二级分组 */}
             <div
               ref={contentRef}
               onScroll={handleScroll}
               className="relative flex-1 min-w-0 overflow-y-auto chat-scrollbar px-6 py-5"
             >
-              {visibleSections.length === 0 ? (
+              {shownSections.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center gap-2 text-faint">
                   <Icon name="sidebar-search" className="w-8 h-8 text-faint-soft" />
                   <p className="text-sm">没有找到相关设置</p>
                   <p className="text-[11px] text-faint-soft">换个关键词试试</p>
                 </div>
               ) : (
-                visibleSections.map((s) => {
+                shownSections.map((s) => {
                   const sectionRows = visibleRowsOf(s.key);
                   return (
-                    <section
-                      key={s.key}
-                      ref={(el) => {
-                        sectionRefs.current[s.key] = el;
-                      }}
-                      data-section={s.key}
-                      className="mb-11 last:mb-2 [&>*+*]:pl-8"
-                      // 指针进到这一块，左侧目录的高亮就跟过来（滚轮只会动右侧，高亮由 handleScroll 反查）
-                      onMouseEnter={() => hoverSection(s.key, null)}
-                    >
+                    <section key={s.key} data-section={s.key} className="animate-fadeIn [&>*+*]:pl-8">
                       <div className="flex items-center gap-2 mb-2 pb-2 border-b border-line-soft">
                         <span className="w-6 h-6 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
                           <Icon name={s.icon} className="w-3.5 h-3.5 text-primary-500" />
@@ -1610,7 +1540,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               ref={(el) => {
                                 groupRefs.current[groupKey(s.key, chunk.group)] = el;
                               }}
-                              onMouseEnter={() => hoverSection(s.key, chunk.group)}
                             >
                               {chunk.group && (
                                 <p className="pt-3 pb-1 text-[11px] font-semibold text-muted">
@@ -1627,6 +1556,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                       {/* 主题：明暗模式 + 预设 + 自定义取色 + 已保存主题 */}
                       {s.key === "theme" && <ThemePanel theme={theme} onChange={onThemeChange} />}
+
+                      {/* 快捷键：全软件键位一览，按当前设置置灰不可用的项 */}
+                      {s.key === "shortcuts" && <ShortcutPanel settings={appSettings} />}
 
                       {/* AI 服务商：复用 AiProviderModal 里的面板，共用本窗口的开关状态 */}
                       {s.key === "provider" && (

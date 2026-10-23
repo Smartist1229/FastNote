@@ -11,6 +11,7 @@
  * 之所以不用现成解析器：实时预览需要「每个顶层块的 Markdown 区间」，市面解析器普遍丢弃位置信息。
  */
 import { inlineToText, normalizeLabel, parseInline } from "./inline";
+import { lineIndexAt, lineOffsets, splitLines } from "../editor/lines";
 import type {
   AlertKind,
   BlockNode,
@@ -327,12 +328,27 @@ const registerHeading = (children: InlineNode[], st: ParseState): { id: string; 
 
 /** 统一生成行数组（保留行号与偏移，不丢空行） */
 const toLines = (src: string): SourceLine[] => {
-  const lines: SourceLine[] = [];
+  const source = splitLines(src);
+  const lines: SourceLine[] = new Array(source.length);
   let offset = 0;
-  src.split("\n").forEach((text, index) => {
-    lines.push({ text, offset, line: index + 1 });
+  for (let index = 0; index < source.length; index += 1) {
+    const text = source[index];
+    lines[index] = { text, offset, line: index + 1 };
     offset += text.length + 1;
-  });
+  }
+  return lines;
+};
+
+/** 只构造窗口内的行（行号、偏移仍是全文的绝对坐标），避免每次按键切全文 */
+const toWindowLines = (src: string, from: number, to: number): SourceLine[] => {
+  const source = splitLines(src);
+  const offsets = lineOffsets(src);
+  const count = Math.max(0, to - from);
+  const lines: SourceLine[] = new Array(count);
+  for (let index = 0; index < count; index += 1) {
+    const line = from + index;
+    lines[index] = { text: source[line] ?? "", offset: offsets[line] ?? src.length, line: line + 1 };
+  }
   return lines;
 };
 
@@ -921,4 +937,599 @@ export function parseMarkdown(
   }));
 
   return { blocks, frontmatter, outline: st.outline, footnotes, links: st.links };
+}
+
+/* ---------- 增量解析 ---------- */
+
+interface LineDiff {
+  first: number;
+  oldEnd: number;
+  newEnd: number;
+}
+
+/**
+ * 两次切行结果的公共前后缀。
+ *
+ * 增量切行（editor/lines.ts）复用了没变过的行字符串，所以这里比较的是引用，
+ * 五万行也只是五万次指针比较。
+ */
+const diffLineRange = (prev: readonly string[], next: readonly string[]): LineDiff => {
+  const shared = Math.min(prev.length, next.length);
+  let first = 0;
+  while (first < shared && prev[first] === next[first]) first += 1;
+  let suffix = 0;
+  while (suffix < shared - first && prev[prev.length - 1 - suffix] === next[next.length - 1 - suffix]) {
+    suffix += 1;
+  }
+  return { first, oldEnd: prev.length - suffix, newEnd: next.length - suffix };
+};
+
+/** 标题行 / Setext 下划线：会改变全文的锚点去重序列 */
+const HEADING_LINE = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:=+|-+)[ \t]*$)/;
+/** 引用式链接 / 脚注定义 */
+const DEFINITION_LINE = /^ {0,3}\[[^\]]+\]:/;
+/** 围栏与 front matter 边界：会改变「定义是否还在正文里」 */
+const BOUNDARY_LINE = /^ {0,3}(?:`{3,}|~{3,})|^(?:---|\.\.\.)[ \t]*$/;
+
+/**
+ * 变化的行里有没有会牵动全文状态的语法。
+ *
+ * 增量解析只重排「受改动影响的那几块」，前提是标题锚点、链接/脚注定义、围栏
+ * 这些跨块状态没有变。命中任意一条就退回整篇解析——正确优先。
+ * 脚注引用也在这里拦下：引用增删会改变全篇脚注编号。
+ */
+const touchesGlobalState = (lines: readonly string[], from: number, to: number): boolean => {
+  for (let index = from; index < to; index += 1) {
+    const text = lines[index] ?? "";
+    if (HEADING_LINE.test(text)) return true;
+    if (DEFINITION_LINE.test(text)) return true;
+    if (BOUNDARY_LINE.test(text)) return true;
+    if (text.includes("[^")) return true;
+  }
+  return false;
+};
+
+/** 按文档顺序收集标题的 slug（重复计数以出现顺序累计） */
+const collectHeadingBases = (blocks: BlockNode[], out: string[] = []): string[] => {
+  for (const block of blocks) {
+    if (block.type === "heading") out.push(slugify(inlineToText(block.children)));
+    else if (block.type === "blockquote" || block.type === "callout") collectHeadingBases(block.children, out);
+    else if (block.type === "list") {
+      for (const item of block.items) collectHeadingBases(item.children, out);
+    }
+  }
+  return out;
+};
+
+/**
+ * 按文档顺序收集脚注引用。
+ *
+ * 引用编号是全文状态：窗口里删掉/改动一个引用会重排后面所有编号。
+ * 改行的首字符检查挡不住跨行的 `[^…]`（`[^` 可能在上一行），
+ * 所以还要拿窗口前后的引用序列做一次比对，序列不一致就退回整篇解析。
+ */
+const collectFootnoteRefs = (blocks: BlockNode[], out: string[] = []): string[] => {
+  const walkInline = (nodes: InlineNode[]): void => {
+    for (const node of nodes) {
+      if (node.type === "footnoteRef") out.push(node.id);
+      else if ("children" in node) walkInline(node.children);
+    }
+  };
+  for (const block of blocks) {
+    switch (block.type) {
+      case "heading":
+      case "paragraph":
+        walkInline(block.children);
+        break;
+      case "blockquote":
+      case "callout":
+        collectFootnoteRefs(block.children, out);
+        break;
+      case "list":
+        for (const item of block.items) collectFootnoteRefs(item.children, out);
+        break;
+      case "table":
+        for (const cell of block.header) walkInline(cell);
+        for (const row of block.rows) for (const cell of row) walkInline(cell);
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
+};
+
+const sameStrings = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+};
+
+/**
+ * 全文标题序列缓存：`bases[i]` 是第 i 个标题的 slug，`blockIndexes[i]` 是它所在的顶层块。
+ *
+ * 增量解析每次都要知道「窗口之前已经出现过哪些标题」，否则窗口里的重复锚点会编错号。
+ * 原实现每次按键都把窗口前的块递归走一遍、对每个标题跑 slugify（正则），
+ * 几千个标题就是 2ms 以上；标题内容只随窗口变化，缓存下来后按键路径只剩数组切片。
+ */
+interface HeadingIndex {
+  bases: string[];
+  blockIndexes: number[];
+}
+
+const headingIndexes = new WeakMap<ParsedDocument, HeadingIndex>();
+
+const buildHeadingIndex = (blocks: BlockNode[]): HeadingIndex => {
+  const bases: string[] = [];
+  const blockIndexes: number[] = [];
+  const visit = (nodes: BlockNode[], top: number): void => {
+    for (const node of nodes) {
+      if (node.type === "heading") {
+        bases.push(slugify(inlineToText(node.children)));
+        blockIndexes.push(top);
+      } else if (node.type === "blockquote" || node.type === "callout") {
+        visit(node.children, top);
+      } else if (node.type === "list") {
+        for (const item of node.items) visit(item.children, top);
+      }
+    }
+  };
+  for (let index = 0; index < blocks.length; index += 1) visit([blocks[index]], index);
+  return { bases, blockIndexes };
+};
+
+/** 取文档标题索引；整篇解析的文档第一次用到时才构建 */
+const headingIndexOf = (doc: ParsedDocument): HeadingIndex => {
+  const cached = headingIndexes.get(doc);
+  if (cached) return cached;
+  const built = buildHeadingIndex(doc.blocks);
+  headingIndexes.set(doc, built);
+  return built;
+};
+
+/** 前 `blockCount` 个顶层块里有多少个标题 */
+const headingCountBefore = (index: HeadingIndex, blockCount: number): number => {
+  let low = 0;
+  let high = index.blockIndexes.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (index.blockIndexes[mid] < blockCount) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+};
+
+const sameLinks = (
+  next: Map<string, { href: string; title?: string }>,
+  prev: Map<string, { href: string; title?: string }>,
+): boolean => {
+  if (next.size !== prev.size) return false;
+  for (const [label, link] of next) {
+    const old = prev.get(label);
+    if (!old || old.href !== link.href || old.title !== link.title) return false;
+  }
+  return true;
+};
+
+/** 脚注定义原文的指纹：定义不变才敢复用尾部块里的脚注编号 */
+const footnoteSignature = (defs: Map<string, SourceLine[]>): string => {
+  if (!defs.size) return "";
+  const parts: string[] = [];
+  for (const [id, lines] of defs) parts.push(`${id}\u0001${lines.map((line) => line.text).join("\n")}`);
+  return parts.join("\u0002");
+};
+
+/**
+ * 尾部块随改动整体平移。
+ *
+ * 平移必须落到对象上（而不是沿用旧对象）：下一次增量解析要靠这些 `line` / `start`
+ * 判断哪一段是安全的公共后缀。容器里的嵌套块（列表项、引用、callout）同样带绝对
+ * 偏移与任务勾选偏移，必须一起平移，否则 AST 会和新文本对不上。
+ * 子节点内容共享引用，渲染层的块级 memo 只在内容和行号真的变了时才重画
+ * （`data-offset` 允许滞后，见 MarkdownPreview 的说明）。
+ */
+const shiftBlockTree = (block: BlockNode, delta: number, lineDelta: number): BlockNode => {
+  const base = {
+    start: block.start + delta,
+    end: block.end + delta,
+    line: block.line + lineDelta,
+  };
+  if (block.type === "list") {
+    return {
+      ...block,
+      ...base,
+      items: block.items.map((item) => ({
+        ...item,
+        line: item.line + lineDelta,
+        taskOffset: item.taskOffset >= 0 ? item.taskOffset + delta : item.taskOffset,
+        children: item.children.map((child) => shiftBlockTree(child, delta, lineDelta)),
+      })),
+    };
+  }
+  if (block.type === "blockquote" || block.type === "callout") {
+    return {
+      ...block,
+      ...base,
+      children: block.children.map((child) => shiftBlockTree(child, delta, lineDelta)),
+    };
+  }
+  return { ...block, ...base };
+};
+
+const shiftTailBlocks = (blocks: BlockNode[], delta: number, lineDelta: number): BlockNode[] => {
+  if (delta === 0 && lineDelta === 0) return blocks.slice();
+  return blocks.map((block) => shiftBlockTree(block, delta, lineDelta));
+};
+
+/**
+ * 窗口里最后一个 callout 是否真的闭合了。
+ *
+ * `!!!` / `???` 没有结尾记号时会一路吞到文末。窗口解析把行截断在窗口边界，
+ * 于是「未闭合」和「刚好在窗口末尾闭合」在 AST 上长得一样；若此时复用尾部块，
+ * 就会和整篇解析（尾部全被吞进 callout）分叉。这里按解析器同一套规则，
+ * 只在窗口范围内找结尾记号，找不到就不敢复用尾部。
+ */
+const calloutClosedInWindow = (
+  lines: SourceLine[],
+  block: BlockNode & { type: "callout" },
+  windowStart: number,
+  limit: number,
+): boolean => {
+  const headerIndex = block.line - 1 - windowStart;
+  const header = CALLOUT_OPEN.exec(lines[headerIndex]?.text ?? "");
+  if (!header) return true;
+  const marker = header[1];
+  for (let index = headerIndex + 1; index < limit; index += 1) {
+    if ((lines[index]?.text ?? "").replace(/^ {0,3}/, "").trim() === marker) return true;
+  }
+  return false;
+};
+
+/**
+ * 窗口里最后一个围栏 / 数学块是否在窗口内闭合。
+ *
+ * 与 callout 同理：未闭合的围栏在窗口边界会被截断，AST 上看起来像正常结束；
+ * 若仍接回尾部，整篇解析里本来吞掉尾部的围栏就被漏掉了。缩进代码不在此列，
+ * 它由「尾部首行是否缩进」的边界检查负责。
+ */
+const fenceClosedInWindow = (
+  lines: SourceLine[],
+  block: BlockNode,
+  windowStart: number,
+  limit: number,
+): boolean => {
+  const headerIndex = block.line - 1 - windowStart;
+  if (headerIndex < 0 || headerIndex >= limit) return true;
+  if (block.type === "math") {
+    const header = /^ {0,3}\$\$(.*)$/.exec(lines[headerIndex]?.text ?? "");
+    if (!header || /\$\$\s*$/.test(header[1])) return true;
+    for (let index = headerIndex + 1; index < limit; index += 1) {
+      if (/^ {0,3}\$\$\s*$/.test(lines[index]?.text ?? "")) return true;
+    }
+    return false;
+  }
+  if (block.type !== "code" || !block.fence) return true;
+  for (let index = headerIndex + 1; index < limit; index += 1) {
+    if (isFenceClose(lines[index]?.text ?? "", block.fence[0], block.fence.length)) return true;
+  }
+  return false;
+};
+
+/**
+ * 增量解析：只重排改动窗口里的顶层块，其余块复用上一份 AST。
+ *
+ * 返回 null 表示这次改动不适合增量（换了全文、改到了跨块状态、窗口边界无法确认），
+ * 调用方退回 `parseMarkdown` 即可，正确性不受影响。
+ *
+ * 窗口的取法（行号 0 基）：
+ * - 起点 S 是一块的起始行，且 S-1 是未被改动的空行（或 S 是首块）——
+ *   空行保证前一块的段落/列表/引用已经结束，改动不会反向吞并它；
+ * - 终点 R 同样落在「空行之后的新块起点」，R 之后的行原样复用；
+ * - 窗口内用完整解析器重排（行号、偏移都是绝对的），因此嵌套列表、表格、
+ *   围栏代码这些跨行结构的判断与整篇解析完全一致。
+ */
+export function parseMarkdownIncremental(
+  previous: {
+    text: string;
+    doc: ParsedDocument;
+    /** 与 `doc` 配套的切行结果：调用方缓存好了就省掉一次全文切行 */
+    lines?: readonly string[];
+    offsets?: Float64Array;
+  },
+  nextText: string,
+  options: { allowHtml?: boolean; breaks?: boolean } = {},
+  nextCache?: { lines: readonly string[]; offsets: Float64Array },
+): ParsedDocument | null {
+  const prevText = previous.text;
+  const prevDoc = previous.doc;
+  if (prevText === nextText) return prevDoc;
+  if (!prevText || !nextText) return null;
+  // 整篇解析会先归一化 CRLF；增量路径直接按 \n 切行，遇到 CR 就不掺和
+  if (prevText.includes("\r") || nextText.includes("\r")) return null;
+
+  const prevLines = previous.lines ?? splitLines(prevText);
+  const nextLines = nextCache?.lines ?? splitLines(nextText);
+  const { first, oldEnd, newEnd } = diffLineRange(prevLines, nextLines);
+  if (first >= prevLines.length && first >= nextLines.length) return prevDoc;
+  const lineDelta = nextLines.length - prevLines.length;
+  const delta = nextText.length - prevText.length;
+  const prevOffsets = previous.offsets ?? lineOffsets(prevText);
+  const nextOffsets = nextCache?.offsets ?? lineOffsets(nextText);
+
+  // front matter 在文首，改到它（或改出新的开头分割线）就整篇重来
+  if (first === 0) {
+    if (prevDoc.frontmatter || /^ {0,3}---[ \t]*$/.test(nextLines[0] ?? "")) return null;
+  } else if (prevDoc.frontmatter) {
+    const frontLines = prevDoc.frontmatter.raw ? prevDoc.frontmatter.raw.split("\n").length + 2 : 2;
+    if (first < frontLines) return null;
+  }
+
+  if (touchesGlobalState(prevLines, first, oldEnd)) return null;
+  if (touchesGlobalState(nextLines, first, newEnd)) return null;
+
+  const prevBlocks = prevDoc.blocks;
+  const firstLineStart = prevOffsets[first] ?? prevText.length;
+
+  /* ---- 窗口起点：向前退到「前面是空行」的块边界 ---- */
+  let head = 0;
+  while (head < prevBlocks.length && prevBlocks[head].end <= firstLineStart) head += 1;
+
+  let startLine: number;
+  let headCount: number;
+  if (head >= prevBlocks.length) {
+    // 改动落在全篇最后一块之后（文末输入 / 尾部空白）
+    const last = prevBlocks.length - 1;
+    if (last < 0) {
+      startLine = 0;
+      headCount = 0;
+    } else {
+      const endLine = lineIndexAt(prevOffsets, prevLines.length, prevBlocks[last].end);
+      if (endLine + 1 < first && blank(prevLines[endLine + 1] ?? "")) {
+        startLine = first;
+        headCount = prevBlocks.length;
+      } else {
+        startLine = prevBlocks[last].line - 1;
+        headCount = last;
+      }
+    }
+  } else {
+    let q = head;
+    while (q > 0) {
+      const line = prevBlocks[q].line - 1;
+      if (line <= first && line > 0 && blank(prevLines[line - 1] ?? "")) break;
+      q -= 1;
+    }
+    if (q === 0) {
+      const line = prevBlocks[0].line - 1;
+      // 改动可能发生在首块之前的空白里：窗口从文首开始
+      startLine = line <= first ? line : 0;
+    } else {
+      startLine = prevBlocks[q].line - 1;
+    }
+    headCount = q;
+  }
+
+  /* ---- 窗口终点：第一个「前一行是未改动空行」的尾块 ---- */
+  let resume = prevBlocks.length;
+  let resumeOldLine = prevLines.length;
+  for (let i = 0; i < prevBlocks.length; i += 1) {
+    const line = prevBlocks[i].line - 1;
+    if (line <= oldEnd) continue;
+    if (blank(prevLines[line - 1] ?? "")) {
+      resume = i;
+      resumeOldLine = line;
+      break;
+    }
+  }
+  const endLine = resume < prevBlocks.length ? resumeOldLine + lineDelta : nextLines.length;
+
+  /* ---- 定义扫描：与整篇解析同一套规则 ---- */
+  /*
+   * 有定义时才切全文逐行扫描；没有 front matter / 引用定义 / 脚注的文档，
+   * 改动行又已经被 touchesGlobalState 挡过一遍，不可能凭空长出定义，
+   * 窗口直接按行号构造即可（省掉每键一次全文切行 + 全行正则）。
+   */
+  const hasDefinitions =
+    prevDoc.links.size > 0 || prevDoc.footnotes.length > 0 || prevDoc.frontmatter !== null;
+  let windowSource: SourceLine[];
+  let definitionState: ParseState;
+  let frontmatter: ParsedDocument["frontmatter"] = null;
+  if (hasDefinitions) {
+    const scanned = toLines(nextText);
+    definitionState = {
+      links: new Map(),
+      footnoteDefs: new Map(),
+      footnoteIndex: new Map(),
+      footnoteOrder: [],
+      slugs: new Map(),
+      outline: [],
+      allowHtml: options.allowHtml ?? true,
+      breaks: options.breaks ?? false,
+    } satisfies ParseState;
+    frontmatter = extractDefinitions(scanned, definitionState).frontmatter;
+    windowSource = scanned.slice(startLine, endLine);
+
+    if (!sameLinks(definitionState.links, prevDoc.links)) return null;
+    if (definitionState.footnoteDefs.size || prevDoc.footnotes.length) {
+      const previousDefinitions = {
+        links: new Map(),
+        footnoteDefs: new Map(),
+        footnoteIndex: new Map(),
+        footnoteOrder: [],
+        slugs: new Map(),
+        outline: [],
+        allowHtml: true,
+        breaks: false,
+      } satisfies ParseState;
+      extractDefinitions(toLines(prevText), previousDefinitions);
+      if (
+        footnoteSignature(definitionState.footnoteDefs) !==
+        footnoteSignature(previousDefinitions.footnoteDefs)
+      ) {
+        return null;
+      }
+    }
+  } else {
+    definitionState = {
+      links: new Map(),
+      footnoteDefs: new Map(),
+      footnoteIndex: new Map(),
+      footnoteOrder: [],
+      slugs: new Map(),
+      outline: [],
+      allowHtml: options.allowHtml ?? true,
+      breaks: options.breaks ?? false,
+    } satisfies ParseState;
+    windowSource = toWindowLines(nextText, startLine, endLine);
+  }
+
+  /* ---- 重排窗口 ---- */
+  const st: ParseState = {
+    links: definitionState.links,
+    footnoteDefs: definitionState.footnoteDefs,
+    footnoteIndex: new Map(prevDoc.footnotes.map((item) => [item.id, item.index])),
+    footnoteOrder: prevDoc.footnotes.map((item) => item.id),
+    slugs: new Map(),
+    outline: [],
+    allowHtml: options.allowHtml ?? true,
+    breaks: options.breaks ?? false,
+  };
+  const prevHeadings = headingIndexOf(prevDoc);
+  const headingStart = headingCountBefore(prevHeadings, headCount);
+  const headingEnd = headingCountBefore(prevHeadings, resume);
+  /*
+   * 只给「窗口里本来就有标题」的情况播种。窗口没有标题时，空 slug 表就能用；
+   * 如果新窗口凭空长出标题，后面的标题序列校验会直接退回整篇解析。
+   */
+  if (headingEnd > headingStart) {
+    const needed = new Set(prevHeadings.bases.slice(headingStart, headingEnd));
+    const counts = new Map<string, number>();
+    for (let index = 0; index < headingStart; index += 1) {
+      const base = prevHeadings.bases[index];
+      if (needed.has(base)) counts.set(base, (counts.get(base) ?? 0) + 1);
+    }
+    for (const [base, count] of counts) st.slugs.set(base, count);
+  }
+
+  const windowBlocks = parseBlocks(windowSource, st, 0);
+
+  /*
+   * 窗口起点同样是「可吞并」边界：复用的头部若以列表/缩进代码结尾，
+   * 窗口里新起的列表或缩进行会被它跨空行收走。整篇解析会合并，
+   * 增量却分成两个块，所以这种边界直接放弃增量。
+   */
+  if (headCount > 0) {
+    const headLast = prevBlocks[headCount - 1];
+    let firstLine = startLine;
+    while (firstLine < endLine && blank(nextLines[firstLine] ?? "")) firstLine += 1;
+    const firstIndented = /^[ \t]/.test(nextLines[firstLine] ?? "");
+    if (headLast?.type === "list" && (windowBlocks[0]?.type === "list" || firstIndented)) return null;
+    if (headLast?.type === "code" && firstIndented) return null;
+  }
+
+  // 窗口末尾若被某个未闭合结构（围栏 / callout）吞掉，尾部块就不能接回来
+  if (resume < prevBlocks.length) {
+    const blankLine = endLine - 1;
+    const blankStart = nextOffsets[blankLine] ?? nextText.length;
+    const lastBlock = windowBlocks[windowBlocks.length - 1];
+    if (lastBlock && lastBlock.end > blankStart) return null;
+    if (lastBlock && lastBlock.type === "callout" && !calloutClosedInWindow(windowSource, lastBlock, startLine, endLine - startLine)) {
+      return null;
+    }
+    if (
+      lastBlock &&
+      (lastBlock.type === "code" || lastBlock.type === "math") &&
+      !fenceClosedInWindow(windowSource, lastBlock, startLine, endLine - startLine)
+    ) {
+      return null;
+    }
+    /*
+     * 列表与缩进代码可以跨空行继续吞内容：窗口里刚起的列表，会把尾部开头的
+     * 缩进行收成自己的子块，也会和尾部另一个列表合并（整篇解析确实如此），
+     * 尾部块就不能当作独立块复用。
+     */
+    const tailFirst = prevBlocks[resume];
+    if (
+      lastBlock &&
+      (lastBlock.type === "list" || lastBlock.type === "code") &&
+      (tailFirst?.type === "list" || /^[ \t]/.test(nextLines[endLine] ?? ""))
+    ) {
+      return null;
+    }
+  }
+
+  // 标题序列是锚点去重的输入：窗口里的标题集合变了，尾部块的 id 就不再可信
+  const windowHeadings = collectHeadingBases(windowBlocks);
+  if (!sameStrings(prevHeadings.bases.slice(headingStart, headingEnd), windowHeadings)) {
+    return null;
+  }
+
+  // 同理，脚注引用序列变了，全篇编号都会重排，尾部块里的序号与脚注表必须作废
+  const nextWindowRefs = collectFootnoteRefs(windowBlocks);
+  if (
+    (prevDoc.footnotes.length > 0 || nextWindowRefs.length > 0) &&
+    !sameStrings(collectFootnoteRefs(prevBlocks.slice(headCount, resume)), nextWindowRefs)
+  ) {
+    return null;
+  }
+
+
+  const shiftedTail = shiftTailBlocks(prevBlocks.slice(resume), delta, lineDelta);
+  const blocks = [
+    ...prevBlocks.slice(0, headCount),
+    ...windowBlocks,
+    ...shiftedTail,
+  ];
+
+  // 大纲按行号有序：用二分切出「窗口前 / 窗口后」，避免每次按键过滤整个大纲
+  const outlineCut = (target: number): number => {
+    let low = 0;
+    let high = prevDoc.outline.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (prevDoc.outline[mid].line - 1 < target) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  };
+  const outline = [
+    ...prevDoc.outline.slice(0, outlineCut(startLine)),
+    ...st.outline,
+    ...prevDoc.outline.slice(outlineCut(resumeOldLine)).map((item) => ({
+      ...item,
+      line: item.line + lineDelta,
+    })),
+  ];
+
+  // 脚注定义可能整段落在窗口外：仍然按新文本重新解析（定义本身已确认没变）
+  const order = [...st.footnoteOrder];
+  for (const id of st.footnoteDefs.keys()) if (!order.includes(id)) order.push(id);
+  const footnotes = order.map((id, index) => ({
+    id,
+    label: String(index + 1),
+    index: index + 1,
+    children: st.footnoteDefs.has(id) ? parseBlocks(st.footnoteDefs.get(id)!, st, 1) : [],
+  }));
+
+  const result: ParsedDocument = {
+    blocks,
+    frontmatter,
+    outline,
+    footnotes,
+    links: definitionState.links,
+  };
+  const blockShift = windowBlocks.length - (resume - headCount);
+  headingIndexes.set(result, {
+    bases: [
+      ...prevHeadings.bases.slice(0, headingStart),
+      ...windowHeadings,
+      ...prevHeadings.bases.slice(headingEnd),
+    ],
+    blockIndexes: [
+      ...prevHeadings.blockIndexes.slice(0, headingStart),
+      ...buildHeadingIndex(windowBlocks).blockIndexes.map((index) => index + headCount),
+      ...prevHeadings.blockIndexes.slice(headingEnd).map((index) => index + blockShift),
+    ],
+  });
+  return result;
 }

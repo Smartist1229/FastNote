@@ -57,6 +57,10 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
  * - desc / args：给模型看的参数说明（desc 用中文短句，args 的值是类型说明）
  * - needsConfirm=true：会改动数据的写操作，执行前必须经用户确认；
  *   AIChatPanel 正是按这个字段把每轮调用分成"只读直接执行"与"待确认"两组。
+ *
+ * 标签类操作一律 needsConfirm=false：它们只碰 source="ai" 的标签，用户手打的一个也动不了
+ * （硬线落在 Rust 侧按 source 过滤，renameTag 另在前端补了 same-source 校验），
+ * 没有"误删用户数据"的风险，再逐条问用户只会打断"读完顺手打标签"这种连贯动作。
  */
 export const TOOL_DEFS = [
   { name: "searchNotes", desc: "搜索笔记（标题 + 正文）", args: { query: "搜索关键词" }, needsConfirm: false },
@@ -88,11 +92,11 @@ export const TOOL_DEFS = [
   { name: "listTags", desc: "列出全部标签及各标签的笔记数", args: {}, needsConfirm: false },
   { name: "getNoteTags", desc: "读取某篇笔记的标签", args: { noteId: "笔记ID" }, needsConfirm: false },
   { name: "findNotesByTag", desc: "按标签查找笔记", args: { tagName: "标签名", limit: "条数(可选)" }, needsConfirm: false },
-  { name: "addNoteTags", desc: "给笔记添加标签", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: true },
-  { name: "removeNoteTags", desc: "移除笔记上的标签（仅限 AI 自己添加的）", args: { noteId: "笔记ID", names: "['标签1']" }, needsConfirm: true },
-  { name: "setNoteTags", desc: "整体重写某篇笔记的 AI 标签（旧的 AI 标签会被替换）", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: true },
-  { name: "renameTag", desc: "重命名标签（全局生效）", args: { tagName: "原标签名", newName: "新标签名" }, needsConfirm: true },
-  { name: "deleteTag", desc: "删除标签（仅限 AI 自己创建的，连带所有笔记上的关联）", args: { tagName: "标签名" }, needsConfirm: true },
+  { name: "addNoteTags", desc: "给笔记添加标签", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: false },
+  { name: "removeNoteTags", desc: "移除笔记上的标签（仅限 AI 自己添加的）", args: { noteId: "笔记ID", names: "['标签1']" }, needsConfirm: false },
+  { name: "setNoteTags", desc: "整体重写某篇笔记的 AI 标签（旧的 AI 标签会被替换）", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: false },
+  { name: "renameTag", desc: "重命名标签（全局生效，仅限 AI 自己创建的）", args: { tagName: "原标签名", newName: "新标签名" }, needsConfirm: false },
+  { name: "deleteTag", desc: "删除标签（仅限 AI 自己创建的，连带所有笔记上的关联）", args: { tagName: "标签名" }, needsConfirm: false },
 ];
 
 /* ---------- 系统提示词 ---------- */
@@ -134,24 +138,27 @@ export const AI_SYSTEM_PROMPT = `You are the FastNote smart note assistant. You 
 - moveNote: move a note to another category. {"noteId":"笔记ID","categoryId":"目标分组ID"}
 - listTags: list every tag in the library with its note count. {}
 - getNoteTags: read the tags of one note; each entry carries source ("user" = added by the user, "ai" = added by you). {"noteId":"笔记ID"}
-- findNotesByTag: find all notes carrying a tag (cross-category retrieval). {"tagName":"标签名","limit":"条数(可选,默认20)"}
-- addNoteTags: add tags to a note; unknown tags are created automatically. {"noteId":"笔记ID","names":["标签1","标签2"]}
-- removeNoteTags: remove tags from a note. You can **only remove tags you added**; user tags are rejected. {"noteId":"笔记ID","names":["标签1"]}
-- setNoteTags: rewrite all AI tags of a note at once (previous AI tags are removed; user tags are untouched). {"noteId":"笔记ID","names":["标签1","标签2"]}
-- renameTag: rename a tag globally (every note it is on follows the new name). {"tagName":"原标签名","newName":"新标签名"}
-- deleteTag: delete a tag globally. You can **only delete tags you created**; user-created ones are rejected. {"tagName":"标签名"}
+- findNotesByTag: find all notes carrying a tag (cross-category retrieval) — the fastest way to pull notes **by topic**. {"tagName":"标签名","limit":"条数(可选,默认20)"}
+- addNoteTags: add tags to a note; unknown tags are created automatically; runs without user confirmation. {"noteId":"笔记ID","names":["标签1","标签2"]}
+- removeNoteTags: remove tags from a note; runs without user confirmation. You can **only remove tags you added**; user tags are rejected. {"noteId":"笔记ID","names":["标签1"]}
+- setNoteTags: rewrite all AI tags of a note at once (previous AI tags are removed; user tags are untouched); runs without user confirmation. {"noteId":"笔记ID","names":["标签1","标签2"]}
+- renameTag: rename a tag globally (every note it is on follows the new name). You can **only rename tags you created**; user-created ones are rejected. {"tagName":"原标签名","newName":"新标签名"}
+- deleteTag: delete a tag globally; it also detaches it from every note, so use it only for clearly redundant tags you introduced. You can **only delete tags you created**; user-created ones are rejected. {"tagName":"标签名"}
 
 ## Tags (cross-category topics)
 A note belongs to exactly one category but can carry many tags — tags are how you retrieve by **theme across categories**.
-- When you **read** a note (getNoteContent / getCurrentNote / readNoteLines / getNoteTags) and it has **no tags at all**, proactively call setNoteTags with 2-5 concise Chinese tags drawn from the content; do it silently and do not make it the headline of your reply.
+- **Retrieve by theme with tags first**: when the request is about a topic rather than exact wording ("关于 XX 的笔记" / "XX 相关的内容" / "我之前记过哪些关于 XX 的"), call listTags then findNotesByTag. searchNotes only matches raw text, so it misses every note that phrases the topic differently.
+- **Auto-tag every note you read**: read results carry the fields "tags" and "aiTags". Whenever aiTags is empty (or clearly stale after you rewrote the note), call setNoteTags with 2-5 concise Chinese tags drawn from the content — do it in the same round as the read, silently, and never make it the headline of your reply. The same applies right after createNote / createNotes.
 - Prefer existing tags: run listTags first and reuse wording already in the library (matching is case-insensitive), otherwise every synonymous variant ("待办"/"todo") becomes a separate tag.
 - Tags are short nouns, no # prefix, no sentences; keep each one within 2-5 words.
+- Tag operations (add/set/remove/rename/delete) run immediately without asking the user, so never announce "需要你确认" or wait for permission — just do them and mention the result in at most one short line.
 - **Never touch "user" tags** unless the user explicitly asks; removing or renaming them will be rejected.
 
 ## Choosing tools
 - "this / current note" → getCurrentNote / updateCurrentNote / appendToNote (omit noteId to mean the current note).
 - Just **adding / continuing / appending** → appendToNote; updateNote / updateCurrentNote **overwrite the whole body**, use them only for a full rewrite.
 - "what did I write recently / what is inside a category" → listNotes (do not run an empty search).
+- "notes about a topic" (no exact wording to match) → listTags then findNotesByTag; tags are the cross-category index, use them instead of guessing keywords.
 - "deleted by mistake / recover it" → listTrash then restoreNote.
 - "permanently delete / empty the trash" → deleteFromTrash / emptyTrash. These are **unrecoverable**: run listTrash first, state which notes will be permanently deleted, then call.
 - Producing multiple notes → one createNotes call, not repeated createNote.
