@@ -1,0 +1,2403 @@
+/*
+ * MarkdownEditor 组件样式。
+ *
+ * 三条约定：
+ * 1) 所有颜色/尺寸/字体都走 `--mde-*` 变量（由 theme.ts 依据配置写入根节点），
+ *    外部既能改配置，也能直接覆盖 CSS 变量，不需要碰内部选择器；
+ * 2) 全部选择器以 `.mde-` 开头，宿主已有 Tailwind preflight 也不会互相污染，
+ *    preflight 抹掉的列表样式、标题间距在这里显式补回；
+ * 3) 只保留必要的过渡（按钮、菜单），并尊重 prefers-reduced-motion。
+ */
+
+.mde-root {
+  --mde-bg: #ffffff;
+  --mde-editor-bg: #ffffff;
+  --mde-preview-bg: #ffffff;
+  --mde-toolbar-bg: #f8fafc;
+  --mde-toolbar-hover: #f1f5f9;
+  --mde-toolbar-active-bg: #eef2ff;
+  --mde-toolbar-active-text: #4f46e5;
+  --mde-border: #e5e9f0;
+  --mde-border-strong: #cbd5e1;
+  --mde-text: #0f172a;
+  --mde-text-body: #334155;
+  --mde-text-muted: #64748b;
+  --mde-text-faint: #94a3b8;
+  --mde-accent: #6366f1;
+  --mde-accent-hover: #4f46e5;
+  --mde-accent-soft: #eef2ff;
+  --mde-on-accent: #ffffff;
+  --mde-link: #4338ca;
+  --mde-selection: rgba(99, 102, 241, 0.22);
+  --mde-inline-code-bg: #f1f5f9;
+  --mde-inline-code-text: #be123c;
+  --mde-code-bg: #282c34;
+  --mde-code-text: #abb2bf;
+  --mde-code-highlight: rgba(99, 102, 241, 0.18);
+  --mde-code-header-bg: #21252b;
+  --mde-code-border: #e5e9f0;
+  --mde-code-tool-hover: rgba(15, 23, 42, 0.08);
+  --mde-quote-border: #c7d2fe;
+  --mde-quote-bg: #f8fafc;
+  --mde-quote-text: #475569;
+  --mde-table-border: #e2e8f0;
+  --mde-table-header-bg: #f8fafc;
+  --mde-table-stripe-bg: #fafafa;
+  --mde-mark-bg: #fef08a;
+  --mde-mark-text: #713f12;
+  --mde-note-color: #3b82f6;
+  --mde-tip-color: #10b981;
+  --mde-warning-color: #f59e0b;
+  --mde-caution-color: #ef4444;
+  --mde-danger: #ef4444;
+  --mde-shadow: 0 12px 32px -12px rgba(15, 23, 42, 0.18);
+  --mde-chip-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --mde-overlay: rgba(15, 23, 42, 0.24);
+  --mde-divider: #e5e9f0;
+  --mde-gutter-bg: transparent;
+  --mde-gutter-text: #94a3b8;
+  --mde-gutter-active-text: #6366f1;
+  --mde-scrollbar-thumb: #cbd5e1;
+  --mde-scrollbar-thumb-hover: #94a3b8;
+  --mde-status-bg: #f8fafc;
+  --mde-status-text: #64748b;
+  --mde-outline-bg: #ffffff;
+  --mde-outline-active-bg: #eef2ff;
+  --mde-outline-active-text: #4f46e5;
+  --mde-menu-bg: #ffffff;
+  --mde-menu-border: #e5e9f0;
+  --mde-input-bg: #f1f5f9;
+  --mde-input-text: #0f172a;
+  --mde-input-border: transparent;
+  --mde-search-bg: #ffffff;
+  --mde-search-border: #e5e9f0;
+  --mde-search-shadow: 0 6px 20px -8px rgba(15, 23, 42, 0.22);
+  --mde-search-match-bg: rgba(255, 197, 66, 0.42);
+  --mde-search-match-border: rgba(202, 148, 40, 0.55);
+  --mde-search-match-active-bg: rgba(234, 92, 0, 0.5);
+  --mde-search-match-active-border: #ea5c00;
+  --mde-callout-tint: 7%;
+  --mde-radius: 4px;
+  --mde-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mde-mono-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --mde-preview-font-family: var(--mde-font-family);
+  --mde-preview-font-size: 15px;
+  --mde-preview-line-height: 1.8;
+  --mde-preview-letter-spacing: 0.01em;
+  --mde-preview-max-width: 820px;
+  --mde-preview-padding: 28px 32px;
+  --mde-preview-para: 0.9em;
+  --mde-heading-top: 1.4em;
+  --mde-heading-bottom: 0.6em;
+  --mde-heading-weight: 650;
+  --mde-preview-align: left;
+  --mde-editor-font-size: 14px;
+  --mde-editor-line-height: 1.75;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--mde-border);
+  border-radius: var(--mde-radius);
+  background: var(--mde-bg);
+  color: var(--mde-text);
+  font-family: var(--mde-font-family);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.mde-root *,
+.mde-root *::before,
+.mde-root *::after {
+  box-sizing: border-box;
+}
+
+/* 纯渲染模式：没有外壳，也没有自己的边框 / 圆角 / 内部滚动，高度完全由内容决定，
+   嵌在别的容器里时就像一段普通的富文本。 */
+.mde-root[data-mode="render"] {
+  display: block;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.mde-root[data-mode="render"] .mde-body,
+.mde-root[data-mode="render"] .mde-panes {
+  display: block;
+  min-height: 0;
+}
+
+.mde-root[data-mode="render"] .mde-preview-pane {
+  overflow: visible;
+  background: transparent;
+}
+
+.mde-root[data-mode="render"] .mde-preview {
+  min-height: 0;
+}
+
+.mde-root ::selection {
+  background: var(--mde-selection);
+}
+
+.mde-root button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* ============ 工具栏 ============ */
+.mde-toolbar {
+  flex: none;
+  border-bottom: 1px solid var(--mde-border);
+  background: var(--mde-toolbar-bg);
+}
+
+.mde-toolbar.is-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.mde-toolbar.is-scrollable {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  /* 不要写 scrollbar-width / scrollbar-color：标准属性一旦生效，下面
+     ::-webkit-scrollbar 的 height 声明就被忽略，滚动条会回到 8px 的"细"档，
+     比正文区的滚动条显眼得多。高度只能靠 webkit 伪元素控。 */
+}
+
+.mde-toolbar.is-scrollable::-webkit-scrollbar {
+  height: 3px;
+}
+
+.mde-toolbar.is-scrollable::-webkit-scrollbar-thumb {
+  border: none;
+  border-radius: 2px;
+  background: var(--mde-border-strong);
+  cursor: default;
+}
+
+.mde-toolbar.is-scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mde-toolbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px;
+  min-width: max-content;
+}
+
+/* 图标统一为 SVG，尺寸一致且块级显示，保证所有按钮内容严格居中对齐 */
+.mde-tool svg,
+.mde-mode-btn svg,
+.mde-menu-item svg {
+  display: block;
+  flex: none;
+}
+
+.mde-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mde-text-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.mde-tool:hover:not(:disabled) {
+  background: var(--mde-toolbar-hover);
+  color: var(--mde-text);
+}
+
+.mde-tool.is-active {
+  background: var(--mde-toolbar-active-bg);
+  color: var(--mde-toolbar-active-text);
+}
+
+.mde-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mde-tool.has-label {
+  min-width: auto;
+  padding: 0 8px;
+}
+
+.mde-tool-label {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/*
+ * 下拉指示：V 形 chevron（不是带杆的箭头）。
+ * 12px 下 1.8 的线宽太细、容易糊成一根，「可展开」读不出来，
+ * 这里单独加粗到 2.4：stroke-width 是继承属性，写在 svg 上就够，不用碰 path。
+ */
+.mde-tool-caret {
+  opacity: 0.6;
+  margin-left: -2px;
+  stroke-width: 2.4;
+}
+
+.mde-toolbar.is-compact .mde-tool {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 3px;
+  border-radius: 5px;
+}
+
+.mde-tool-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.mde-tool-slot.has-menu .mde-tool {
+  padding-right: 3px;
+}
+
+.mde-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 3px;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.mde-sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--mde-border);
+}
+
+/* 模式切换：分段控件 */
+.mde-tool-slot.is-mode {
+  margin-left: 2px;
+}
+
+/*
+ * 尾部吸附组（`toolbar.pinTail`）：视图切换 / 大纲 / 全屏 / 复制。
+ *
+ * 这一组钉在工具栏右缘，窗口变窄、前面的按钮被滚走时它们始终点得到；
+ * 底色必须不透明（盖住从下面滑过去的按钮）。
+ * 滚动后左侧补一条渐变，暗示「左边还有东西」，否则看着像凭空浮着。
+ *
+ * 右缘留白由它自己出（`right: 0` + `padding-right: 8px`），inner 的右内边距在有尾组时让位：
+ * 两处都算的话，滚到最右（尾组从"钉住"回到自然位置）会整体左移 8px，看着像吸附不稳。
+ */
+.mde-toolbar.has-tail .mde-toolbar-inner {
+  padding-right: 0;
+}
+
+.mde-toolbar-tail {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 6px;
+  padding-right: 8px;
+  background: var(--mde-toolbar-bg);
+}
+
+.mde-toolbar-tail.is-stuck::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  width: 14px;
+  background: linear-gradient(to right, transparent, var(--mde-toolbar-bg));
+  pointer-events: none;
+}
+
+.mde-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--mde-toolbar-hover);
+}
+
+.mde-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mde-text-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.mde-mode-btn:hover {
+  color: var(--mde-text);
+}
+
+.mde-mode-btn.is-active {
+  background: var(--mde-bg);
+  color: var(--mde-accent);
+  box-shadow: var(--mde-chip-shadow);
+}
+
+.mde-mode-btn .mde-tool-label {
+  font-size: 11.5px;
+}
+
+/* 下拉菜单 */
+.mde-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 172px;
+  padding: 5px;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 10px;
+  background: var(--mde-menu-bg);
+  box-shadow: var(--mde-shadow);
+  animation: mde-pop 120ms ease;
+}
+
+@keyframes mde-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 下拉菜单渲染到 body：工具栏有 overflow 裁剪，留在内部会被整块切掉 */
+.mde-portal {
+  position: static;
+}
+
+.mde-portal[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+.mde-menu.is-floating {
+  position: fixed;
+  z-index: 500;
+  top: 0;
+  left: 0;
+}
+
+.mde-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--mde-text-body);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mde-menu-item:hover {
+  background: var(--mde-toolbar-hover);
+  color: var(--mde-text);
+}
+
+.mde-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mde-menu-item:disabled:hover {
+  background: transparent;
+  color: var(--mde-text-body);
+}
+
+.mde-menu-item.is-active {
+  color: var(--mde-accent);
+  background: var(--mde-accent-soft);
+}
+
+.mde-menu-label {
+  flex: 1;
+  font-size: 12.5px;
+}
+
+.mde-menu-hint {
+  color: var(--mde-text-faint);
+  font-size: 11px;
+}
+
+.mde-alert-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mde-accent);
+}
+
+.mde-alert-dot.is-note {
+  background: var(--mde-note-color);
+}
+.mde-alert-dot.is-tip {
+  background: var(--mde-tip-color);
+}
+.mde-alert-dot.is-important {
+  background: var(--mde-accent);
+}
+.mde-alert-dot.is-warning {
+  background: var(--mde-warning-color);
+}
+.mde-alert-dot.is-caution {
+  background: var(--mde-caution-color);
+}
+
+/* ---------- 色盘（文字颜色 / 文字底色） ---------- */
+/*
+ * 一行 8 个色块：再多一列菜单就要跟工具栏一样宽。
+ * 色块自己就是按钮，用 outline 而不是 box-shadow 画选中环——后者会被相邻色块盖住一半。
+ */
+.mde-color-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  padding: 5px;
+}
+
+.mde-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgb(0 0 0 / 0.16);
+  border-radius: 5px;
+  background-clip: padding-box;
+  cursor: pointer;
+  transition: transform 90ms ease;
+}
+
+.mde-color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.mde-color-swatch.is-active {
+  outline: 2px solid var(--mde-accent);
+  outline-offset: 1px;
+}
+
+/* 菜单里的行分隔：比按钮之间的留白更明确的「下面换一组」 */
+.mde-menu-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--mde-menu-border);
+}
+
+/* ============ 自绘取色器（SV 面板 + 色相滑杆） ============ */
+/*
+ * 拖动靠 JS 抢占指针，CSS 只负责「能拖」这件事的手感：
+ * - `touch-action: none`：不然触屏会被当成页面滚动，手指一动画面就跑了；
+ * - `user-select: none`：拖动时别顺带选中面板里的字。
+ */
+.mde-picker {
+  padding: 6px 8px 8px;
+  touch-action: none;
+  user-select: none;
+}
+
+.mde-picker-sv {
+  position: relative;
+  width: 100%;
+  height: 96px;
+  overflow: hidden;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* 两层渐变叠在纯色相底上：横向白→透明（饱和度），纵向透明→黑（明度） */
+.mde-picker-sv-white,
+.mde-picker-sv-black {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mde-picker-sv-white {
+  background: linear-gradient(to right, #fff, rgb(255 255 255 / 0));
+}
+
+.mde-picker-sv-black {
+  background: linear-gradient(to top, #000, rgb(0 0 0 / 0));
+}
+
+.mde-picker-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mde-picker-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.mde-picker-hue {
+  position: relative;
+  flex: 1;
+  height: 12px;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 6px;
+  cursor: pointer;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 17%,
+    #0f0 33%,
+    #0ff 50%,
+    #00f 67%,
+    #f0f 83%,
+    #f00 100%
+  );
+}
+
+.mde-picker-hue-handle {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mde-picker-preview {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 5px;
+}
+
+.mde-picker-hex {
+  /* 至少容得下 #rrggbb；不能沿用 flex: 1 的 0 基准，否则会被右侧按钮挤没 */
+  flex: 1 1 88px;
+  min-width: 76px;
+  height: 24px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--mde-menu-border);
+  border-radius: 5px;
+  background: var(--mde-input-bg, transparent);
+  color: inherit;
+  font-family: var(--mde-mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  /* 取色器整体禁用了选中；输入框里要能正常点选、全选、粘贴色值 */
+  user-select: text;
+  cursor: text;
+}
+
+/*
+ * 焦点态只留一圈软光晕。必须同时压住宿主全局的
+ * `input:focus-visible { box-shadow: 0 0 0 2px …, 0 0 0 4px … }`，
+ * 那是按普通表单控件调的双层焦点环，套在这个 24px 小输入框上又粗又脏。
+ */
+.mde-picker-hex:focus,
+.mde-picker-hex:focus-visible {
+  outline: none;
+  border-color: var(--mde-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mde-accent) 16%, transparent);
+}
+
+/* 菜单里的一颗行内小按钮（清除颜色） */
+
+.mde-menu-item.is-inline {
+  /* .mde-menu-item 是 width:100% 的整行菜单项；放进 flex 行必须按内容收窄，
+     否则会把十六进制输入框挤成 0 宽，自己再溢出菜单右缘 */
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 24px;
+  padding: 0 8px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* ============ 查找 / 替换（VSCode 风格悬浮框） ============ */
+/*
+ * 两行是同一个网格，不是各自一条 flex：
+ *   列1 = 折叠开关 / 占位（22px）、列2 = 输入框（自适应）、列3 = 右侧按钮组（auto）。
+ * 这样两个输入框的左右边缘天然对齐，右侧按钮多宽都不会把输入框挤歪。
+ * 行容器用 display:contents 把自己从盒模型里摘掉，直接让按钮参与网格。
+ */
+.mde-search {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 60;
+  width: 344px;
+  max-width: calc(100% - 28px);
+  padding: 6px 6px 6px 4px;
+  border: 1px solid var(--mde-search-border);
+  border-radius: 8px;
+  background: var(--mde-search-bg);
+  box-shadow: var(--mde-search-shadow);
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 4px;
+  row-gap: 5px;
+  animation: mde-pop 120ms ease;
+}
+
+.mde-search.is-compact {
+  width: 304px;
+  padding: 4px;
+}
+
+.mde-search-row {
+  display: contents;
+}
+
+/* 第二行留出的宽度，用来和第一行的折叠开关对齐（网格列1已经空出来，这里只是占位） */
+.mde-search-spacer {
+  display: block;
+  width: 22px;
+}
+
+.mde-search-toggles {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+/* 右侧「模式/上/下/关闭」这一整组：整体靠右，两行之间多余的宽度只留在它左边 */
+.mde-search-tail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* 与 .mde-search-actions 的间隙一致：字面 / 替换 / 全部替换三者间距均匀，不忽宽忽窄 */
+  gap: 1px;
+  min-width: 0;
+}
+
+.mde-search-field {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 24px;
+}
+
+.mde-search-input {
+  width: 100%;
+  height: 24px;
+  box-sizing: border-box;
+  padding: 0 7px;
+  border: 1px solid var(--mde-input-border);
+  border-radius: 5px;
+  background: var(--mde-input-bg);
+  color: var(--mde-input-text);
+  font-family: var(--mde-font-family);
+  font-size: 12.5px;
+  line-height: 1;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+
+/* 有计数的那一行：右边留出计数文字的宽度（最多 "2000/2000" 这种），字不会被数字压住 */
+.mde-search-field.is-counted .mde-search-input {
+  /* 够放「12345/20000+」这种五位数计数：命中上限抬高后计数可能比原来长一截 */
+  padding-right: 64px;
+}
+
+.mde-search-input::placeholder {
+  color: var(--mde-text-faint);
+}
+
+/*
+ * 焦点态：描边转强调色 + 一圈很软的辉光。
+ *
+ * 必须带上 :focus-visible 并且优先级高过宿主：宿主常有全局
+ * `input:focus-visible { box-shadow: 0 0 0 2px …, 0 0 0 4px … }` 的焦点环，
+ * 那是按普通表单控件调的，套在这个 24px 高的小输入框上就是截图里那圈又粗又硬的紫边。
+ * `outline: none` 单独写在 :focus 上是为了压住宿主的 outline 版本。
+ */
+.mde-search-input:focus,
+.mde-search-input:focus-visible {
+  outline: none;
+  border-color: var(--mde-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mde-accent) 16%, transparent);
+}
+
+/* 查询无结果：输入框描边转红，与 VSCode 一致 */
+.mde-search-input.is-empty {
+  border-color: var(--mde-danger);
+}
+
+.mde-search-input.is-empty:focus,
+.mde-search-input.is-empty:focus-visible {
+  border-color: var(--mde-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mde-danger) 16%, transparent);
+}
+
+/*
+ * 计数叠在输入框右端：它占的是输入框自己的盒内空间（输入框留了右内边距），
+ * 不再是 row 里的一个 flex 子项——否则它会把这行的输入框挤窄，两行就对不起。
+ */
+.mde-search-count {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--mde-text-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+
+.mde-search-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.mde-search-icon-btn,
+.mde-search-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mde-text-muted);
+  cursor: pointer;
+  transition: background-color 110ms ease, color 110ms ease;
+}
+
+.mde-search-toggle-btn {
+  width: 24px;
+}
+
+.mde-search-icon-btn:hover:not(:disabled),
+.mde-search-toggle-btn:hover:not(:disabled) {
+  background: var(--mde-toolbar-hover);
+  color: var(--mde-text);
+}
+
+.mde-search-icon-btn:disabled,
+.mde-search-toggle-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mde-search-toggle-btn.is-active {
+  background: var(--mde-toolbar-active-bg);
+  color: var(--mde-toolbar-active-text);
+}
+
+/*
+ * 选择器带上 .mde-search：`.mde-root button` 是 (0,1,1)，单靠 `.mde-search-text-btn`
+ * (0,1,0) 压不住它，字号和颜色都会被 `font-size: inherit` / `color: inherit` 抢走
+ * （文字按钮于是跟正文一样大，看着和旁边的图标不是一套）。
+ */
+.mde-search .mde-search-text-btn {
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mde-text-muted);
+  font-family: var(--mde-font-family);
+  /* 三个文字按钮（字面 / 替换 / 全部替换）共用同一档字号与内边距，看上去才是一组 */
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 110ms ease, color 110ms ease;
+}
+
+.mde-search-text-btn:hover:not(:disabled) {
+  background: var(--mde-toolbar-hover);
+  color: var(--mde-text);
+}
+
+.mde-search-text-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/*
+ * 替换串的模式开关：紧挨着替换输入框右侧。
+ * 它是个文字按钮——"字面 / 正则" 比一个图标更能说明当前替换串会被怎么解释；
+ * 最小宽度是为了在「字面/正则」两种长度（英文是 Text/Regex）之间不跳动。
+ */
+.mde-search-text-btn.is-mode {
+  min-width: 30px;
+  padding: 0 5px;
+}
+
+.mde-search-text-btn.is-active {
+  background: var(--mde-toolbar-active-bg);
+  color: var(--mde-toolbar-active-text);
+}
+
+/* ============ 布局 ============ */
+/* 查找框绝对定位在这里，右上角悬浮，不挤压编辑区 */
+.mde-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.mde-panes {
+  display: grid;
+  grid-template-columns: 1fr;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mde-root.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border: none;
+  border-radius: 0;
+}
+
+.mde-divider {
+  position: relative;
+  background: var(--mde-divider);
+  cursor: col-resize;
+  transition: background-color 120ms ease;
+}
+
+.mde-divider::after {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+}
+
+.mde-divider:hover {
+  background: var(--mde-accent);
+}
+
+/* ============ 编辑区 ============ */
+.mde-source {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--mde-editor-bg);
+  /*
+   * 正文区的内边距：正文、占位提示、行号槽三处必须一致（否则第一行就对不齐）。
+   * 在这里定一次，下面各处引用。
+   */
+  --mde-editor-pad-x: 24px;
+  --mde-editor-pad-y: 20px;
+  /* 行号槽与正文之间不再留缝，正文靠自己的左内边距与数字拉开一点距离 */
+  --mde-editor-pad-left: 10px;
+}
+
+/* 可编辑区（.mde-content）与自绘光标层（.mde-caret-layer）叠放：光标在上、不吃事件 */
+.mde-source-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+/*
+ * 编辑区：contenteditable 容器，同时兼滚动容器。
+ *
+ * 里面只放可视区间那几十个 `.mde-line`，所以 DOM 规模与文档长度无关——
+ * 以前整篇文本都在一个 textarea 里，几万行的文档光是节点就是几万个。
+ */
+.mde-content {
+  flex: 1;
+  min-width: 0;
+  /*
+   * 定位 + z-index 2：让正文压在它自己那层「当前行底色」之上（底色是 `.mde-line`
+   * 自己的 background，与正文同一个栈，靠 z-index 分先后）。
+   * 查找命中走 `::highlight()`，是浏览器直接画在文字上的，不参与这一层的层序。
+   */
+  position: relative;
+  z-index: 2;
+  padding: var(--mde-editor-pad-y) var(--mde-editor-pad-x) var(--mde-editor-pad-y) var(--mde-editor-pad-left);
+  border: none;
+  outline: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /*
+   * 关掉滚动锚定：内容高度一变（改字号、切文档、虚拟化区间伸缩），浏览器会
+   * 「锚定」某个可见节点替我们挪 scrollTop，挪出来的差既不通知也不受控。
+   */
+  overflow-anchor: none;
+  background: transparent;
+  color: var(--mde-text-body);
+  font-family: var(--mde-mono-family);
+  font-size: var(--mde-editor-font-size);
+  line-height: var(--mde-editor-line-height);
+  caret-color: var(--mde-accent);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 2;
+}
+
+.mde-content.is-nowrap {
+  white-space: pre;
+  overflow-wrap: normal;
+  /* 不折行时横向也要能滚：超宽的行由 `.mde-line` 撑出 scrollWidth */
+  overflow-x: auto;
+}
+
+/*
+ * 行容器：上下 padding 就是「可视区间之外的部分」。
+ *
+ * 用 padding 而不是占位 div，是为了让浏览器找不到一个可以把光标放进去的空节点——
+ * 按方向键走到区间尽头时，光标会留在最后一行，而不是掉进占位里再也不出来。
+ */
+.mde-lines {
+  display: block;
+  min-width: 0;
+}
+
+.mde-line {
+  display: block;
+}
+
+/*
+ * 围栏代码块：整块（含 ``` 围栏行）铺一层很浅的底色，把代码和正文分开。
+ *
+ * 底色必须和文字左缘对齐。不要再用「负外边距 + 等量左内边距」往外铺：
+ * 编辑区带 `overflow`（裁剪发生在 padding box），铺出去的部分会被裁掉一截，
+ * 结果色带比文字更靠左，看上去像正文被缩进了一格。
+ * token 的颜色不在这里，它由注入的 `::highlight(mde-syn-*)` 规则画（见文件末尾）。
+ */
+.mde-line.is-code {
+  background: var(--mde-source-code-bg, rgba(15, 23, 42, 0.035));
+}
+
+/* 光标正好落在代码行上：当前行底色叠在代码底色上，别把代码的底色顶掉 */
+.mde-line.is-code.is-current {
+  background:
+    linear-gradient(var(--mde-active-line-bg), var(--mde-active-line-bg)),
+    var(--mde-source-code-bg, rgba(15, 23, 42, 0.035));
+}
+
+/* 占位提示：contenteditable 没有 :placeholder-shown，用一个绝对定位的兄弟节点画 */
+.mde-placeholder {
+  position: absolute;
+  /* 正文是 z-index 2，占位要盖在它上面；放在 4 是因为光标层占了 3 */
+  z-index: 4;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: var(--mde-editor-pad-y) var(--mde-editor-pad-x) var(--mde-editor-pad-y) var(--mde-editor-pad-left);
+  color: var(--mde-text-faint);
+  font-family: var(--mde-mono-family);
+  font-size: var(--mde-editor-font-size);
+  line-height: var(--mde-editor-line-height);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+
+.mde-source.has-gutter .mde-placeholder {
+  padding-left: 8px;
+}
+
+/*
+ * 查找命中 / 大纲跳转的高亮：走 CSS 自定义高亮（见 editor/highlights.ts），
+ * 只往注册表里塞 Range，不改 DOM。编辑区与预览区共用这几个名字，观感一致。
+ *
+ * 铺出来就是命中那一段**文字**的范围（高度随字形盒，折行时每段各自铺），
+ * 不是整行——整行色带看着像选中了整行，也和预览区对不上。
+ *
+ * 颜色规则由 theme.ts 的 buildHighlightRules 按 theme.colors 生成后注入
+ * （`::highlight()` 不认自定义属性，只能写成一整条字面量规则）。
+ */
+
+/*
+ * 光标所在行。
+ *
+ * 按行虚拟化之后「哪一行」只是给那一个 `.mde-line` 加个类——不需要额外的定位层，
+ * 行号槽里同一格跟着点亮（它们的纵向偏移本来就出自同一张表）。
+ */
+.mde-line.is-current {
+  background: var(--mde-active-line-bg);
+}
+
+.mde-gutter-line.is-current .mde-gutter-num,
+.mde-gutter-line.is-flash .mde-gutter-num {
+  color: var(--mde-gutter-active-text);
+  font-weight: 600;
+}
+
+.mde-source.has-gutter .mde-content {
+  padding-left: 8px;
+}
+
+/* 连字开关（`editor.fontLigatures`）。
+   必须覆盖到所有用等宽字体排版的层：编辑区、行号槽、折行测量层、代码块。
+   测量层漏掉的话，同一段字在两层里折出来的行数不一样，行号与光标就会整体错位。 */
+.mde-content,
+.mde-line,
+.mde-measure,
+.mde-gutter,
+.mde-root .mde-inline-code,
+.mde-code-text,
+.mde-code-ln,
+.mde-code-lang {
+  font-variant-ligatures: var(--mde-ligatures, none);
+  font-feature-settings: var(--mde-font-features, "liga" 0, "calt" 0);
+}
+
+/*
+ * 自绘光标。
+ *
+ * 原生光标恒为 1px（Chromium 没有 caret-width），125%/150% 缩放下细成一根毛发，
+ * 所以这里把它隐掉（caret-color: transparent，见下），用一条 2px 的竖线代替：
+ * 位置由 JS 算好后只写 transform，滚动时同一份坐标平移即可，不重新排版。
+ *
+ * 宽度做成变量：宿主想要更粗/更细或跟随字号都只改这一个值，不用动组件。
+ */
+.mde-caret-layer {
+  position: absolute;
+  inset: 0;
+  /* 正文是 z-index 2，光标要压在它上面 */
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.mde-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--mde-caret-width, 2px);
+  /* 高度默认取变量（字号 × caretHeight）；JS 落光标时会再写一次内联值 */
+  height: var(--mde-caret-height, 1.25em);
+  border-radius: calc(var(--mde-caret-width, 2px) / 2);
+  background: var(--mde-accent);
+  opacity: 0;
+  will-change: transform;
+}
+
+/*
+ * 闪烁：动的时候实心、停手之后才闪（和原生一致）。
+ * 重新挂上这个类动画就从头播一次——JS 那边靠「移除 → 读 offsetWidth → 加回」重启动画。
+ */
+.mde-caret.is-blinking {
+  animation: mde-caret-blink 1.06s steps(1, end) infinite;
+}
+
+@keyframes mde-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 自绘光标接管期间隐掉原生那根细线；量不出位置时 JS 会把这个类摘掉 */
+.mde-content.is-caret-hidden {
+  caret-color: transparent;
+}
+
+.mde-gutter {
+  flex: none;
+  /* 右内边距归零：行号槽与正文区贴合，不再隔出一道缝；数字与文字的距离交给正文自己的左内边距 */
+  width: 46px;
+  /* 顶边与正文对齐：-y 变量必须与 .mde-content / .mde-placeholder 一致 */
+  padding: var(--mde-editor-pad-y) 0 0 0;
+  overflow: hidden;
+  background: var(--mde-gutter-bg);
+  color: var(--mde-gutter-text);
+  font-family: var(--mde-mono-family);
+  font-size: var(--mde-editor-font-size);
+  line-height: var(--mde-editor-line-height);
+  text-align: right;
+  user-select: none;
+  opacity: 0.7;
+}
+
+/*
+ * 行号槽只渲染可视区间，每行用绝对定位钉在真实纵向偏移上。
+ * 容器高度只到渲染区间为止（不是整篇几万像素），
+ * 于是平移量恒在一屏之内，`will-change` 也不会逼出一整块超大合成层。
+ */
+.mde-gutter-inner {
+  position: relative;
+  will-change: transform;
+}
+
+/* 软换行时这一格会被撑成多行高：数字必须钉在首行，不能跟着垂直居中 */
+.mde-gutter-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 0 2px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: right;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.mde-gutter-num {
+  display: block;
+  flex: none;
+}
+
+.mde-gutter-line:hover {
+  color: var(--mde-gutter-active-text);
+}
+
+/* 折行测量层：字体与宽度由 JS 同步成编辑区的值，只用来量「这一行折成几行」 */
+.mde-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.mde-measure-line {
+  display: block;
+}
+
+/* ============ 预览 ============ */
+.mde-preview-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--mde-preview-bg);
+  /* 只是为了让点击能落进焦点（阅读模式下 Ctrl/⌘+F 才传得到根节点），不需要焦点环 */
+  outline: none;
+}
+
+/* 切到编辑视图时预览只隐藏，DOM 保留，切回来不必重建几万个节点 */
+.mde-preview-pane.is-hidden {
+  display: none;
+}
+
+/* 阅读视图里编辑区只隐藏，光标、选区、行号测量都留着 */
+.mde-source.is-hidden {
+  display: none;
+}
+
+.mde-preview {
+  min-height: 100%;
+}
+
+.mde-preview-content {
+  max-width: var(--mde-preview-max-width);
+  margin: 0 auto;
+  padding: var(--mde-preview-padding);
+  color: var(--mde-text-body);
+  font-family: var(--mde-preview-font-family);
+  font-size: var(--mde-preview-font-size);
+  line-height: var(--mde-preview-line-height);
+  letter-spacing: var(--mde-preview-letter-spacing);
+  text-align: var(--mde-preview-align);
+  overflow-wrap: break-word;
+}
+
+/*
+ * 超长文档：按分片让浏览器跳过屏外内容的布局与绘制。
+ *
+ * 不能给每个顶层块都开 `content-visibility`：滚动时浏览器要为每个块单独判定
+ * 是否接近视口，上万个块就是每滚一下几百毫秒。包成一百多个分片后判定量降两个数量级，
+ * 而 DOM 仍是整篇，框选/复制/页内查找都不受影响。
+ *
+ * `contain-intrinsic-size` 的 `auto` 会让浏览器记住分片实测过的高度，
+ * 滚动条不会反复抽动；首次占位高度由 React 按块数写在行内样式上。
+ */
+.mde-preview.is-large .mde-chunk {
+  content-visibility: auto;
+}
+
+/* 分片边界不影响标题的段间距（首个分片的第一块仍按原样贴顶） */
+.mde-preview.is-large .mde-chunk > .mde-h:first-child {
+  margin-top: var(--mde-heading-top);
+}
+
+.mde-preview.is-large .mde-chunk:first-child > .mde-h:first-child {
+  margin-top: 0;
+}
+
+.mde-preview-empty {
+  padding: 48px 0;
+  color: var(--mde-text-faint);
+  font-family: var(--mde-font-family);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* 标题 */
+.mde-root .mde-h {
+  margin: var(--mde-heading-top) 0 var(--mde-heading-bottom);
+  color: var(--mde-text);
+  font-weight: var(--mde-heading-weight);
+  line-height: 1.35;
+  scroll-margin-top: 16px;
+}
+
+.mde-root .mde-h:first-child {
+  margin-top: 0;
+}
+
+.mde-root .mde-h1 {
+  font-size: 1.9em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--mde-border);
+  letter-spacing: -0.01em;
+}
+
+.mde-root .mde-h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.26em;
+  border-bottom: 1px solid var(--mde-border);
+}
+
+.mde-root .mde-h3 {
+  font-size: 1.26em;
+}
+
+.mde-root .mde-h4 {
+  font-size: 1.1em;
+}
+
+.mde-root .mde-h5 {
+  font-size: 1em;
+}
+
+.mde-root .mde-h6 {
+  font-size: 0.92em;
+  color: var(--mde-text-muted);
+}
+
+.mde-root .mde-preview-content p {
+  margin: 0 0 var(--mde-preview-para);
+}
+
+/* 列表：preflight 会把标记清掉，这里显式恢复。
+   无序列表用自绘圆点（inline-block 画进 padding 区）：原生 outside 标记在
+   padding 偏小或容器过窄时会探出容器左缘，自绘的永远在盒子内 */
+.mde-root .mde-list {
+  margin: 0 0 var(--mde-preview-para);
+  padding-left: 1.4em;
+}
+
+.mde-root ul.mde-list {
+  list-style: none;
+}
+
+.mde-root ul.mde-list > li::before {
+  content: "•";
+  display: inline-block;
+  width: 1.4em;
+  margin-left: -1.4em;
+  color: var(--mde-text-faint);
+}
+
+/* 任务项是 flex + 自绘勾选框，不吃圆点 */
+.mde-root ul.mde-list > li.mde-task-item::before {
+  content: none;
+}
+
+.mde-root ol.mde-list {
+  list-style: decimal;
+}
+
+.mde-root .mde-list .mde-list {
+  margin-top: 0.2em;
+  margin-bottom: 0.2em;
+}
+
+.mde-root .mde-list > li {
+  margin: 0.18em 0;
+}
+
+.mde-root .mde-list.is-tight > li {
+  margin: 0.1em 0;
+}
+
+.mde-root .mde-list > li::marker {
+  color: var(--mde-text-faint);
+}
+
+.mde-root .mde-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+  list-style: none;
+}
+
+/* 自绘勾选框：原生控件在亮/暗主题下差异太大，这里统一成组件配色。
+   尺寸压到 14px、勾用 1.6px 细线，避免截图里那种「大色块 + 粗对勾」的笨重感 */
+.mde-root .mde-task-checkbox {
+  flex: none;
+  position: relative;
+  width: 14px;
+  height: 14px;
+  margin-top: 0.32em;
+  border: 1.5px solid var(--mde-border-strong);
+  border-radius: 4px;
+  background: var(--mde-bg);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.mde-root .mde-task-checkbox:hover:not(:disabled) {
+  border-color: var(--mde-accent);
+  box-shadow: 0 0 0 3px var(--mde-accent-soft);
+}
+
+.mde-root .mde-task-checkbox:checked {
+  border-color: var(--mde-accent);
+  background: var(--mde-accent);
+}
+
+.mde-root .mde-task-checkbox:checked::after {
+  content: "";
+  position: absolute;
+  left: 3.6px;
+  top: 1px;
+  width: 4.2px;
+  height: 7.4px;
+  border: solid var(--mde-on-accent);
+  border-width: 0 1.6px 1.6px 0;
+  transform: rotate(43deg);
+}
+
+.mde-root .mde-task-checkbox:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mde-root .mde-li-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.mde-root .mde-li-content > p {
+  margin-bottom: 0.3em;
+}
+
+.mde-root .mde-li-content > p:last-child {
+  margin-bottom: 0;
+}
+
+/* 引用 */
+.mde-root .mde-quote {
+  margin: 0 0 var(--mde-preview-para);
+  padding: 0.55em 1em;
+  border-left: 3px solid var(--mde-quote-border);
+  border-radius: 0 8px 8px 0;
+  background: var(--mde-quote-bg);
+  color: var(--mde-quote-text);
+}
+
+.mde-root .mde-quote > :last-child {
+  margin-bottom: 0;
+}
+
+.mde-root .mde-quote .mde-quote {
+  margin: 0.4em 0 0;
+}
+
+/* Alert 提示块 */
+.mde-root .mde-alert {
+  --mde-alert-color: var(--mde-accent);
+  border-left-width: 4px;
+  border-left-color: var(--mde-alert-color);
+  background: var(--mde-quote-bg);
+}
+
+.mde-root .mde-alert-note {
+  --mde-alert-color: var(--mde-note-color);
+}
+.mde-root .mde-alert-tip {
+  --mde-alert-color: var(--mde-tip-color);
+}
+.mde-root .mde-alert-important {
+  --mde-alert-color: var(--mde-accent);
+}
+.mde-root .mde-alert-warning {
+  --mde-alert-color: var(--mde-warning-color);
+}
+.mde-root .mde-alert-caution {
+  --mde-alert-color: var(--mde-caution-color);
+}
+
+.mde-root .mde-alert-title {
+  margin-bottom: 0.25em;
+  color: var(--mde-alert-color);
+  font-size: 0.86em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* `!!!` 提示块：比引用型 Alert 更"卡片"，带类型图标与标题 */
+.mde-root .mde-callout {
+  --mde-callout-color: var(--mde-warning-color);
+  margin: 0 0 var(--mde-preview-para);
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--mde-callout-color) 28%, var(--mde-border));
+  border-left: 3px solid var(--mde-callout-color);
+  border-radius: 8px;
+  background: var(--mde-quote-bg);
+  background: color-mix(in srgb, var(--mde-callout-color) var(--mde-callout-tint), var(--mde-preview-bg));
+}
+
+.mde-root .mde-callout.is-note {
+  --mde-callout-color: var(--mde-note-color);
+}
+.mde-root .mde-callout.is-tip {
+  --mde-callout-color: var(--mde-tip-color);
+}
+.mde-root .mde-callout.is-important {
+  --mde-callout-color: var(--mde-accent);
+}
+.mde-root .mde-callout.is-warning {
+  --mde-callout-color: var(--mde-warning-color);
+}
+.mde-root .mde-callout.is-caution {
+  --mde-callout-color: var(--mde-caution-color);
+}
+
+.mde-root .mde-callout-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0.35em;
+  color: var(--mde-callout-color);
+  font-family: var(--mde-font-family);
+  font-size: 0.86em;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+/* 可折叠提示块（??? 语法）：<details> + <summary>，去原生三角、加自绘箭头 */
+.mde-root details.mde-callout > summary.mde-callout-head {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.mde-root details.mde-callout > summary.mde-callout-head::-webkit-details-marker,
+.mde-root details.mde-callout > summary.mde-callout-head::marker {
+  display: none;
+  content: "";
+}
+
+.mde-root .mde-callout-caret {
+  margin-left: auto;
+  opacity: 0.7;
+  transition: transform 140ms ease;
+}
+
+.mde-root details.mde-callout[open] > .mde-callout-head {
+  margin-bottom: 0.5em;
+}
+
+.mde-root details.mde-callout[open] .mde-callout-caret {
+  transform: rotate(180deg);
+}
+
+.mde-root details.mde-callout:not([open]) > .mde-callout-head {
+  margin-bottom: 0;
+}
+
+.mde-root .mde-callout-body > :first-child {
+  margin-top: 0;
+}
+
+.mde-root .mde-callout-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* 行内元素 */
+.mde-root .mde-inline-code {
+  padding: 0.14em 0.4em;
+  border-radius: 4px;
+  background: var(--mde-inline-code-bg);
+  color: var(--mde-inline-code-text);
+  font-family: var(--mde-mono-family);
+  font-size: 0.88em;
+}
+
+.mde-root .mde-link {
+  color: var(--mde-link);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 120ms ease;
+}
+
+.mde-root .mde-link:hover {
+  border-bottom-color: currentColor;
+}
+
+.mde-root .mde-image {
+  display: block;
+  max-width: 100%;
+  margin: 0.5em 0;
+  border-radius: 6px;
+}
+
+/* 可点击放大：给个 zoom-in 指针提示（preview.imagePreview） */
+.mde-root .mde-image.is-zoomable {
+  cursor: zoom-in;
+}
+
+/* ============ 图片放大预览 ============ */
+/*
+ * 固定铺满视口：图片放大要看整张，不该被编辑区的边框裁掉。
+ * 节点由 ImageViewer 用 `createPortal` 挂到 document.body，这里的兜底色
+ * 只是给「没传 themeVars」的独立用法用（portal 后不再继承 `.mde-root`）。
+ */
+.mde-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--mde-image-viewer-bg, rgba(15, 23, 42, 0.8));
+  animation: mde-fade 120ms ease;
+}
+
+/* portal 的外壳：不参与布局，只负责把 `--mde-*` 变量带进来 */
+.mde-image-viewer-portal {
+  display: contents;
+}
+
+.mde-image-viewer-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mde-image-viewer-img {
+  max-width: 92%;
+  max-height: 92%;
+  user-select: none;
+  -webkit-user-drag: none;
+  cursor: grab;
+  will-change: transform;
+  transition: transform 80ms ease-out;
+}
+
+/* 拖动中跟手：去掉过渡，否则图片会落后指针一截 */
+.mde-image-viewer-img.is-dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+.mde-image-viewer-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mde-bg, #ffffff) 88%, transparent);
+  color: var(--mde-text-body);
+  font-size: 12px;
+  box-shadow: var(--mde-shadow);
+  pointer-events: none;
+}
+
+.mde-image-viewer-scale {
+  color: var(--mde-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mde-image-viewer-hint {
+  color: var(--mde-text-muted);
+}
+
+.mde-image-viewer-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mde-bg, #ffffff) 88%, transparent);
+  color: var(--mde-text-body);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.mde-image-viewer-close:hover {
+  color: var(--mde-text);
+}
+
+@keyframes mde-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.mde-root .mde-mark {
+  padding: 0.06em 0.2em;
+  border-radius: 3px;
+  background: var(--mde-mark-bg);
+  /* 外层上过字色时让位给它（`<font style="color:red">==x==</font>`），否则用高亮自带的深色 */
+  color: var(--mde-ink, var(--mde-mark-text));
+}
+
+.mde-root del {
+  opacity: 0.72;
+}
+
+.mde-root sup,
+.mde-root sub {
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+.mde-root .mde-hr {
+  margin: 1.6em 0;
+  border: none;
+  border-top: 1px solid var(--mde-border);
+}
+
+/* 表格 */
+.mde-root .mde-table-wrap {
+  margin: 0 0 var(--mde-preview-para);
+  overflow-x: auto;
+}
+
+.mde-root .mde-table {
+  border-collapse: collapse;
+  width: auto;
+  max-width: 100%;
+  font-size: 0.95em;
+}
+
+.mde-root .mde-table.is-full {
+  width: 100%;
+}
+
+.mde-root .mde-table th,
+.mde-root .mde-table td {
+  padding: 0.5em 0.8em;
+  border-bottom: 1px solid var(--mde-table-border);
+  vertical-align: top;
+}
+
+.mde-root .mde-table th {
+  background: var(--mde-table-header-bg);
+  color: var(--mde-text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mde-root .mde-table.is-bordered th,
+.mde-root .mde-table.is-bordered td {
+  border: 1px solid var(--mde-table-border);
+}
+
+.mde-root .mde-table.is-striped tbody tr:nth-child(even) {
+  background: var(--mde-table-stripe-bg);
+}
+
+.mde-root .mde-table.is-compact th,
+.mde-root .mde-table.is-compact td {
+  padding: 0.3em 0.55em;
+}
+
+/* 代码块 */
+.mde-code-wrap {
+  margin: 0 0 var(--mde-preview-para);
+}
+
+.mde-code {
+  overflow: hidden;
+  border: 1px solid var(--mde-code-border);
+  border-radius: 9px;
+  background: var(--mde-code-bg);
+}
+
+.mde-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  padding: 3px 8px 3px 12px;
+  /* 头部底色由预设给：选中「跟随主题」预设时，theme.ts 会把这里算成主题色调制的版本 */
+  background: var(--mde-code-header-bg);
+  color: var(--mde-code-text);
+}
+
+/* 折叠开关在语言名左侧时，头部左内边距收紧一点，避免「箭头 + 语言名」显得离边框太远 */
+.mde-code-head:has(> .mde-code-fold) {
+  padding-left: 6px;
+}
+
+.mde-code-lang {
+  /* 折叠开关在语言名左侧、工具在右侧：把语言名推到中间靠左，右侧工具保持贴边 */
+  margin-right: auto;
+  font-family: var(--mde-mono-family);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  opacity: 0.62;
+}
+
+.mde-code-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.mde-code:hover .mde-code-tools {
+  opacity: 1;
+}
+
+.mde-code-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mde-code-text);
+  cursor: pointer;
+}
+
+.mde-code-tool:hover {
+  background: var(--mde-code-tool-hover);
+}
+
+.mde-code-tool.is-active {
+  color: var(--mde-accent);
+}
+
+.mde-code-body {
+  position: relative;
+  overflow-x: auto;
+  padding: 10px 0;
+}
+
+/* 折叠：限制高度 + 底部渐隐。
+   「展开全部」按钮已去掉：只留渐隐做「下面还有内容」的暗示，折叠态整块可点展开。 */
+.mde-code-body.is-collapsed {
+  max-height: var(--mde-code-collapse-height, 260px);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.mde-code-body.is-collapsed::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 68px;
+  background: linear-gradient(to bottom, transparent, var(--mde-code-bg) 82%);
+  pointer-events: none;
+}
+
+/* 折叠后的「展开」入口已改为整块可点（见 .mde-code-body.is-collapsed），不再有悬浮按钮 */
+
+.mde-code-fold svg {
+  transition: transform 140ms ease;
+}
+
+.mde-code-fold.is-collapsed svg {
+  transform: rotate(-90deg);
+}
+
+.mde-code-lines {
+  display: grid;
+  min-width: max-content;
+  color: var(--mde-code-text);
+  font-family: var(--mde-mono-family);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.mde-code-line {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding: 0 14px;
+}
+
+.mde-code-lines.with-numbers .mde-code-line {
+  grid-template-columns: 36px 1fr;
+}
+
+.mde-code-ln {
+  color: var(--mde-code-text);
+  opacity: 0.32;
+  text-align: right;
+  user-select: none;
+}
+
+/* 围栏里声明的行高亮：整行浅色底 + 左侧强调线 */
+.mde-code-line.is-highlighted {
+  background: var(--mde-code-highlight);
+  box-shadow: inset 2px 0 0 var(--mde-accent);
+}
+
+.mde-code-line.is-highlighted .mde-code-ln {
+  color: var(--mde-accent);
+  opacity: 0.9;
+}
+
+.mde-code-text {
+  display: block;
+  white-space: pre;
+}
+
+.mde-code.is-wrapped .mde-code-lines {
+  min-width: 0;
+}
+
+.mde-code.is-wrapped .mde-code-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 代码高亮 token：全部映射到变量，换预设即换配色 */
+.mde-code-lines .hljs-keyword,
+.mde-code-lines .hljs-selector-tag,
+.mde-code-lines .hljs-doctag {
+  color: var(--mde-tok-keyword);
+}
+.mde-code-lines .hljs-string,
+.mde-code-lines .hljs-regexp,
+.mde-code-lines .hljs-char {
+  color: var(--mde-tok-string);
+}
+.mde-code-lines .hljs-number {
+  color: var(--mde-tok-number);
+}
+.mde-code-lines .hljs-comment,
+.mde-code-lines .hljs-quote {
+  color: var(--mde-tok-comment);
+  font-style: italic;
+}
+.mde-code-lines .hljs-title,
+.mde-code-lines .hljs-section,
+.mde-code-lines .hljs-selector-id {
+  color: var(--mde-tok-function);
+}
+.mde-code-lines .hljs-variable,
+.mde-code-lines .hljs-template-variable,
+.mde-code-lines .hljs-params {
+  color: var(--mde-tok-variable);
+}
+.mde-code-lines .hljs-type,
+.mde-code-lines .hljs-class .hljs-title {
+  color: var(--mde-tok-type);
+}
+.mde-code-lines .hljs-tag,
+.mde-code-lines .hljs-name,
+.mde-code-lines .hljs-selector-class {
+  color: var(--mde-tok-tag);
+}
+.mde-code-lines .hljs-attr,
+.mde-code-lines .hljs-attribute {
+  color: var(--mde-tok-attr);
+}
+.mde-code-lines .hljs-built_in,
+.mde-code-lines .hljs-builtin-name {
+  color: var(--mde-tok-builtin);
+}
+.mde-code-lines .hljs-literal {
+  color: var(--mde-tok-literal);
+}
+.mde-code-lines .hljs-meta {
+  color: var(--mde-tok-meta);
+}
+.mde-code-lines .hljs-punctuation,
+.mde-code-lines .hljs-operator {
+  color: var(--mde-tok-punctuation);
+}
+.mde-code-lines .hljs-addition {
+  color: var(--mde-tok-addition);
+}
+.mde-code-lines .hljs-deletion {
+  color: var(--mde-tok-deletion);
+}
+.mde-code-lines .hljs-emphasis {
+  font-style: italic;
+}
+.mde-code-lines .hljs-strong {
+  font-weight: 700;
+}
+
+/* 公式 */
+.mde-root .mde-math-block {
+  margin: 0.2em 0 var(--mde-preview-para);
+  padding: 0.3em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+.mde-root .mde-math-inline .katex {
+  font-size: 1.05em;
+}
+
+.mde-root .mde-math-fallback,
+.mde-root .mde-inline-math {
+  font-family: var(--mde-mono-family);
+  font-size: 0.9em;
+  color: var(--mde-inline-code-text);
+  background: var(--mde-inline-code-bg);
+  border-radius: 4px;
+  padding: 0.12em 0.35em;
+}
+
+.mde-root .mde-math-fallback {
+  display: block;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* Mermaid */
+.mde-root .mde-mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 0.4em 0 var(--mde-preview-para);
+  padding: 10px 0;
+  overflow-x: auto;
+}
+
+.mde-root .mde-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mde-root .mde-mermaid-loading {
+  min-height: 60px;
+  align-items: center;
+}
+
+.mde-mermaid-skeleton {
+  width: 200px;
+  height: 40px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--mde-toolbar-hover), var(--mde-border), var(--mde-toolbar-hover));
+  background-size: 200% 100%;
+  animation: mde-shimmer 1.4s linear infinite;
+}
+
+@keyframes mde-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 脚注 */
+.mde-root .mde-fn-ref a {
+  color: var(--mde-accent);
+  text-decoration: none;
+  padding: 0 1px;
+}
+
+.mde-root .mde-footnotes {
+  margin-top: 2.2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--mde-border);
+  color: var(--mde-text-muted);
+  font-size: 0.9em;
+}
+
+.mde-root .mde-footnotes-title {
+  margin-bottom: 0.5em;
+  color: var(--mde-text);
+  font-size: 0.86em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.mde-root .mde-footnotes ol {
+  margin: 0;
+  padding-left: 1.4em;
+  list-style: decimal;
+}
+
+.mde-root .mde-footnotes li {
+  margin: 0.25em 0;
+}
+
+.mde-root .mde-footnotes li p {
+  margin: 0;
+}
+
+/* 返回链接跟在正文后面：脚注内容是块级 <p>，把最后一个段落行内化，
+   否则 ↩ 会被挤到下一行独立成行 */
+.mde-root .mde-footnotes li > p:last-of-type {
+  display: inline;
+}
+
+.mde-root .mde-fn-back {
+  margin-left: 0.4em;
+  color: var(--mde-text-faint);
+  text-decoration: none;
+}
+
+/* front matter */
+.mde-root .mde-frontmatter {
+  margin-bottom: 1.6em;
+  padding: 10px 14px;
+  border: 1px dashed var(--mde-border-strong);
+  border-radius: 8px;
+  background: var(--mde-toolbar-bg);
+  font-family: var(--mde-font-family);
+  font-size: 12.5px;
+}
+
+.mde-root .mde-frontmatter-title {
+  margin-bottom: 6px;
+  color: var(--mde-text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mde-root .mde-frontmatter dl {
+  margin: 0;
+}
+
+.mde-root .mde-frontmatter-row {
+  display: flex;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.mde-root .mde-frontmatter dt {
+  flex: none;
+  min-width: 74px;
+  color: var(--mde-text-muted);
+}
+
+.mde-root .mde-frontmatter dd {
+  margin: 0;
+  color: var(--mde-text-body);
+}
+
+/* TOC 块 */
+.mde-root .mde-toc-block {
+  margin: 0 0 var(--mde-preview-para);
+  padding: 10px 14px;
+  border-left: 2px solid var(--mde-border);
+  background: var(--mde-toolbar-bg);
+  border-radius: 0 8px 8px 0;
+  font-family: var(--mde-font-family);
+  font-size: 13px;
+}
+
+.mde-root .mde-toc-title {
+  margin-bottom: 4px;
+  color: var(--mde-text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/*
+ * TOC 是列表结构但只当目录用，不能带原生圆点。
+ *
+ * 宿主（App.css）为了让正文列表显示原点/序号，给 `ul li` / `ol li` 写了
+ * `list-style-type: ... !important` 的通配规则，所以这里必须同样用 !important 才盖得住；
+ * 只写 `list-style: none` 会被那条规则按 !important 优先级的顺序判负，目录里就全是圆点。
+ */
+.mde-root .mde-toc-block ul,
+.mde-root .mde-toc-block li {
+  margin: 0;
+  padding: 0;
+  list-style: none !important;
+  list-style-type: none !important;
+}
+
+.mde-root .mde-toc-block li {
+  margin: 2px 0;
+}
+
+.mde-root .mde-toc-block a {
+  color: var(--mde-text-body);
+  text-decoration: none;
+}
+
+.mde-root .mde-toc-block a:hover {
+  color: var(--mde-accent);
+}
+
+.mde-root .mde-toc-empty {
+  color: var(--mde-text-faint);
+}
+
+.mde-root .mde-html-block {
+  margin-bottom: var(--mde-preview-para);
+}
+
+/* ============ 大纲 ============ */
+.mde-outline {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--mde-toolbar-bg);
+  border-right: 1px solid var(--mde-border);
+}
+
+.mde-outline.is-right {
+  border-right: none;
+  border-left: 1px solid var(--mde-border);
+  order: 2;
+}
+
+.mde-outline-head {
+  flex: none;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--mde-border);
+  color: var(--mde-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mde-outline-body {
+  flex: 1;
+  min-height: 0;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.mde-outline-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mde-text-body);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.mde-outline-item:hover {
+  background: var(--mde-toolbar-hover);
+  color: var(--mde-text);
+}
+
+.mde-outline-item.is-active {
+  background: var(--mde-outline-active-bg);
+  color: var(--mde-outline-active-text);
+  font-weight: 600;
+}
+
+.mde-outline-empty {
+  padding: 10px 12px;
+  color: var(--mde-text-faint);
+  font-size: 12px;
+}
+
+/* ============ 状态栏 ============ */
+.mde-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 32px;
+  padding: 0 12px;
+  border-top: 1px solid var(--mde-border);
+  background: var(--mde-status-bg);
+  color: var(--mde-status-text);
+  font-size: 11.5px;
+  user-select: none;
+}
+
+.mde-status-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mde-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.mde-status-dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--mde-text-faint);
+}
+
+.mde-status-mode {
+  flex: none;
+  color: var(--mde-text-faint);
+}
+
+/* ============ 滚动条 ============ */
+.mde-root ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.mde-root ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mde-root ::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+  background-color: var(--mde-scrollbar-thumb);
+}
+
+.mde-root ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--mde-scrollbar-thumb-hover);
+}
+
+/*
+ * 滚动条上统一用箭头光标。
+ *
+ * 编辑区自己带 `cursor: text`，指针划到它右侧的滚动条上时浏览器仍按元素的
+ * 光标去画，于是变成一根 I 形插入符——看着像能在滚动条上打字。滚动条是绘制在
+ * 元素之上的独立区域，只能靠伪元素单独声明光标。
+ */
+.mde-root ::-webkit-scrollbar,
+.mde-root ::-webkit-scrollbar-track,
+.mde-root ::-webkit-scrollbar-thumb,
+.mde-root ::-webkit-scrollbar-corner {
+  cursor: default;
+}
+
+/* ============ 深色微调（颜色已由变量覆盖） ============ */
+/* 让原生控件（勾选框、滚动条）跟随主题，否则深色下会出现刺眼的白块 */
+.mde-root[data-theme="dark"] {
+  color-scheme: dark;
+  --mde-callout-tint: 13%;
+}
+
+/* ============ 动效降级 ============ */
+@media (prefers-reduced-motion: reduce) {
+  .mde-root *,
+  .mde-root *::before,
+  .mde-root *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .mde-preview-pane {
+    scroll-behavior: auto;
+  }
+}
