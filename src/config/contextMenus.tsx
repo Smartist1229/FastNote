@@ -7,11 +7,11 @@ import type { Category, Note } from "@/interface/note";
 import type { ContextMenuItem } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
 
-/** 能弹出「分组菜单」的目标类型：真实分组、两个默认分组、搜索视图的三个虚拟分组 */
-export type GroupMenuKind = "category" | "all" | "uncategorized" | "search-all" | "search-title" | "search-content";
+/** 能弹出「分组菜单」的目标类型：真实分组、两个默认分组、搜索视图的四个虚拟分组 */
+export type GroupMenuKind = "category" | "all" | "uncategorized" | "search-all" | "search-title" | "search-content" | "search-semantic";
 
 /** 搜索视图的虚拟分组：只承载结果展示，不是真实分组，因此不能新建 / 改名 / 删除 */
-export const SEARCH_GROUP_KINDS: GroupMenuKind[] = ["search-all", "search-title", "search-content"];
+export const SEARCH_GROUP_KINDS: GroupMenuKind[] = ["search-all", "search-title", "search-content", "search-semantic"];
 export const isSearchGroupKind = (kind: GroupMenuKind) => SEARCH_GROUP_KINDS.includes(kind);
 
 /** 菜单项里的分隔线（ContextMenuItem 要求 label/onClick 必填，故给空实现） */

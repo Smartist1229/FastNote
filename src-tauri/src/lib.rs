@@ -1,14 +1,18 @@
+use chrono::{Duration, Local};
+use futures_util::StreamExt;
+use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
-use futures_util::StreamExt;
-use tauri::{AppHandle, Emitter, Manager, State};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use chrono::{Local, Duration};
-use sha2::{Digest, Sha256};
-use ring::rand::{SecureRandom, SystemRandom};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+mod download;
+mod opener;
+mod semantic;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Note {
@@ -99,6 +103,8 @@ pub struct AiChatDbMessage {
 
 struct AppState {
     conn: Mutex<Connection>,
+    semantic: semantic::SemanticState,
+    download: download::DownloadState,
 }
 
 /// 判断某张表是否存在（用于读取可选的数据表）
@@ -264,7 +270,10 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
     // ---- 迁移：多选模型列表 ----
     // 老库只有 enabled_model（单选），这里补上 enabled_models（JSON 数组）并把旧值回填进去
     if !has_column(conn, "ai_providers", "enabled_models") {
-        conn.execute("ALTER TABLE ai_providers ADD COLUMN enabled_models TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE ai_providers ADD COLUMN enabled_models TEXT",
+            [],
+        )?;
     }
     let legacy: Vec<(i64, Option<String>)> = {
         let mut stmt = conn.prepare(
@@ -287,7 +296,10 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
 
     // ---- 迁移：笔记置顶字段 ----
     if !has_column(conn, "notes", "is_pinned") {
-        conn.execute("ALTER TABLE notes ADD COLUMN is_pinned INTEGER DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN is_pinned INTEGER DEFAULT 0",
+            [],
+        )?;
     }
 
     // ---- 迁移：AI 访问档位（0=禁止 / 1=只读 / 2=完全）----
@@ -324,12 +336,52 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
         .unwrap_or(0);
     if done == 0 {
         conn.execute("UPDATE notes SET ai_access = 2 WHERE ai_access = 1", [])?;
-        conn.execute("UPDATE categories SET ai_access = 2 WHERE ai_access = 1", [])?;
+        conn.execute(
+            "UPDATE categories SET ai_access = 2 WHERE ai_access = 1",
+            [],
+        )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES ('ai_access_levels_v2', ?1)",
             params![Local::now().to_rfc3339()],
         )?;
     }
+
+    // ---- 语义搜索 ----
+    // 向量按块存（一篇笔记多行），文本与向量同表：检索命中后直接取片段，不必回查 notes。
+    // 这里不建外键：永久删除笔记时由索引 worker 统一清孤儿，避免删除路径到处补级联。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_chunks (
+            note_id INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            dim INTEGER NOT NULL,
+            embedding BLOB NOT NULL,
+            PRIMARY KEY (note_id, seq)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id)",
+        [],
+    )?;
+    // 脏判定：notes.updated_at 与本表不一致（或本表无记录）就该重建该笔记的块。
+    // 不用内容哈希——写入方只要碰过 updated_at 就会触发，创建/导入/恢复都自动覆盖。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_index_state (
+            note_id INTEGER PRIMARY KEY,
+            note_updated_at TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS semantic_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )?;
 
     Ok(())
 }
@@ -472,26 +524,28 @@ fn supports_reasoning_effort(model: &str) -> bool {
 /// 判断 Claude 模型是否支持扩展思考（extended thinking）
 fn supports_extended_thinking(model: &str) -> bool {
     let m = model.to_lowercase();
-    m.contains("3-7")
-        || m.contains("sonnet-4")
-        || m.contains("opus-4")
-        || m.contains("thinking")
+    m.contains("3-7") || m.contains("sonnet-4") || m.contains("opus-4") || m.contains("thinking")
 }
 
 #[tauri::command]
-fn create_category(name: String, ai_access: Option<i64>, state: State<AppState>) -> Result<Category, String> {
+fn create_category(
+    name: String,
+    ai_access: Option<i64>,
+    state: State<AppState>,
+) -> Result<Category, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     // 同 create_note：默认档位由前端按设置传入，缺省"完全"
     let ai_access = ai_access.unwrap_or(2).clamp(0, 2);
-    
+
     conn.execute(
         "INSERT INTO categories (name, created_at, ai_access) VALUES (?1, ?2, ?3)",
         params![name, now, ai_access],
-    ).map_err(|e| e.to_string())?;
-    
+    )
+    .map_err(|e| e.to_string())?;
+
     let id = conn.last_insert_rowid();
-    
+
     Ok(Category {
         id,
         name,
@@ -507,13 +561,17 @@ fn create_category(name: String, ai_access: Option<i64>, state: State<AppState>)
  */
 
 #[tauri::command]
-fn get_app_settings(state: State<AppState>) -> Result<std::collections::HashMap<String, String>, String> {
+fn get_app_settings(
+    state: State<AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn
         .prepare("SELECT key, value FROM app_settings")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?;
     let mut map = std::collections::HashMap::new();
     for row in rows {
@@ -530,7 +588,8 @@ fn set_app_setting(key: String, value: String, state: State<AppState>) -> Result
         "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         params![key, value, Local::now().to_rfc3339()],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -571,7 +630,9 @@ where
     F: FnMut(&rusqlite::Row) -> rusqlite::Result<Value>,
 {
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| map(row)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| map(row))
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row.map_err(|e| e.to_string())?);
@@ -580,7 +641,10 @@ where
 }
 
 fn json_str(v: &Value, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn json_opt_str(v: &Value, key: &str) -> Option<String> {
@@ -710,7 +774,9 @@ fn export_backup(
             .prepare("SELECT id, api_key FROM ai_providers")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|e| e.to_string())?;
         let mut plain_keys: std::collections::HashMap<i64, String> =
             std::collections::HashMap::new();
@@ -900,6 +966,9 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         "DELETE FROM categories",
         "DELETE FROM ai_providers",
         "DELETE FROM app_settings",
+        // 向量与索引状态不随 JSON 备份走，恢复后旧向量与笔记 ID/内容不再对应
+        "DELETE FROM note_chunks",
+        "DELETE FROM note_index_state",
     ] {
         tx.execute(sql, []).map_err(|e| e.to_string())?;
     }
@@ -1054,7 +1123,12 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         .map_err(|e| e.to_string())?;
     }
 
+    // 维度元数据作废：下一次建索引时会重新写入，避免旧维度残留
+    tx.execute("DELETE FROM semantic_meta WHERE key = 'dim'", [])
+        .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
 
     Ok(BackupSummary {
         notes: notes.len(),
@@ -1123,11 +1197,8 @@ fn export_sqlite_backup(
     let _ = std::fs::remove_file(&tmp);
 
     let result = (|| -> Result<(), String> {
-        conn.execute(
-            "VACUUM INTO ?1",
-            params![tmp.to_string_lossy().to_string()],
-        )
-        .map_err(|e| format!("生成数据库快照失败：{e}"))?;
+        conn.execute("VACUUM INTO ?1", params![tmp.to_string_lossy().to_string()])
+            .map_err(|e| format!("生成数据库快照失败：{e}"))?;
 
         {
             let snap = Connection::open(&tmp).map_err(|e| format!("打开数据库快照失败：{e}"))?;
@@ -1154,7 +1225,12 @@ fn export_sqlite_backup(
                     ("app_version", app.package_info().version.to_string()),
                     (
                         "api_keys",
-                        if include_api_keys { "encrypted" } else { "none" }.to_string(),
+                        if include_api_keys {
+                            "encrypted"
+                        } else {
+                            "none"
+                        }
+                        .to_string(),
                     ),
                 ];
                 for (key, value) in meta {
@@ -1291,11 +1367,7 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
             |row| row.get(0),
         )
         .ok();
-    if version
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(0)
-        > SQLITE_BACKUP_VERSION
-    {
+    if version.and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) > SQLITE_BACKUP_VERSION {
         return Err("备份由更新版本的 FastNote 创建，请先升级软件再恢复".to_string());
     }
 
@@ -1303,15 +1375,37 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
         ("categories", &["id", "name", "created_at"]),
         (
             "notes",
-            &["id", "title", "content", "category_id", "created_at", "updated_at"],
+            &[
+                "id",
+                "title",
+                "content",
+                "category_id",
+                "created_at",
+                "updated_at",
+            ],
         ),
         (
             "ai_providers",
-            &["id", "name", "provider_type", "api_base_url", "api_key", "created_at", "updated_at"],
+            &[
+                "id",
+                "name",
+                "provider_type",
+                "api_base_url",
+                "api_key",
+                "created_at",
+                "updated_at",
+            ],
         ),
         (
             "ai_chat_sessions",
-            &["id", "title", "provider_id", "model", "created_at", "updated_at"],
+            &[
+                "id",
+                "title",
+                "provider_id",
+                "model",
+                "created_at",
+                "updated_at",
+            ],
         ),
         (
             "ai_chat_messages",
@@ -1614,7 +1708,11 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
     for p in &data.providers {
         let fallback = || {
             local_keys
-                .get(&(p.name.clone(), p.provider_type.clone(), p.api_base_url.clone()))
+                .get(&(
+                    p.name.clone(),
+                    p.provider_type.clone(),
+                    p.api_base_url.clone(),
+                ))
                 .cloned()
                 .unwrap_or_default()
         };
@@ -1642,6 +1740,9 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         "DELETE FROM categories",
         "DELETE FROM ai_providers",
         "DELETE FROM app_settings",
+        // 备份里的向量可能来自另一台机器/另一个模型，一律不用；恢复后交给 worker 重建
+        "DELETE FROM note_chunks",
+        "DELETE FROM note_index_state",
     ] {
         tx.execute(sql, []).map_err(|e| e.to_string())?;
     }
@@ -1740,11 +1841,7 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
     for s in &data.settings {
         tx.execute(
             "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
-            params![
-                s.key,
-                s.value,
-                non_empty_or_now(s.updated_at.clone())
-            ],
+            params![s.key, s.value, non_empty_or_now(s.updated_at.clone())],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1777,6 +1874,8 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
     }
 
     tx.commit().map_err(|e| e.to_string())?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
 
     Ok(BackupSummary {
         notes: data.notes.len(),
@@ -1819,7 +1918,11 @@ fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), String> {
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
     for entry in entries {
-        let options = if entry.name == "mimetype" { stored } else { deflated };
+        let options = if entry.name == "mimetype" {
+            stored
+        } else {
+            deflated
+        };
         zip.start_file(entry.name.as_str(), options)
             .map_err(|e| format!("写入 {0} 失败：{1}", entry.name, e))?;
         zip.write_all(entry.content.as_bytes())
@@ -2085,7 +2188,10 @@ fn export_notes_zip(
     let mut entries = Vec::with_capacity(notes.len());
     for (i, note) in notes.iter().enumerate() {
         // 逐篇自选的后缀优先，没有就用预设格式
-        let ext = per_note.get(&note.id).cloned().unwrap_or_else(|| global_ext.clone());
+        let ext = per_note
+            .get(&note.id)
+            .cloned()
+            .unwrap_or_else(|| global_ext.clone());
         let base = safe_filename(&note.title, &format!("未命名笔记-{}", i + 1));
         let count = used.entry(base.to_lowercase()).or_insert(0);
         *count += 1;
@@ -2275,49 +2381,54 @@ fn ebook_epub_entries(title: &str, notes: &[Note]) -> Vec<ZipEntry> {
 #[tauri::command]
 fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
     let conn = state.conn.lock().unwrap();
-    
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.created_at, COUNT(n.id) as note_count, c.ai_access
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.name, c.created_at, COUNT(n.id) as note_count, c.ai_access
          FROM categories c
          LEFT JOIN notes n ON c.id = n.category_id AND n.is_deleted = 0
          GROUP BY c.id, c.name, c.created_at, c.ai_access
-         ORDER BY c.created_at DESC"
-    ).map_err(|e| e.to_string())?;
-    
-    let categories = stmt.query_map([], |row| {
-        Ok(Category {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            created_at: row.get(2)?,
-            note_count: row.get(3)?,
-            ai_access: row.get::<_, i64>(4)?.clamp(0, 2),
+         ORDER BY c.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let categories = stmt
+        .query_map([], |row| {
+            Ok(Category {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+                note_count: row.get(3)?,
+                ai_access: row.get::<_, i64>(4)?.clamp(0, 2),
+            })
         })
-    }).map_err(|e| e.to_string())?;
-    
+        .map_err(|e| e.to_string())?;
+
     let mut result = Vec::new();
     for category in categories {
         result.push(category.map_err(|e| e.to_string())?);
     }
-    
+
     Ok(result)
 }
 
 #[tauri::command]
 fn update_category(id: i64, name: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    
+
     conn.execute(
         "UPDATE categories SET name = ?1 WHERE id = ?2",
         params![name, id],
-    ).map_err(|e| e.to_string())?;
-    
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
 #[tauri::command]
 fn delete_category(id: i64, delete_notes: bool, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    
+
     if delete_notes {
         let now = Local::now().to_rfc3339();
         conn.execute(
@@ -2328,19 +2439,27 @@ fn delete_category(id: i64, delete_notes: bool, state: State<AppState>) -> Resul
         conn.execute(
             "UPDATE notes SET category_id = NULL WHERE category_id = ?1",
             params![id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
-    
-    conn.execute(
-        "DELETE FROM categories WHERE id = ?1",
-        params![id],
-    ).map_err(|e| e.to_string())?;
-    
+
+    conn.execute("DELETE FROM categories WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+    // 进回收站的笔记不再参与语义检索；向量缓存按库快照建，必须整表失效
+    semantic::invalidate(&state.semantic);
+
     Ok(())
 }
 
 #[tauri::command]
-fn create_note(title: String, content: String, category_id: Option<i64>, ai_access: Option<i64>, state: State<AppState>) -> Result<Note, String> {
+fn create_note(
+    title: String,
+    content: String,
+    category_id: Option<i64>,
+    ai_access: Option<i64>,
+    state: State<AppState>,
+) -> Result<Note, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     // 新笔记的 AI 档位由调用方给（设置里的「新建笔记默认权限」），缺省按"完全"，
@@ -2393,7 +2512,12 @@ fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
 
 /// 查询笔记列表（含正文）。正文随列表一起返回，AI 读未打开的笔记也无需额外请求。
 #[tauri::command]
-fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, state: State<AppState>) -> Result<Vec<Note>, String> {
+fn get_notes(
+    category_id: Option<i64>,
+    sort_by: String,
+    sort_order: String,
+    state: State<AppState>,
+) -> Result<Vec<Note>, String> {
     let conn = state.conn.lock().unwrap();
 
     let order_direction = if sort_order == "asc" { "ASC" } else { "DESC" };
@@ -2402,7 +2526,10 @@ fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, stat
     let order_clause = match sort_by.as_str() {
         "created_at" => format!("ORDER BY is_pinned DESC, created_at {}", order_direction),
         "updated_at" => format!("ORDER BY is_pinned DESC, updated_at {}", order_direction),
-        "title" => format!("ORDER BY is_pinned DESC, title {}", if sort_order == "asc" { "ASC" } else { "DESC" }),
+        "title" => format!(
+            "ORDER BY is_pinned DESC, title {}",
+            if sort_order == "asc" { "ASC" } else { "DESC" }
+        ),
         _ => format!("ORDER BY is_pinned DESC, updated_at {}", order_direction),
     };
 
@@ -2423,20 +2550,22 @@ fn get_notes(category_id: Option<i64>, sort_by: String, sort_order: String, stat
             order_clause
         )
     };
-    
+
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    
+
     let notes_iter = if let Some(cat_id) = category_id {
-        stmt.query_map(params![cat_id], map_row_to_note).map_err(|e| e.to_string())?
+        stmt.query_map(params![cat_id], map_row_to_note)
+            .map_err(|e| e.to_string())?
     } else {
-        stmt.query_map([], map_row_to_note).map_err(|e| e.to_string())?
+        stmt.query_map([], map_row_to_note)
+            .map_err(|e| e.to_string())?
     };
-    
+
     let mut result = Vec::new();
     for note in notes_iter {
         result.push(note.map_err(|e| e.to_string())?);
     }
-    
+
     Ok(result)
 }
 
@@ -2457,15 +2586,36 @@ fn get_note(id: i64, state: State<AppState>) -> Result<Note, String> {
 }
 
 #[tauri::command]
-fn update_note(id: i64, title: String, content: String, category_id: Option<i64>, is_pinned: Option<i64>, state: State<AppState>) -> Result<(), String> {
-    let conn = state.conn.lock().unwrap();
+fn update_note(
+    id: i64,
+    title: String,
+    content: String,
+    category_id: Option<i64>,
+    is_pinned: Option<i64>,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let mut conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    conn.execute(
+    tx.execute(
         "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = COALESCE(?4, is_pinned), updated_at = ?5 WHERE id = ?6",
         params![title, content, category_id, is_pinned, now, id],
     ).map_err(|e| e.to_string())?;
 
+    // 旧块立刻作废：否则 worker 重建前的这几秒里，语义搜索会拿旧正文当片段返回。
+    // note_index_state 一并删掉，worker 下一轮凭「state 缺失」判定为脏。
+    tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM note_index_state WHERE note_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    drop(conn);
+
+    semantic::invalidate(&state.semantic);
     Ok(())
 }
 
@@ -2775,11 +2925,8 @@ fn rename_tag(id: i64, name: String, state: State<AppState>) -> Result<Vec<Tag>,
             target
         }
         None => {
-            conn.execute(
-                "UPDATE tags SET name = ?1 WHERE id = ?2",
-                params![name, id],
-            )
-            .map_err(|e| e.to_string())?;
+            conn.execute("UPDATE tags SET name = ?1 WHERE id = ?2", params![name, id])
+                .map_err(|e| e.to_string())?;
             id
         }
     };
@@ -2894,7 +3041,8 @@ fn pin_note(id: i64, pinned: bool, state: State<AppState>) -> Result<(), String>
     conn.execute(
         "UPDATE notes SET is_pinned = ?1 WHERE id = ?2",
         params![if pinned { 1 } else { 0 }, id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -2903,31 +3051,37 @@ fn pin_note(id: i64, pinned: bool, state: State<AppState>) -> Result<(), String>
 fn move_to_trash(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
-    
+
     conn.execute(
         "UPDATE notes SET is_deleted = 1, deleted_at = ?1 WHERE id = ?2",
         params![now, id],
-    ).map_err(|e| e.to_string())?;
-    
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
     Ok(())
 }
 
 #[tauri::command]
 fn restore_note(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    
+
     conn.execute(
         "UPDATE notes SET is_deleted = 0, deleted_at = NULL WHERE id = ?1",
         params![id],
-    ).map_err(|e| e.to_string())?;
-    
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
     Ok(())
 }
 
 #[tauri::command]
 fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
     let conn = state.conn.lock().unwrap();
-    
+
     let mut stmt = conn.prepare(
         "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, 
                 is_pinned, ai_access
@@ -2935,28 +3089,30 @@ fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
          WHERE is_deleted = 1 
          ORDER BY deleted_at DESC"
     ).map_err(|e| e.to_string())?;
-    
-    let notes = stmt.query_map([], map_row_to_note).map_err(|e| e.to_string())?;
-    
+
+    let notes = stmt
+        .query_map([], map_row_to_note)
+        .map_err(|e| e.to_string())?;
+
     let mut result = Vec::new();
     for note in notes {
         result.push(note.map_err(|e| e.to_string())?);
     }
-    
+
     Ok(result)
 }
 
 #[tauri::command]
 fn delete_note_permanently(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    
-    conn.execute(
-        "DELETE FROM notes WHERE id = ?1",
-        params![id],
-    ).map_err(|e| e.to_string())?;
+
+    conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
 
     // 没开级联外键，笔记没了标签关联会留成孤儿（list_tags 的计数会飘）
     prune_tag_links(&conn)?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
 
     Ok(())
 }
@@ -2964,15 +3120,15 @@ fn delete_note_permanently(id: i64, state: State<AppState>) -> Result<(), String
 #[tauri::command]
 fn delete_multiple_notes_permanently(ids: Vec<i64>, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    
+
     for id in ids {
-        conn.execute(
-            "DELETE FROM notes WHERE id = ?1",
-            params![id],
-        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
     }
 
     prune_tag_links(&conn)?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
 
     Ok(())
 }
@@ -2982,13 +3138,16 @@ fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let thirty_days_ago = Local::now() - Duration::days(30);
     let threshold = thirty_days_ago.to_rfc3339();
-    
+
     conn.execute(
         "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1",
         params![threshold],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     prune_tag_links(&conn)?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
 
     Ok(())
 }
@@ -3056,14 +3215,18 @@ fn create_ai_provider(
 #[tauri::command]
 fn get_ai_providers(state: State<AppState>) -> Result<Vec<AiProvider>, String> {
     let conn = state.conn.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
                 created_at, updated_at, enabled_models
          FROM ai_providers
          ORDER BY updated_at DESC",
-    ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
-    let providers = stmt.query_map([], map_row_to_ai_provider).map_err(|e| e.to_string())?;
+    let providers = stmt
+        .query_map([], map_row_to_ai_provider)
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     for provider in providers {
         result.push(provider.map_err(|e| e.to_string())?);
@@ -3085,7 +3248,8 @@ fn get_ai_providers(state: State<AppState>) -> Result<Vec<AiProvider>, String> {
             conn.execute(
                 "UPDATE ai_providers SET api_key = ?1 WHERE id = ?2",
                 params![encrypted, provider.id],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
     Ok(result)
@@ -3096,7 +3260,9 @@ fn update_ai_provider(provider: AiProvider, state: State<AppState>) -> Result<()
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     let clean_api_path = provider.api_path.filter(|path| !path.trim().is_empty());
-    let clean_enabled_model = provider.enabled_model.filter(|model| !model.trim().is_empty());
+    let clean_enabled_model = provider
+        .enabled_model
+        .filter(|model| !model.trim().is_empty());
     // 去重并清理空白项后序列化为 JSON 数组
     let mut seen = std::collections::HashSet::new();
     let clean_models: Vec<String> = provider
@@ -3129,7 +3295,8 @@ fn update_ai_provider(provider: AiProvider, state: State<AppState>) -> Result<()
             models_json,
             provider.id
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -3144,13 +3311,15 @@ fn delete_ai_provider(id: i64, state: State<AppState>) -> Result<(), String> {
 
 fn get_ai_provider(id: i64, state: &State<AppState>) -> Result<AiProvider, String> {
     let conn = state.conn.lock().unwrap();
-    let mut provider = conn.query_row(
-        "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
+    let mut provider = conn
+        .query_row(
+            "SELECT id, name, provider_type, api_base_url, api_key, api_path, enabled_model,
                 created_at, updated_at, enabled_models
          FROM ai_providers WHERE id = ?1",
-        params![id],
-        map_row_to_ai_provider,
-    ).map_err(|e| e.to_string())?;
+            params![id],
+            map_row_to_ai_provider,
+        )
+        .map_err(|e| e.to_string())?;
     // 单条读取同样解密，并顺手迁移明文（对话、拉取模型都走这里）
     if is_encrypted(&provider.api_key) {
         match decrypt_secret(&conn, &provider.api_key) {
@@ -3165,7 +3334,8 @@ fn get_ai_provider(id: i64, state: &State<AppState>) -> Result<AiProvider, Strin
         conn.execute(
             "UPDATE ai_providers SET api_key = ?1 WHERE id = ?2",
             params![encrypted, provider.id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(provider)
 }
@@ -3325,7 +3495,8 @@ async fn fetch_ai_models(provider: AiProvider) -> Result<Vec<String>, String> {
                 .await
         }
         _ => return Err("不支持的 API 兼容类型".to_string()),
-    }.map_err(|e| e.to_string())?;
+    }
+    .map_err(|e| e.to_string())?;
 
     let status = response.status();
     let body = response.text().await.map_err(|e| e.to_string())?;
@@ -3355,7 +3526,12 @@ async fn fetch_ai_models(provider: AiProvider) -> Result<Vec<String>, String> {
             .and_then(|data| data.as_array())
             .map(|data| {
                 data.iter()
-                    .filter_map(|model| model.get("id").and_then(|id| id.as_str()).map(|id| id.to_string()))
+                    .filter_map(|model| {
+                        model
+                            .get("id")
+                            .and_then(|id| id.as_str())
+                            .map(|id| id.to_string())
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
@@ -3392,9 +3568,11 @@ async fn send_ai_chat(
         "openai" => {
             let url = join_url(&provider.api_base_url, &openai_chat_path(&provider));
             let mut api_messages = vec![json!({ "role": "system", "content": system_prompt })];
-            api_messages.extend(messages.iter().map(|message| {
-                json!({ "role": message.role, "content": message.content })
-            }));
+            api_messages.extend(
+                messages
+                    .iter()
+                    .map(|message| json!({ "role": message.role, "content": message.content })),
+            );
             client
                 .post(url)
                 .bearer_auth(provider.api_key.trim())
@@ -3410,13 +3588,20 @@ async fn send_ai_chat(
         "google" => {
             let url = join_url(
                 &provider.api_base_url,
-                &format!("/models/{}:generateContent", model.trim_start_matches("models/")),
+                &format!(
+                    "/models/{}:generateContent",
+                    model.trim_start_matches("models/")
+                ),
             );
             let contents = messages
                 .iter()
                 .filter(|message| message.role != "system")
                 .map(|message| {
-                    let role = if message.role == "assistant" { "model" } else { "user" };
+                    let role = if message.role == "assistant" {
+                        "model"
+                    } else {
+                        "user"
+                    };
                     json!({
                         "role": role,
                         "parts": [{ "text": message.content }]
@@ -3462,7 +3647,8 @@ async fn send_ai_chat(
                 .await
         }
         _ => return Err("不支持的 API 兼容类型".to_string()),
-    }.map_err(|e| e.to_string())?;
+    }
+    .map_err(|e| e.to_string())?;
 
     let status = response.status();
     let body = response.text().await.map_err(|e| e.to_string())?;
@@ -3473,7 +3659,10 @@ async fn send_ai_chat(
     let value: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let text = match provider.provider_type.as_str() {
         "openai" => extract_text(&value, &[&["choices", "0", "message", "content"]]),
-        "google" => extract_text(&value, &[&["candidates", "0", "content", "parts", "0", "text"]]),
+        "google" => extract_text(
+            &value,
+            &[&["candidates", "0", "content", "parts", "0", "text"]],
+        ),
         "claude" => extract_text(&value, &[&["content", "0", "text"]]),
         _ => None,
     };
@@ -3536,7 +3725,10 @@ fn parse_sse_event(event: &str) -> (Option<String>, Option<String>) {
                 .and_then(|p| p.as_array())
             {
                 for part in parts {
-                    let is_thought = part.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                    let is_thought = part
+                        .get("thought")
+                        .and_then(|t| t.as_bool())
+                        .unwrap_or(false);
                     if let Some(part_text) = part.get("text").and_then(|t| t.as_str()) {
                         if part_text.is_empty() {
                             continue;
@@ -3708,7 +3900,10 @@ async fn send_ai_chat_stream(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.map_err(|e| e.to_string())?;
-        let _ = app_handle.emit("ai-chat-error", json!({"error": format!("AI 请求失败：{} {}", status, body)}));
+        let _ = app_handle.emit(
+            "ai-chat-error",
+            json!({"error": format!("AI 请求失败：{} {}", status, body)}),
+        );
         return Err(format!("AI 请求失败：{} {}", status, body));
     }
 
@@ -3761,7 +3956,10 @@ async fn send_ai_chat_stream(
     }
 
     if full_text.is_empty() && full_reasoning.is_empty() {
-        let _ = app_handle.emit("ai-chat-error", json!({"error": "没有从 AI 响应中解析到文本内容"}));
+        let _ = app_handle.emit(
+            "ai-chat-error",
+            json!({"error": "没有从 AI 响应中解析到文本内容"}),
+        );
         return Err("没有从 AI 响应中解析到文本内容".to_string());
     }
 
@@ -3785,7 +3983,12 @@ fn derive_stream_payload(reasoning: &str, text: &str) -> String {
 }
 
 #[tauri::command]
-fn create_chat_session(title: String, provider_id: i64, model: String, state: State<AppState>) -> Result<AiChatSession, String> {
+fn create_chat_session(
+    title: String,
+    provider_id: i64,
+    model: String,
+    state: State<AppState>,
+) -> Result<AiChatSession, String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     conn.execute(
@@ -3793,7 +3996,14 @@ fn create_chat_session(title: String, provider_id: i64, model: String, state: St
         params![title, provider_id, model, now, now],
     ).map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
-    Ok(AiChatSession { id, title, provider_id, model, created_at: now.clone(), updated_at: now })
+    Ok(AiChatSession {
+        id,
+        title,
+        provider_id,
+        model,
+        created_at: now.clone(),
+        updated_at: now,
+    })
 }
 
 #[tauri::command]
@@ -3802,16 +4012,18 @@ fn get_chat_sessions(state: State<AppState>) -> Result<Vec<AiChatSession>, Strin
     let mut stmt = conn.prepare(
         "SELECT id, title, provider_id, model, created_at, updated_at FROM ai_chat_sessions ORDER BY updated_at DESC"
     ).map_err(|e| e.to_string())?;
-    let sessions = stmt.query_map([], |row| {
-        Ok(AiChatSession {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            provider_id: row.get(2)?,
-            model: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+    let sessions = stmt
+        .query_map([], |row| {
+            Ok(AiChatSession {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                provider_id: row.get(2)?,
+                model: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     for session in sessions {
         result.push(session.map_err(|e| e.to_string())?);
@@ -3820,20 +4032,25 @@ fn get_chat_sessions(state: State<AppState>) -> Result<Vec<AiChatSession>, Strin
 }
 
 #[tauri::command]
-fn get_chat_messages(session_id: i64, state: State<AppState>) -> Result<Vec<AiChatDbMessage>, String> {
+fn get_chat_messages(
+    session_id: i64,
+    state: State<AppState>,
+) -> Result<Vec<AiChatDbMessage>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, session_id, role, content, created_at FROM ai_chat_messages WHERE session_id = ?1 ORDER BY id ASC"
     ).map_err(|e| e.to_string())?;
-    let messages = stmt.query_map(params![session_id], |row| {
-        Ok(AiChatDbMessage {
-            id: row.get(0)?,
-            session_id: row.get(1)?,
-            role: row.get(2)?,
-            content: row.get(3)?,
-            created_at: row.get(4)?,
+    let messages = stmt
+        .query_map(params![session_id], |row| {
+            Ok(AiChatDbMessage {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     for message in messages {
         result.push(message.map_err(|e| e.to_string())?);
@@ -3842,7 +4059,12 @@ fn get_chat_messages(session_id: i64, state: State<AppState>) -> Result<Vec<AiCh
 }
 
 #[tauri::command]
-fn save_chat_message(session_id: i64, role: String, content: String, state: State<AppState>) -> Result<(), String> {
+fn save_chat_message(
+    session_id: i64,
+    role: String,
+    content: String,
+    state: State<AppState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     conn.execute(
@@ -3852,27 +4074,39 @@ fn save_chat_message(session_id: i64, role: String, content: String, state: Stat
     conn.execute(
         "UPDATE ai_chat_sessions SET updated_at = ?1 WHERE id = ?2",
         params![now, session_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn update_chat_session_title(session_id: i64, title: String, state: State<AppState>) -> Result<(), String> {
+fn update_chat_session_title(
+    session_id: i64,
+    title: String,
+    state: State<AppState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     conn.execute(
         "UPDATE ai_chat_sessions SET title = ?1 WHERE id = ?2",
         params![title, session_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn delete_chat_session(session_id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    conn.execute("DELETE FROM ai_chat_messages WHERE session_id = ?1", params![session_id])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM ai_chat_sessions WHERE id = ?1", params![session_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM ai_chat_messages WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM ai_chat_sessions WHERE id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -3921,7 +4155,11 @@ fn read_text_file(path: String) -> Result<TextFileInfo, String> {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
-    Ok(TextFileInfo { path, name, content })
+    Ok(TextFileInfo {
+        path,
+        name,
+        content,
+    })
 }
 
 #[tauri::command]
@@ -3971,7 +4209,7 @@ const APP_IDENTIFIER: &str = "com.smartist.fastnote";
  *
  * @param app_data_dir tauri 解析出的应用数据目录；run() 阶段传 None，此时用 dirs 兜底
  */
-fn resolve_data_dir(app_data_dir: Option<std::path::PathBuf>) -> std::path::PathBuf {
+pub(crate) fn resolve_data_dir(app_data_dir: Option<std::path::PathBuf>) -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let install_data_dir = exe_dir.join("data");
@@ -4040,6 +4278,13 @@ fn read_setting_string(app: &AppHandle, key: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// 读无符号数值设置；缺失、为负数或解析失败时回退 fallback
+pub(crate) fn read_setting_u64(app: &AppHandle, key: &str, fallback: u64) -> u64 {
+    read_setting_raw(app, key)
+        .and_then(|raw| serde_json::from_str::<u64>(&raw).ok())
+        .unwrap_or(fallback)
+}
+
 /// 启动时是否应该显示主窗口。
 ///
 /// 窗口以 `visible: false` 创建、由前端在首帧画完后 show()（见 main.tsx），
@@ -4090,7 +4335,8 @@ fn nudge_webview_repaint(window: tauri::WebviewWindow) {
         if !window.is_maximized().unwrap_or(false) && !window.is_fullscreen().unwrap_or(false) {
             if let Ok(size) = window.outer_size() {
                 if size.width > 1 && size.height > 1 {
-                    let _ = window.set_size(tauri::PhysicalSize::new(size.width + 1, size.height + 1));
+                    let _ =
+                        window.set_size(tauri::PhysicalSize::new(size.width + 1, size.height + 1));
                     std::thread::sleep(std::time::Duration::from_millis(40));
                     let _ = window.set_size(tauri::PhysicalSize::new(size.width, size.height));
                 }
@@ -4251,7 +4497,9 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 /// 启动时对齐一次：只有快捷方式「该在却不在 / 不该在却在」时才动手。
 /// 正常情况下（设置已开启且快捷方式已存在）这里什么都不做，不会每次都跑一遍 PowerShell。
 fn sync_autostart_shortcut(app: &AppHandle) {
-    let Ok(shortcut) = startup_shortcut_path() else { return };
+    let Ok(shortcut) = startup_shortcut_path() else {
+        return;
+    };
     if read_setting_bool(app, "app.config.general.autostart", false) {
         if !shortcut.exists() {
             if let Err(e) = write_autostart_shortcut(&shortcut) {
@@ -4280,7 +4528,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-                .invoke_handler(tauri::generate_handler![
+        .invoke_handler(tauri::generate_handler![
             create_category,
             get_categories,
             update_category,
@@ -4335,6 +4583,19 @@ pub fn run() {
             set_tray_enabled,
             set_autostart_enabled,
             should_show_on_startup,
+            semantic::semantic_status,
+            semantic::semantic_download_model,
+            semantic::semantic_delete_model,
+            semantic::semantic_import_model,
+            semantic::semantic_rebuild_index,
+            semantic::semantic_cancel_index,
+            semantic::semantic_search,
+            #[cfg(debug_assertions)]
+            semantic::semantic_debug_embed,
+            download::toolbox_download,
+            download::toolbox_download_cancel,
+            download::toolbox_download_dir,
+            opener::open_app_folder,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件
@@ -4347,49 +4608,63 @@ pub fn run() {
 
             let conn = Connection::open(db_path).expect("failed to open database");
             init_database(&conn).expect("failed to initialize database");
-            
+
             let state = AppState {
                 conn: Mutex::new(conn),
+                semantic: semantic::SemanticState::default(),
+                download: download::DownloadState::default(),
             };
-            
+
             app.manage(state);
-            
-            let window = app.get_webview_window("main").expect("main window not found");
-            
+            // 旧版本模型放在应用数据目录，搬进便携数据目录后再启动索引
+            semantic::model::migrate_legacy(app.handle());
+            // 索引 worker 自己轮询开关与模型状态，未开启时每 2 秒空转一次，几乎无开销
+            semantic::spawn_worker(app.handle().clone());
+
+            let window = app
+                .get_webview_window("main")
+                .expect("main window not found");
+
             if let Ok(cursor_pos) = window.cursor_position() {
                 if let Ok(monitors) = app.available_monitors() {
                     let mut target_monitor = None;
-                    
+
                     for monitor in monitors {
                         let pos = monitor.position();
                         let size = monitor.size();
-                        
+
                         let x1 = pos.x as f64;
                         let y1 = pos.y as f64;
                         let x2 = (pos.x + size.width as i32) as f64;
                         let y2 = (pos.y + size.height as i32) as f64;
-                        
-                        if cursor_pos.x >= x1 && cursor_pos.x <= x2 && 
-                           cursor_pos.y >= y1 && cursor_pos.y <= y2 {
+
+                        if cursor_pos.x >= x1
+                            && cursor_pos.x <= x2
+                            && cursor_pos.y >= y1
+                            && cursor_pos.y <= y2
+                        {
                             target_monitor = Some(monitor);
                             break;
                         }
                     }
-                    
+
                     if let Some(monitor) = target_monitor {
                         let monitor_pos = monitor.position();
                         let monitor_size = monitor.size();
-                        
+
                         let window_width = 1200.0;
                         let window_height = 800.0;
-                        
-                        let center_x = monitor_pos.x as f64 + (monitor_size.width as f64 / 2.0) - (window_width / 2.0);
-                        let center_y = monitor_pos.y as f64 + (monitor_size.height as f64 / 2.0) - (window_height / 2.0);
-                        
-                        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                            x: center_x,
-                            y: center_y,
-                        }));
+
+                        let center_x = monitor_pos.x as f64 + (monitor_size.width as f64 / 2.0)
+                            - (window_width / 2.0);
+                        let center_y = monitor_pos.y as f64 + (monitor_size.height as f64 / 2.0)
+                            - (window_height / 2.0);
+
+                        let _ =
+                            window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                                x: center_x,
+                                y: center_y,
+                            }));
                     }
                 }
             }
@@ -4451,3 +4726,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

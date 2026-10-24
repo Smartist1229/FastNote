@@ -22,7 +22,8 @@ import { AiSparkleIcon } from '@/components/common/icons';
 import { Icon } from '@/components/common/Icon';
 import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/contextMenus';
 import type { GroupMenuKind } from '@/config/contextMenus';
-import { searchNotes } from '@/lib/noteSearch';
+import { buildNoteMatcher, findMatchRanges, searchNotes, type NoteSearchHit } from '@/lib/noteSearch';
+import { useSemanticSearch } from '@/lib/useSemanticSearch';
 /** 排序选项：value 直接作为后端排序字段使用 */
 const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' }];
 /** 排序浮层宽度（px）：定位时用它把浮层夹在视口内 */
@@ -37,11 +38,12 @@ const MAX_SIDEBAR_WIDTH = 480;
 const DEFAULT_SIDEBAR_WIDTH = 272;
 /** 主内容区保底宽度：侧边栏上限 = 可用宽度 − 该值，窗口越宽侧边栏越能放宽到 MAX_SIDEBAR_WIDTH */
 const SIDEBAR_CONTENT_MIN_WIDTH = 560;
-/** 搜索视图三个虚拟分组 → 展开状态 key */
-const SEARCH_GROUP_KEY: Record<string, 'all' | 'title' | 'content'> = {
+/** 搜索视图四个虚拟分组 → 展开状态 key */
+const SEARCH_GROUP_KEY: Record<string, 'all' | 'title' | 'content' | 'semantic'> = {
   'search-all': 'all',
   'search-title': 'title',
   'search-content': 'content',
+  'search-semantic': 'semantic',
 };
 /** 右键命中的分组：真实分组带 category，默认分组 / 搜索分组带名称与笔记列表 */
 type GroupMenuTarget =
@@ -66,6 +68,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   searchQuery,
   onSearchQueryChange,
   useRegex = false,
+  onRegexChange,
+  semanticEnabled = false,
+  semanticIndexing = false,
   onCommitSearch,
   searchHistory = [],
   onRemoveSearchHistory,
@@ -207,10 +212,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
     () => searchNotes(notes, searchQuery.trim(), useRegex),
     [notes, searchQuery, useRegex],
   );
-  /** 搜索视图「全部搜索结果」：按命中顺序 */
-  const searchMatches = useMemo(() => searchHits.map((h) => h.note), [searchHits]);
-  /** id → 命中信息，给列表做关键词高亮与上下文片段 */
-  const hitMap = useMemo(() => new Map(searchHits.map((h) => [h.note.id, h])), [searchHits]);
+  /** 语义命中异步补位：关键词结果不等它，避免慢请求把搜索框卡住 */
+  const { hits: semanticHits, loading: semanticLoading } = useSemanticSearch(
+    searchQuery.trim(),
+    semanticEnabled,
+    notes,
+  );
+  const noteById = useMemo(() => new Map(notes.map((note) => [note.id, note])), [notes]);
+  /**
+   * 语义命中转成与关键词命中同构的结构：抽屉只认 NoteSearchHit。
+   * 语义命中本身没有位置信息，但片段里若字面出现查询词，顺手标黄。
+   */
+  const semanticHitInfos = useMemo(() => {
+    const keywordIds = new Set(searchHits.map((h) => h.note.id));
+    const matcher = buildNoteMatcher(searchQuery.trim(), false);
+    const out: NoteSearchHit[] = [];
+    for (const hit of semanticHits) {
+      if (out.length >= 15) break;
+      // 关键词已经命中过的笔记不再放入语义组，两组的「全部」才不会被重复项撑长
+      if (keywordIds.has(hit.note_id)) continue;
+      const note = noteById.get(hit.note_id);
+      if (!note) continue;
+      out.push({
+        note,
+        titleRanges: [],
+        snippetRanges: findMatchRanges(matcher, hit.snippet),
+        snippet: hit.snippet,
+        titleOnly: false,
+      });
+    }
+    return out;
+  }, [semanticHits, searchHits, noteById, searchQuery]);
+  const semanticMatches = useMemo(() => semanticHitInfos.map((h) => h.note), [semanticHitInfos]);
+  /** id → 命中信息：关键词与语义合并，列表据此渲染标题/片段高亮 */
+  const hitMap = useMemo(() => {
+    const map = new Map<number, NoteSearchHit>();
+    for (const hit of searchHits) map.set(hit.note.id, hit);
+    for (const hit of semanticHitInfos) map.set(hit.note.id, hit);
+    return map;
+  }, [searchHits, semanticHitInfos]);
+  /** 搜索视图「全部搜索结果」：关键词命中在前，语义补位在后 */
+  const searchMatches = useMemo(
+    () => [...searchHits.map((h) => h.note), ...semanticMatches],
+    [searchHits, semanticMatches],
+  );
   /** 搜索视图「标题命中」：标题里有命中的笔记 */
   const titleMatches = useMemo(
     () => searchHits.filter((h) => h.titleRanges.length > 0).map((h) => h.note),
@@ -221,13 +266,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     () => searchHits.filter((h) => h.titleRanges.length === 0).map((h) => h.note),
     [searchHits],
   );
-  /** 搜索视图内三个默认分组的展开状态：默认展开，结果立即可见 */
-  const [searchGroupOpen, setSearchGroupOpen] = useState({ all: true, title: true, content: true });
-  const toggleSearchGroup = (key: 'all' | 'title' | 'content') =>
+  /** 搜索视图内各默认分组的展开状态：默认收起，先看各组的命中数量 */
+  const [searchGroupOpen, setSearchGroupOpen] = useState({ all: false, title: false, content: false, semantic: false });
+  const toggleSearchGroup = (key: 'all' | 'title' | 'content' | 'semantic') =>
     setSearchGroupOpen((s) => ({ ...s, [key]: !s[key] }));
-  // 每次开始新的搜索都重置为全部展开，避免上一次的折叠状态挡住结果
+  // 每次开始新的搜索都回到收起状态，避免上一次展开的组把结果全铺开
   useEffect(() => {
-    if (isSearching) setSearchGroupOpen({ all: true, title: true, content: true });
+    if (isSearching) setSearchGroupOpen({ all: false, title: false, content: false, semantic: false });
   }, [isSearching]);
   /** 笔记右键：记录目标并弹出菜单（搜索视图 / 收藏视图共用） */
   const handleNoteContextMenu = (e: React.MouseEvent, note: Note) => {
@@ -544,17 +589,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }
                 if (e.key === 'Escape') setHistoryOpen(false);
               }}
-              className="w-full pl-8 pr-7 py-1.5 text-xs input-modern"
+              className={`w-full pl-8 py-1.5 text-xs input-modern ${isSearching ? 'pr-12' : 'pr-7'}`}
             />
             {isSearching && (
               <button
                 onClick={() => onSearchQueryChange('')}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-md text-faint-soft hover:text-muted hover:bg-surface-alt transition-colors"
+                className="absolute right-7 top-1/2 -translate-y-1/2 p-0.5 rounded-md text-faint-soft hover:text-muted hover:bg-surface-alt transition-colors"
                 title="清空搜索"
               >
                 <Icon name="sidebar-close" className="w-3.5 h-3.5" />
               </button>
             )}
+            {/* 正则开关：放进输入框右侧，点按时不让输入框失焦，方便边输边切 */}
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onRegexChange?.(!useRegex)}
+              disabled={!onRegexChange}
+              aria-pressed={useRegex}
+              aria-label="正则搜索"
+              title={
+                useRegex
+                  ? "正则搜索：开（点击关闭）"
+                  : "正则搜索：关（点击开启，支持 (待办|备忘)、^周报\\d+$）"
+              }
+              className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary-300 disabled:opacity-40 ${
+                useRegex
+                  ? "bg-primary-50 text-primary-600"
+                  : "text-faint-soft hover:bg-surface-alt hover:text-muted"
+              }`}
+            >
+              <Icon name="sidebar-regex" className="w-3 h-3" />
+            </button>
             {/* 历史下拉：聚焦时出现；历史为空或已开始输入都不打扰 */}
             {historyOpen && searchHistory.length > 0 && !isSearching && (
               <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-line bg-surface shadow-card-hover overflow-hidden">
@@ -724,14 +790,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="w-10 h-10 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
                 <Icon name="sidebar-search" className="w-5 h-5 text-faint-soft" />
               </div>
-              <p className="text-xs text-faint">无匹配笔记</p>
+              <p className="text-xs text-faint">{semanticLoading ? '正在按语义查找…' : '无匹配笔记'}</p>
               {/* 开了正则最容易"什么都不出来"—至少说清楚是表达式本身没通过编译，而不是库里没有 */}
               {invalidRegex ? (
                 <p className="text-[10px] text-warning mt-1 text-center px-2">
-                  这不是合法的正则表达式，换个写法或在设置里关掉「笔记搜索支持正则」
+                  这不是合法的正则表达式，检查写法或点搜索框里的 .* 按钮关闭正则
                 </p>
               ) : (
-                <p className="text-[10px] text-faint-soft mt-1">换个关键词试试</p>
+                <p className="text-[10px] text-faint-soft mt-1">
+                  {semanticEnabled && semanticIndexing ? '语义索引构建中，结果可能还不完整' : '换个关键词试试'}
+                </p>
               )}
             </div>
           ) : (
@@ -800,6 +868,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }}
                 onNoteContextMenu={handleNoteContextMenu}
               />
+              {/* 语义组只在有结果时出现：空组对"逐字输入"的搜索没有信息量 */}
+              {semanticEnabled && semanticMatches.length > 0 && (
+                <CategoryDrawer
+                  category={null}
+                  notes={semanticMatches}
+                  isExpanded={searchGroupOpen.semantic}
+                  isAllNotes={true}
+                  headerTitle="语义相关"
+                  headerIcon="ai-bolt"
+                  hits={hitMap}
+                  selectedNoteId={selectedNoteId}
+                  focusNoteId={focusNoteId}
+                  onToggle={() => toggleSearchGroup('semantic')}
+                  onSelectNote={onSelectNote}
+                  onDeleteNote={onDeleteNote}
+                  onTogglePin={onTogglePin}
+                  onCreateNote={() => { }}
+                  onContextMenu={(e) => {
+                    groupMenuRef.current = { kind: 'search-semantic', name: '语义相关', notes: semanticMatches };
+                    handleContextMenu(e);
+                  }}
+                  onNoteContextMenu={handleNoteContextMenu}
+                />
+              )}
+              {semanticEnabled && semanticMatches.length > 0 && (
+                <p className="px-3 pt-1 pb-2 text-[10px] leading-relaxed text-faint-soft">
+                  「语义相关」由本地模型按相似度推断，不同模型效果不同，未必精准。
+                </p>
+              )}
             </div>
           )
         ) : view === 'favorites' ? (

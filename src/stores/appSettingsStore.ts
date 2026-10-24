@@ -3,6 +3,7 @@ import type { AppSettings, EditorSettings } from "@/interface/settings";
 import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
 import { EDITOR_SPEC_BY_FIELD } from "@/config/editorSettingSpecs";
 import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
+import { SEMANTIC_MODEL_IDS } from "@/config/semanticModels";
 import { normalizeHex, normalizeHexList } from "@/lib/theme";
 
 /**
@@ -11,7 +12,8 @@ import { normalizeHex, normalizeHexList } from "@/lib/theme";
  * 数据源是 SQLite 的 app_settings 表，与 AI 设置同表、只靠前缀区分：
  *   app.config.<分类>.<字段>
  *     general：cleanTrashOnStartup / trayEnabled / closeBehavior / autostart /
- *              minimizeToTray / enableAI / singleInstance
+ *              minimizeToTray / enableAI / singleInstance / noteSearchRegex /
+ *              semanticSearch / semanticAutoIndex / semanticModel / downloadThreads
  *     editor： 见 interface/settings.ts 的 EditorSettings（config/editorSettingSpecs.ts 里的规格表）
  *     layout： sidebarCollapsed / aiPanelOpen
  *     view：   sortBy / sortOrder
@@ -41,6 +43,20 @@ const CATEGORIES = ["general", "editor", "layout", "view"] as const;
 const ENUM_BY_KEY: Record<string, readonly string[]> = {
   "general.closeBehavior": ["minimize", "exit"],
   "view.sortOrder": ["asc", "desc"],
+};
+
+/**
+ * 语义模型 id：内置项走白名单，本地导入的自定义项形如 `custom-<16 位十六进制>`
+ * （由后端按文件内容哈希生成）。不能用固定白名单，否则自定义模型在下次启动时会被重置。
+ */
+const CUSTOM_MODEL_ID = /^custom-[0-9a-f]{16}$/;
+
+const normalizeSemanticModelId = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  if (CUSTOM_MODEL_ID.test(value)) return value;
+  return SEMANTIC_MODEL_IDS.includes(value as (typeof SEMANTIC_MODEL_IDS)[number])
+    ? value
+    : undefined;
 };
 
 /**
@@ -137,7 +153,12 @@ export const loadAppSettings = async (): Promise<AppSettings> => {
         category === "editor"
           ? EDITOR_SPEC_BY_FIELD[field as keyof EditorSettings]
           : undefined;
-      const value = parsed === undefined ? undefined : normalizeValue(parsed, spec, ENUM_BY_KEY[key]);
+      const value =
+        key === "general.semanticModel"
+          ? normalizeSemanticModelId(parsed)
+          : parsed === undefined
+            ? undefined
+            : normalizeValue(parsed, spec, ENUM_BY_KEY[key]);
 
       if (value === undefined) {
         // 库里没有或值不可信：用默认值，并把这个键补写回库

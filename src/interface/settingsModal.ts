@@ -20,6 +20,10 @@ export type SettingsSection =
   | "shortcuts"
   /** 主题：明暗模式、预设主题、自定义取色、保存的主题 */
   | "theme"
+  /** 语义搜索：本地模型下载与索引状态 */
+  | "semantic"
+  /** 工具箱：通用下载工具与下载线程数 */
+  | "toolbox"
   /** AI 服务商：增删改、拉取模型 */
   | "provider"
   /** AI 对话行为：轮数、流式、确认、轨迹、输出长度 */

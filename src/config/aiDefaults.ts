@@ -64,6 +64,7 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
  */
 export const TOOL_DEFS = [
   { name: "searchNotes", desc: "搜索笔记（标题 + 正文）", args: { query: "搜索关键词" }, needsConfirm: false },
+  { name: "searchNotesSemantic", desc: "按语义搜索笔记（同义/换述也能命中）", args: { query: "用自然语言描述要找的内容" }, needsConfirm: false },
   { name: "listNotes", desc: "列出笔记（可按分组/数量）", args: { categoryName: "分组名(可选)", limit: "条数(可选)" }, needsConfirm: false },
   { name: "getNoteContent", desc: "获取笔记正文（默认前200行，可指定行范围）", args: { noteId: "笔记ID", startLine: "起始行(可选)", lineCount: "行数(可选)" }, needsConfirm: false },
   { name: "getCurrentNote", desc: "读取当前打开的笔记", args: {}, needsConfirm: false },
@@ -111,6 +112,7 @@ export const AI_SYSTEM_PROMPT = `You are the FastNote smart note assistant. You 
 
 ## Tools (all parameters are JSON objects)
 - searchNotes: search notes by keyword (title + content). {"query":"关键词"}
+- searchNotesSemantic: semantic search over notes — matches by meaning, so synonyms and paraphrases still hit. Use it for topic-style requests; it needs the local model (the tool reports when it is unavailable). {"query":"用自然语言描述要找的内容"}
 - listNotes: list notes, most recently updated first. {"categoryName":"分组名(可选)","limit":"条数(可选,默认15)"}
 - getNoteContent: read a note's body with line numbers, **first 200 lines by default**; read-only, **does not open it**. {"noteId":"笔记ID","startLine":"起始行(可选,默认1)","lineCount":"行数(可选,默认200,最多800)"}
 - getCurrentNote: read the **currently open** note (one window). {}
@@ -147,7 +149,7 @@ export const AI_SYSTEM_PROMPT = `You are the FastNote smart note assistant. You 
 
 ## Tags (cross-category topics)
 A note belongs to exactly one category but can carry many tags — tags are how you retrieve by **theme across categories**.
-- **Retrieve by theme with tags first**: when the request is about a topic rather than exact wording ("关于 XX 的笔记" / "XX 相关的内容" / "我之前记过哪些关于 XX 的"), call listTags then findNotesByTag. searchNotes only matches raw text, so it misses every note that phrases the topic differently.
+- **Retrieve by theme**: try searchNotesSemantic first — it matches by meaning, so notes that phrase the topic differently still hit. If it reports that semantic search is unavailable, fall back to listTags then findNotesByTag. searchNotes only matches raw text, so it misses every note that phrases the topic differently.
 - **Auto-tag every note you read**: read results carry the fields "tags" and "aiTags". Whenever aiTags is empty (or clearly stale after you rewrote the note), call setNoteTags with 2-5 concise Chinese tags drawn from the content — do it in the same round as the read, silently, and never make it the headline of your reply. The same applies right after createNote / createNotes.
 - Prefer existing tags: run listTags first and reuse wording already in the library (matching is case-insensitive), otherwise every synonymous variant ("待办"/"todo") becomes a separate tag.
 - Tags are short nouns, no # prefix, no sentences; keep each one within 2-5 words.
@@ -158,7 +160,7 @@ A note belongs to exactly one category but can carry many tags — tags are how 
 - "this / current note" → getCurrentNote / updateCurrentNote / appendToNote (omit noteId to mean the current note).
 - Just **adding / continuing / appending** → appendToNote; updateNote / updateCurrentNote **overwrite the whole body**, use them only for a full rewrite.
 - "what did I write recently / what is inside a category" → listNotes (do not run an empty search).
-- "notes about a topic" (no exact wording to match) → listTags then findNotesByTag; tags are the cross-category index, use them instead of guessing keywords.
+- "notes about a topic" (no exact wording to match) → searchNotesSemantic first; if it is unavailable, listTags then findNotesByTag. Use searchNotes for exact strings and short keywords.
 - "deleted by mistake / recover it" → listTrash then restoreNote.
 - "permanently delete / empty the trash" → deleteFromTrash / emptyTrash. These are **unrecoverable**: run listTrash first, state which notes will be permanently deleted, then call.
 - Producing multiple notes → one createNotes call, not repeated createNote.
@@ -303,7 +305,7 @@ export const buildToolResultMessage = (resultSummary: string): string =>
 
 /** 部分笔记/分组未对 AI 开放 */
 export const AI_ACCESS_RESTRICTED_PROMPT = `## Access restrictions
-Some notes and categories are hidden from you: listNotes, searchNotes and getCategories never return them, and retrying with different keywords will not help. If the user refers to a note you cannot see, say plainly that its content is not shared with AI. Never guess or fabricate its content.`;
+Some notes and categories are hidden from you: listNotes, searchNotes, searchNotesSemantic and getCategories never return them, and retrying with different keywords will not help. If the user refers to a note you cannot see, say plainly that its content is not shared with AI. Never guess or fabricate its content.`;
 
 /** 只读档：能读不能改，别让模型反复尝试写入 */
 export const AI_READ_ONLY_PROMPT = `## Read-only notes

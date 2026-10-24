@@ -5,6 +5,7 @@ import type {
   LayoutSettings,
   ViewSettings,
 } from "@/interface/settings";
+import { DEFAULT_SEMANTIC_MODEL_ID } from "@/config/semanticModels";
 
 /**
  * 软件设置的「默认配置文件」：所有分类的默认值与字号区间。
@@ -56,6 +57,14 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   singleInstance: true, 
   /** 搜索笔记是否支持正则：默认关（普通用户输入的 `*`、`(` 往往是字面意思） */
   noteSearchRegex: false,
+  /** 语义搜索：默认关（需下载模型 + 建索引，不能让用户被动承担） */
+  semanticSearch: false,
+  /** 自动建立索引：默认开（下载完成与笔记改动后自动建/更新，保持与旧版行为一致） */
+  semanticAutoIndex: true,
+  /** 语义模型：默认推荐项（体积小、速度快） */
+  semanticModel: DEFAULT_SEMANTIC_MODEL_ID,
+  /** 下载线程数：模型与工具箱下载共用，默认 32（后端会夹到 1–128） */
+  downloadThreads: 32,
 };
 
 /* ---------- Editor ---------- */

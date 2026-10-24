@@ -7,7 +7,7 @@
  *
  * 数据流：
  *   1. 打开时清空搜索、切到 defaultSection，并向 Tauri 取应用名与版本；
- *   2. 设置项 = rows（通用/编辑器/列表/对话/上下文）+ 8 个自定义面板；
+ *   2. 设置项 = rows（通用/编辑器/列表/对话/上下文）+ 若干自定义面板；
  *   3. **一次只渲染一个分区**（目录点选切换）：几百行设置项全量挂载会让打开明显变慢，
  *      ThemePanel / 服务商 / 访问权限这些子面板也会跟着空跑；
  *   4. 搜索同时匹配 rows 的 title/desc/keywords 与自定义面板的关键词表，命中数标在目录上；
@@ -41,10 +41,13 @@ import {
 import { AiProviderSettings } from "@/components/ai/AiProviderModal";
 import { ThemePanel } from "@/components/settings/ThemePanel";
 import { ShortcutPanel } from "@/components/settings/ShortcutPanel";
+import { SemanticPanel } from "@/components/settings/SemanticPanel";
+import { ToolboxPanel } from "@/components/settings/ToolboxPanel";
 import { ColorPicker } from "@/components/settings/ColorPicker";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
 import { useDraggable } from "@/components/common/useDraggable";
+import { useActionGuard } from "@/hooks/useActionGuard";
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import { useToast } from "@/components/common/Toast";
@@ -66,6 +69,8 @@ const SECTIONS: SectionMeta[] = [
   { key: "layout", label: "界面布局", icon: "sidebar-edit-square", group: "软件" },
   { key: "shortcuts", label: "快捷键", icon: "settings-shortcuts", group: "软件" },
   { key: "theme", label: "主题", icon: "settings-theme", group: "软件" },
+  { key: "semantic", label: "语义搜索", icon: "ai-bolt", group: "软件" },
+  { key: "toolbox", label: "工具箱", icon: "toolbox", group: "软件" },
   { key: "provider", label: "AI 服务商", icon: "settings-provider", group: "AI" },
   { key: "chat", label: "对话行为", icon: "settings-chat", group: "AI" },
   { key: "context", label: "上下文", icon: "settings-context", group: "AI" },
@@ -90,7 +95,7 @@ const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
 const UNCATEGORIZED_KEY = -1;
 
 /** 自定义面板分区：内容不是数据驱动的行，但同样参与搜索 */
-const CUSTOM_KEYS: SettingsSection[] = ["theme", "shortcuts", "provider", "memory", "access", "reset", "backup", "about"];
+const CUSTOM_KEYS: SettingsSection[] = ["theme", "semantic", "toolbox", "shortcuts", "provider", "memory", "access", "reset", "backup", "about"];
 
 /* ---------- 基础控件 ---------- */
 
@@ -597,6 +602,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
+  const guard = useActionGuard();
 
   /** 搜索关键词：非空时只渲染命中的分区与行 */
   const [query, setQuery] = useState("");
@@ -766,16 +772,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         keywords: "单例 多开 多进程 实例 single instance 单实例 重复启动",
         value: appSettings.general.singleInstance,
         onChange: (v) => setApp("general", "singleInstance", v),
-      },
-      {
-        section: "general",
-        kind: "toggle",
-        scope: "live",
-        title: "笔记搜索支持正则",
-        desc: "开启后，侧边栏「搜索笔记」的输入框按正则表达式匹配标题与正文（例如 `^周报\\\\d+$`、待办|备忘）。输入的正则不合法时搜索不会报错，只是没有任何结果。关闭时按普通文本匹配，`*`、`(` 等字符当作字面量。",
-        keywords: "搜索 正则 regex 匹配 search 查找",
-        value: appSettings.general.noteSearchRegex,
-        onChange: (v) => setApp("general", "noteSearchRegex", v),
       },
       {
         section: "general",
@@ -1115,8 +1111,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         aiProviders.map((p) => p.name).join(" "),
       theme:
         "主题 配色 颜色 取色 色盘 暗黑 暗色 深色 浅色 夜间 预设 自定义 圆角 外观 theme color palette dark light appearance radius preset",
+      semantic:
+        "语义搜索 语义 向量 embedding 向量检索 模型 本地模型 推荐 多语言 bge minilm 下载 索引 重建 自动 自动索引 增量 启用 开关 index semantic vector model onnx 离线 相似 近似",
       shortcuts:
         "快捷键 键位 按键 组合键 键盘 ctrl cmd shift alt 跳转 命令面板 shortcut shortcuts keymap hotkey keyboard ctrl+p ctrl+shift+p",
+      toolbox:
+        "工具箱 下载 下载器 链接 url http https 线程 并发 分段 文件 目录 download downloader threads",
       memory: "记忆 提示词 prompt 长期记忆 前置 要求 memory",
       access: "访问 权限 分组 笔记 ai 隐私 限制 禁止 只读 完全 三档 access permission privacy readonly category note",
       reset: "恢复默认 重置 出厂值 reset default",
@@ -1557,8 +1557,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {/* 主题：明暗模式 + 预设 + 自定义取色 + 已保存主题 */}
                       {s.key === "theme" && <ThemePanel theme={theme} onChange={onThemeChange} />}
 
+                      {/* 语义搜索：本地模型下载/删除、索引重建/取消与进度 */}
+                      {s.key === "semantic" && (
+                        <SemanticPanel
+                          enabled={appSettings.general.semanticSearch}
+                          onEnabledChange={(v) => setApp("general", "semanticSearch", v)}
+                          autoIndex={appSettings.general.semanticAutoIndex}
+                          onAutoIndexChange={(v) => setApp("general", "semanticAutoIndex", v)}
+                          modelId={appSettings.general.semanticModel}
+                          onModelChange={(id) => setApp("general", "semanticModel", id)}
+                        />
+                      )}
+
                       {/* 快捷键：全软件键位一览，按当前设置置灰不可用的项 */}
                       {s.key === "shortcuts" && <ShortcutPanel settings={appSettings} />}
+
+                      {/* 工具箱：通用下载工具，与语义模型下载共用线程数 */}
+                      {s.key === "toolbox" && (
+                        <ToolboxPanel
+                          threads={appSettings.general.downloadThreads}
+                          onThreadsChange={(v) => setApp("general", "downloadThreads", v)}
+                        />
+                      )}
 
                       {/* AI 服务商：复用 AiProviderModal 里的面板，共用本窗口的开关状态 */}
                       {s.key === "provider" && (
@@ -1974,7 +1994,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               )}
                             </div>
                             <button
-                              onClick={handleExport}
+                              onClick={() => void guard(handleExport)}
                               disabled={backupBusy !== null}
                               className="btn-primary px-3 py-1.5 text-xs flex-shrink-0 disabled:opacity-50"
                             >
@@ -1993,7 +2013,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               </p>
                             </div>
                             <button
-                              onClick={handleImport}
+                              onClick={() => void guard(handleImport)}
                               disabled={backupBusy !== null}
                               className="px-3 py-1.5 text-xs font-medium text-warning-deep bg-warning-soft rounded-xl hover:bg-warning-line transition-colors flex-shrink-0 disabled:opacity-50"
                             >

@@ -51,6 +51,7 @@ import * as categoriesApi from "@/api/categories";
 import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
 import * as settingsApi from "@/api/settings";
+import * as semanticApi from "@/api/semantic";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
 import { CommandPalette } from "@/components/common/CommandPalette";
@@ -208,6 +209,8 @@ function AppContent() {
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   /** 软件设置是否已从数据库读回：读回前不碰开机启动快捷方式，避免用默认值覆盖用户设置 */
   const [appSettingsLoaded, setAppSettingsLoaded] = useState(false);
+  /** 语义索引是否在后台构建：只为搜索框下的提示，开启语义搜索后才订阅 */
+  const [semanticIndexing, setSemanticIndexing] = useState(false);
   /**
    * 主题设置：初值取 localStorage 的快照（首帧不闪），随后被数据库的值覆盖。
    * 落库在 app.config.theme.settings 一个键里，见 stores/themeStore.ts。
@@ -392,6 +395,41 @@ function AppContent() {
     if (prev === null || prev === autostart) return;
     settingsApi.setAutostart(autostart);
   }, [appSettingsLoaded, appSettings.general.autostart]);
+
+  /**
+   * 语义索引状态：只影响「索引构建中」提示，因此不必轮询。
+   * 开工时 worker 会发 running=true 的进度事件，收尾发 done 事件；事件丢失则由首次状态查询兜底。
+   */
+  useEffect(() => {
+    if (!appSettingsLoaded || !appSettings.general.semanticSearch) {
+      setSemanticIndexing(false);
+      return;
+    }
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    void (async () => {
+      try {
+        const status = await semanticApi.getSemanticStatus();
+        if (!disposed) setSemanticIndexing(status.indexing);
+      } catch {
+        // 状态查询失败不影响搜索本身，下次索引事件仍会更新提示
+      }
+      const offProgress = await semanticApi.onSemanticIndexProgress((progress) =>
+        setSemanticIndexing(progress.running),
+      );
+      const offDone = await semanticApi.onSemanticIndexDone(() => setSemanticIndexing(false));
+      if (disposed) {
+        offProgress();
+        offDone();
+      } else {
+        unlisteners.push(offProgress, offDone);
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisteners.forEach((off) => off());
+    };
+  }, [appSettingsLoaded, appSettings.general.semanticSearch]);
 
   /** 打开统一设置窗口，并定位到指定分区 */
   const openSettings = useCallback((section: SettingsSection = "general") => {
@@ -1543,6 +1581,9 @@ function AppContent() {
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             useRegex={appSettings.general.noteSearchRegex}
+            onRegexChange={(v) => applyAppSetting("general", "noteSearchRegex", v)}
+            semanticEnabled={appSettings.general.semanticSearch}
+            semanticIndexing={semanticIndexing}
             onCommitSearch={pushSearchQuery}
             searchHistory={searchHistory}
             onRemoveSearchHistory={removeSearchQuery}

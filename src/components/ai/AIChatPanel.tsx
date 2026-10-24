@@ -18,6 +18,7 @@ import * as notesApi from "@/api/notes";
 import * as categoriesApi from "@/api/categories";
 import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
+import * as semanticApi from "@/api/semantic";
 import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai";
 import type { Tag } from "@/interface/note";
 import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/aiChat";
@@ -79,6 +80,7 @@ const ANCHOR_PREVIEW_LEN = 80;
 /** 工具调用的中文短标签：回复上方以紧凑轨迹展示，一眼能看清到底做了什么 */
 const TOOL_LABELS: Record<string, string> = {
   searchNotes: "搜索笔记",
+  searchNotesSemantic: "语义搜索",
   listNotes: "列出笔记",
   getNoteContent: "读取笔记",
   getCurrentNote: "读取当前笔记",
@@ -221,6 +223,11 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
       const total = num(r.total);
       const fuzzy = r.fuzzy === true ? "（模糊）" : "";
       return [q + fuzzy, Number.isFinite(total) ? `命中 ${total} 篇` : ""].filter(Boolean).join(" · ");
+    }
+    case "searchNotesSemantic": {
+      const q = args.query ? `「${clip(args.query, 14)}」` : "";
+      const total = num(r.total);
+      return [q, Number.isFinite(total) ? `命中 ${total} 篇` : "", failure].filter(Boolean).join(" · ");
     }
     case "listNotes": {
       const scope = args.categoryName ? `「${clip(args.categoryName)}」` : "全部";
@@ -479,6 +486,68 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
         ? { hint: "没有命中。关键词只在标题与正文里匹配：若用户说的是主题（而不是原文用词），改用 listTags 看库里有哪些标签，再用 findNotesByTag 检索；也可以换成 2-4 个字的短关键词再搜一次。" }
         : {}),
     };
+  },
+  searchNotesSemantic: async (args, ctx) => {
+    const query = String(args.query ?? "").trim();
+    if (!query) return { error: "query 不能为空" };
+    // 未开启或模型没下载时直接说明，否则模型会反复换关键词重试
+    try {
+      const status = await semanticApi.getSemanticStatus();
+      if (!status.enabled) {
+        return {
+          matches: [],
+          total: 0,
+          error: "语义搜索未开启",
+          hint: "用户没有在设置里开启语义搜索。改用 searchNotes（精确关键词）或 listTags + findNotesByTag。",
+        };
+      }
+      if (!status.model_ready) {
+        return {
+          matches: [],
+          total: 0,
+          error: "语义模型尚未下载",
+          hint: "语义模型还没下载，无法按语义检索。改用 searchNotes 或 listTags + findNotesByTag。",
+        };
+      }
+    } catch (e) {
+      return {
+        matches: [],
+        total: 0,
+        error: `无法读取语义搜索状态：${formatError(e)}`,
+        hint: "改用 searchNotes 或 listTags + findNotesByTag。",
+      };
+    }
+
+    // 权限过滤在 Rust 侧完成：只传可见笔记 id，受限笔记的标题与片段不会进入返回值
+    const visible = await visibleNotes(ctx.access);
+    const byId = new Map<number, any>(visible.map((n: any) => [n.id as number, n]));
+    if (byId.size === 0) return { matches: [], total: 0 };
+
+    try {
+      const hits = await semanticApi.semanticSearch(query, 15, [...byId.keys()]);
+      const matches = hits
+        .filter((hit) => byId.has(hit.note_id))
+        .map((hit) => ({
+          id: hit.note_id,
+          title: byId.get(hit.note_id)!.title,
+          content: hit.snippet,
+          score: Number(hit.score.toFixed(4)),
+        }));
+      return {
+        matches,
+        total: matches.length,
+        ...(matches.length === 0
+          ? { hint: "没有语义命中。可以换一句更自然的描述，或改用 searchNotes / listTags + findNotesByTag。" }
+          : {}),
+      };
+    } catch (e) {
+      return {
+        matches: [],
+        total: 0,
+        error: `语义检索失败：${formatError(e)}`,
+        hint: "模型可能未就绪。改用 searchNotes 或 listTags + findNotesByTag。",
+      };
+    }
   },
   getNoteContent: async (args, ctx) => {
     const n: any = await fetchNoteById(Number(args.noteId), ctx.access);

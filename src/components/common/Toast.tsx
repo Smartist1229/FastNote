@@ -71,7 +71,7 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
               {toast.type === "info" && (
                 <Icon name="toast-info" className="w-4 h-4 text-faint" />
               )}
-              {toast.message}
+              <span className="selectable">{toast.message}</span>
             </div>
           </div>
         ))}

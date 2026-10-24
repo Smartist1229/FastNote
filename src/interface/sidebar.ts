@@ -54,15 +54,21 @@ export interface SidebarProps {
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
   /**
-   * 搜索框是否按正则匹配（软件设置「笔记搜索支持正则」）。
+   * 搜索框是否按正则匹配（设置键 general.noteSearchRegex，开关在搜索框右侧）。
    * 传给 lib/noteSearch 决定解释方式；正则非法时按零结果处理并在界面上提示。
    */
   useRegex?: boolean;
+  /** 切换正则模式：立即落库，搜索框右侧的小图标就是唯一入口 */
+  onRegexChange?: (value: boolean) => void;
   /**
    * 一次搜索被"执行"（回车 / 选中历史）时的回调，用于把查询词记进搜索历史。
    * 逐字符输入不触发：历史里塞满同一个词的各种前缀就没什么用了。
    */
   onCommitSearch?: (query: string) => void;
+  /** 是否启用语义搜索（设置项 app.config.general.semanticSearch） */
+  semanticEnabled?: boolean;
+  /** 语义索引是否正在构建：搜索框下方提示"结果可能不完整" */
+  semanticIndexing?: boolean;
   /** 搜索历史（最近用过的查询词），为空时不显示下拉 */
   searchHistory?: string[];
   /** 划掉某一条搜索历史 */
