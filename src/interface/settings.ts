@@ -53,6 +53,11 @@ export interface GeneralSettings {
    * 改完在下一次下载任务生效。
    */
   downloadThreads: number;
+  /**
+   * 每篇笔记保留的历史版本数（1–100，默认 10）。
+   * 每次标题 / 正文 / 分组变化前存一份旧版本，超出后删最早的。
+   */
+  noteHistoryLimit: number;
 }
 
 /** 笔记编辑器可选的默认视图（render 是给 AI 回复用的纯渲染模式，不作为笔记的默认视图） */
@@ -361,10 +366,37 @@ export interface ViewSettings {
   sortOrder: "asc" | "desc";
 }
 
+/** 自动备份目标：仅本地 / 仅云端 / 云端 + 本地 */
+export type AutoBackupTarget = "local" | "cloud" | "both";
+
+/**
+ * WebDAV 云同步设置。
+ *
+ * 密码不在这里：后端用主密钥加密后单独存 `webdav.password`，
+ * 避免明文密码落进 app.config.* 或随普通备份导出。
+ */
+export interface WebdavSettings {
+  /** WebDAV 根地址，例如 https://dav.example.com/remote.php/dav/files/user/ */
+  server: string;
+  /** 账号（Basic Auth 用户名） */
+  username: string;
+  /** 在 WebDAV 上创建/使用的文件夹名，默认 FastNote */
+  folder: string;
+  /** 是否开启自动备份 */
+  autoBackup: boolean;
+  /** 自动备份间隔（小时，默认 1） */
+  autoIntervalHours: number;
+  /** 自动备份目标 */
+  autoTarget: AutoBackupTarget;
+  /** 本地自动备份最多保留份数（云端不限） */
+  autoMaxLocal: number;
+}
+
 /** 软件设置总集合；分类名即 app.config.<分类> 中的一段 */
 export interface AppSettings {
   general: GeneralSettings;
   editor: EditorSettings;
   layout: LayoutSettings;
   view: ViewSettings;
+  webdav: WebdavSettings;
 }

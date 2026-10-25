@@ -11,8 +11,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod download;
+mod fingerprint;
 mod opener;
 mod semantic;
+mod webdav;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Note {
@@ -105,6 +107,7 @@ struct AppState {
     conn: Mutex<Connection>,
     semantic: semantic::SemanticState,
     download: download::DownloadState,
+    webdav: webdav::WebdavState,
 }
 
 /// 判断某张表是否存在（用于读取可选的数据表）
@@ -154,6 +157,32 @@ fn parse_models_json(raw: Option<String>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 给 webdav 模块用的内部入口：命令函数本身不能被其他模块直接调用
+/// （`#[tauri::command]` 生成的宏名会与跨模块引用冲突），这里只做一层转发。
+pub(crate) fn backup_export_for_webdav(
+    state: State<AppState>,
+    path: String,
+    include_api_keys: bool,
+    include_webdav: bool,
+    app: AppHandle,
+) -> Result<BackupSummary, String> {
+    export_backup(state, path, include_api_keys, include_webdav, app)
+}
+
+pub(crate) fn backup_import_for_webdav(
+    state: State<AppState>,
+    path: String,
+) -> Result<BackupSummary, String> {
+    import_backup(state, path)
+}
+
+pub(crate) fn backup_import_sqlite_for_webdav(
+    state: State<AppState>,
+    path: String,
+) -> Result<BackupSummary, String> {
+    import_sqlite_backup(state, path)
 }
 
 fn init_database(conn: &Connection) -> rusqlite::Result<()> {
@@ -264,6 +293,26 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id)",
+        [],
+    )?;
+
+    // ---- 笔记历史版本 ----
+    // 每次内容/标题/分组变化前把旧版本存进来；上限由 app.config.general.noteHistoryLimit 控制，
+    // 超出后删最早的。永久删除笔记时一并清理，回滚只恢复这几列（标签、AI 访问权限不动）。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notes_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            category_id INTEGER,
+            is_pinned INTEGER NOT NULL DEFAULT 0,
+            saved_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_history_note ON notes_history(note_id, id DESC)",
         [],
     )?;
 
@@ -701,11 +750,59 @@ fn non_empty_or_now(text: String) -> String {
     }
 }
 
+/// 自动备份运行状态：写的是「最近一次成功/尝试」这类只对本机有意义的信息，
+/// 无论如何都不进备份；恢复时按本机原值接回，避免恢复完就断掉自动备份。
+const WEBDAV_AUTO_STATE_KEYS: [&str; 4] = [
+    "webdav.lastAutoBackupAt",
+    "webdav.lastAutoAttemptAt",
+    "webdav.lastAutoError",
+    "webdav.lastAutoFile",
+];
+
+/// 读出本机全部 webdav.* 设置（服务器、账号、密码、自动备份配置与运行状态）。
+/// 备份默认不带 WebDAV；恢复时这些键按「备份里有就用备份、没有就保留本机」合并，
+/// 避免一次恢复把本机正在用的云端配置抹成默认值。
+fn read_local_only_settings(conn: &Connection) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let Ok(mut stmt) =
+        conn.prepare("SELECT key, value, updated_at FROM app_settings WHERE key LIKE 'webdav.%' ORDER BY key")
+    else {
+        return out;
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    }) else {
+        return out;
+    };
+    out.extend(rows.flatten());
+    out
+}
+
+fn restore_local_only_settings(
+    conn: &Connection,
+    rows: &[(String, String, String)],
+) -> Result<(), String> {
+    for (key, value, updated_at) in rows {
+        // 备份勾选了 WebDAV 时可能自带密码：以备份为准，本机原值只在该键缺失时补上
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            params![key, value, updated_at],
+        )
+        .map_err(|e| format!("恢复本机 WebDAV 设置失败：{e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn export_backup(
     state: State<AppState>,
     path: String,
     include_api_keys: bool,
+    include_webdav: bool,
     app: AppHandle,
 ) -> Result<BackupSummary, String> {
     let conn = state
@@ -831,17 +928,42 @@ fn export_backup(
         },
     )?;
 
-    let settings = query_rows(
-        &conn,
-        "SELECT key, value, updated_at FROM app_settings ORDER BY key",
-        |row| {
-            Ok(json!({
-                "key": row.get::<_, String>(0)?,
-                "value": row.get::<_, String>(1)?,
-                "updated_at": row.get::<_, String>(2)?,
-            }))
-        },
-    )?;
+    // 本机专属设置默认不进备份：未勾选 WebDAV 时整组 webdav.* 都排除；
+    // 勾选后仍只排除自动备份运行状态，密码会在下面解密成明文写进 JSON（换机可直接恢复）。
+    let settings_sql = if include_webdav {
+        "SELECT key, value, updated_at FROM app_settings
+         WHERE key NOT IN ('webdav.lastAutoBackupAt', 'webdav.lastAutoAttemptAt',
+                           'webdav.lastAutoError', 'webdav.lastAutoFile')
+         ORDER BY key"
+    } else {
+        "SELECT key, value, updated_at FROM app_settings
+         WHERE key NOT LIKE 'webdav.%'
+         ORDER BY key"
+    };
+    let mut settings = query_rows(&conn, settings_sql, |row| {
+        Ok(json!({
+            "key": row.get::<_, String>(0)?,
+            "value": row.get::<_, String>(1)?,
+            "updated_at": row.get::<_, String>(2)?,
+        }))
+    })?;
+
+    if include_webdav {
+        for setting in settings.iter_mut() {
+            if setting.get("key").and_then(|v| v.as_str()) != Some("webdav.password") {
+                continue;
+            }
+            let stored = json_str(setting, "value");
+            if stored.is_empty() {
+                continue;
+            }
+            // 解不开（换了机器/用户）就留空，不因一条密码让整次导出失败
+            let plain = decrypt_secret(&conn, &stored).unwrap_or_default();
+            if let Some(obj) = setting.as_object_mut() {
+                obj.insert("value".to_string(), json!(plain));
+            }
+        }
+    }
 
     // 标签与其关联单独成表导出：笔记是被恢复的，标签如果不在备份里，恢复后就只剩"没打标签的笔记"
     let tags = query_rows(
@@ -866,6 +988,23 @@ fn export_backup(
                 "tag_id": row.get::<_, i64>(1)?,
                 "source": row.get::<_, String>(2)?,
                 "created_at": row.get::<_, String>(3)?,
+            }))
+        },
+    )?;
+
+    let notes_history = query_rows(
+        &conn,
+        "SELECT id, note_id, title, content, category_id, is_pinned, saved_at
+         FROM notes_history ORDER BY id",
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "note_id": row.get::<_, i64>(1)?,
+                "title": row.get::<_, String>(2)?,
+                "content": row.get::<_, String>(3)?,
+                "category_id": row.get::<_, Option<i64>>(4)?,
+                "is_pinned": row.get::<_, i64>(5)? != 0,
+                "saved_at": row.get::<_, String>(6)?,
             }))
         },
     )?;
@@ -895,6 +1034,7 @@ fn export_backup(
             "settings": settings,
             "tags": tags,
             "note_tags": note_tags,
+            "notes_history": notes_history,
         }
     });
 
@@ -924,6 +1064,7 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
     // 老备份没有这两张表 → json_arr 返回空数组，等价于"这次不恢复标签"，不会挂
     let tags = json_arr(data, "tags");
     let note_tags = json_arr(data, "note_tags");
+    let notes_history = json_arr(data, "notes_history");
 
     let mut conn = state
         .conn
@@ -956,19 +1097,25 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         }
     }
 
+    // WebDAV 密码与自动备份状态不随备份走：先记下本机值，写完备份数据后再接回
+    let local_only_settings = read_local_only_settings(&tx);
+
     // 覆盖式恢复：先清空，再按备份里的 id 原样写回（先删子表再删主表）
     for sql in [
         "DELETE FROM ai_chat_messages",
         "DELETE FROM ai_chat_sessions",
         "DELETE FROM note_tags",
         "DELETE FROM tags",
+        "DELETE FROM notes_history",
         "DELETE FROM notes",
         "DELETE FROM categories",
         "DELETE FROM ai_providers",
         "DELETE FROM app_settings",
-        // 向量与索引状态不随 JSON 备份走，恢复后旧向量与笔记 ID/内容不再对应
+        // 向量、索引状态与语义元数据都不随备份走：旧向量与恢复后的笔记已不对应，
+        // 残留的 model_id / dim / last_error 会让面板显示备份之前的旧状态与旧错误
         "DELETE FROM note_chunks",
         "DELETE FROM note_index_state",
+        "DELETE FROM semantic_meta",
     ] {
         tx.execute(sql, []).map_err(|e| e.to_string())?;
     }
@@ -1004,6 +1151,24 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
                 // 旧备份没有这两个字段：置顶 / AI 访问都按默认值兜底
                 if json_bool_or(n, "is_pinned", false) { 1 } else { 0 },
                 json_level(n, "ai_access", 2)
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // 历史版本必须排在笔记之后写；老备份没有这张表时就是空数组
+    for h in notes_history {
+        tx.execute(
+            "INSERT INTO notes_history (id, note_id, title, content, category_id, is_pinned, saved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                json_i64(h, "id"),
+                json_i64(h, "note_id"),
+                json_str(h, "title"),
+                json_str(h, "content"),
+                json_opt_i64(h, "category_id"),
+                if json_bool_or(h, "is_pinned", false) { 1 } else { 0 },
+                non_empty_or_now(json_str(h, "saved_at"))
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1083,16 +1248,24 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
     }
 
     for s in settings {
+        let key = json_str(s, "key");
+        let mut value = json_str(s, "value");
+        // 勾选了「备份 WebDAV」的备份带的是明文密码，入库前重新加密；已是密文则原样保留
+        if key == "webdav.password" && !value.is_empty() && !is_encrypted(&value) {
+            value = encrypt_secret(&tx, &value)?;
+        }
         tx.execute(
             "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
             params![
-                json_str(s, "key"),
-                json_str(s, "value"),
+                key,
+                value,
                 non_empty_or_now(json_str(s, "updated_at"))
             ],
         )
         .map_err(|e| e.to_string())?;
     }
+
+    restore_local_only_settings(&tx, &local_only_settings)?;
 
     // 标签必须在 notes 之后写：这里的 INSERT 没有外键检查，
     // 顺序反了也不会报错，但会留下一批指向不存在笔记的孤儿关联。
@@ -1123,9 +1296,6 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         .map_err(|e| e.to_string())?;
     }
 
-    // 维度元数据作废：下一次建索引时会重新写入，避免旧维度残留
-    tx.execute("DELETE FROM semantic_meta WHERE key = 'dim'", [])
-        .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     drop(conn);
     semantic::invalidate(&state.semantic);
@@ -1171,6 +1341,7 @@ fn export_sqlite_backup(
     state: State<AppState>,
     path: String,
     include_api_keys: bool,
+    include_webdav: bool,
     app: AppHandle,
 ) -> Result<BackupSummary, String> {
     let conn = state
@@ -1243,6 +1414,25 @@ fn export_sqlite_backup(
                 snap.execute("UPDATE ai_providers SET api_key = ''", [])
                     .map_err(|e| format!("清除快照中的 API Key 失败：{e}"))?;
             }
+            // 自动备份运行状态永远不随快照走；未勾选 WebDAV 时整组配置一起清掉，
+            // 勾选后保留服务器/账号/密码密文，恢复后仍可在同机继续使用。
+            for key in WEBDAV_AUTO_STATE_KEYS {
+                snap.execute(
+                    "DELETE FROM app_settings WHERE key = ?1",
+                    params![key],
+                )
+                .map_err(|e| format!("清除快照中的本机设置失败：{e}"))?;
+            }
+            if !include_webdav {
+                snap.execute("DELETE FROM app_settings WHERE key LIKE 'webdav.%'", [])
+                    .map_err(|e| format!("清除快照中的 WebDAV 设置失败：{e}"))?;
+            }
+            // 语义索引与元数据是纯本机派生物（体积大、换机/换模型无意义）：快照里也不带，
+            // 恢复后由后台按当前模型重建。
+            for table in ["note_chunks", "note_index_state", "semantic_meta"] {
+                snap.execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(|e| format!("清除快照中的语义数据失败：{e}"))?;
+            }
         }
 
         // Windows 的 rename 不会覆盖已有文件，先删除旧目标
@@ -1271,6 +1461,7 @@ struct SqliteBackupData {
     settings: Vec<SqliteSettingRow>,
     tags: Vec<SqliteTagRow>,
     note_tags: Vec<SqliteNoteTagRow>,
+    notes_history: Vec<SqliteNoteHistoryRow>,
     exported_at: Option<String>,
 }
 
@@ -1342,6 +1533,16 @@ struct SqliteNoteTagRow {
     tag_id: i64,
     source: String,
     created_at: String,
+}
+
+struct SqliteNoteHistoryRow {
+    id: i64,
+    note_id: i64,
+    title: String,
+    content: String,
+    category_id: Option<i64>,
+    is_pinned: i64,
+    saved_at: String,
 }
 
 /// 读取并校验 SQLite 备份。表结构必须包含当前版本的核心列；
@@ -1494,6 +1695,44 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
             .map_err(|e| e.to_string())?;
         for row in rows {
             out.notes.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    // 历史版本同样是后加的表：老快照没有时按空数组处理
+    if has_table(conn, "notes_history")
+        && [
+            "id",
+            "note_id",
+            "title",
+            "content",
+            "category_id",
+            "is_pinned",
+            "saved_at",
+        ]
+        .iter()
+        .all(|column| has_column(conn, "notes_history", column))
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, note_id, title, content, category_id, is_pinned, saved_at
+                 FROM notes_history ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteNoteHistoryRow {
+                    id: row.get(0)?,
+                    note_id: row.get(1)?,
+                    title: row.get(2)?,
+                    content: row.get(3)?,
+                    category_id: row.get(4)?,
+                    is_pinned: row.get(5)?,
+                    saved_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.notes_history.push(row.map_err(|e| e.to_string())?);
         }
     }
 
@@ -1703,6 +1942,9 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         }
     }
 
+    // 快照里不含 WebDAV 密码与自动备份状态；先记下本机值，恢复完再接回去
+    let local_only_settings = read_local_only_settings(&conn);
+
     // 加密操作需要不可变的 &Connection，必须在开启事务前算好最终密文
     let mut provider_keys: Vec<String> = Vec::with_capacity(data.providers.len());
     for p in &data.providers {
@@ -1736,13 +1978,16 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         "DELETE FROM ai_chat_sessions",
         "DELETE FROM note_tags",
         "DELETE FROM tags",
+        "DELETE FROM notes_history",
         "DELETE FROM notes",
         "DELETE FROM categories",
         "DELETE FROM ai_providers",
         "DELETE FROM app_settings",
-        // 备份里的向量可能来自另一台机器/另一个模型，一律不用；恢复后交给 worker 重建
+        // 备份里的向量可能来自另一台机器/另一个模型，一律不用；恢复后交给 worker 重建。
+        // 语义元数据同样清空，否则快照里的 model_id / dim / last_error 会盖住恢复后的真实状态
         "DELETE FROM note_chunks",
         "DELETE FROM note_index_state",
+        "DELETE FROM semantic_meta",
     ] {
         tx.execute(sql, []).map_err(|e| e.to_string())?;
     }
@@ -1776,6 +2021,23 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
                 n.deleted_at,
                 if n.is_pinned != 0 { 1 } else { 0 },
                 n.ai_access
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    for h in &data.notes_history {
+        tx.execute(
+            "INSERT INTO notes_history (id, note_id, title, content, category_id, is_pinned, saved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                h.id,
+                h.note_id,
+                h.title,
+                h.content,
+                h.category_id,
+                if h.is_pinned != 0 { 1 } else { 0 },
+                non_empty_or_now(h.saved_at.clone())
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1845,6 +2107,8 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         )
         .map_err(|e| e.to_string())?;
     }
+
+    restore_local_only_settings(&tx, &local_only_settings)?;
 
     for t in &data.tags {
         tx.execute(
@@ -2585,6 +2849,266 @@ fn get_note(id: i64, state: State<AppState>) -> Result<Note, String> {
         .map_err(|e| e.to_string())
 }
 
+const NOTE_HISTORY_LIMIT_KEY: &str = "app.config.general.noteHistoryLimit";
+
+/// 历史版本上限：默认 10，夹到 1–100，避免手工改库写出几万条历史把库撑大
+fn note_history_limit(app: &AppHandle) -> u64 {
+    crate::read_setting_u64(app, NOTE_HISTORY_LIMIT_KEY, 10).clamp(1, 100)
+}
+
+/// 把笔记当前状态写进历史表（调用前不要先 UPDATE，否则存进去的是新版本）
+fn snapshot_note(conn: &Connection, note_id: i64, saved_at: &str) -> Result<bool, String> {
+    let inserted = conn
+        .execute(
+            "INSERT INTO notes_history (note_id, title, content, category_id, is_pinned, saved_at)
+             SELECT id, title, content, category_id, is_pinned, ?2 FROM notes WHERE id = ?1",
+            params![note_id, saved_at],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(inserted > 0)
+}
+
+/// 只保留最近 `limit` 条历史（按 id 倒序），超出的删最早的
+fn prune_note_history(conn: &Connection, note_id: i64, limit: u64) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM notes_history
+         WHERE note_id = ?1
+           AND id NOT IN (
+             SELECT id FROM notes_history WHERE note_id = ?1 ORDER BY id DESC LIMIT ?2
+           )",
+        params![note_id, limit as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn purge_note_history(conn: &Connection, note_id: i64) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM notes_history WHERE note_id = ?1",
+        params![note_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod note_history_tests {
+    use super::*;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category_id INTEGER,
+                is_pinned INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE notes_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category_id INTEGER,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                saved_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO notes (id, title, content, category_id, is_pinned) VALUES (1, '标题', '正文', NULL, 1)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_version(conn: &Connection, note_id: i64, title: &str) {
+        conn.execute(
+            "INSERT INTO notes_history (note_id, title, content, saved_at) VALUES (?1, ?2, '正文', '2026-10-25T10:00:00+08:00')",
+            params![note_id, title],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn snapshot_copies_current_note() {
+        let conn = setup();
+        assert!(snapshot_note(&conn, 1, "2026-10-25T10:00:00+08:00").unwrap());
+        let (title, content, pinned): (String, String, i64) = conn
+            .query_row(
+                "SELECT title, content, is_pinned FROM notes_history WHERE note_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "标题");
+        assert_eq!(content, "正文");
+        assert_eq!(pinned, 1);
+    }
+
+    #[test]
+    fn prune_keeps_latest_versions_per_note() {
+        let conn = setup();
+        for title in ["v1", "v2", "v3", "v4"] {
+            insert_version(&conn, 1, title);
+        }
+        insert_version(&conn, 2, "other");
+
+        prune_note_history(&conn, 1, 2).unwrap();
+
+        let titles: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT title FROM notes_history WHERE note_id = 1 ORDER BY id")
+                .unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+            rows.map(Result::unwrap).collect()
+        };
+        assert_eq!(titles, vec!["v3", "v4"]);
+        // 另一篇笔记的历史不受影响
+        let others: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes_history WHERE note_id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(others, 1);
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NoteHistoryEntry {
+    id: i64,
+    note_id: i64,
+    title: String,
+    content: String,
+    category_id: Option<i64>,
+    is_pinned: bool,
+    saved_at: String,
+}
+
+/// 某篇笔记的历史版本，新的在前。
+#[tauri::command]
+fn get_note_history(note_id: i64, state: State<AppState>) -> Result<Vec<NoteHistoryEntry>, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, note_id, title, content, category_id, is_pinned, saved_at
+             FROM notes_history WHERE note_id = ?1 ORDER BY id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![note_id], |row| {
+            Ok(NoteHistoryEntry {
+                id: row.get(0)?,
+                note_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                category_id: row.get(4)?,
+                is_pinned: row.get::<_, i64>(5)? != 0,
+                saved_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 删除单条历史版本（只动历史表，不碰笔记本身）
+#[tauri::command]
+fn delete_note_history_entry(entry_id: i64, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "DELETE FROM notes_history WHERE id = ?1",
+        params![entry_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 清空某篇笔记的全部历史版本
+#[tauri::command]
+fn clear_note_history(note_id: i64, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    purge_note_history(&conn, note_id)
+}
+
+/// 回滚到某个历史版本。回滚本身不再写新的历史：反复回滚不会把历史越滚越多。
+#[tauri::command]
+fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, String> {
+    let mut conn = state.conn.lock().unwrap();
+    let now = Local::now().to_rfc3339();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let (note_id, title, content, category_id, is_pinned): (
+        i64,
+        String,
+        String,
+        Option<i64>,
+        i64,
+    ) = tx
+        .query_row(
+            "SELECT note_id, title, content, category_id, is_pinned FROM notes_history WHERE id = ?1",
+            params![entry_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|_| "历史版本不存在或已被清理".to_string())?;
+
+    let (cur_title, cur_content, cur_category, cur_is_pinned): (String, String, Option<i64>, i64) = tx
+        .query_row(
+            "SELECT title, content, category_id, is_pinned FROM notes WHERE id = ?1",
+            params![note_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
+
+    if cur_title != title
+        || cur_content != content
+        || cur_category != category_id
+        || cur_is_pinned != is_pinned
+    {
+        tx.execute(
+            "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = ?4, updated_at = ?5 WHERE id = ?6",
+            params![title, content, category_id, is_pinned, now, note_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![note_id])
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM note_index_state WHERE note_id = ?1",
+            params![note_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let note = tx
+        .query_row(
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
+             FROM notes WHERE id = ?1",
+            params![note_id],
+            map_row_to_note,
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    drop(conn);
+
+    semantic::invalidate(&state.semantic);
+    Ok(note)
+}
+
 #[tauri::command]
 fn update_note(
     id: i64,
@@ -2592,11 +3116,27 @@ fn update_note(
     content: String,
     category_id: Option<i64>,
     is_pinned: Option<i64>,
+    app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
+    let limit = note_history_limit(&app);
     let mut conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let (old_title, old_content, old_category): (String, String, Option<i64>) = tx
+        .query_row(
+            "SELECT title, content, category_id FROM notes WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 只改了置顶不算内容变化，不必占一条历史
+    let changed = old_title != title || old_content != content || old_category != category_id;
+    if changed {
+        snapshot_note(&tx, id, &now)?;
+    }
 
     tx.execute(
         "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = COALESCE(?4, is_pinned), updated_at = ?5 WHERE id = ?6",
@@ -2612,6 +3152,9 @@ fn update_note(
         params![id],
     )
     .map_err(|e| e.to_string())?;
+    if changed {
+        prune_note_history(&tx, id, limit)?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     drop(conn);
 
@@ -3108,6 +3651,7 @@ fn delete_note_permanently(id: i64, state: State<AppState>) -> Result<(), String
 
     conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    purge_note_history(&conn, id)?;
 
     // 没开级联外键，笔记没了标签关联会留成孤儿（list_tags 的计数会飘）
     prune_tag_links(&conn)?;
@@ -3124,6 +3668,7 @@ fn delete_multiple_notes_permanently(ids: Vec<i64>, state: State<AppState>) -> R
     for id in ids {
         conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
+        purge_note_history(&conn, id)?;
     }
 
     prune_tag_links(&conn)?;
@@ -3139,6 +3684,13 @@ fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
     let thirty_days_ago = Local::now() - Duration::days(30);
     let threshold = thirty_days_ago.to_rfc3339();
 
+    conn.execute(
+        "DELETE FROM notes_history WHERE note_id IN (
+            SELECT id FROM notes WHERE is_deleted = 1 AND deleted_at < ?1
+         )",
+        params![threshold],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1",
         params![threshold],
@@ -3423,7 +3975,7 @@ fn aead_key(conn: &Connection) -> Result<ring::aead::LessSafeKey, String> {
 }
 
 /// 加密：返回 enc:v1:<hex>，空串原样返回（没填 Key 时不必加密）
-fn encrypt_secret(conn: &Connection, plain: &str) -> Result<String, String> {
+pub(crate) fn encrypt_secret(conn: &Connection, plain: &str) -> Result<String, String> {
     if plain.is_empty() {
         return Ok(String::new());
     }
@@ -3445,7 +3997,7 @@ fn encrypt_secret(conn: &Connection, plain: &str) -> Result<String, String> {
 }
 
 /// 解密：非密文（历史明文）原样返回，交由调用方迁移
-fn decrypt_secret(conn: &Connection, stored: &str) -> Result<String, String> {
+pub(crate) fn decrypt_secret(conn: &Connection, stored: &str) -> Result<String, String> {
     if !is_encrypted(stored) {
         return Ok(stored.to_string());
     }
@@ -4537,6 +5089,10 @@ pub fn run() {
             get_notes,
             get_note,
             update_note,
+            get_note_history,
+            delete_note_history_entry,
+            clear_note_history,
+            rollback_note_history,
             set_note_ai_access,
             set_category_ai_access,
             list_tags,
@@ -4574,6 +5130,15 @@ pub fn run() {
             import_backup,
             export_sqlite_backup,
             import_sqlite_backup,
+            webdav::webdav_status,
+            webdav::webdav_set_password,
+            webdav::webdav_test,
+            webdav::webdav_backup,
+            webdav::webdav_list_remote,
+            webdav::webdav_restore_remote,
+            webdav::webdav_list_local,
+            webdav::webdav_restore_local,
+            webdav::webdav_backup_dir,
             export_category_zip,
             export_category_ebook,
             export_notes_zip,
@@ -4595,6 +5160,7 @@ pub fn run() {
             download::toolbox_download,
             download::toolbox_download_cancel,
             download::toolbox_download_dir,
+            fingerprint::fingerprint_info,
             opener::open_app_folder,
         ])
         .setup(|app| {
@@ -4613,9 +5179,11 @@ pub fn run() {
                 conn: Mutex::new(conn),
                 semantic: semantic::SemanticState::default(),
                 download: download::DownloadState::default(),
+                webdav: webdav::WebdavState::default(),
             };
 
             app.manage(state);
+            webdav::spawn_auto_backup(app.handle().clone());
             // 旧版本模型放在应用数据目录，搬进便携数据目录后再启动索引
             semantic::model::migrate_legacy(app.handle());
             // 索引 worker 自己轮询开关与模型状态，未开启时每 2 秒空转一次，几乎无开销

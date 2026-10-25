@@ -33,8 +33,8 @@ const PREFIX = "app.config.";
 /** 分类 + 字段名 → 完整键名；读写与删除都经由它，避免手拼字符串 */
 const configKey = (category: string, field: string) => `${PREFIX}${category}.${field}`;
 
-/** 四个分类的遍历顺序：与 AppSettings 的键一致 */
-const CATEGORIES = ["general", "editor", "layout", "view"] as const;
+/** 五个分类的遍历顺序：与 AppSettings 的键一致 */
+const CATEGORIES = ["general", "editor", "layout", "view", "webdav"] as const;
 
 /**
  * 非编辑器分类里需要白名单校验的字段。
@@ -43,6 +43,15 @@ const CATEGORIES = ["general", "editor", "layout", "view"] as const;
 const ENUM_BY_KEY: Record<string, readonly string[]> = {
   "general.closeBehavior": ["minimize", "exit"],
   "view.sortOrder": ["asc", "desc"],
+  "webdav.autoTarget": ["local", "cloud", "both"],
+};
+
+/** 非编辑器分类里需要夹到区间的数值字段（与后端 clamp 保持同一范围） */
+const RANGE_BY_KEY: Record<string, readonly [number, number]> = {
+  "general.downloadThreads": [1, 128],
+  "general.noteHistoryLimit": [1, 100],
+  "webdav.autoIntervalHours": [1, 720],
+  "webdav.autoMaxLocal": [1, 200],
 };
 
 /**
@@ -159,13 +168,19 @@ export const loadAppSettings = async (): Promise<AppSettings> => {
           : parsed === undefined
             ? undefined
             : normalizeValue(parsed, spec, ENUM_BY_KEY[key]);
+      // 数值型字段统一夹到区间：手改库写了 100000 也不会把界面和后端拖垮
+      const range = RANGE_BY_KEY[key];
+      const bounded =
+        range && typeof value === "number"
+          ? Math.min(range[1], Math.max(range[0], value))
+          : value;
 
-      if (value === undefined) {
+      if (bounded === undefined) {
         // 库里没有或值不可信：用默认值，并把这个键补写回库
         merged[field] = fallback;
         pending.push(saveAppSetting(category, field as never, fallback as never));
       } else {
-        merged[field] = value;
+        merged[field] = bounded;
       }
     }
 

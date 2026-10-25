@@ -42,6 +42,8 @@ const countContent = (text: string): { chars: number; lines: number } => ({
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
+  editable = true,
+  historyPreview,
   onSave,
   onDelete,
   onCursorOffsetChange,
@@ -70,6 +72,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [content]);
   /** 由 externalFilePath 派生：该模式下标题只读、内容写回原文件而不写库 */
   const isExternal = externalFilePath != null;
+  /** 只读：外部文件模式的标题、历史版本预览，或宿主显式关闭编辑 */
+  const isReadOnly = !editable || isExternal;
   /** 输入法组合中：拼音等未上屏的中间态不该触发保存 */
   const isComposingRef = useRef(false);
   /** 当前明暗模式与主题令牌：编辑器的配色由这两者换算，它不会自己去读 CSS 变量 */
@@ -86,6 +90,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     setMode(settings.defaultMode);
   }, [settings.defaultMode]);
   const lastNoteIdRef = useRef<number | null>(null);
+  /** note 的镜像：命令式动作（如回滚前丢弃草稿）要读当前内容，但不能进 effect 依赖 */
+  const noteRef = useRef(note);
+  useEffect(() => {
+    noteRef.current = note;
+  }, [note]);
   /** 标题/正文/分组的最新值镜像：saveNow 读 ref，避免闭包拿到上一轮 state */
   const latestTitleRef = useRef("");
   const latestContentRef = useRef("");
@@ -203,6 +212,23 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       toggleFullscreen: () => editorApiRef.current?.toggleFullscreen(),
       openSearch: (withReplace) => editorApiRef.current?.openSearch(undefined, withReplace),
       focus: () => editorApiRef.current?.focus(),
+      discardPendingEdits: () => {
+        if (saveTimerRef.current !== null) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+        hasUnsavedChangesRef.current = false;
+        hasPendingSaveRef.current = false;
+        const current = noteRef.current;
+        if (current) {
+          setTitle(current.title);
+          setContent(current.content);
+          latestTitleRef.current = current.title;
+          latestContentRef.current = current.content;
+          latestCategoryIdRef.current = current.category_id;
+          setLastSavedAt(current.updated_at);
+        }
+      },
     };
     onRegisterActions?.(actions);
     return () => {
@@ -488,6 +514,28 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   return (
     <div className="h-full flex flex-col">
+      {/* 历史版本预览：只读叠层，回滚与退出都放在这条提示里 */}
+      {historyPreview && (
+        <div className="px-4 py-2 bg-info-soft/70 border-b border-info-line flex items-center justify-between gap-2 flex-shrink-0">
+          <span className="text-[11px] text-info-deep truncate">
+            历史版本预览 · {historyPreview.savedAt} · 内容只读，不会保存
+          </span>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={historyPreview.onRollback}
+              className="text-[11px] px-2 py-0.5 rounded-md text-on-accent bg-primary-500 hover:bg-primary-600 transition-colors"
+            >
+              回滚到此版本
+            </button>
+            <button
+              onClick={historyPreview.onExit}
+              className="text-[11px] px-2 py-0.5 rounded-md text-info-deep hover:bg-info-soft transition-colors"
+            >
+              退出预览
+            </button>
+          </div>
+        </div>
+      )}
       {isTemporary && (
         <div className="px-4 py-2 bg-warning-soft/70 border-b border-warning-line flex items-center justify-between flex-shrink-0">
           <span className="text-[11px] text-warning-deep">临时预览 · 来自 AI 回复，不会保存为笔记</span>
@@ -534,12 +582,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             onChange={handleTitleChange}
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}
-            readOnly={isExternal}
+            readOnly={isReadOnly}
             placeholder="输入笔记标题..."
-            title={isExternal ? "标题即电脑上的文件名，不可修改" : undefined}
+            title={
+              historyPreview
+                ? "历史版本预览不可编辑"
+                : isExternal
+                  ? "标题即电脑上的文件名，不可修改"
+                  : undefined
+            }
             className="title-input flex-1 px-4 py-2.5 text-lg font-semibold text-ink placeholder:text-faint bg-transparent"
           />
-          {!isTemporary && !isExternal && (
+          {!isTemporary && !isExternal && !historyPreview && (
             <button
               onClick={onDelete}
               className="toolbar-btn hover:!bg-danger-soft hover:!text-danger"
@@ -685,6 +739,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               mode={mode}
               onModeChange={setMode}
               config={editorConfig}
+              readOnly={isReadOnly}
               onChange={handleContentChange}
               onReady={handleEditorReady}
               onFontSizeChange={handleFontSizeChange}

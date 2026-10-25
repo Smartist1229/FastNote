@@ -7,7 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
-import type { ExternalTextFile, Note } from '@/interface/note';
+import type { ExternalTextFile, Note, NoteHistoryEntry } from '@/interface/note';
 
 /**
  * 新建笔记（create_note），返回完整 Note（含 id 与时间戳）；categoryId 为 null 表示未分组。
@@ -88,6 +88,31 @@ export const deleteMultipleNotesPermanently = async (ids: number[]): Promise<voi
 /** 清理回收站（cleanup_old_trash）：删除 deleted_at 早于 30 天前的笔记 */
 export const cleanupOldTrash = async (): Promise<void> => {
   return await invoke('cleanup_old_trash');
+};
+
+/* ---------- 历史版本 ---------- */
+
+/** 某篇笔记的历史版本（get_note_history），新的在前；只含标题/正文/分组/置顶 */
+export const getNoteHistory = async (noteId: number): Promise<NoteHistoryEntry[]> => {
+  return await invoke('get_note_history', { noteId });
+};
+
+/**
+ * 回滚到指定历史版本（rollback_note_history），返回回滚后的完整笔记。
+ * 回滚本身不会再写入一条历史，反复回滚不会让历史越滚越多。
+ */
+export const rollbackNoteHistory = async (entryId: number): Promise<Note> => {
+  return await invoke('rollback_note_history', { entryId });
+};
+
+/** 删除单条历史版本（delete_note_history_entry），不影响笔记本身 */
+export const deleteNoteHistoryEntry = async (entryId: number): Promise<void> => {
+  await invoke('delete_note_history_entry', { entryId });
+};
+
+/** 清空某篇笔记的全部历史版本（clear_note_history） */
+export const clearNoteHistory = async (noteId: number): Promise<void> => {
+  await invoke('clear_note_history', { noteId });
 };
 
 /* ---------- 电脑文本文件（拖入/打开） ---------- */

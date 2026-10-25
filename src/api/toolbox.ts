@@ -14,9 +14,9 @@ export const getDownloadDir = async (): Promise<string> => {
   return await invoke('toolbox_download_dir');
 };
 
-/** 启动下载：只接受 http/https 链接；同一时间只允许一个任务 */
-export const startDownload = async (url: string): Promise<void> => {
-  return await invoke('toolbox_download', { url });
+/** 启动下载：只接受 http/https 链接；同一时间只允许一个任务。filename 留空时按链接自动取名 */
+export const startDownload = async (url: string, filename?: string): Promise<void> => {
+  return await invoke('toolbox_download', { url, filename: filename || null });
 };
 
 /** 取消当前下载；没有进行中的任务时返回 false */

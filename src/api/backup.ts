@@ -15,9 +15,14 @@ import type { BackupSummary } from '@/interface/backup';
  * 导出整库到指定路径（export_backup），返回统计 BackupSummary。
  * `includeApiKeys` 为 true 时，额外导出**解密后的明文** API Key（文件需妥善保管）；
  * 为 false 时只保留服务商配置，不含 Key。
+ * `includeWebdav` 为 true 时一并导出 WebDAV 配置（密码为明文），默认完全不含。
  */
-export const exportBackup = async (path: string, includeApiKeys: boolean): Promise<BackupSummary> => {
-  return await invoke<BackupSummary>('export_backup', { path, includeApiKeys });
+export const exportBackup = async (
+  path: string,
+  includeApiKeys: boolean,
+  includeWebdav: boolean,
+): Promise<BackupSummary> => {
+  return await invoke<BackupSummary>('export_backup', { path, includeApiKeys, includeWebdav });
 };
 
 /**
@@ -32,12 +37,14 @@ export const importBackup = async (path: string): Promise<BackupSummary> => {
  * 导出为 SQLite 数据库快照（export_sqlite_backup）。
  * `includeApiKeys` 为 true 时保留本机加密值（密钥文件不随备份走，换机可能无法解密）；
  * 为 false 时快照里的 api_key 全部清空。
+ * `includeWebdav` 为 true 时保留 WebDAV 配置（密码同样为本机密文）。
  */
 export const exportSqliteBackup = async (
   path: string,
   includeApiKeys: boolean,
+  includeWebdav: boolean,
 ): Promise<BackupSummary> => {
-  return await invoke<BackupSummary>('export_sqlite_backup', { path, includeApiKeys });
+  return await invoke<BackupSummary>('export_sqlite_backup', { path, includeApiKeys, includeWebdav });
 };
 
 /**

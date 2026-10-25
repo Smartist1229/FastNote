@@ -27,7 +27,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "cookies"] }
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # 数据目录兜底：Builder 之前要读单例开关，那时还没有 AppHandle 拿不到 tauri 的路径解析，

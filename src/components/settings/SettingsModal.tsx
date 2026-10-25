@@ -43,6 +43,7 @@ import { ThemePanel } from "@/components/settings/ThemePanel";
 import { ShortcutPanel } from "@/components/settings/ShortcutPanel";
 import { SemanticPanel } from "@/components/settings/SemanticPanel";
 import { ToolboxPanel } from "@/components/settings/ToolboxPanel";
+import { WebdavPanel } from "@/components/settings/WebdavPanel";
 import { ColorPicker } from "@/components/settings/ColorPicker";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
@@ -123,19 +124,17 @@ const DangerBadge: React.FC = () => (
   </span>
 );
 
-const Switch: React.FC<{ value: boolean; disabled?: boolean; onChange: (v: boolean) => void }> = ({
+const Switch: React.FC<{ value: boolean; onChange: (v: boolean) => void }> = ({
   value,
-  disabled,
   onChange,
 }) => (
   <button
-    onClick={() => !disabled && onChange(!value)}
+    onClick={() => onChange(!value)}
     role="switch"
     aria-checked={value}
-    disabled={disabled}
     className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${
       value ? "bg-primary-500" : "bg-surface-strong"
-    } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
+    }`}
   >
     <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-surface shadow transition-all ${value ? "left-[18px]" : "left-0.5"}`} />
   </button>
@@ -206,9 +205,8 @@ const NumberInput: React.FC<{
 const ColorListInput: React.FC<{
   value: string;
   placeholder?: string;
-  disabled?: boolean;
   onChange: (v: string) => void;
-}> = ({ value, placeholder, disabled, onChange }) => {
+}> = ({ value, placeholder, onChange }) => {
   const [text, setText] = useState(value);
 
   useEffect(() => {
@@ -235,7 +233,6 @@ const ColorListInput: React.FC<{
         type="text"
         value={text}
         placeholder={placeholder}
-        disabled={disabled}
         spellCheck={false}
         onChange={(event) => setText(event.target.value)}
         onBlur={commit}
@@ -284,25 +281,19 @@ const OptionSwatch: React.FC<{ swatch?: string[] }> = ({ swatch }) => {
 const SegmentedInput: React.FC<{
   value: string;
   options: EnumOption[];
-  disabled?: boolean;
   onChange: (v: string) => void;
-}> = ({ value, options, disabled, onChange }) => (
-  <div
-    className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-alt border border-line/70 ${
-      disabled ? "opacity-40" : ""
-    }`}
-  >
+}> = ({ value, options, onChange }) => (
+  <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-alt border border-line/70">
     {options.map((o) => {
       const active = o.value === value;
       return (
         <button
           key={o.value}
           type="button"
-          disabled={disabled}
-          onClick={() => !disabled && !active && onChange(o.value)}
+          onClick={() => !active && onChange(o.value)}
           className={`px-2.5 py-1 text-[11px] rounded-md transition-colors whitespace-nowrap ${
             active ? "bg-surface text-primary-600 font-medium shadow-sm" : "text-muted"
-          } ${disabled ? "cursor-not-allowed" : active ? "" : "hover:text-body"}`}
+          } ${active ? "" : "hover:text-body"}`}
         >
           {o.label}
         </button>
@@ -321,9 +312,8 @@ const SegmentedInput: React.FC<{
 const SelectInput: React.FC<{
   value: string;
   options: EnumOption[];
-  disabled?: boolean;
   onChange: (v: string) => void;
-}> = ({ value, options, disabled, onChange }) => {
+}> = ({ value, options, onChange }) => {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -379,13 +369,12 @@ const SelectInput: React.FC<{
       <button
         ref={triggerRef}
         type="button"
-        disabled={disabled}
         onClick={() => (open ? setOpen(false) : openMenu())}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 text-[11px] rounded-lg bg-surface border transition-colors ${
+        className={`inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 text-[11px] rounded-lg bg-surface border transition-colors cursor-pointer ${
           open ? "border-primary-400 text-primary-600" : "border-line text-body hover:bg-surface-alt"
-        } ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+        }`}
       >
         <OptionSwatch swatch={current?.swatch} />
         {current?.label ?? value}
@@ -434,7 +423,6 @@ const SelectInput: React.FC<{
 
 /**
  * 行的统一渲染：左标题 + 说明 + 作用范围徽标，右侧按 kind 派发到具体控件。
- * disabled 时整行降低透明度，开关与分段控件忽略点击；行保留在原位，避免布局跳动。
  *
  * 用 memo 包一层：搜索输入、目录高亮、保存提示等状态变化都会重渲染整个弹窗，
  * 但这些变化并不改动具体某一行的 row 对象（row 引用只在设置值变化时重建），
@@ -442,25 +430,17 @@ const SelectInput: React.FC<{
  */
 const RowView = memo(function RowView({ row }: { row: SettingRow }) {
   return (
-    <div
-      className={`flex items-start justify-between gap-6 py-3 ${
-        row.disabled ? "opacity-55" : ""
-      }`}
-    >
+    <div className="flex items-start justify-between gap-6 py-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className={`text-xs font-medium ${row.disabled ? "text-faint" : "text-body"}`}>
-            {row.title}
-          </span>
+          <span className="text-xs font-medium text-body">{row.title}</span>
           <ScopeBadge scope={row.scope} />
           {row.danger && <DangerBadge />}
         </div>
         <p className="text-[11px] text-faint leading-relaxed mt-1">{row.desc}</p>
       </div>
       <div className="flex-shrink-0 pt-0.5">
-        {row.kind === "toggle" && (
-          <Switch value={row.value} disabled={row.disabled} onChange={row.onChange} />
-        )}
+        {row.kind === "toggle" && <Switch value={row.value} onChange={row.onChange} />}
         {row.kind === "number" && (
           <NumberInput
             value={row.value}
@@ -472,26 +452,15 @@ const RowView = memo(function RowView({ row }: { row: SettingRow }) {
           />
         )}
         {row.kind === "segment" && (
-          <SegmentedInput
-            value={row.value}
-            options={row.options}
-            disabled={row.disabled}
-            onChange={row.onChange}
-          />
+          <SegmentedInput value={row.value} options={row.options} onChange={row.onChange} />
         )}
         {row.kind === "select" && (
-          <SelectInput
-            value={row.value}
-            options={row.options}
-            disabled={row.disabled}
-            onChange={row.onChange}
-          />
+          <SelectInput value={row.value} options={row.options} onChange={row.onChange} />
         )}
         {row.kind === "color" && (
           <ColorPicker
             value={row.value}
             onChange={row.onChange}
-            disabled={row.disabled}
             label={row.title}
             showValue
             className="min-w-[104px]"
@@ -501,7 +470,6 @@ const RowView = memo(function RowView({ row }: { row: SettingRow }) {
           <ColorListInput
             value={row.value}
             placeholder={row.placeholder}
-            disabled={row.disabled}
             onChange={row.onChange}
           />
         )}
@@ -645,6 +613,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [lastExport, setLastExport] = useState<{ summary: BackupSummary; path: string } | null>(null);
   /** 导出备份时是否一并写入 AI 服务商 API Key（JSON 为明文，SQLite 为本机加密值） */
   const [backupIncludeApiKey, setBackupIncludeApiKey] = useState(false);
+  /** 导出备份时是否一并写入 WebDAV 配置（JSON 含明文密码，SQLite 保留本机密文） */
+  const [backupIncludeWebdav, setBackupIncludeWebdav] = useState(false);
   /** 备份格式：JSON 适合换机迁移，SQLite 是整库快照、适合本机快速备份 */
   const [backupFormat, setBackupFormat] = useState<"json" | "sqlite">("json");
 
@@ -693,8 +663,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
    */
   const rows: SettingRow[] = useMemo(() => {
     const editor = appSettings.editor;
-    /** 规格 → 设置行：按 kind 取对应类型的值，写回统一走 setApp */
-    const editorRows: SettingRow[] = EDITOR_SETTING_SPECS.map((spec) => {
+    /** 规格 → 设置行：按 kind 取对应类型的值，写回统一走 setApp；依赖未满足的整行不出现 */
+    const editorRows: SettingRow[] = EDITOR_SETTING_SPECS.filter(
+      (spec) => !spec.hiddenWhen?.(editor),
+    ).map((spec) => {
       const base = {
         section: "editor" as const,
         group: spec.group,
@@ -702,7 +674,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         desc: spec.desc,
         keywords: spec.keywords,
         scope: "live" as const,
-        disabled: spec.disabledWhen?.(editor),
       };
       if (spec.kind === "toggle") {
         return {
@@ -783,6 +754,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.general.enableAI,
         onChange: (v) => setApp("general", "enableAI", v),
       },
+      {
+        section: "general",
+        kind: "number",
+        scope: "live",
+        title: "笔记历史版本上限",
+        desc: "每篇笔记最多保留多少个历史版本；超出后自动删除最早的。改小后，已有笔记会在下次编辑时收敛到新上限。",
+        keywords: "历史 版本 回滚 history version 快照",
+        value: appSettings.general.noteHistoryLimit,
+        min: 1,
+        max: 100,
+        unit: "个",
+        onChange: (v) => setApp("general", "noteHistoryLimit", v),
+      },
       ...editorRows,
       {
         section: "view",
@@ -850,23 +834,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.general.trayEnabled,
         onChange: (v) => setApp("general", "trayEnabled", v),
       },
-      {
-        section: "general",
-        kind: "segment",
-        scope: "live",
-        title: "关闭窗口时",
-        desc: appSettings.general.trayEnabled
-          ? "点击窗口关闭按钮时的行为。最小化到托盘：隐藏窗口但保留托盘图标；直接退出：关闭软件。"
-          : "当前未开启托盘图标，点击关闭按钮只会直接退出软件。开启上方「显示托盘图标」后才能选择最小化到托盘。",
-        keywords: "关闭 退出 minimize exit 行为 托盘",
-        disabled: !appSettings.general.trayEnabled,
-        value: appSettings.general.closeBehavior,
-        options: [
-          { value: "minimize", label: "最小化到托盘" },
-          { value: "exit", label: "直接退出" },
-        ],
-        onChange: (v) => setApp("general", "closeBehavior", v),
-      },
+      // 未开启托盘时关闭按钮只会直接退出，这一项无从选择，整行不出现
+      ...(appSettings.general.trayEnabled
+        ? [
+            {
+              section: "general" as const,
+              kind: "segment" as const,
+              scope: "live" as const,
+              title: "关闭窗口时",
+              desc: "点击窗口关闭按钮时的行为。最小化到托盘：隐藏窗口但保留托盘图标；直接退出：关闭软件。",
+              keywords: "关闭 退出 minimize exit 行为 托盘",
+              value: appSettings.general.closeBehavior,
+              options: [
+                { value: "minimize", label: "最小化到托盘" },
+                { value: "exit", label: "直接退出" },
+              ],
+              onChange: (v: string) => setApp("general", "closeBehavior", v),
+            },
+          ]
+        : []),
       {
         section: "general",
         kind: "toggle",
@@ -877,18 +863,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: appSettings.general.autostart,
         onChange: (v) => setApp("general", "autostart", v),
       },
-      ...(appSettings.general.autostart
+      // 开机后最小化到托盘同时依赖「开机自启动」与「托盘图标」，缺一个就整行隐藏
+      ...(appSettings.general.autostart && appSettings.general.trayEnabled
         ? [
             {
               section: "general" as const,
               kind: "toggle" as const,
               scope: "startup" as const,
               title: "开机后最小化到托盘",
-              desc: appSettings.general.trayEnabled
-                ? "开启：开机自启动后不弹出主窗口，只在托盘显示图标，点击托盘图标再打开。关闭：开机后正常显示窗口。"
-                : "当前未开启托盘图标，开机后只能正常显示窗口；开启上面「显示托盘图标」后才能选择隐藏到托盘。",
+              desc: "开启：开机自启动后不弹出主窗口，只在托盘显示图标，点击托盘图标再打开。关闭：开机后正常显示窗口。",
               keywords: "开机 自启动 最小化 tray 后台",
-              disabled: !appSettings.general.trayEnabled,
               value: appSettings.general.minimizeToTray,
               onChange: (v: boolean) => setApp("general", "minimizeToTray", v),
             },
@@ -1039,34 +1023,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         value: aiSettings.aiAccessEnabled,
         onChange: (v) => setAi("aiAccessEnabled", v),
       },
-      {
-        section: "access",
-        kind: "segment",
-        scope: "live",
-        title: "新建笔记默认权限",
-        desc:
-          "之后新建的笔记以此档位开局：软件里新建、另存为笔记、导入文件，以及 AI 创建笔记都算。" +
-          "已有笔记不受影响，建好后仍可在「笔记属性」里单独改。",
-        keywords: "默认 新建 笔记 权限 档位 note default",
-        disabled: !aiSettings.aiAccessEnabled,
-        value: String(aiSettings.defaultNoteAiAccess),
-        options: ACCESS_LEVEL_OPTIONS,
-        onChange: (v) => setAi("defaultNoteAiAccess", Number(v) as AiAccessLevel),
-      },
-      {
-        section: "access",
-        kind: "segment",
-        scope: "live",
-        title: "新建分组默认权限",
-        desc:
-          "之后新建的分组（含 AI 创建的分组）以此档位开局。分组档位是组内笔记的上限，" +
-          "设成「只读」时组内笔记再怎么写也超不过它。",
-        keywords: "默认 新建 分组 权限 档位 category default",
-        disabled: !aiSettings.aiAccessEnabled,
-        value: String(aiSettings.defaultCategoryAiAccess),
-        options: ACCESS_LEVEL_OPTIONS,
-        onChange: (v) => setAi("defaultCategoryAiAccess", Number(v) as AiAccessLevel),
-      },
+      // AI 无法访问笔记时，「新建默认权限」无处生效，两行一并隐藏
+      ...(aiSettings.aiAccessEnabled
+        ? [
+            {
+              section: "access" as const,
+              kind: "segment" as const,
+              scope: "live" as const,
+              title: "新建笔记默认权限",
+              desc:
+                "之后新建的笔记以此档位开局：软件里新建、另存为笔记、导入文件，以及 AI 创建笔记都算。" +
+                "已有笔记不受影响，建好后仍可在「笔记属性」里单独改。",
+              keywords: "默认 新建 笔记 权限 档位 note default",
+              value: String(aiSettings.defaultNoteAiAccess),
+              options: ACCESS_LEVEL_OPTIONS,
+              onChange: (v: string) => setAi("defaultNoteAiAccess", Number(v) as AiAccessLevel),
+            },
+            {
+              section: "access" as const,
+              kind: "segment" as const,
+              scope: "live" as const,
+              title: "新建分组默认权限",
+              desc:
+                "之后新建的分组（含 AI 创建的分组）以此档位开局。分组档位是组内笔记的上限，" +
+                "设成「只读」时组内笔记再怎么写也超不过它。",
+              keywords: "默认 新建 分组 权限 档位 category default",
+              value: String(aiSettings.defaultCategoryAiAccess),
+              options: ACCESS_LEVEL_OPTIONS,
+              onChange: (v: string) => setAi("defaultCategoryAiAccess", Number(v) as AiAccessLevel),
+            },
+          ]
+        : []),
     ];
   }, [appSettings, aiSettings, setApp, setAi]);
 
@@ -1120,7 +1107,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       memory: "记忆 提示词 prompt 长期记忆 前置 要求 memory",
       access: "访问 权限 分组 笔记 ai 隐私 限制 禁止 只读 完全 三档 access permission privacy readonly category note",
       reset: "恢复默认 重置 出厂值 reset default",
-      backup: "备份 恢复 导出 导入 数据 json sqlite db 数据库 快照 迁移 backup restore",
+      backup:
+        "备份 恢复 导出 导入 数据 json sqlite db 数据库 快照 迁移 webdav 云同步 云端 网盘 nextcloud 群晖 坚果云 alist 自动备份 服务器 账号 密码 文件夹 backup restore cloud sync",
       about:
         "关于 版本 作者 应用名 图标 开源项目 开源 about version author name iconfont opensource",
     }),
@@ -1320,14 +1308,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       await flushThemeSettings();
       setBackupBusy("export");
       const summary = isSqlite
-        ? await exportSqliteBackup(path, backupIncludeApiKey)
-        : await exportBackup(path, backupIncludeApiKey);
+        ? await exportSqliteBackup(path, backupIncludeApiKey, backupIncludeWebdav)
+        : await exportBackup(path, backupIncludeApiKey, backupIncludeWebdav);
       setLastExport({ summary, path });
-      const keyNote = backupIncludeApiKey
-        ? isSqlite
-          ? "（含本机加密 Key）"
-          : "（含 API Key）"
-        : "";
+      const extras = [
+        backupIncludeApiKey ? (isSqlite ? "本机加密 Key" : "API Key") : "",
+        backupIncludeWebdav ? "WebDAV 配置" : "",
+      ].filter(Boolean);
+      const keyNote = extras.length ? `（含${extras.join("、")}）` : "";
       showToast(`已导出 ${summary.notes} 篇笔记${keyNote}`, "success");
     } catch (e) {
       showToast(`导出失败：${errorText(e)}`, "error");
@@ -1936,8 +1924,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {s.key === "backup" && (
                         <div className="space-y-3">
                           <p className="text-[11px] text-faint leading-relaxed">
-                            备份内容包含笔记、分组、回收站、标签、AI 对话记录与全部设置（含编辑器与主题），
-                            支持 JSON 与 SQLite 两种格式。
+                            备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置
+                            （含编辑器与主题），支持 JSON 与 SQLite 两种格式。API Key 与 WebDAV
+                            默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里：
+                            恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV，
+                            把 JSON 备份自动同步到云端并按需恢复。
                           </p>
 
                           {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照 */}
@@ -1965,13 +1956,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <div className="min-w-0">
                               <span className="text-xs font-medium text-body">备份 API Key</span>
                               <p className="text-[11px] text-faint leading-relaxed mt-1">
-                                勾选后备份文件会保留 API Key：JSON 里是
+                                勾选后导出的备份文件会保留 API Key：JSON 里是
                                 <b className="text-muted">明文</b>
                                 （请妥善保管），SQLite 里保持本机加密（换机可能解不开）；不勾选则只保留服务商配置、不含 Key。
+                                手动「备份到云端」同样遵循此开关，自动备份则始终不含 Key。
                               </p>
                             </div>
                             <div className="flex-shrink-0 pt-0.5">
                               <Switch value={backupIncludeApiKey} onChange={setBackupIncludeApiKey} />
+                            </div>
+                          </div>
+
+                          {/* WebDAV 配置默认同样不进备份：里面含云端账号与密码 */}
+                          <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
+                            <div className="min-w-0">
+                              <span className="text-xs font-medium text-body">备份 WebDAV 配置</span>
+                              <p className="text-[11px] text-faint leading-relaxed mt-1">
+                                勾选后备份会带上 WebDAV 服务器、账号、文件夹与自动备份设置：JSON 里密码为
+                                <b className="text-muted">明文</b>
+                                （请妥善保管），SQLite 保持本机加密（换机可能解不开）；不勾选则完全不含
+                                WebDAV 配置。手动「备份到云端」同样遵循此开关，自动备份始终不含。
+                              </p>
+                            </div>
+                            <div className="flex-shrink-0 pt-0.5">
+                              <Switch value={backupIncludeWebdav} onChange={setBackupIncludeWebdav} />
                             </div>
                           </div>
 
@@ -2026,6 +2034,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               本次导出时间：{prettyTime(lastExport.summary.exported_at)}
                             </p>
                           )}
+
+                          <WebdavPanel
+                            settings={appSettings.webdav}
+                            onAppSettingChange={onAppSettingChange}
+                            includeApiKeys={backupIncludeApiKey}
+                            includeWebdav={backupIncludeWebdav}
+                          />
                         </div>
                       )}
 

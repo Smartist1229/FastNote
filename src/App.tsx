@@ -21,7 +21,7 @@
  */
 import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "@/App.css";
-import type { Category, ExternalTextFile, Note, Tag } from "@/interface/note";
+import type { Category, ExternalTextFile, Note, NoteHistoryEntry, Tag } from "@/interface/note";
 import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
 import type { AppSettings } from "@/interface/settings";
 import type { ExportTarget } from "@/interface/exportCategory";
@@ -78,6 +78,14 @@ const NoteEditor = lazy(() =>
   }))
 );
 
+/** 历史版本时间：本地时区到分钟；非法值原样返回，避免出现 Invalid Date */
+const formatHistoryTime = (iso: string): string => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 function AppContent() {
   /** 全量笔记：分组抽屉、收藏视图、搜索都从它派生，因此不按当前分组裁剪 */
   const [notes, setNotes] = useState<Note[]>([]);
@@ -87,6 +95,8 @@ function AppContent() {
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
   /** AI 回复的临时预览：只在编辑器展示、绝不写库；null 时露出下一层或欢迎页 */
   const [tempNote, setTempNote] = useState<{ id: number; title: string; content: string } | null>(null);
+  /** 历史版本预览：叠在真实笔记之上只读展示，退出后回到原笔记 */
+  const [historyPreview, setHistoryPreview] = useState<NoteHistoryEntry | null>(null);
   /** 临时预览的负 id 计数器：每次打开都换一个新 id，确保编辑器一定会刷新成新内容 */
   const tempNoteIdRef = useRef(-1);
   /**
@@ -118,10 +128,14 @@ function AppContent() {
   const externalFileNote: Note | null = externalFile
     ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2 }
     : null;
-  /** 编辑器当前展示的内容：三层叠放，最上层优先 —— AI 预览 > 电脑文件 > 真实笔记 */
-  const editorNote = tempPreviewNote ?? externalFileNote ?? selectedNote;
-  /** 是否有叠放层（AI 预览 / 电脑文件）盖在真实笔记之上：此时 AI 面板不引用底层笔记 */
-  const overlayActive = tempNote != null || externalFile != null;
+  /** 历史版本预览的伪笔记：固定负 id 哨兵，内容全部来自历史表，编辑只读 */
+  const historyPreviewNote: Note | null = historyPreview
+    ? { id: -2000001, title: historyPreview.title, content: historyPreview.content, category_id: historyPreview.category_id, created_at: "", updated_at: historyPreview.saved_at, is_deleted: false, deleted_at: null, is_pinned: historyPreview.is_pinned, ai_access: 2 }
+    : null;
+  /** 编辑器当前展示的内容：最上层是历史版本预览 / AI 预览，其次是电脑文件，最后是真实笔记 */
+  const editorNote = historyPreviewNote ?? tempPreviewNote ?? externalFileNote ?? selectedNote;
+  /** 是否有叠放层（历史预览 / AI 预览 / 电脑文件）盖在真实笔记之上：此时 AI 面板不引用底层笔记 */
+  const overlayActive = historyPreview != null || tempNote != null || externalFile != null;
   /**
    * AI 回复「在编辑器中打开」：把预览叠到最上层。
    * 底下的电脑文件 / 笔记保留不动，关闭预览后自然回到上一层。
@@ -129,6 +143,7 @@ function AppContent() {
   const handleOpenInEditor = (title: string, content: string) => {
     // 预览会盖住当前层：先把电脑文件的待写入 flush 掉，避免丢最后一次编辑
     flushExternalRef.current?.();
+    setHistoryPreview(null);
     tempNoteIdRef.current -= 1;
     setTempNote({ id: tempNoteIdRef.current, title, content });
   };
@@ -153,6 +168,8 @@ function AppContent() {
   const [propertiesTarget, setPropertiesTarget] = useState<PropertiesTarget | null>(null);
   /** 属性窗里当前笔记的标签；跟着目标笔记走，切歌即清空避免串到别篇上去 */
   const [noteTags, setNoteTags] = useState<Tag[]>([]);
+  /** 属性窗里当前笔记的历史版本；与标签一样跟着目标笔记走 */
+  const [noteHistory, setNoteHistory] = useState<NoteHistoryEntry[]>([]);
   /** AI 打开笔记时用于聚焦高亮的笔记 ID（变化即触发一次动画） */
   const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
   /** 分组侧边栏是否折叠（腾出宽度给编辑器/AI 面板） */
@@ -559,6 +576,7 @@ function AppContent() {
       externalFileRef.current = null;
     }
     setTempNote(null);
+    setHistoryPreview(null);
     setExternalFile(null);
     setSelectedCategoryId(note.category_id);
     setExpandedDrawer(note.category_id === null ? 'uncategorized' : note.category_id);
@@ -680,6 +698,7 @@ function AppContent() {
       externalFileRef.current = null;
     }
     setTempNote(null);
+    setHistoryPreview(null);
     setExternalFile(null);
     try {
       const note = await notesApi.createNote("无标题", "", targetCategory, defaultNoteAiAccess);
@@ -701,6 +720,7 @@ function AppContent() {
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
       setTempNote(null);
+      setHistoryPreview(null);
       setExternalFile(null);
       setSelectedNote(note);
       showToast("已保存为笔记", "success");
@@ -730,8 +750,9 @@ function AppContent() {
     try {
       const file = await notesApi.readTextFile(path);
       externalFileIdRef.current -= 1;
-      // 打开文件是最新的用户动作：先收起 AI 预览，笔记作为底层保留
+      // 打开文件是最新的用户动作：先收起 AI 预览与历史预览，笔记作为底层保留
       setTempNote(null);
+      setHistoryPreview(null);
       setExternalFile({ id: externalFileIdRef.current, ...file });
       // 读成功了才记进最近列表：打不开的文件不值得占一个位置
       pushRecentFile(path, file.name);
@@ -756,6 +777,7 @@ function AppContent() {
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
       setTempNote(null);
+      setHistoryPreview(null);
       setExternalFile(null);
       setSelectedNote(note);
       showToast("已保存为笔记", "success");
@@ -1174,6 +1196,48 @@ function AppContent() {
     }
   };
 
+  /**
+   * 把某个历史版本写回笔记，并同步列表与编辑器里的同一篇。
+   * 后端回滚本身不再写历史，反复回滚不会让历史越滚越多。成功返回 true。
+   */
+  const applyHistoryRollback = async (entry: NoteHistoryEntry): Promise<boolean> => {
+    try {
+      // 只丢弃「编辑器里正显示这篇笔记」时的草稿；编辑别的笔记 / 外部文件时不能动它。
+      // 随后等保存队列落地：否则排队中的保存会排在回滚之后，把刚回滚的内容又写回去。
+      const editingTarget =
+        !historyPreview && !tempNote && !externalFile && selectedNote?.id === entry.note_id;
+      if (editingTarget) editorActionsRef.current?.discardPendingEdits();
+      await saveQueueRef.current;
+      const updated = await notesApi.rollbackNoteHistory(entry.id);
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      setSelectedNote((prev) => (prev && prev.id === updated.id ? updated : prev));
+      setNoteHistory(await notesApi.getNoteHistory(updated.id));
+      return true;
+    } catch (error) {
+      showToast("回滚失败：" + error, "error");
+      return false;
+    }
+  };
+
+  const handleRollbackNoteHistory = async (entry: NoteHistoryEntry) => {
+    if (await applyHistoryRollback(entry)) showToast("已回滚到所选历史版本", "success");
+  };
+
+  /** 属性窗「预览」：关掉属性窗，用伪笔记在编辑器里只读展示这个版本 */
+  const handlePreviewHistory = (entry: NoteHistoryEntry) => {
+    setHistoryPreview(entry);
+    setPropertiesTarget(null);
+  };
+
+  /** 顶部提示条里的回滚：成功才退出预览，失败留在预览里方便重试 */
+  const handleRollbackFromPreview = async () => {
+    if (!historyPreview) return;
+    if (await applyHistoryRollback(historyPreview)) {
+      setHistoryPreview(null);
+      showToast("已回滚到所选历史版本", "success");
+    }
+  };
+
   /* ---------------- 标签 ----------------
    * 属性窗自己不发请求：只在目标笔记变化时拉一次，之后的增删改都让 Rust 回传最新列表，
    * 用回传值覆盖本地 state——避免"写入成功了但列表还是旧的"这类要再刷一次才对得上的情况。
@@ -1263,6 +1327,49 @@ function AppContent() {
       alive = false;
     };
   }, [propertiesNoteId]);
+
+  /** 历史版本与标签同源：目标笔记变化时重拉，关闭属性窗即清空 */
+  useEffect(() => {
+    if (propertiesNoteId === null) {
+      setNoteHistory([]);
+      return;
+    }
+    let alive = true;
+    void (async () => {
+      try {
+        const list = await notesApi.getNoteHistory(propertiesNoteId);
+        if (alive) setNoteHistory(list);
+      } catch {
+        if (alive) setNoteHistory([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [propertiesNoteId]);
+
+  /** 删除单条历史版本：只刷新属性窗里的列表，笔记本身不动 */
+  const handleDeleteNoteHistory = async (entry: NoteHistoryEntry) => {
+    try {
+      await notesApi.deleteNoteHistoryEntry(entry.id);
+      setNoteHistory((prev) => prev.filter((item) => item.id !== entry.id));
+      showToast("已删除该历史版本", "success");
+    } catch (error) {
+      showToast("删除失败：" + error, "error");
+    }
+  };
+
+  /** 清空当前笔记的全部历史版本 */
+  const handleClearNoteHistory = async () => {
+    if (propertiesNoteId === null) return;
+    try {
+      await notesApi.clearNoteHistory(propertiesNoteId);
+      setNoteHistory([]);
+      showToast("已清空历史版本", "success");
+    } catch (error) {
+      showToast("清空失败：" + error, "error");
+    }
+  };
 
   /**
    * 当前笔记的生效档位 = min(笔记, 所属分组)；没有打开笔记时按"完全"处理（不限制面板本身）。
@@ -1681,7 +1788,17 @@ function AppContent() {
                   {/* 预览层激活时不传外部文件路径，避免把 AI 内容写回磁盘 */}
                   <NoteEditor
                     note={editorNote}
-                    isTemporary={tempNote != null}
+                    editable={historyPreview === null}
+                    historyPreview={
+                      historyPreview
+                        ? {
+                            savedAt: formatHistoryTime(historyPreview.saved_at),
+                            onRollback: () => void handleRollbackFromPreview(),
+                            onExit: () => setHistoryPreview(null),
+                          }
+                        : undefined
+                    }
+                    isTemporary={tempNote != null && historyPreview === null}
                     onCloseTemporary={handleCloseTemporary}
                     categories={categories}
                     onSaveToCategory={handleSavePreviewToCategory}
@@ -1692,7 +1809,7 @@ function AppContent() {
                     onToggleAiPanel={appSettings.general.enableAI ? toggleAiPanel : undefined}
                     isAiPanelOpen={appSettings.general.enableAI && aiPanelOpen}
                     onRegisterExport={registerExportNote}
-                    externalFilePath={tempNote ? null : externalFile?.path ?? null}
+                    externalFilePath={historyPreview || tempNote ? null : externalFile?.path ?? null}
                     onSaveExternal={handleWriteExternal}
                     onSaveExternalToNote={handleSaveExternalToNote}
                     onCloseExternal={handleCloseExternalFile}
@@ -1941,6 +2058,11 @@ function AppContent() {
         onAddTags={handleAddTags}
         onRemoveTag={handleRemoveTag}
         onRenameTag={handleRenameTag}
+        history={noteHistory}
+        onPreviewHistory={handlePreviewHistory}
+        onRollbackHistory={handleRollbackNoteHistory}
+        onDeleteHistory={handleDeleteNoteHistory}
+        onClearHistory={handleClearNoteHistory}
       />
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}

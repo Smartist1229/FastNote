@@ -1,5 +1,5 @@
 /**
- * 编辑器设置项的「规格表」：分组、控件类型、取值约束、联动禁用与文案。
+ * 编辑器设置项的「规格表」：分组、控件类型、取值约束、联动隐藏与文案。
  *
  * 一处声明三处消费，避免同一个开关在默认值 / 校验 / 弹窗三处各写一遍：
  *   1. config/appDefaults.ts    —— 默认值照这里的字段取值（类型在此对齐）；
@@ -45,8 +45,8 @@ interface SpecBase {
   desc: string;
   /** 供设置搜索命中的额外关键词 */
   keywords?: string;
-  /** 依赖的开关没打开时置灰（控件保留在原位，提示用户为什么不能改） */
-  disabledWhen?: (s: EditorSettings) => boolean;
+  /** 依赖的开关没打开时整行隐藏；打开后自动出现 */
+  hiddenWhen?: (s: EditorSettings) => boolean;
 }
 
 /** 四种控件：开关 / 数字 / 分段（枚举） / 下拉（枚举，选项多） */
@@ -97,7 +97,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "工具栏显示视图切换",
     desc: "关闭后工具栏右侧不再出现「分栏 / 编辑 / 阅读」切换，视图固定为上面的默认视图。",
     keywords: "视图切换 模式切换 分栏 编辑 阅读 toolbar mode",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "splitRatio",
@@ -137,7 +137,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
       { value: "anchor", label: "行锚点" },
       { value: "ratio", label: "按比例" },
     ],
-    disabledWhen: (s) => !s.syncScroll,
+    hiddenWhen: (s) => !s.syncScroll,
   },
 
   /* ---------- 编辑 ---------- */
@@ -170,7 +170,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     min: 1,
     max: 4,
     unit: "px",
-    disabledWhen: (s) => !s.ctrlScrollZoom,
+    hiddenWhen: (s) => !s.ctrlScrollZoom,
   },
   {
     field: "sourceLineHeight",
@@ -219,7 +219,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "点击行号选中整行",
     desc: "点左边行号时选中这一整行（方便整行删除或替换）。",
     keywords: "行号 点击 选中 整行 gutter select",
-    disabledWhen: (s) => !s.lineNumbers,
+    hiddenWhen: (s) => !s.lineNumbers,
   },
   {
     field: "wrap",
@@ -411,7 +411,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "长代码块默认折叠",
     desc: "超过下面阈值行数的代码块，初次渲染时直接收起。",
     keywords: "代码块 默认 折叠 collapse 收起",
-    disabledWhen: (s) => !s.codeCollapsible,
+    hiddenWhen: (s) => !s.codeCollapsible,
   },
   {
     field: "codeCollapseThreshold",
@@ -423,7 +423,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     min: 4,
     max: 120,
     unit: "行",
-    disabledWhen: (s) => !s.codeCollapsible,
+    hiddenWhen: (s) => !s.codeCollapsible,
   },
   {
     field: "codeCollapseHeight",
@@ -436,7 +436,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 800,
     step: 20,
     unit: "px",
-    disabledWhen: (s) => !s.codeCollapsible,
+    hiddenWhen: (s) => !s.codeCollapsible,
   },
   {
     field: "codeHighlightLines",
@@ -500,7 +500,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
       { value: "neutral", label: "中性" },
       { value: "base", label: "极简" },
     ],
-    disabledWhen: (s) => !s.mermaid,
+    hiddenWhen: (s) => !s.mermaid,
   },
   {
     field: "taskInteractive",
@@ -533,7 +533,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "净化 HTML",
     desc: "渲染前去掉 script、on* 事件与 javascript: 链接，保留其余标签。",
     keywords: "html 净化 安全 sanitize xss script",
-    disabledWhen: (s) => !s.allowHtml,
+    hiddenWhen: (s) => !s.allowHtml,
   },
   {
     field: "showFrontmatter",
@@ -603,7 +603,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 3,
     step: 0.05,
     unit: "倍",
-    disabledWhen: (s) => !s.imagePreview,
+    hiddenWhen: (s) => !s.imagePreview,
   },
   {
     field: "imageZoomMin",
@@ -616,7 +616,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 1,
     step: 0.1,
     unit: "倍",
-    disabledWhen: (s) => !s.imagePreview,
+    hiddenWhen: (s) => !s.imagePreview,
   },
   {
     field: "imageZoomMax",
@@ -629,7 +629,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 20,
     step: 1,
     unit: "倍",
-    disabledWhen: (s) => !s.imagePreview,
+    hiddenWhen: (s) => !s.imagePreview,
   },
 
   /* ---------- 排版 ---------- */
@@ -734,7 +734,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "工具栏吸顶",
     desc: "滚动编辑内容时工具栏固定在上边不跟着滚走。",
     keywords: "工具栏 吸顶 固定 sticky toolbar",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarCompact",
@@ -743,7 +743,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "工具栏紧凑",
     desc: "按钮更小、间距更窄，一行能放更多工具。",
     keywords: "工具栏 紧凑 compact 大小 toolbar",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarLabels",
@@ -752,7 +752,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "工具栏显示文字",
     desc: "按钮上显示名称（如「加粗」）而不只是图标。",
     keywords: "工具栏 文字 名称 label toolbar",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarTooltip",
@@ -761,7 +761,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "工具栏悬停提示",
     desc: "鼠标停在按钮上时显示名称与快捷键。",
     keywords: "工具栏 提示 tooltip 悬停 名称",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarOpenOnHover",
@@ -770,7 +770,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "悬停展开下拉菜单",
     desc: "鼠标停在带下拉的按钮（标题 / 提示块）上时自动展开，不用再点一下。",
     keywords: "下拉 菜单 悬停 展开 hover 工具栏",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarHoverOpenDelay",
@@ -783,7 +783,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 800,
     step: 20,
     unit: "ms",
-    disabledWhen: (s) => !s.showToolbar || !s.toolbarOpenOnHover,
+    hiddenWhen: (s) => !s.showToolbar || !s.toolbarOpenOnHover,
   },
   {
     field: "toolbarHoverCloseDelay",
@@ -796,7 +796,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 800,
     step: 20,
     unit: "ms",
-    disabledWhen: (s) => !s.showToolbar || !s.toolbarOpenOnHover,
+    hiddenWhen: (s) => !s.showToolbar || !s.toolbarOpenOnHover,
   },
   {
     field: "toolbarScrollWheel",
@@ -805,7 +805,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "滚轮横向滚动工具栏",
     desc: "窄窗下工具栏溢出时，纵向滚轮转换成工具栏的横向滚动。",
     keywords: "工具栏 滚动 滚轮 横向 scroll wheel",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarPinTail",
@@ -814,7 +814,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "尾部按钮常驻",
     desc: "窗口变窄时把「视图切换 / 大纲 / 全屏 / 复制」钉在工具栏右缘，前面的按钮被滚走也不影响它们。",
     keywords: "工具栏 吸附 固定 常驻 视图切换 大纲 全屏 pin sticky",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarColorSwatches",
@@ -824,7 +824,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     desc: "文字颜色 / 底色菜单里直接点选的色块，用逗号分隔十六进制颜色（如 #e03131, #1c7ed6），最多 32 个；保存时会去重并丢弃非法色值。",
     keywords: "颜色 色盘 预设 色块 调色板 color swatch palette 工具栏",
     placeholder: "#e03131, #1c7ed6, #2f9e44",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarTextColorFallback",
@@ -833,7 +833,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "文字颜色起始色",
     desc: "没有选中已上色文本时，文字颜色取色器默认停在这个颜色。",
     keywords: "颜色 文字色 取色器 起始色 color picker default 工具栏",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
   {
     field: "toolbarBackgroundColorFallback",
@@ -842,7 +842,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "底色起始色",
     desc: "没有选中已上色文本时，文字底色取色器默认停在这个颜色。",
     keywords: "颜色 底色 背景色 高亮 取色器 起始色 background picker 工具栏",
-    disabledWhen: (s) => !s.showToolbar,
+    hiddenWhen: (s) => !s.showToolbar,
   },
 
   /* ---------- 状态栏 ---------- */
@@ -861,7 +861,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "状态栏：字数",
     desc: "英文按单词、中日韩按字计。",
     keywords: "状态栏 字数 words 统计",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
   {
     field: "statusChars",
@@ -870,7 +870,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "状态栏：字符数",
     desc: "含空格与标点的字符总数。",
     keywords: "状态栏 字符数 chars 统计",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
   {
     field: "statusLines",
@@ -879,7 +879,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "状态栏：行数",
     desc: "当前文档的总行数。",
     keywords: "状态栏 行数 lines 统计",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
   {
     field: "statusCursor",
@@ -888,7 +888,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "状态栏：光标位置",
     desc: "光标所在的第几行第几列。",
     keywords: "状态栏 光标 位置 cursor 行列",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
   {
     field: "statusReadingTime",
@@ -897,7 +897,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "状态栏：阅读时长",
     desc: "按下面的阅读速度估算还剩多少分钟。",
     keywords: "状态栏 阅读 时长 分钟 reading time",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
   {
     field: "statusMode",
@@ -906,7 +906,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "状态栏：当前视图",
     desc: "标注当前是分栏 / 编辑 / 阅读。",
     keywords: "状态栏 视图 模式 mode",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
   {
     field: "statusReadingSpeed",
@@ -919,7 +919,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 1200,
     step: 50,
     unit: "字/分",
-    disabledWhen: (s) => !s.showStatusBar,
+    hiddenWhen: (s) => !s.showStatusBar,
   },
 
   /* ---------- 大纲 ---------- */
@@ -942,7 +942,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
       { value: "left", label: "左侧" },
       { value: "right", label: "右侧" },
     ],
-    disabledWhen: (s) => !s.showOutline,
+    hiddenWhen: (s) => !s.showOutline,
   },
   {
     field: "outlineWidth",
@@ -955,7 +955,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 420,
     step: 10,
     unit: "px",
-    disabledWhen: (s) => !s.showOutline,
+    hiddenWhen: (s) => !s.showOutline,
   },
   {
     field: "outlineMaxDepth",
@@ -966,7 +966,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     keywords: "大纲 层级 深度 标题 depth outline",
     min: 1,
     max: 6,
-    disabledWhen: (s) => !s.showOutline,
+    hiddenWhen: (s) => !s.showOutline,
   },
   {
     field: "outlineIndent",
@@ -975,7 +975,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "大纲层级缩进",
     desc: "低级别标题在大纲里向右缩进。",
     keywords: "大纲 缩进 层级 outline indent",
-    disabledWhen: (s) => !s.showOutline,
+    hiddenWhen: (s) => !s.showOutline,
   },
   {
     field: "outlineCaretTarget",
@@ -988,7 +988,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
       { value: "lineStart", label: "行首" },
       { value: "textStart", label: "文字前" },
     ],
-    disabledWhen: (s) => !s.showOutline,
+    hiddenWhen: (s) => !s.showOutline,
   },
   {
     field: "outlineFlashTarget",
@@ -997,7 +997,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "跳转后高亮标题",
     desc: "点大纲后把目标标题高亮一下：只铺标题文字本身的范围（编辑区含 `###`），不铺整行/整块。光标或鼠标移到别处自动撤掉。",
     keywords: "大纲 跳转 高亮 标题 闪烁 flash outline jump",
-    disabledWhen: (s) => !s.showOutline,
+    hiddenWhen: (s) => !s.showOutline,
   },
 
   /* ---------- 查找替换 ---------- */
@@ -1016,7 +1016,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "Ctrl/⌘+F 带替换行",
     desc: "按 Ctrl/⌘+F 打开查找框时就连替换输入框一起展开；关闭后只出查找行，要替换按 Ctrl/⌘+H 或用框内的展开箭头。",
     keywords: "替换 展开 replace 查找 ctrl f h",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchCaseSensitive",
@@ -1025,7 +1025,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "默认区分大小写",
     desc: "打开查找框时「区分大小写」是否默认点亮（框内随时可切换）。",
     keywords: "查找 大小写 case sensitive 搜索",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchRegex",
@@ -1034,7 +1034,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "默认使用正则",
     desc: "打开查找框时「使用正则表达式」是否默认点亮。",
     keywords: "查找 正则 regex 表达式 搜索",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchHighlightAll",
@@ -1043,7 +1043,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "高亮全部命中",
     desc: "编辑区标出所有匹配；关闭后只高亮当前那一个。",
     keywords: "查找 高亮 命中 highlight 搜索",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchHighlightPreview",
@@ -1052,7 +1052,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "阅读视图也高亮命中",
     desc: "阅读视图里同样标出匹配（替换始终以编辑区为准，预览侧只负责画）。分栏视图只高亮编辑侧，预览侧不铺。",
     keywords: "查找 高亮 预览 阅读 命中 preview highlight 搜索",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchRegexReplace",
@@ -1061,7 +1061,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "默认正则替换",
     desc: "打开查找框时「替换串按正则展开」是否默认点亮：替换串里原样写下的查找正则会被换成整个命中。只在正则模式下有意义。",
     keywords: "替换 正则 展开 regex replace 查找",
-    disabledWhen: (s) => !s.searchEnabled || !s.searchRegex,
+    hiddenWhen: (s) => !s.searchEnabled || !s.searchRegex,
   },
   {
     field: "searchLoop",
@@ -1070,7 +1070,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "查找循环",
     desc: "跳到最后一个后再按「下一个」时回到开头。",
     keywords: "查找 循环 回绕 loop 搜索",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchSeedFromSelection",
@@ -1079,7 +1079,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "选中文字带入查找框",
     desc: "打开查找框时，把编辑器里选中的文字直接填进查找框。",
     keywords: "查找 选区 选中 带入 selection 搜索",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchMaxMatches",
@@ -1092,7 +1092,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     max: 20000,
     step: 100,
     unit: "个",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
   {
     field: "searchBlockHostFind",
@@ -1101,7 +1101,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     title: "拦截浏览器原生查找",
     desc: "焦点在编辑器里时，挡掉 WebView 自带的查找条与 F3 等快捷键，避免和编辑器的查找框同时弹出来。",
     keywords: "原生 查找条 浏览器 find F3 拦截 block",
-    disabledWhen: (s) => !s.searchEnabled,
+    hiddenWhen: (s) => !s.searchEnabled,
   },
 
   /* ---------- 主题与其他 ---------- */

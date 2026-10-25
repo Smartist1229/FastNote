@@ -15,17 +15,38 @@ export interface NoteEditorActions {
   /** withReplace=true 时同时展开替换行（阅读视图下无效） */
   openSearch: (withReplace?: boolean) => void;
   focus: () => void;
+  /**
+   * 丢弃防抖窗口里还没落盘的输入，回到当前 note 的最新内容。
+   * 回滚历史前调用：否则待触发的保存会排在回滚之后，把刚回滚的内容又写回去。
+   */
+  discardPendingEdits: () => void;
+}
+
+/**
+ * 历史版本预览：编辑器正文与标题切到只读，
+ * 顶部提示条提供「回滚到此版本」与「退出预览」。
+ */
+export interface EditorHistoryPreview {
+  /** 该版本的保存时间（已按界面习惯格式化） */
+  savedAt: string;
+  onRollback: () => void;
+  onExit: () => void;
 }
 
 /**
  * 笔记编辑器 Props。
- * 除常规的笔记读改写外，还承载两种特殊模式：
+ * 除常规的笔记读改写外，还承载几种特殊模式：
  * - isTemporary：AI 回复的临时预览，只渲染不落库；
- * - externalFilePath 非空：直接编辑电脑上的文本文件，保存时写回原文件。
+ * - externalFilePath 非空：直接编辑电脑上的文本文件，保存时写回原文件；
+ * - editable=false 或 historyPreview 非空：只读展示，不产生任何写入。
  */
 export interface NoteEditorProps {
   /** 当前笔记；null = 没有打开任何笔记（显示欢迎页） */
   note: Note | null;
+  /** 是否允许编辑（默认 true）；false 时标题与正文都只读 */
+  editable?: boolean;
+  /** 历史版本预览：传了即进入只读预览并显示顶部提示条 */
+  historyPreview?: EditorHistoryPreview;
   onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
   onDelete: () => void;
   /** 上报正文末尾偏移（AI 插入文本时的定位基准） */

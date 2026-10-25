@@ -56,6 +56,21 @@ export interface Tag {
 }
 
 /**
+ * 一篇笔记的历史版本（notes_history 表的一行）。
+ * 只快照标题 / 正文 / 分组 / 置顶；回滚不恢复标签与 AI 访问档位。
+ */
+export interface NoteHistoryEntry {
+  id: number;
+  note_id: number;
+  title: string;
+  content: string;
+  category_id: number | null;
+  is_pinned: boolean;
+  /** 该版本被替换下来的时间（ISO 字符串） */
+  saved_at: string;
+}
+
+/**
  * 直接编辑电脑上的文本文件时，编辑器里承载的内容。
  * 不落库：读取走 read_text_file，保存走 write_text_file。
  */

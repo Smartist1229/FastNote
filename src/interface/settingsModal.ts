@@ -69,12 +69,9 @@ export interface RowBase {
   group?: string;
   /** 供搜索命中的额外关键词 */
   keywords?: string;
-  /** 依赖未满足时置灰：控件保留在原位，但不可交互（例如未开启托盘时的关闭行为） */
-  disabled?: boolean;
   /**
    * 危险标记：只是在标题后额外挂一枚「不建议修改」徽标，
    * 用来提示"改了可能出问题"的项（例如关掉单例模式导致多进程同时写库）。
-   * 不影响可交互性——真要禁用请同时用 disabled。
    */
   danger?: boolean;
 }

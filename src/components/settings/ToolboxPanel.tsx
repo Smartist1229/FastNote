@@ -4,7 +4,7 @@
  * 与语义模型下载共用后端下载模块（`src-tauri/src/download.rs`）：
  * - 线程数存在 general.downloadThreads（默认 32，1–128），下一次任务生效；
  * - 文件保存到软件安装目录的 `download` 文件夹，不可写时退回应用数据目录；
- * - 文件名取链接路径最后一段，非法字符与重名由后端处理；
+ * - 文件名默认取链接路径最后一段；用户填了自定义文件名时优先使用（非法字符与重名仍由后端处理）；
  * - 进度走 `toolbox-download-progress`，事件里的 segments 用来显示单线程/多段并发；
  * - 下载中可以取消，取消后后端会清理临时文件。
  */
@@ -18,8 +18,15 @@ import { useToast } from "@/components/common/Toast";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { formatBytes, formatSpeed } from "@/lib/format";
 import type { ToolboxDownloadProgress } from "@/interface/toolbox";
+import { FingerprintPanel } from "@/components/settings/FingerprintPanel";
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** 工具箱的两个二级分类：下载设置与指纹信息 */
+const TABS = [
+  { id: "download", label: "下载工具" },
+  { id: "fingerprint", label: "指纹信息" },
+] as const;
 
 /** 链接里的文件名只用来在首个事件到达前占位，真实文件名以后端事件为准 */
 const guessFilename = (raw: string): string => {
@@ -90,8 +97,10 @@ interface ToolboxPanelProps {
 export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsChange }) => {
   const { showToast } = useToast();
   const guard = useActionGuard();
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("download");
 
   const [url, setUrl] = useState("");
+  const [filename, setFilename] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState<ToolboxDownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
@@ -170,14 +179,15 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       return;
     }
 
+    const customName = filename.trim();
     setDownloading(true);
     setLastFile(null);
     setSpeed(0);
     speedSampleRef.current = null;
-    // 先用链接里的文件名画 0%，后端事件到达后会覆盖成真实文件名
+    // 先用目标文件名画 0%，后端事件到达后会覆盖成清理后的真实文件名
     setProgress({
       stage: "download",
-      filename: guessFilename(target),
+      filename: customName || guessFilename(target),
       path: "",
       downloaded: 0,
       total: 0,
@@ -186,7 +196,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
     });
 
     try {
-      await toolboxApi.startDownload(target);
+      await toolboxApi.startDownload(target, customName);
     } catch (e) {
       setDownloading(false);
       setProgress(null);
@@ -241,7 +251,31 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl border border-line bg-surface px-3.5 py-3">
+      <div className="flex w-fit items-center gap-1 rounded-lg border border-line-soft bg-app p-0.5">
+        {TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setTab(item.id)}
+            aria-pressed={tab === item.id}
+            className={`rounded-md px-2.5 py-1 text-[11px] transition-colors ${
+              tab === item.id
+                ? "bg-primary-50 font-medium text-primary-600"
+                : "text-muted hover:text-body"
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div
+        className={
+          tab === "download"
+            ? "rounded-xl border border-line bg-surface px-3.5 py-3"
+            : "hidden"
+        }
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium text-body">下载线程</p>
@@ -253,11 +287,15 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-line">
+      <div
+        className={
+          tab === "download" ? "overflow-hidden rounded-xl border border-line" : "hidden"
+        }
+      >
         <div className="px-3.5 py-2.5">
           <p className="text-xs font-medium text-body">下载文件</p>
           <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-            粘贴 http / https 链接即可下载。文件名按链接自动获取，重名时自动加序号，不会覆盖已有文件。
+            粘贴 http / https 链接即可下载，可自定义保存文件名；留空时按链接自动获取。重名时自动加序号，不会覆盖已有文件。
           </p>
         </div>
 
@@ -294,6 +332,18 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
               </button>
             )}
           </div>
+
+          <input
+            type="text"
+            value={filename}
+            onChange={(e) => setFilename(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !downloading) void guard(handleDownload);
+            }}
+            placeholder="自定义文件名（留空则按链接自动识别）"
+            spellCheck={false}
+            className="w-full px-2 py-1.5 text-xs input-modern"
+          />
 
           {progress && (
             <div className="rounded-lg border border-line bg-app px-2.5 py-2">
@@ -359,6 +409,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
           </div>
         </div>
       </div>
+
+      {tab === "fingerprint" && <FingerprintPanel />}
     </div>
   );
 };

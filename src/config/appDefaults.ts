@@ -4,6 +4,7 @@ import type {
   EditorSettings,
   LayoutSettings,
   ViewSettings,
+  WebdavSettings,
 } from "@/interface/settings";
 import { DEFAULT_SEMANTIC_MODEL_ID } from "@/config/semanticModels";
 
@@ -65,6 +66,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   semanticModel: DEFAULT_SEMANTIC_MODEL_ID,
   /** 下载线程数：模型与工具箱下载共用，默认 32（后端会夹到 1–128） */
   downloadThreads: 32,
+  /** 每篇笔记保留的历史版本数：默认 10（后端会夹到 1–100） */
+  noteHistoryLimit: 10,
 };
 
 /* ---------- Editor ---------- */
@@ -330,6 +333,23 @@ export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   sortOrder: "asc",
 };
 
+/* ---------- WebDAV ---------- */
+export const DEFAULT_WEBDAV_SETTINGS: WebdavSettings = {
+  /** 服务器地址留空：用户填之前不发起任何网络请求 */
+  server: "",
+  username: "",
+  /** WebDAV 上使用的文件夹：不存在时自动创建 */
+  folder: "FastNote",
+  /** 自动备份默认关闭，避免用户只配了地址就被动上传 */
+  autoBackup: false,
+  /** 自动备份间隔（小时） */
+  autoIntervalHours: 1,
+  /** 默认同时备份到本地与云端 */
+  autoTarget: "both",
+  /** 本地自动备份最多保留 10 份（云端不限制） */
+  autoMaxLocal: 10,
+};
+
 /* ---------- 合并后的完整默认值 ---------- */
 /** 四个分类的完整默认值：App 初始化 state 与各 store 缺键回退都以它为准 */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -337,4 +357,5 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   editor: DEFAULT_EDITOR_SETTINGS,
   layout: DEFAULT_LAYOUT_SETTINGS,
   view: DEFAULT_VIEW_SETTINGS,
+  webdav: DEFAULT_WEBDAV_SETTINGS,
 };

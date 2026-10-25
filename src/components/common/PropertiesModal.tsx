@@ -4,7 +4,7 @@
  * group 指默认分组或搜索视图的虚拟分组：没有 id、也没有可写回的对象，因此全部只读。
  */
 import { useEffect, useState } from "react";
-import type { Category, Note, Tag } from "@/interface/note";
+import type { Category, Note, NoteHistoryEntry, Tag } from "@/interface/note";
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import type { PropertiesTarget } from "@/interface/ui";
@@ -144,6 +144,16 @@ export const PropertiesModal: React.FC<{
   onAddTags?: (note: Note, names: string[]) => void | Promise<void>;
   onRemoveTag?: (note: Note, name: string) => void | Promise<void>;
   onRenameTag?: (id: number, name: string) => void | Promise<void>;
+  /** 这篇笔记的历史版本；同样由父组件按需加载后传入 */
+  history?: NoteHistoryEntry[];
+  /** 在编辑器里以只读方式预览某个历史版本（父组件负责打开预览并关闭属性窗） */
+  onPreviewHistory?: (entry: NoteHistoryEntry) => void;
+  /** 回滚到某个历史版本（父组件负责写库并刷新 notes / 编辑器） */
+  onRollbackHistory?: (entry: NoteHistoryEntry) => void | Promise<void>;
+  /** 删除单条历史版本 */
+  onDeleteHistory?: (entry: NoteHistoryEntry) => void | Promise<void>;
+  /** 清空这篇笔记的全部历史版本 */
+  onClearHistory?: () => void | Promise<void>;
 }> = ({
   target,
   categories,
@@ -159,6 +169,11 @@ export const PropertiesModal: React.FC<{
   onAddTags,
   onRemoveTag,
   onRenameTag,
+  history = [],
+  onPreviewHistory,
+  onRollbackHistory,
+  onDeleteHistory,
+  onClearHistory,
 }) => {
   const note: Note | null = target?.kind === "note" ? target.note : null;
   const category: Category | null = target?.kind === "category" ? target.category : null;
@@ -181,6 +196,9 @@ export const PropertiesModal: React.FC<{
     setAddingTag(false);
     setTagDraft("");
     setTagEdit(null);
+    setConfirmRollbackId(null);
+    setConfirmDeleteId(null);
+    setConfirmClear(false);
   }, [targetKey]);
 
   /**
@@ -216,6 +234,11 @@ export const PropertiesModal: React.FC<{
   /** 正在改名的标签（行内输入框替掉徽标），与新建互斥 */
   const [tagEdit, setTagEdit] = useState<TagEdit>(null);
   const canEditTags = !!onAddTags && !!onRemoveTag;
+  /** 二次确认中的历史版本 id：回滚会覆盖当前正文，点一次先亮出「确认」 */
+  const [confirmRollbackId, setConfirmRollbackId] = useState<number | null>(null);
+  /** 二次确认中的删除 / 清空：删了就找不回来，同样先亮「确认」 */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   /** 新建草稿提交：支持逗号 / 顿号 / 分号 / 空格分隔一次加多个，已存在的词跳过 */
   const commitTagDraft = () => {
@@ -453,6 +476,152 @@ export const PropertiesModal: React.FC<{
           </>
         )}
       </div>
+
+      {/* 历史版本：每次保存前记录旧版本，回滚会覆盖当前正文，所以点一次先出「确认」 */}
+      {note && (
+        <div className="mt-3 rounded-xl border border-line-soft px-3.5 py-2">
+          <div className="flex items-center justify-between gap-2 py-1">
+            <span className="text-xs font-medium text-body">历史版本</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-faint">{history.length ? `${history.length} 个` : "暂无"}</span>
+              {history.length > 0 && onClearHistory && (
+                confirmClear ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmClear(false);
+                        void onClearHistory();
+                      }}
+                      className="px-2 py-0.5 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
+                    >
+                      确认清空
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClear(false)}
+                      className="px-2 py-0.5 text-[11px] rounded-md text-faint hover:bg-surface-alt transition-colors"
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmRollbackId(null);
+                      setConfirmDeleteId(null);
+                      setConfirmClear(true);
+                    }}
+                    className="px-2 py-0.5 text-[11px] rounded-md text-faint hover:bg-danger-soft hover:text-danger transition-colors"
+                  >
+                    清空
+                  </button>
+                )
+              )}
+            </div>
+          </div>
+          {history.length === 0 ? (
+            <p className="pb-2 text-[11px] text-faint leading-relaxed">
+              编辑并保存这篇笔记后，旧版本会自动记录在这里。
+            </p>
+          ) : (
+            <div className="max-h-[200px] overflow-y-auto -mx-1">
+              {history.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-2 px-1 py-1.5 rounded-md hover:bg-surface-alt transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[12px] text-body truncate">{entry.title || "无标题"}</div>
+                    <div className="text-[11px] text-faint">
+                      {formatDateTime(entry.saved_at)} · {entry.content.length.toLocaleString()} 字
+                    </div>
+                  </div>
+                  {confirmRollbackId === entry.id ? (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmRollbackId(null);
+                          void onRollbackHistory?.(entry);
+                        }}
+                        className="px-2 py-1 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
+                      >
+                        确认回滚
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRollbackId(null)}
+                        className="px-2 py-1 text-[11px] rounded-md text-faint hover:bg-surface-alt transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ) : confirmDeleteId === entry.id ? (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmDeleteId(null);
+                          void onDeleteHistory?.(entry);
+                        }}
+                        className="px-2 py-1 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
+                      >
+                        确认删除
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-2 py-1 text-[11px] rounded-md text-faint hover:bg-surface-alt transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {onPreviewHistory && (
+                        <button
+                          type="button"
+                          onClick={() => onPreviewHistory(entry)}
+                          className="px-2 py-1 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt transition-colors"
+                        >
+                          预览
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!onRollbackHistory}
+                        onClick={() => {
+                          setConfirmDeleteId(null);
+                          setConfirmClear(false);
+                          setConfirmRollbackId(entry.id);
+                        }}
+                        className="px-2 py-1 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt disabled:opacity-40 transition-colors"
+                      >
+                        回滚
+                      </button>
+                      {onDeleteHistory && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmRollbackId(null);
+                            setConfirmClear(false);
+                            setConfirmDeleteId(entry.id);
+                          }}
+                          className="px-2 py-1 text-[11px] rounded-md text-faint hover:bg-danger-soft hover:text-danger transition-colors"
+                        >
+                          删除
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {groupMenu.open && note && (
         <>

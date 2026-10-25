@@ -4,6 +4,7 @@
 //!   语义模型下载与工具箱下载共用同一个值；
 //! - 服务器支持 Range 时按段并发，每段至少 512 KiB；不支持或文件很小时退回单流；
 //! - 分段进度留在 `<目标>.part.<序号>`，参数不变时重试可续传；线程数变了就丢弃旧分段；
+//! - 工具箱下载的分片放在 `<下载目录>/<文件名>` 临时目录，完成后合并回下载根目录并删除；
 //! - 工具箱下载可以取消：取消标记在每个数据块之间检查，退出后清理临时文件；
 //! - 进度通过回调交给调用方（附带实际分段数，便于界面显示单线程/多段并发），
 //!   模型下载发 `semantic-model-progress`，工具箱发 `toolbox-download-progress`。
@@ -83,11 +84,20 @@ pub fn threads(app: &AppHandle) -> usize {
     crate::read_setting_u64(app, THREADS_KEY, DEFAULT_THREADS).clamp(1, MAX_THREADS) as usize
 }
 
-/// 下载客户端：限制连接超时与空闲读超时，连接池按最大线程数预留
+/// 下载客户端：默认头来自浏览器指纹模块（UA、UA-CH、语言、Fetch Metadata），
+/// 不少下载站（含 comfy.org）对无 UA 或非浏览器 UA 直接回 400/403；
+/// 另外开启 Cookie 与 Referer 跟随，限制连接超时与空闲读超时，连接池按最大线程数预留。
+///
+/// 每次创建客户端取一份新的随机指纹：同一个任务的各段 Range 请求共用这个 Client，
+/// 因此共用同一身份，任务之间才会换指纹。
 pub fn client() -> Result<Client, String> {
+    let fingerprint = crate::fingerprint::BrowserFingerprint::random();
     Client::builder()
+        .default_headers(fingerprint.headers())
+        .cookie_store(true)
+        .referer(true)
         .connect_timeout(Duration::from_secs(20))
-        .read_timeout(Duration::from_secs(60))
+        .read_timeout(Duration::from_secs(120))
         .pool_max_idle_per_host(MAX_THREADS as usize)
         .build()
         .map_err(|e| format!("创建下载客户端失败：{e}"))
@@ -112,6 +122,86 @@ pub fn default_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+/// 分片临时目录取下载文件名（去扩展名）：既按文件区分任务，又不会和最终文件同名冲突。
+/// 文件名本身没有扩展名时追加 `-parts`，避免目录与最终文件同名。
+fn staging_name(filename: &str) -> String {
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(filename);
+    if stem.is_empty() || stem == filename {
+        format!("{filename}-parts")
+    } else {
+        stem.to_string()
+    }
+}
+
+/// 准备 `download/<文件名>`：同名文件占位时追加后缀，并清掉上次异常退出留下的分片
+async fn prepare_staging(root: &Path, name: &str) -> Result<PathBuf, String> {
+    for attempt in 0..100 {
+        let candidate = if attempt == 0 {
+            root.join(name)
+        } else {
+            root.join(format!("{name}-{attempt}"))
+        };
+        match tokio::fs::metadata(&candidate).await {
+            Ok(meta) if meta.is_dir() => {
+                purge_part_files(&candidate).await;
+                return Ok(candidate);
+            }
+            Ok(_) => continue,
+            Err(_) => {
+                tokio::fs::create_dir_all(&candidate)
+                    .await
+                    .map_err(|e| format!("创建分片目录失败：{e}"))?;
+                return Ok(candidate);
+            }
+        }
+    }
+    Err("无法创建分片目录：同名文件过多".to_string())
+}
+
+/// 分片与下载计划都以 `.part` 命名，只清理这类文件，不动目录里的其他内容
+async fn purge_part_files(dir: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let is_file = entry
+            .file_type()
+            .await
+            .map(|kind| kind.is_file())
+            .unwrap_or(false);
+        if !is_file {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.contains(".part") {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
+/// 任务结束后删掉分片目录；目录里还有别的文件时保留，避免误删用户内容
+async fn remove_staging(dir: &Path) {
+    purge_part_files(dir).await;
+    let _ = tokio::fs::remove_dir(dir).await;
+}
+
+/// 用户指定的文件名优先；留空或清理后为空时回退到链接推导
+fn resolve_filename(url: &str, custom: Option<&str>) -> String {
+    let name = custom.map(sanitize_filename).unwrap_or_default();
+    if name.is_empty() {
+        filename_from_url(url)
+    } else {
+        name
+    }
+}
+
 /// 从链接最后一段取文件名；取不到时用时间戳兜底
 pub fn filename_from_url(raw: &str) -> String {
     if let Ok(url) = reqwest::Url::parse(raw) {
@@ -128,6 +218,56 @@ pub fn filename_from_url(raw: &str) -> String {
         "download-{}.bin",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     )
+}
+
+/// 从 `Content-Disposition` 取文件名：优先 RFC 5987 的 `filename*`，其次 `filename`。
+fn filename_from_disposition(value: &str) -> Option<String> {
+    let mut plain = None;
+    for part in value.split(';').skip(1) {
+        let Some((key, raw)) = part.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let raw = raw.trim();
+        if key == "filename*" {
+            // 形如 UTF-8''%E4%B8%AD%E6%96%87.zip：取第二个单引号之后的部分
+            let encoded = raw.splitn(3, '\'').nth(2).unwrap_or(raw);
+            let name = sanitize_filename(&percent_decode(encoded.trim_matches('"')));
+            if !name.is_empty() {
+                return Some(name);
+            }
+        } else if key == "filename" {
+            let name = sanitize_filename(raw.trim_matches('"'));
+            if !name.is_empty() {
+                plain = Some(name);
+            }
+        }
+    }
+    plain
+}
+
+/// 预检一次，读响应头里的文件名。用户没填文件名时调用：
+/// 链接形如 `/download/windows/nsis/x64` 时路径推导不出 `Comfy-Desktop-Setup.exe`，
+/// 只有响应头里有。失败不影响下载，回退到链接推导。
+async fn suggest_filename(client: &Client, url: &str) -> Option<String> {
+    let mut response = client
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        // 有些站拒绝 Range，普通 GET 的头才是对的；不读 body，拿到头就丢
+        response = client.get(url).send().await.ok()?;
+    }
+    if !response.status().is_success() {
+        return None;
+    }
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(filename_from_disposition)
 }
 
 /// 重名时追加 ` (1)`、` (2)`…，不覆盖用户已有文件
@@ -211,11 +351,21 @@ async fn probe(client: &Client, url: &str, cancel: Option<&Cancel>) -> Result<Pr
         result = request.send() => result.map_err(|e| format!("请求失败：{e}"))?,
     };
     let status = response.status();
-    if status == StatusCode::RANGE_NOT_SATISFIABLE {
-        return Err("服务器拒绝分段请求，无法获取文件大小".to_string());
-    }
+    // 416 或 4xx：有些站直接拒绝带 Range 的请求（403/400），换成普通 GET 再试一次
     if !status.is_success() {
-        return Err(format!("HTTP {status}"));
+        let fallback = tokio::select! {
+            _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+            result = client.get(url).send() => result.map_err(|e| format!("请求失败：{e}"))?,
+        };
+        if !fallback.status().is_success() {
+            return Err(format!("HTTP {}", fallback.status()));
+        }
+        let total = fallback.content_length();
+        return Ok(Probe {
+            total,
+            ranges: false,
+            response: Some(fallback),
+        });
     }
     if status == StatusCode::PARTIAL_CONTENT {
         let total = response
@@ -775,8 +925,13 @@ pub fn toolbox_download_dir(app: AppHandle) -> Result<String, String> {
 }
 
 /// 启动一个工具箱下载任务：命令立刻返回，进度走 `toolbox-download-progress`。
+/// `filename` 为空时按链接自动取名，非空时清理非法字符后直接使用。
 #[tauri::command]
-pub async fn toolbox_download(app: AppHandle, url: String) -> Result<(), String> {
+pub async fn toolbox_download(
+    app: AppHandle,
+    url: String,
+    filename: Option<String>,
+) -> Result<(), String> {
     let url = url.trim().to_string();
     let parsed = reqwest::Url::parse(&url).map_err(|_| "链接格式不正确".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -799,7 +954,7 @@ pub async fn toolbox_download(app: AppHandle, url: String) -> Result<(), String>
     let handle = app.clone();
     let task_cancel = cancel.clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = run_toolbox_download(&handle, &url, &task_cancel).await;
+        let outcome = run_toolbox_download(&handle, &url, filename.as_deref(), &task_cancel).await;
         if let Some(state) = handle.try_state::<AppState>() {
             if let Ok(mut active) = state.download.active.lock() {
                 *active = None;
@@ -834,10 +989,35 @@ pub fn toolbox_download_cancel(app: AppHandle) -> Result<bool, String> {
     }
 }
 
-async fn run_toolbox_download(app: &AppHandle, url: &str, cancel: &Cancel) -> Result<(), String> {
+async fn run_toolbox_download(
+    app: &AppHandle,
+    url: &str,
+    filename: Option<&str>,
+    cancel: &Cancel,
+) -> Result<(), String> {
     let dir = default_dir(app)?;
-    let base_name = filename_from_url(url);
+    let client = client()?;
+    let mut base_name = resolve_filename(url, filename);
+    let custom_blank = filename
+        .map(|name| sanitize_filename(name).is_empty())
+        .unwrap_or(true);
+    if custom_blank {
+        if let Some(remote) = suggest_filename(&client, url).await {
+            base_name = remote;
+        }
+    }
+
+    // 分片放 download/<文件名>，最终文件仍落在 download 根目录
     let dest = unique_dest(&dir, &base_name);
+    let temp_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&base_name);
+    let staging = prepare_staging(&dir, &staging_name(temp_name)).await?;
+    let temp_dest = staging.join(temp_name);
+    // 上次异常退出可能留下已合并完成的临时文件，先清掉，避免最终改名失败
+    let _ = tokio::fs::remove_file(&temp_dest).await;
+
     let filename = dest
         .file_name()
         .and_then(|name| name.to_str())
@@ -846,25 +1026,50 @@ async fn run_toolbox_download(app: &AppHandle, url: &str, cancel: &Cancel) -> Re
     let path = dest.to_string_lossy().to_string();
 
     emit_toolbox(app, "download", &filename, &path, 0, 0, 0, None);
-    let client = client()?;
     let count = threads(app);
     let progress = |done: u64, total: u64, segments: usize| {
         emit_toolbox(
             app, "download", &filename, &path, done, total, segments, None,
         );
     };
-    let size = match fetch(&client, url, &dest, count, Some(cancel), &progress).await {
+    let size = match fetch(&client, url, &temp_dest, count, Some(cancel), &progress).await {
         Ok(size) => size,
         Err(error) => {
             // 工具箱每次都选新的文件名，残留分段不会再被续传，失败或取消都清掉
-            cleanup(&dest).await;
+            cleanup(&temp_dest).await;
+            remove_staging(&staging).await;
             if cancel.is_cancelled() {
                 return Err(CANCELLED.to_string());
             }
             return Err(error);
         }
     };
-    emit_toolbox(app, "done", &filename, &path, size, size, 0, None);
+
+    // 下载期间目标名可能被其他程序占用，落盘前再确认一次
+    let final_dest = unique_dest(&dir, temp_name);
+    let final_filename = final_dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(temp_name)
+        .to_string();
+    let final_path = final_dest.to_string_lossy().to_string();
+    if let Err(error) = tokio::fs::rename(&temp_dest, &final_dest).await {
+        let _ = tokio::fs::remove_file(&temp_dest).await;
+        cleanup(&temp_dest).await;
+        remove_staging(&staging).await;
+        return Err(format!("保存文件失败：{error}"));
+    }
+    remove_staging(&staging).await;
+    emit_toolbox(
+        app,
+        "done",
+        &final_filename,
+        &final_path,
+        size,
+        size,
+        0,
+        None,
+    );
     Ok(())
 }
 
@@ -910,9 +1115,43 @@ mod tests {
     }
 
     #[test]
+    fn custom_filename_overrides_url_and_falls_back_when_blank() {
+        assert_eq!(
+            resolve_filename("https://example.com/a.zip", Some("我的报告.zip")),
+            "我的报告.zip"
+        );
+        assert_eq!(
+            resolve_filename("https://example.com/a.zip", Some("x/y")),
+            "x_y"
+        );
+        assert_eq!(
+            resolve_filename("https://example.com/a.zip", Some("   ")),
+            "a.zip"
+        );
+        assert_eq!(resolve_filename("https://example.com/a.zip", None), "a.zip");
+    }
+
+    #[test]
     fn filename_is_sanitized() {
         assert_eq!(sanitize_filename("a:b*c?.txt"), "a_b_c_.txt");
         assert_eq!(sanitize_filename("  ..name..txt.. "), "name..txt");
+    }
+
+    #[test]
+    fn filename_comes_from_content_disposition() {
+        assert_eq!(
+            filename_from_disposition("attachment; filename=\"Comfy-Desktop-Setup.exe\""),
+            Some("Comfy-Desktop-Setup.exe".to_string())
+        );
+        assert_eq!(
+            filename_from_disposition("attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.zip; filename=fallback.zip"),
+            Some("报告.zip".to_string())
+        );
+        assert_eq!(
+            filename_from_disposition("attachment; filename=plain.zip"),
+            Some("plain.zip".to_string())
+        );
+        assert_eq!(filename_from_disposition("inline"), None);
     }
 
     #[test]
@@ -948,6 +1187,42 @@ mod tests {
         let second = unique_dest(&dir, "a.txt");
         assert_eq!(second.file_name().unwrap(), "a (1).txt");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staging_folder_follows_download_filename() {
+        assert_eq!(staging_name("FastNote_2.5.6.exe"), "FastNote_2.5.6");
+        assert_eq!(staging_name("archive.tar.gz"), "archive.tar");
+        assert_eq!(staging_name("installer"), "installer-parts");
+        assert_eq!(staging_name("说明文档.pdf"), "说明文档");
+    }
+
+    #[test]
+    fn staging_folder_keeps_unrelated_files() {
+        let root = std::env::temp_dir().join(format!("fastnote-staging-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("FastNote"), b"x").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let staging = prepare_staging(&root, "FastNote").await.unwrap();
+            assert_eq!(staging.file_name().unwrap(), "FastNote-1");
+
+            tokio::fs::write(staging.join("file.bin.part.0"), b"x")
+                .await
+                .unwrap();
+            tokio::fs::write(staging.join("keep.txt"), b"x").await.unwrap();
+            remove_staging(&staging).await;
+            assert!(staging.exists(), "目录里还有其他文件时不能整个删掉");
+            assert!(!staging.join("file.bin.part.0").exists());
+
+            tokio::fs::remove_file(staging.join("keep.txt")).await.unwrap();
+            remove_staging(&staging).await;
+            assert!(!staging.exists(), "分片清空后临时目录应删除");
+        });
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     use std::io::{BufRead, BufReader, Write};
