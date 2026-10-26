@@ -2138,6 +2138,8 @@
 
 /* front matter */
 .mde-root .mde-frontmatter {
+  /* 窄分栏时按卡片自身宽度改排版（见文件末尾的 @container） */
+  container-type: inline-size;
   margin-bottom: 1.6em;
   padding: 10px 14px;
   border: 1px dashed var(--mde-border-strong);
@@ -2162,6 +2164,7 @@
 
 .mde-root .mde-frontmatter-row {
   display: flex;
+  align-items: baseline;
   gap: 10px;
   padding: 2px 0;
 }
@@ -2172,9 +2175,29 @@
   color: var(--mde-text-muted);
 }
 
+/* 值列吃满剩余宽度：长值（路径、URL、连续英文标识符）在卡片内折行，不能顶出去 */
 .mde-root .mde-frontmatter dd {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   color: var(--mde-text-body);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/*
+ * 卡片窄到两列放不下时改成上下排：值列拿到整行宽度，
+ * 长英文标识符（MarkdownEditor、路径片段）就不会被拆得七零八落。
+ */
+@container (max-width: 240px) {
+  .mde-root .mde-frontmatter-row {
+    display: block;
+  }
+
+  .mde-root .mde-frontmatter dt {
+    min-width: 0;
+    margin-bottom: 1px;
+  }
 }
 
 /* TOC 块 */

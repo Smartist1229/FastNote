@@ -4,7 +4,7 @@
  * group 指默认分组或搜索视图的虚拟分组：没有 id、也没有可写回的对象，因此全部只读。
  */
 import { useEffect, useState } from "react";
-import type { Category, Note, NoteHistoryEntry, Tag } from "@/interface/note";
+import type { Category, Note, NoteHistoryEntry, NoteHistoryKind, Tag } from "@/interface/note";
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import type { PropertiesTarget } from "@/interface/ui";
@@ -69,6 +69,22 @@ const RowInput: React.FC<{ value: string; onChange: (value: string) => void; onC
     className="w-full min-w-0 px-2 py-0.5 text-[13px] text-body rounded-md border border-primary-200 bg-surface outline-none focus:border-primary-400"
   />
 );
+
+/** 历史版本类型徽标：自动版本不加徽标，其余标明来源 */
+const HISTORY_KIND_LABELS: Record<NoteHistoryKind, string> = {
+  auto: "",
+  session: "打开时",
+  manual: "手动",
+  "pre-rollback": "回滚前",
+};
+
+/** 固定按钮提示：手动版本本来就长期保留，星标对它只是标记 */
+const historyPinTitle = (entry: NoteHistoryEntry) => {
+  if (entry.kind === "manual") {
+    return entry.pinned ? "取消标记（手动版本始终保留）" : "标记为固定（手动版本本就始终保留）";
+  }
+  return entry.pinned ? "取消固定（之后可能被自动清理）" : "固定此版本（不会被自动清理）";
+};
 
 /** 标签编辑态：新建时为 null（草稿输入框），改名为其标签 id */
 type TagEdit = { kind: "new" | "rename"; id: number | null; draft: string } | null;
@@ -154,6 +170,10 @@ export const PropertiesModal: React.FC<{
   onDeleteHistory?: (entry: NoteHistoryEntry) => void | Promise<void>;
   /** 清空这篇笔记的全部历史版本 */
   onClearHistory?: () => void | Promise<void>;
+  /** 把当前内容手动存成一个历史版本（内容未变化时后端不会重复写） */
+  onCreateHistoryVersion?: () => void | Promise<void>;
+  /** 固定 / 取消固定某个版本：固定的版本不会被自动清理 */
+  onToggleHistoryPinned?: (entry: NoteHistoryEntry) => void | Promise<void>;
 }> = ({
   target,
   categories,
@@ -174,6 +194,8 @@ export const PropertiesModal: React.FC<{
   onRollbackHistory,
   onDeleteHistory,
   onClearHistory,
+  onCreateHistoryVersion,
+  onToggleHistoryPinned,
 }) => {
   const note: Note | null = target?.kind === "note" ? target.note : null;
   const category: Category | null = target?.kind === "category" ? target.category : null;
@@ -484,6 +506,21 @@ export const PropertiesModal: React.FC<{
             <span className="text-xs font-medium text-body">历史版本</span>
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] text-faint">{history.length ? `${history.length} 个` : "暂无"}</span>
+              {onCreateHistoryVersion && (
+                <button
+                  type="button"
+                  title="把当前内容存为一个手动版本，不会被自动清理"
+                  onClick={() => {
+                    setConfirmRollbackId(null);
+                    setConfirmDeleteId(null);
+                    setConfirmClear(false);
+                    void onCreateHistoryVersion();
+                  }}
+                  className="px-2 py-0.5 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt transition-colors"
+                >
+                  存版本
+                </button>
+              )}
               {history.length > 0 && onClearHistory && (
                 confirmClear ? (
                   <div className="flex items-center gap-1">
@@ -523,7 +560,7 @@ export const PropertiesModal: React.FC<{
           </div>
           {history.length === 0 ? (
             <p className="pb-2 text-[11px] text-faint leading-relaxed">
-              编辑并保存这篇笔记后，旧版本会自动记录在这里。
+              编辑并保存后，系统会按设定的间隔自动记录旧版本；最早的一版会一直保留。点「存版本」可随时手动留存，固定或手动的版本不会被自动清理。
             </p>
           ) : (
             <div className="max-h-[200px] overflow-y-auto -mx-1">
@@ -534,8 +571,20 @@ export const PropertiesModal: React.FC<{
                 >
                   <div className="flex-1 min-w-0">
                     <div className="text-[12px] text-body truncate">{entry.title || "无标题"}</div>
-                    <div className="text-[11px] text-faint">
-                      {formatDateTime(entry.saved_at)} · {entry.content.length.toLocaleString()} 字
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
+                      <span>
+                        {formatDateTime(entry.saved_at)} · {entry.content.length.toLocaleString()} 字
+                      </span>
+                      {HISTORY_KIND_LABELS[entry.kind] && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] leading-none bg-surface-alt text-faint">
+                          {HISTORY_KIND_LABELS[entry.kind]}
+                        </span>
+                      )}
+                      {entry.pinned && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] leading-none bg-primary-50 text-primary-500">
+                          固定
+                        </span>
+                      )}
                     </div>
                   </div>
                   {confirmRollbackId === entry.id ? (
@@ -546,6 +595,7 @@ export const PropertiesModal: React.FC<{
                           setConfirmRollbackId(null);
                           void onRollbackHistory?.(entry);
                         }}
+                        title="恢复此版本，并删除它及之后的所有历史版本"
                         className="px-2 py-1 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
                       >
                         确认回滚
@@ -580,6 +630,19 @@ export const PropertiesModal: React.FC<{
                     </div>
                   ) : (
                     <div className="flex items-center gap-1 flex-shrink-0">
+                      {onToggleHistoryPinned && (
+                        <RowButton
+                          icon={entry.pinned ? "sidebar-star-filled" : "sidebar-star"}
+                          title={historyPinTitle(entry)}
+                          active={entry.pinned}
+                          onClick={() => {
+                            setConfirmRollbackId(null);
+                            setConfirmDeleteId(null);
+                            setConfirmClear(false);
+                            void onToggleHistoryPinned(entry);
+                          }}
+                        />
+                      )}
                       {onPreviewHistory && (
                         <button
                           type="button"

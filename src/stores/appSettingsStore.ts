@@ -13,7 +13,8 @@ import { normalizeHex, normalizeHexList } from "@/lib/theme";
  *   app.config.<分类>.<字段>
  *     general：cleanTrashOnStartup / trayEnabled / closeBehavior / autostart /
  *              minimizeToTray / enableAI / singleInstance / noteSearchRegex /
- *              semanticSearch / semanticAutoIndex / semanticModel / downloadThreads
+ *              semanticSearch / semanticAutoIndex / semanticModel / downloadThreads /
+ *              noteHistoryLimit / noteHistoryIntervalMinutes
  *     editor： 见 interface/settings.ts 的 EditorSettings（config/editorSettingSpecs.ts 里的规格表）
  *     layout： sidebarCollapsed / aiPanelOpen
  *     view：   sortBy / sortOrder
@@ -50,6 +51,7 @@ const ENUM_BY_KEY: Record<string, readonly string[]> = {
 const RANGE_BY_KEY: Record<string, readonly [number, number]> = {
   "general.downloadThreads": [1, 128],
   "general.noteHistoryLimit": [1, 100],
+  "general.noteHistoryIntervalMinutes": [1, 60],
   "webdav.autoIntervalHours": [1, 720],
   "webdav.autoMaxLocal": [1, 200],
 };
@@ -108,7 +110,10 @@ const normalizeValue = (
     const list = normalizeHexList(value);
     return list.length ? list.join(", ") : undefined;
   }
-  return typeof value === "string" && spec.options.some((o) => o.value === value) ? value : undefined;
+  // 分段 / 下拉：选项值以字符串声明，但数值项（如 Tab 宽度）在设置对象里是 number，
+  // 两边都按字符串比较，命中后保留原类型，避免读库时把用户选的 4 当成非法值重置。
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  return spec.options.some((o) => o.value === String(value)) ? value : undefined;
 };
 
 /**

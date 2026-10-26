@@ -99,10 +99,25 @@ export const getNoteHistory = async (noteId: number): Promise<NoteHistoryEntry[]
 
 /**
  * 回滚到指定历史版本（rollback_note_history），返回回滚后的完整笔记。
- * 回滚本身不会再写入一条历史，反复回滚不会让历史越滚越多。
+ * 该版本及所有更新的版本会被删除，回滚本身不生成新的历史。
  */
 export const rollbackNoteHistory = async (entryId: number): Promise<Note> => {
   return await invoke('rollback_note_history', { entryId });
+};
+
+/** 手动保存当前状态为历史版本（create_note_history_version）；内容与最新一条相同时返回 false */
+export const createNoteHistoryVersion = async (noteId: number): Promise<boolean> => {
+  return await invoke('create_note_history_version', { noteId });
+};
+
+/** 打开笔记时记录会话基线（snapshot_note_session）；还没有历史或与最新历史相同则不写，返回 false */
+export const snapshotNoteSession = async (noteId: number): Promise<boolean> => {
+  return await invoke('snapshot_note_session', { noteId });
+};
+
+/** 固定 / 取消固定一条历史版本（set_note_history_pinned）；固定版本不会被自动清理 */
+export const setNoteHistoryPinned = async (entryId: number, pinned: boolean): Promise<void> => {
+  await invoke('set_note_history_pinned', { entryId, pinned });
 };
 
 /** 删除单条历史版本（delete_note_history_entry），不影响笔记本身 */

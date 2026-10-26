@@ -1,10 +1,11 @@
-use chrono::{Duration, Local};
+use chrono::{DateTime, Duration, Local};
 use futures_util::StreamExt;
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -297,8 +298,10 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     // ---- 笔记历史版本 ----
-    // 每次内容/标题/分组变化前把旧版本存进来；上限由 app.config.general.noteHistoryLimit 控制，
-    // 超出后删最早的。永久删除笔记时一并清理，回滚只恢复这几列（标签、AI 访问权限不动）。
+    // 内容/标题/分组变化前把旧版本存进来，但距上一条历史不足间隔时不重复记
+    // （app.config.general.noteHistoryIntervalMinutes，默认 5 分钟）。
+    // 超出上限（noteHistoryLimit）时只删中间的旧版本，最早一条始终保留。
+    // 永久删除笔记时一并清理，回滚只恢复这几列（标签、AI 访问权限不动）。
     conn.execute(
         "CREATE TABLE IF NOT EXISTS notes_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -307,6 +310,8 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
             content TEXT NOT NULL,
             category_id INTEGER,
             is_pinned INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'auto',
+            pinned INTEGER NOT NULL DEFAULT 0,
             saved_at TEXT NOT NULL
         )",
         [],
@@ -315,6 +320,21 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_notes_history_note ON notes_history(note_id, id DESC)",
         [],
     )?;
+    // ---- 迁移：历史版本来源与固定标记 ----
+    // kind 区分自动 / 打开笔记时的会话基线 / 手动保存（早期数据还可能有回滚前快照）；
+    // pinned 标记用户固定、永不自动清理的版本。
+    if !has_column(conn, "notes_history", "kind") {
+        conn.execute(
+            "ALTER TABLE notes_history ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto'",
+            [],
+        )?;
+    }
+    if !has_column(conn, "notes_history", "pinned") {
+        conn.execute(
+            "ALTER TABLE notes_history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
 
     // ---- 迁移：多选模型列表 ----
     // 老库只有 enabled_model（单选），这里补上 enabled_models（JSON 数组）并把旧值回填进去
@@ -696,6 +716,15 @@ fn json_str(v: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// 取字符串字段，缺失或空串时用默认值（旧备份缺新字段）
+fn json_str_or(v: &Value, key: &str, fallback: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
 fn json_opt_str(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
@@ -994,7 +1023,7 @@ fn export_backup(
 
     let notes_history = query_rows(
         &conn,
-        "SELECT id, note_id, title, content, category_id, is_pinned, saved_at
+        "SELECT id, note_id, title, content, category_id, is_pinned, kind, pinned, saved_at
          FROM notes_history ORDER BY id",
         |row| {
             Ok(json!({
@@ -1004,7 +1033,9 @@ fn export_backup(
                 "content": row.get::<_, String>(3)?,
                 "category_id": row.get::<_, Option<i64>>(4)?,
                 "is_pinned": row.get::<_, i64>(5)? != 0,
-                "saved_at": row.get::<_, String>(6)?,
+                "kind": row.get::<_, String>(6)?,
+                "pinned": row.get::<_, i64>(7)? != 0,
+                "saved_at": row.get::<_, String>(8)?,
             }))
         },
     )?;
@@ -1159,8 +1190,9 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
     // 历史版本必须排在笔记之后写；老备份没有这张表时就是空数组
     for h in notes_history {
         tx.execute(
-            "INSERT INTO notes_history (id, note_id, title, content, category_id, is_pinned, saved_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO notes_history (id, note_id, title, content, category_id, is_pinned, kind,
+                                        pinned, saved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 json_i64(h, "id"),
                 json_i64(h, "note_id"),
@@ -1168,6 +1200,9 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
                 json_str(h, "content"),
                 json_opt_i64(h, "category_id"),
                 if json_bool_or(h, "is_pinned", false) { 1 } else { 0 },
+                // 旧备份没有来源/固定字段：按自动版本、未固定处理
+                normalize_history_kind(&json_str_or(h, "kind", HISTORY_KIND_AUTO)),
+                if json_bool_or(h, "pinned", false) { 1 } else { 0 },
                 non_empty_or_now(json_str(h, "saved_at"))
             ],
         )
@@ -1542,6 +1577,8 @@ struct SqliteNoteHistoryRow {
     content: String,
     category_id: Option<i64>,
     is_pinned: i64,
+    kind: String,
+    pinned: i64,
     saved_at: String,
 }
 
@@ -1712,12 +1749,13 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
         .iter()
         .all(|column| has_column(conn, "notes_history", column))
     {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, note_id, title, content, category_id, is_pinned, saved_at
-                 FROM notes_history ORDER BY id",
-            )
-            .map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT id, note_id, title, content, category_id, is_pinned, {}, {}, saved_at
+             FROM notes_history ORDER BY id",
+            col("notes_history", "kind", "'auto'"),
+            col("notes_history", "pinned", "0")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(SqliteNoteHistoryRow {
@@ -1727,7 +1765,9 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
                     content: row.get(3)?,
                     category_id: row.get(4)?,
                     is_pinned: row.get(5)?,
-                    saved_at: row.get(6)?,
+                    kind: normalize_history_kind(&row.get::<_, String>(6)?),
+                    pinned: row.get(7)?,
+                    saved_at: row.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2028,15 +2068,18 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
 
     for h in &data.notes_history {
         tx.execute(
-            "INSERT INTO notes_history (id, note_id, title, content, category_id, is_pinned, saved_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO notes_history (id, note_id, title, content, category_id, is_pinned, kind,
+                                        pinned, saved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 h.id,
                 h.note_id,
-                h.title,
-                h.content,
+                &h.title,
+                &h.content,
                 h.category_id,
                 if h.is_pinned != 0 { 1 } else { 0 },
+                normalize_history_kind(&h.kind),
+                if h.pinned != 0 { 1 } else { 0 },
                 non_empty_or_now(h.saved_at.clone())
             ],
         )
@@ -2850,33 +2893,240 @@ fn get_note(id: i64, state: State<AppState>) -> Result<Note, String> {
 }
 
 const NOTE_HISTORY_LIMIT_KEY: &str = "app.config.general.noteHistoryLimit";
+const NOTE_HISTORY_INTERVAL_KEY: &str = "app.config.general.noteHistoryIntervalMinutes";
 
 /// 历史版本上限：默认 10，夹到 1–100，避免手工改库写出几万条历史把库撑大
 fn note_history_limit(app: &AppHandle) -> u64 {
     crate::read_setting_u64(app, NOTE_HISTORY_LIMIT_KEY, 10).clamp(1, 100)
 }
 
+/// 两条自动历史之间的最小间隔（秒）：默认 5 分钟，夹到 1–60 分钟。
+/// 自动保存是 500ms 防抖，若每次保存都记历史，反复停顿打字几分钟就能把保留窗口刷满。
+fn note_history_interval_secs(app: &AppHandle) -> i64 {
+    (crate::read_setting_u64(app, NOTE_HISTORY_INTERVAL_KEY, 5).clamp(1, 60) as i64) * 60
+}
+
+const HISTORY_KIND_AUTO: &str = "auto";
+const HISTORY_KIND_SESSION: &str = "session";
+const HISTORY_KIND_MANUAL: &str = "manual";
+const HISTORY_KIND_PRE_ROLLBACK: &str = "pre-rollback";
+
+/// 未知来源（旧备份/手工改库）一律按自动版本处理，避免把脏 kind 带进界面
+fn normalize_history_kind(kind: &str) -> String {
+    match kind {
+        HISTORY_KIND_MANUAL | HISTORY_KIND_SESSION | HISTORY_KIND_PRE_ROLLBACK => kind.to_string(),
+        _ => HISTORY_KIND_AUTO.to_string(),
+    }
+}
+
 /// 把笔记当前状态写进历史表（调用前不要先 UPDATE，否则存进去的是新版本）
-fn snapshot_note(conn: &Connection, note_id: i64, saved_at: &str) -> Result<bool, String> {
+fn snapshot_note(
+    conn: &Connection,
+    note_id: i64,
+    saved_at: &str,
+    kind: &str,
+) -> Result<bool, String> {
     let inserted = conn
         .execute(
-            "INSERT INTO notes_history (note_id, title, content, category_id, is_pinned, saved_at)
-             SELECT id, title, content, category_id, is_pinned, ?2 FROM notes WHERE id = ?1",
-            params![note_id, saved_at],
+            "INSERT INTO notes_history (note_id, title, content, category_id, is_pinned, kind, saved_at)
+             SELECT id, title, content, category_id, is_pinned, ?2, ?3 FROM notes WHERE id = ?1",
+            params![note_id, kind, saved_at],
         )
         .map_err(|e| e.to_string())?;
     Ok(inserted > 0)
 }
 
-/// 只保留最近 `limit` 条历史（按 id 倒序），超出的删最早的
-fn prune_note_history(conn: &Connection, note_id: i64, limit: u64) -> Result<(), String> {
+/// 最新一条历史（标题 / 正文 / 分组 / 保存时间）；没有历史时返回 None
+fn latest_history(
+    conn: &Connection,
+    note_id: i64,
+) -> Result<Option<(String, String, Option<i64>, String)>, String> {
+    let latest = conn.query_row(
+        "SELECT title, content, category_id, saved_at
+         FROM notes_history WHERE note_id = ?1 ORDER BY id DESC LIMIT 1",
+        params![note_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    );
+    match latest {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 当前内容是否与最新一条历史完全相同（没有历史时为 false）
+fn history_matches_latest(
+    conn: &Connection,
+    note_id: i64,
+    title: &str,
+    content: &str,
+    category: Option<i64>,
+) -> Result<bool, String> {
+    Ok(latest_history(conn, note_id)?
+        .map(|(last_title, last_content, last_category, _)| {
+            last_title == title && last_content == content && last_category == category
+        })
+        .unwrap_or(false))
+}
+
+/// 本次自动改动是否值得写一条历史。
+///
+/// - 还没有任何历史：写。保证「最初版本」一定留得下来（老笔记第一次被编辑时也走这条）。
+/// - 与最新一条内容完全相同：不写。用户改回原样时不该再堆一条重复版本。
+/// - 距最新一条不足间隔：不写。打字停顿触发的自动保存不等于一个值得回看的版本。
+/// - 时间不可解析 / 系统时间回拨：写。宁可多记一条，也不要因为脏时间戳从此不再记录。
+fn should_snapshot_history(
+    conn: &Connection,
+    note_id: i64,
+    old_title: &str,
+    old_content: &str,
+    old_category: Option<i64>,
+    now: &str,
+    interval_secs: i64,
+) -> Result<bool, String> {
+    let Some((last_title, last_content, last_category, last_saved_at)) =
+        latest_history(conn, note_id)?
+    else {
+        return Ok(true);
+    };
+
+    if last_title == old_title && last_content == old_content && last_category == old_category {
+        return Ok(false);
+    }
+
+    let (now_at, last_at) = match (
+        DateTime::parse_from_rfc3339(now),
+        DateTime::parse_from_rfc3339(&last_saved_at),
+    ) {
+        (Ok(now_at), Ok(last_at)) => (now_at, last_at),
+        _ => return Ok(true),
+    };
+    let elapsed = now_at.signed_duration_since(last_at).num_seconds();
+    Ok(elapsed < 0 || elapsed >= interval_secs)
+}
+
+/// 历史保留策略：
+///
+/// - 固定版本（pinned）与手动版本（manual）永不自动删除；
+/// - 自动版本保留最新 `limit` 条；
+/// - 最早一条自动版本始终保留（找回最初内容）；
+/// - 更早的自动版本按天抽样：最近 30 天里每天最多留一条，避免密集自动版本把库撑大，
+///   同时保留一条远期时间线。
+///
+/// 已保留版本覆盖到的日期不再补抽样，否则同一天的中间版本会挤占配额。
+fn prune_note_history(
+    conn: &Connection,
+    note_id: i64,
+    limit: u64,
+    now: &str,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, pinned, saved_at FROM notes_history
+             WHERE note_id = ?1 ORDER BY id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![note_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut keep: HashSet<i64> = HashSet::new();
+    let mut newest_auto = 0u64;
+    let mut oldest_auto: Option<i64> = None;
+
+    for (id, kind, pinned, _) in &rows {
+        let is_manual = kind.as_str() == HISTORY_KIND_MANUAL;
+        let is_pinned = *pinned != 0;
+        if is_pinned || is_manual {
+            keep.insert(*id);
+        } else if newest_auto < limit {
+            keep.insert(*id);
+            newest_auto += 1;
+        }
+        if !is_pinned && !is_manual {
+            oldest_auto = Some(*id);
+        }
+    }
+    if let Some(id) = oldest_auto {
+        keep.insert(id);
+    }
+
+    let now_date = DateTime::parse_from_rfc3339(now)
+        .map(|d| d.date_naive())
+        .unwrap_or_else(|_| Local::now().date_naive());
+    let cutoff = now_date - Duration::days(30);
+
+    let mut covered_dates = HashSet::new();
+    for (id, _, _, saved_at) in &rows {
+        if !keep.contains(id) {
+            continue;
+        }
+        if let Ok(dt) = DateTime::parse_from_rfc3339(saved_at) {
+            covered_dates.insert(dt.date_naive());
+        }
+    }
+
+    for (id, kind, pinned, saved_at) in &rows {
+        if *pinned != 0 || kind.as_str() == HISTORY_KIND_MANUAL || keep.contains(id) {
+            continue;
+        }
+        let Ok(dt) = DateTime::parse_from_rfc3339(saved_at) else {
+            continue;
+        };
+        let date = dt.date_naive();
+        if date < cutoff {
+            continue;
+        }
+        if covered_dates.insert(date) {
+            keep.insert(*id);
+        }
+    }
+
+    if keep.len() == rows.len() {
+        return Ok(());
+    }
+
+    let mut delete = conn
+        .prepare("DELETE FROM notes_history WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+    for (id, _, _, _) in &rows {
+        if !keep.contains(id) {
+            delete.execute(params![id]).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// 回滚时丢弃目标版本及其之后的所有历史：id 自增，`id >= from_entry_id` 即更新的版本。
+fn truncate_note_history(
+    conn: &Connection,
+    note_id: i64,
+    from_entry_id: i64,
+) -> Result<(), String> {
     conn.execute(
-        "DELETE FROM notes_history
-         WHERE note_id = ?1
-           AND id NOT IN (
-             SELECT id FROM notes_history WHERE note_id = ?1 ORDER BY id DESC LIMIT ?2
-           )",
-        params![note_id, limit as i64],
+        "DELETE FROM notes_history WHERE note_id = ?1 AND id >= ?2",
+        params![note_id, from_entry_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -2912,6 +3162,8 @@ mod note_history_tests {
                 content TEXT NOT NULL,
                 category_id INTEGER,
                 is_pinned INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL DEFAULT 'auto',
+                pinned INTEGER NOT NULL DEFAULT 0,
                 saved_at TEXT NOT NULL
             );",
         )
@@ -2924,10 +3176,42 @@ mod note_history_tests {
         conn
     }
 
-    fn insert_version(conn: &Connection, note_id: i64, title: &str) {
+    fn insert_version_at(
+        conn: &Connection,
+        note_id: i64,
+        title: &str,
+        content: &str,
+        saved_at: &str,
+    ) {
         conn.execute(
-            "INSERT INTO notes_history (note_id, title, content, saved_at) VALUES (?1, ?2, '正文', '2026-10-25T10:00:00+08:00')",
-            params![note_id, title],
+            "INSERT INTO notes_history (note_id, title, content, saved_at) VALUES (?1, ?2, ?3, ?4)",
+            params![note_id, title, content, saved_at],
+        )
+        .unwrap();
+    }
+
+    fn insert_version(conn: &Connection, note_id: i64, title: &str) {
+        insert_version_at(
+            conn,
+            note_id,
+            title,
+            "正文",
+            "2026-10-25T10:00:00+08:00",
+        );
+    }
+
+    fn insert_version_kind(
+        conn: &Connection,
+        note_id: i64,
+        title: &str,
+        kind: &str,
+        pinned: bool,
+        saved_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO notes_history (note_id, title, content, kind, pinned, saved_at)
+             VALUES (?1, ?2, '正文', ?3, ?4, ?5)",
+            params![note_id, title, kind, if pinned { 1 } else { 0 }, saved_at],
         )
         .unwrap();
     }
@@ -2935,37 +3219,43 @@ mod note_history_tests {
     #[test]
     fn snapshot_copies_current_note() {
         let conn = setup();
-        assert!(snapshot_note(&conn, 1, "2026-10-25T10:00:00+08:00").unwrap());
-        let (title, content, pinned): (String, String, i64) = conn
+        assert!(snapshot_note(&conn, 1, "2026-10-25T10:00:00+08:00", HISTORY_KIND_AUTO).unwrap());
+        let (title, content, note_pinned, kind, pinned): (String, String, i64, String, i64) = conn
             .query_row(
-                "SELECT title, content, is_pinned FROM notes_history WHERE note_id = 1",
+                "SELECT title, content, is_pinned, kind, pinned FROM notes_history WHERE note_id = 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .unwrap();
         assert_eq!(title, "标题");
         assert_eq!(content, "正文");
-        assert_eq!(pinned, 1);
+        assert_eq!(note_pinned, 1);
+        assert_eq!(kind, HISTORY_KIND_AUTO);
+        assert_eq!(pinned, 0);
+    }
+
+    fn titles_of(conn: &Connection, note_id: i64) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT title FROM notes_history WHERE note_id = ?1 ORDER BY id")
+            .unwrap();
+        let rows = stmt
+            .query_map(params![note_id], |row| row.get::<_, String>(0))
+            .unwrap();
+        rows.map(Result::unwrap).collect()
     }
 
     #[test]
-    fn prune_keeps_latest_versions_per_note() {
+    fn prune_keeps_latest_versions_and_the_earliest() {
         let conn = setup();
         for title in ["v1", "v2", "v3", "v4"] {
             insert_version(&conn, 1, title);
         }
         insert_version(&conn, 2, "other");
 
-        prune_note_history(&conn, 1, 2).unwrap();
+        prune_note_history(&conn, 1, 2, NOW).unwrap();
 
-        let titles: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT title FROM notes_history WHERE note_id = 1 ORDER BY id")
-                .unwrap();
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
-            rows.map(Result::unwrap).collect()
-        };
-        assert_eq!(titles, vec!["v3", "v4"]);
+        // 最新 2 条 + 最早 1 条：v1 不能被挤出窗口
+        assert_eq!(titles_of(&conn, 1), vec!["v1", "v3", "v4"]);
         // 另一篇笔记的历史不受影响
         let others: i64 = conn
             .query_row(
@@ -2975,6 +3265,231 @@ mod note_history_tests {
             )
             .unwrap();
         assert_eq!(others, 1);
+    }
+
+    #[test]
+    fn truncate_drops_target_and_newer_versions() {
+        let conn = setup();
+        for title in ["v1", "v2", "v3", "v4"] {
+            insert_version(&conn, 1, title);
+        }
+        // 更新的历史即使被固定，也随回滚一起删除
+        insert_version_kind(
+            &conn,
+            1,
+            "v5",
+            HISTORY_KIND_MANUAL,
+            true,
+            "2026-10-25T10:00:00+08:00",
+        );
+        insert_version(&conn, 2, "other");
+
+        let target_id: i64 = conn
+            .query_row(
+                "SELECT id FROM notes_history WHERE note_id = 1 AND title = 'v2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        truncate_note_history(&conn, 1, target_id).unwrap();
+
+        assert_eq!(titles_of(&conn, 1), vec!["v1"]);
+        assert_eq!(titles_of(&conn, 2), vec!["other"]);
+    }
+
+    #[test]
+    fn prune_keeps_earliest_even_with_limit_one() {
+        let conn = setup();
+        for title in ["v1", "v2", "v3"] {
+            insert_version(&conn, 1, title);
+        }
+
+        prune_note_history(&conn, 1, 1, NOW).unwrap();
+
+        assert_eq!(titles_of(&conn, 1), vec!["v1", "v3"]);
+    }
+
+    #[test]
+    fn prune_keeps_pinned_and_manual_versions() {
+        let conn = setup();
+        insert_version_kind(
+            &conn,
+            1,
+            "v1",
+            HISTORY_KIND_AUTO,
+            false,
+            "2026-10-25T09:00:00+08:00",
+        );
+        insert_version_kind(
+            &conn,
+            1,
+            "v2",
+            HISTORY_KIND_MANUAL,
+            false,
+            "2026-10-25T09:10:00+08:00",
+        );
+        insert_version_kind(
+            &conn,
+            1,
+            "v3",
+            HISTORY_KIND_SESSION,
+            true,
+            "2026-10-25T09:20:00+08:00",
+        );
+        insert_version_kind(
+            &conn,
+            1,
+            "v4",
+            HISTORY_KIND_AUTO,
+            false,
+            "2026-10-25T09:30:00+08:00",
+        );
+        insert_version_kind(
+            &conn,
+            1,
+            "v5",
+            HISTORY_KIND_AUTO,
+            false,
+            "2026-10-25T09:40:00+08:00",
+        );
+
+        prune_note_history(&conn, 1, 1, NOW).unwrap();
+
+        // 手动 / 固定永不删除；自动版本仍按「最新 1 条 + 最早 1 条」保留
+        assert_eq!(titles_of(&conn, 1), vec!["v1", "v2", "v3", "v5"]);
+    }
+
+    #[test]
+    fn prune_keeps_one_auto_per_day_in_recent_month() {
+        let conn = setup();
+        let rows = [
+            ("v1", "2026-08-01T09:00:00+08:00"), // 超出 30 天窗口，只作为最早版本保留
+            ("v2", "2026-09-26T09:00:00+08:00"),
+            ("v3", "2026-09-26T12:00:00+08:00"), // 同日第二条，让位给当天较新的一条
+            ("v4", "2026-09-27T09:00:00+08:00"),
+            ("v5", "2026-10-24T09:00:00+08:00"),
+            ("v6", "2026-10-24T20:00:00+08:00"),
+            ("v7", "2026-10-25T09:00:00+08:00"),
+        ];
+        for (title, saved_at) in rows {
+            insert_version_kind(&conn, 1, title, HISTORY_KIND_AUTO, false, saved_at);
+        }
+
+        prune_note_history(&conn, 1, 2, NOW).unwrap();
+
+        // 最新 2 条(v7,v6) + 最早 1 条(v1) + 每个更早日期各 1 条(v4,v3)
+        assert_eq!(titles_of(&conn, 1), vec!["v1", "v3", "v4", "v6", "v7"]);
+    }
+
+    #[test]
+    fn unknown_history_kind_normalizes_to_auto() {
+        assert_eq!(normalize_history_kind("tampered"), HISTORY_KIND_AUTO);
+        assert_eq!(
+            normalize_history_kind(HISTORY_KIND_MANUAL),
+            HISTORY_KIND_MANUAL
+        );
+    }
+
+    const NOW: &str = "2026-10-25T10:06:00+08:00";
+
+    #[test]
+    fn snapshot_required_when_note_has_no_history() {
+        let conn = setup();
+        assert!(should_snapshot_history(&conn, 1, "标题", "正文", None, NOW, 300).unwrap());
+    }
+
+    #[test]
+    fn snapshot_skipped_for_identical_latest_version() {
+        let conn = setup();
+        insert_version_at(
+            &conn,
+            1,
+            "标题",
+            "正文",
+            "2026-10-25T10:00:00+08:00",
+        );
+        assert!(!should_snapshot_history(&conn, 1, "标题", "正文", None, NOW, 300).unwrap());
+    }
+
+    #[test]
+    fn snapshot_throttled_within_interval() {
+        let conn = setup();
+        insert_version_at(
+            &conn,
+            1,
+            "旧标题",
+            "旧正文",
+            "2026-10-25T10:04:00+08:00",
+        );
+        assert!(!should_snapshot_history(&conn, 1, "标题", "正文", None, NOW, 300).unwrap());
+    }
+
+    #[test]
+    fn snapshot_allowed_after_interval() {
+        let conn = setup();
+        insert_version_at(
+            &conn,
+            1,
+            "旧标题",
+            "旧正文",
+            "2026-10-25T10:00:00+08:00",
+        );
+        assert!(should_snapshot_history(&conn, 1, "标题", "正文", None, NOW, 300).unwrap());
+    }
+
+    #[test]
+    fn snapshot_allowed_when_saved_at_is_unparsable() {
+        let conn = setup();
+        insert_version_at(&conn, 1, "旧标题", "旧正文", "not-a-time");
+        assert!(should_snapshot_history(&conn, 1, "标题", "正文", None, NOW, 300).unwrap());
+    }
+
+    #[test]
+    fn snapshot_allowed_when_clock_moved_backwards() {
+        let conn = setup();
+        insert_version_at(
+            &conn,
+            1,
+            "旧标题",
+            "旧正文",
+            "2026-10-25T10:10:00+08:00",
+        );
+        assert!(should_snapshot_history(&conn, 1, "标题", "正文", None, NOW, 300).unwrap());
+    }
+
+    /// 按 update_note 的顺序模拟「每 30 秒一次自动保存、间隔 1 分钟、只留 1 条最近版本」：
+    /// 无论保存多频繁，最早那一版都必须还在。
+    #[test]
+    fn frequent_autosaves_do_not_evict_the_original_version() {
+        let conn = setup();
+        conn.execute("UPDATE notes SET content = 'v0' WHERE id = 1", [])
+            .unwrap();
+
+        let base = DateTime::parse_from_rfc3339("2026-10-25T10:00:00+08:00").unwrap();
+        let mut current = "v0".to_string();
+        for i in 1..=20 {
+            let at = (base + Duration::seconds(30 * i)).to_rfc3339();
+            if should_snapshot_history(&conn, 1, "标题", &current, None, &at, 60).unwrap() {
+                snapshot_note(&conn, 1, &at, HISTORY_KIND_AUTO).unwrap();
+            }
+            prune_note_history(&conn, 1, 1, &at).unwrap();
+
+            current = format!("v{i}");
+            conn.execute(
+                "UPDATE notes SET content = ?1 WHERE id = 1",
+                params![current],
+            )
+            .unwrap();
+        }
+
+        let contents: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT content FROM notes_history WHERE note_id = 1 ORDER BY id")
+                .unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+            rows.map(Result::unwrap).collect()
+        };
+        assert_eq!(contents, vec!["v0", "v18"]);
     }
 }
 
@@ -2986,6 +3501,10 @@ struct NoteHistoryEntry {
     content: String,
     category_id: Option<i64>,
     is_pinned: bool,
+    /// auto = 自动 / session = 打开笔记时 / manual = 手动保存 / pre-rollback = 早期回滚快照
+    kind: String,
+    /// 固定版本：不会被自动清理
+    pinned: bool,
     saved_at: String,
 }
 
@@ -2995,7 +3514,7 @@ fn get_note_history(note_id: i64, state: State<AppState>) -> Result<Vec<NoteHist
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT id, note_id, title, content, category_id, is_pinned, saved_at
+            "SELECT id, note_id, title, content, category_id, is_pinned, kind, pinned, saved_at
              FROM notes_history WHERE note_id = ?1 ORDER BY id DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -3008,7 +3527,9 @@ fn get_note_history(note_id: i64, state: State<AppState>) -> Result<Vec<NoteHist
                 content: row.get(3)?,
                 category_id: row.get(4)?,
                 is_pinned: row.get::<_, i64>(5)? != 0,
-                saved_at: row.get(6)?,
+                kind: normalize_history_kind(&row.get::<_, String>(6)?),
+                pinned: row.get::<_, i64>(7)? != 0,
+                saved_at: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -3038,7 +3559,101 @@ fn clear_note_history(note_id: i64, state: State<AppState>) -> Result<(), String
     purge_note_history(&conn, note_id)
 }
 
-/// 回滚到某个历史版本。回滚本身不再写新的历史：反复回滚不会把历史越滚越多。
+/// 手动保存当前状态为历史版本；与最新一条内容相同时不重复写。
+#[tauri::command]
+fn create_note_history_version(
+    note_id: i64,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<bool, String> {
+    let limit = note_history_limit(&app);
+    let mut conn = state.conn.lock().unwrap();
+    let now = Local::now().to_rfc3339();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let (title, content, category): (String, String, Option<i64>) = tx
+        .query_row(
+            "SELECT title, content, category_id FROM notes WHERE id = ?1",
+            params![note_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
+
+    if history_matches_latest(&tx, note_id, &title, &content, category)? {
+        return Ok(false);
+    }
+    let inserted = snapshot_note(&tx, note_id, &now, HISTORY_KIND_MANUAL)?;
+    prune_note_history(&tx, note_id, limit, &now)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(inserted)
+}
+
+/// 打开笔记时记录会话基线：当前内容与最新历史不同才写，存成 `session` 版本。
+/// 这样长时间编辑里「这次打开时的样子」不会被自动保存的节流漏掉。
+#[tauri::command]
+fn snapshot_note_session(
+    note_id: i64,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<bool, String> {
+    let limit = note_history_limit(&app);
+    let mut conn = state.conn.lock().unwrap();
+    let now = Local::now().to_rfc3339();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let current = tx.query_row(
+        "SELECT title, content, category_id FROM notes WHERE id = ?1",
+        params![note_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        },
+    );
+    let (title, content, category) = match current {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+
+    // 还没有任何历史时不写：第一次编辑时 update_note 会把编辑前内容存成 auto，
+    // 仅仅是打开一篇从未记录过的笔记不应该凭空多出一条历史。
+    if latest_history(&tx, note_id)?.is_none() {
+        return Ok(false);
+    }
+    if history_matches_latest(&tx, note_id, &title, &content, category)? {
+        return Ok(false);
+    }
+    let inserted = snapshot_note(&tx, note_id, &now, HISTORY_KIND_SESSION)?;
+    prune_note_history(&tx, note_id, limit, &now)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(inserted)
+}
+
+/// 固定 / 取消固定一条历史版本。固定版本不会被自动清理，只能手动删除。
+#[tauri::command]
+fn set_note_history_pinned(
+    entry_id: i64,
+    pinned: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE notes_history SET pinned = ?1 WHERE id = ?2",
+            params![if pinned { 1 } else { 0 }, entry_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("历史版本不存在或已被清理".to_string());
+    }
+    Ok(())
+}
+
+/// 回滚到某个历史版本：目标版本和所有更新的版本一起删除，不生成新的历史。
+/// 回到更早的状态后，那些更新的版本已不属于当前分支，留着只会让列表越回滚越长。
 #[tauri::command]
 fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, String> {
     let mut conn = state.conn.lock().unwrap();
@@ -3075,11 +3690,15 @@ fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, 
         )
         .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
 
-    if cur_title != title
+    let changed = cur_title != title
         || cur_content != content
         || cur_category != category_id
-        || cur_is_pinned != is_pinned
-    {
+        || cur_is_pinned != is_pinned;
+
+    // 即使回滚目标与当前内容一致，也要丢弃这条及之后的历史
+    truncate_note_history(&tx, note_id, entry_id)?;
+
+    if changed {
         tx.execute(
             "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = ?4, updated_at = ?5 WHERE id = ?6",
             params![title, content, category_id, is_pinned, now, note_id],
@@ -3119,7 +3738,9 @@ fn update_note(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
+    // 读设置要在锁住 conn 之前：read_setting_* 内部也会拿同一把锁
     let limit = note_history_limit(&app);
+    let interval_secs = note_history_interval_secs(&app);
     let mut conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -3134,8 +3755,18 @@ fn update_note(
 
     // 只改了置顶不算内容变化，不必占一条历史
     let changed = old_title != title || old_content != content || old_category != category_id;
-    if changed {
-        snapshot_note(&tx, id, &now)?;
+    if changed
+        && should_snapshot_history(
+            &tx,
+            id,
+            &old_title,
+            &old_content,
+            old_category,
+            &now,
+            interval_secs,
+        )?
+    {
+        snapshot_note(&tx, id, &now, HISTORY_KIND_AUTO)?;
     }
 
     tx.execute(
@@ -3153,7 +3784,7 @@ fn update_note(
     )
     .map_err(|e| e.to_string())?;
     if changed {
-        prune_note_history(&tx, id, limit)?;
+        prune_note_history(&tx, id, limit, &now)?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     drop(conn);
@@ -5092,6 +5723,9 @@ pub fn run() {
             get_note_history,
             delete_note_history_entry,
             clear_note_history,
+            create_note_history_version,
+            snapshot_note_session,
+            set_note_history_pinned,
             rollback_note_history,
             set_note_ai_access,
             set_category_ai_access,

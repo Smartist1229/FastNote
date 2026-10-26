@@ -55,6 +55,9 @@ export interface Tag {
   note_count: number;
 }
 
+/** 历史版本的来源：自动保存 / 打开笔记时的会话基线 / 手动保存 / 早期数据的回滚前快照 */
+export type NoteHistoryKind = "auto" | "session" | "manual" | "pre-rollback";
+
 /**
  * 一篇笔记的历史版本（notes_history 表的一行）。
  * 只快照标题 / 正文 / 分组 / 置顶；回滚不恢复标签与 AI 访问档位。
@@ -66,6 +69,10 @@ export interface NoteHistoryEntry {
   content: string;
   category_id: number | null;
   is_pinned: boolean;
+  /** 来源：auto / session / manual / pre-rollback */
+  kind: NoteHistoryKind;
+  /** 固定版本：不会被自动清理，只能手动删除 */
+  pinned: boolean;
   /** 该版本被替换下来的时间（ISO 字符串） */
   saved_at: string;
 }

@@ -234,7 +234,7 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     group: "编辑",
     kind: "segment",
     title: "Tab 宽度",
-    desc: "按 Tab 键缩进多少空格，同时决定列表缩进的宽度。",
+    desc: "按 Tab 键缩进多少空格，同时决定列表缩进的宽度；默认 2 空格。",
     keywords: "tab 缩进 空格 indent 宽度",
     options: [
       { value: "2", label: "2 空格" },
@@ -515,8 +515,17 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     group: "预览",
     kind: "toggle",
     title: "单换行即换行",
-    desc: "预览时每个换行符都渲染成换行（GFM breaks）；关闭则遵循标准 Markdown，行尾补两个空格才算换行。",
-    keywords: "换行 回车 br breaks newline 软换行 硬换行",
+    desc: "预览时每个换行符都渲染成换行（GFM breaks）；关闭则遵循标准 Markdown，行尾补两个空格才算换行。开启后 Setext 标题（下一行写 === / ---）不再生效，避免「文字 + ---」被当成标题。",
+    keywords: "换行 回车 br breaks newline 软换行 硬换行 setext",
+  },
+  {
+    field: "setext",
+    group: "预览",
+    kind: "toggle",
+    title: "Setext 标题",
+    desc: "把段落下一行的 === / --- 识别为标题下划线（一级 / 二级）。仅在关闭「单换行即换行」时生效；关闭后这类行按普通文字和分割线处理。",
+    keywords: "setext 标题 下划线 h1 h2 分割线 --- ===",
+    hiddenWhen: (s) => s.breaks,
   },
   {
     field: "allowHtml",

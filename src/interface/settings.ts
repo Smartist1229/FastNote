@@ -54,10 +54,16 @@ export interface GeneralSettings {
    */
   downloadThreads: number;
   /**
-   * 每篇笔记保留的历史版本数（1–100，默认 10）。
-   * 每次标题 / 正文 / 分组变化前存一份旧版本，超出后删最早的。
+   * 每篇笔记保留的**最近**历史版本数（1–100，默认 10）。
+   * 超出后删中间的旧版本，但最早的一条始终保留（总计最多 N+1 条）。
    */
   noteHistoryLimit: number;
+  /**
+   * 自动历史版本的最小间隔（分钟，1–60，默认 5）。
+   * 自动保存仍按 500ms 防抖落库，但距上一条历史不满这个间隔时不再记新版本，
+   * 避免打字停顿把保留窗口刷满、挤掉最初的版本。
+   */
+  noteHistoryIntervalMinutes: number;
 }
 
 /** 笔记编辑器可选的默认视图（render 是给 AI 回复用的纯渲染模式，不作为笔记的默认视图） */
@@ -195,8 +201,10 @@ export interface EditorSettings {
   mermaidTheme: EditorMermaidTheme;
   /** 任务列表勾选框可点击 */
   taskInteractive: boolean;
-  /** 单个换行即换行（GFM breaks）：每行的 \n 都渲染成换行，不用行尾补两个空格 */
+  /** 单个换行即换行（GFM breaks）：每行的 \n 都渲染成换行，不用行尾补两个空格；开启后 Setext 标题停用 */
   breaks: boolean;
+  /** Setext 标题：文字下一行写 === / --- 变成一级 / 二级标题；仅在关闭「单换行即换行」时生效 */
+  setext: boolean;
   /** 允许 HTML 标签（关闭后原样显示为文本） */
   allowHtml: boolean;
   /** 对 HTML 做基础净化（去 script / on* / javascript:） */

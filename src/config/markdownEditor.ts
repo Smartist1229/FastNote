@@ -238,6 +238,7 @@ export const buildNoteEditorConfig = (
       taskInteractive: settings.taskInteractive,
       allowHtml: settings.allowHtml,
       breaks: settings.breaks,
+      setext: settings.setext,
       sanitizeHtml: settings.sanitizeHtml,
       showFrontmatter: settings.showFrontmatter,
       showFootnotes: settings.showFootnotes,

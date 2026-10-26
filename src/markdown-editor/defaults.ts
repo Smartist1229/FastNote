@@ -688,6 +688,7 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     imageZoom: { step: 1.2, min: 0.2, max: 8 },
     allowHtml: true,
     breaks: false,
+    setext: true,
     sanitizeHtml: true,
     linkTarget: "_blank",
     emptyText: "",

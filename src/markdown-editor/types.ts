@@ -436,8 +436,13 @@ export interface MarkdownPreviewConfig {
     /** 最大倍率 */
     max: number;
   };
-  /** 单个换行即换行（GFM breaks）：开 after 每行的 `\n` 都渲染成换行，不用行尾补两个空格 */
+  /** 单个换行即换行（GFM breaks）：开启后每行的 `\n` 都渲染成换行，不用行尾补两个空格；同时停用 Setext 标题 */
   breaks: boolean;
+  /**
+   * Setext 标题：段落下一行写 `===` / `---`，把这段文字变成一级 / 二级标题。
+   * 仅在 `breaks` 关闭时生效——开启单换行即换行后，`文字\n---` 应渲染成段落 + 分割线。
+   */
+  setext: boolean;
   /** 允许 HTML 标签（关闭后原样显示为文本） */
   allowHtml: boolean;
   /** 对 HTML 做基础净化（去 script / on* / javascript:） */

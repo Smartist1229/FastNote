@@ -14,6 +14,11 @@
  * 滚动同步都读同一张表，所以校正不会让屏上的行号与正文错开；向上滚进未测区时
  * `useVisibleRange` 会把锚点行的偏移变化补回 scrollTop，避免视图跳动。
  *
+ * 排版条件变过（改宽度 / 字号）时，旧的折行行数只能按宽度比例给个估值；
+ * 短行不会跟着成比例折行，所以这些值只用于滚动条与滚动位图的近似，
+ * 必须标记为待测（`dirty`），等它们进入渲染窗口时重新实测——否则屏上的
+ * 行号、光标就会和正文错开，越往前累计越偏。
+ *
  * 文本增删会平移未改动的尾部行数（`rows.copyWithin`）：只重测真正改到的行，
  * 折行行数不会从改动点开始整体错位。
  *
@@ -67,6 +72,11 @@ export class LineRuler {
   lines: string[] = [];
   /** 每个逻辑行占的视觉行数；NaN = 还没实测，按 ESTIMATED_ROWS 参与偏移计算 */
   rows = new Float64Array(0);
+  /**
+   * 折行行数只是估值（排版条件变过、按宽度比例缩放过）：可以参与偏移计算，
+   * 但进入渲染窗口时必须重新实测。
+   */
+  private dirty = new Uint8Array(0);
   /** 单行行高（px）：来自容器的 computed line-height，用于把测量层的像素高度折算成行数 */
   unit = 0;
   /**
@@ -130,6 +140,11 @@ export class LineRuler {
     return this.offsets[Math.max(0, Math.min(line, this.lines.length))];
   }
 
+  /** 这一行的折行行数是否需要重测：从未量过，或排版条件变过只剩比例估值 */
+  private needsMeasure(index: number): boolean {
+    return Number.isNaN(this.rows[index]) || this.dirty[index] === 1;
+  }
+
   /** 某个纵向位置落在第几行（0 基）：在偏移表上二分，不必逐行累加 */
   lineAt(px: number): number {
     if (this.offsetsStale) this.rebuildOffsets();
@@ -185,17 +200,23 @@ export class LineRuler {
       /*
        * 已经量过的行按宽度比例缩放一次再继续用：换宽度时一行能放的字数大致与宽度成反比，
        * 缩放后的偏移足够接近真值，滚动位置不会先塌回文首再慢慢长回来。
-       * 视口附近随后会被实测覆盖，远处的近似值等滚到了再校正。
+       * 但比例对短行完全不成立（放得下的标题不会因为栏窄了一半就折两行），
+       * 所以这些值只是滚动用的估值：全标记为待测，视口附近随后实测覆盖，
+       * 其余的等滚到了再校正。
        */
-      if (box.wrap && oldWidth > 0) {
-        const ratio = oldWidth / box.width;
-        if (Math.abs(ratio - 1) > 0.001) {
-          const count = this.lines.length;
-          for (let i = 0; i < count; i += 1) {
-            const value = this.rows[i];
-            if (!Number.isNaN(value)) this.rows[i] = Math.max(1, Math.round(value * ratio));
-          }
+      if (box.wrap) {
+        const ratio = oldWidth > 0 ? oldWidth / box.width : 1;
+        const scaled = Math.abs(ratio - 1) > 0.001;
+        const count = this.lines.length;
+        for (let i = 0; i < count; i += 1) {
+          const value = this.rows[i];
+          if (Number.isNaN(value)) continue;
+          if (scaled) this.rows[i] = Math.max(1, Math.round(value * ratio));
+          this.dirty[i] = 1;
         }
+      } else {
+        // 不折行时每行恒为一行，行数与宽度无关
+        this.dirty.fill(0, 0, this.lines.length);
       }
     }
 
@@ -220,6 +241,7 @@ export class LineRuler {
          */
         if (diff.oldEnd !== diff.newEnd) {
           this.rows.copyWithin(diff.newEnd, diff.oldEnd, prev.length);
+          this.dirty.copyWithin(diff.newEnd, diff.oldEnd, prev.length);
         } else {
           // 行数没变：记下改动区间的旧视觉行数，量完再比一次，决定要不要通知
           diffFirst = Math.max(0, diff.first);
@@ -230,11 +252,15 @@ export class LineRuler {
         }
       } else if (prev) {
         this.rows.fill(Number.NaN, 0, lines.length);
+        this.dirty.fill(0, 0, lines.length);
       }
       this.lines = lines;
       this.cached = lines;
       if (diff) {
-        this.rows.fill(Number.NaN, Math.max(0, diff.first), Math.max(0, Math.min(diff.newEnd, lines.length)));
+        const from = Math.max(0, diff.first);
+        const to = Math.max(0, Math.min(diff.newEnd, lines.length));
+        this.rows.fill(Number.NaN, from, to);
+        this.dirty.fill(0, from, to);
       }
     }
 
@@ -245,10 +271,10 @@ export class LineRuler {
     if (!box.wrap) {
       // 不折行：每行必然占一行，直接标记全部已测，省掉整趟排版
       this.rows.fill(1, 0, count);
+      this.dirty.fill(0, 0, count);
     } else if (boxChanged) {
       const anchor = Math.max(0, Math.min(anchorLine, Math.max(0, count - 1)));
-      // 缩放值只是近似：视口上下这一段重新实测
-      this.rows.fill(Number.NaN, anchor, Math.min(count, anchor + visibleRows + 4));
+      // 视口上下这一段立刻实测；其余估值行等进入渲染窗口后再测
       this.measureBand(element, Math.max(0, anchor - 2), Math.min(count, anchor + visibleRows + 8), false);
     } else if (diff) {
       /*
@@ -288,17 +314,25 @@ export class LineRuler {
   /**
    * 光标在**内容坐标系**里的位置（px）：x 从内容左边缘算，y 从内容顶边算。
    *
-   * 复用行号槽的测量层：它已经和编辑区同字体、同宽度、同折行规则（连字也一起），
-   * 只把光标所在的那一行拆成「前缀 + 标记 + 后缀」排一次，标记的 offsetLeft/offsetTop
-   * 就是光标的位置——折行、Tab、代理对、CJK 全宽都由浏览器算，不用另养一套宽度模型。
+   * 优先量**屏上真实渲染出来的那一行**：把 Range 落在光标所在列，取它的矩形。
+   * 行内折行第几段、Tab、代理对、CJK 全宽、连字都由浏览器按最终排版给出，
+   * 不依赖偏移表，也就不会出现「正文在这一行、光标按偏移表画在另一行」的错位。
    *
-   * 一次调用 = 一次排版 + 两次读取，所以只在光标真的动过时调（滚动只是平移，别走这里）。
+   * 行还没渲染（在渲染窗口之外）、或 DOM 文字尚未跟上 value（组合输入中）时，
+   * 退回隐藏测量层：它已经和编辑区同字体、同宽度、同折行规则，
+   * 把光标所在行拆成「前缀 + 标记 + 后缀」排一次，标记的 offsetLeft/offsetTop 就是位置。
+   *
+   * 只在光标真的动过时调（滚动只是平移，别走这里）。
    */
   caretPoint(element: HTMLElement, line: number, column: number): { x: number; y: number } | null {
     if (!this.lines.length) return null;
     const index = Math.max(0, Math.min(line, this.lines.length - 1));
-    // 光标所在行可能还没量过（例如刚打开文档）：先补测这一行，y 才是真实折行位置
-    if (Number.isNaN(this.rows[index])) this.measureBand(element, index, index + 1);
+    const text = this.lines[index] ?? "";
+    const at = Math.max(0, Math.min(column, text.length));
+    // 这一行的折行行数可能只是估值：先按渲染出来的真实高度补测一次（顺带校正行号槽）
+    if (this.needsMeasure(index)) this.measureBand(element, index, index + 1, true, true);
+    const rendered = this.renderedCaretPoint(element, index, at, text);
+    if (rendered) return rendered;
     const box = this.mirrorOf(element);
     if (!box) return null;
     if (this.styleStale) {
@@ -306,8 +340,6 @@ export class LineRuler {
       this.styleStale = false;
     }
 
-    const text = this.lines[index] ?? "";
-    const at = Math.max(0, Math.min(column, text.length));
     const doc = element.ownerDocument;
     const row = doc.createElement("div");
     row.className = "mde-measure-line";
@@ -340,6 +372,62 @@ export class LineRuler {
     const y = this.offsetOf(index) + Math.round(rowsIntoLine) * (this.advance || this.unit);
     box.textContent = "";
     return { x, y };
+  }
+
+  /**
+   * 从屏上已经渲染出来的行测量光标；行不在渲染窗口里、或 DOM 文字与 value 不一致时返回 null。
+   *
+   * `.mde-line` 里就是一个文本节点（空行是 `<br>`），但浏览器编辑后可能拆成多个，
+   * 所以按长度走一遍文本节点找到光标所在列。Range 是折叠的：宽度为 0，
+   * `top` 是文字内容顶而不是行盒顶，因此 y 以真实行盒顶为准，只取 Range 的 x。
+   */
+  private renderedCaretPoint(
+    element: HTMLElement,
+    index: number,
+    column: number,
+    text: string,
+  ): { x: number; y: number } | null {
+    const row = element.querySelector<HTMLElement>(`.mde-line[data-line="${index}"]`);
+    if (!row || (row.textContent ?? "") !== text) return null;
+    const view = element.ownerDocument.defaultView;
+    const style = view ? view.getComputedStyle(element) : null;
+    const padLeft = style ? parseFloat(style.paddingLeft) || 0 : 0;
+    const padTop = style ? parseFloat(style.paddingTop) || 0 : 0;
+    const doc = element.ownerDocument;
+
+    let rect: DOMRect | null = null;
+    if (text.length) {
+      const walker = doc.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      let remaining = column;
+      while (node) {
+        const length = node.nodeValue?.length ?? 0;
+        if (remaining <= length) break;
+        remaining -= length;
+        node = walker.nextNode();
+      }
+      if (node) {
+        const range = doc.createRange();
+        range.setStart(node, remaining);
+        range.collapse(true);
+        const first = range.getClientRects()[0] ?? range.getBoundingClientRect();
+        // 折叠 Range 在部分内核里给不出有高度的矩形；这时宁可退回测量层
+        if (first && (first.height > 0 || first.width > 0)) rect = first;
+      }
+      if (!rect) return null;
+    }
+
+    const rowRect = row.getBoundingClientRect();
+    if (!rowRect.height) return null;
+    // 行内折出的第几段：行盒顶到 Range 顶的差里，除了 4px 的内容内缩，正好是整数个 advance
+    const advance = this.advance || this.unit;
+    const visualRow =
+      rect && advance > 0 ? Math.max(0, Math.round((rect.top - rowRect.top) / advance)) : 0;
+    const box = element.getBoundingClientRect();
+    return {
+      x: (rect ? rect.left : rowRect.left) - box.left - padLeft + element.scrollLeft,
+      y: rowRect.top - box.top - padTop + element.scrollTop + visualRow * advance,
+    };
   }
 
   /**
@@ -389,7 +477,7 @@ export class LineRuler {
     this.ensureCapacity(limit);
 
     let missing = 0;
-    for (let i = start; i < end; i += 1) if (Number.isNaN(this.rows[i])) missing += 1;
+    for (let i = start; i < end; i += 1) if (this.needsMeasure(i)) missing += 1;
     if (!missing) return false;
 
     let changed = false;
@@ -400,7 +488,7 @@ export class LineRuler {
       for (const node of rendered) {
         const index = Number(node.dataset.line);
         if (!Number.isInteger(index) || index < start || index >= end) continue;
-        if (!Number.isNaN(this.rows[index])) continue;
+        if (!this.needsMeasure(index)) continue;
         // 组合输入期间 DOM 里的文字可能领先于 ruler 的行文本，对不上就不信
         if ((node.textContent ?? "") !== (this.lines[index] ?? "")) continue;
         indexes.push(index);
@@ -429,7 +517,7 @@ export class LineRuler {
     const indexes: number[] = [];
     const nodes: HTMLDivElement[] = [];
     for (let i = start; i < end; i += 1) {
-      if (!Number.isNaN(this.rows[i])) continue;
+      if (!this.needsMeasure(i)) continue;
       const line = doc.createElement("div");
       line.className = "mde-measure-line";
       line.textContent = this.lines[i] || FILLER;
@@ -455,6 +543,7 @@ export class LineRuler {
       const rows = Math.max(1, Math.round(heights[i] / unit));
       const previous = Number.isNaN(this.rows[index]) ? ESTIMATED_ROWS : this.rows[index];
       this.rows[index] = rows;
+      this.dirty[index] = 0;
       if (rows !== previous) changed = true;
     }
     this.offsetsStale = true;
@@ -470,10 +559,14 @@ export class LineRuler {
 
   private ensureCapacity(n: number): void {
     if (this.rows.length >= n) return;
-    const grown = new Float64Array(Math.max(n, 64, this.rows.length * 2));
+    const size = Math.max(n, 64, this.rows.length * 2);
+    const grown = new Float64Array(size);
     grown.fill(Number.NaN);
     grown.set(this.rows);
     this.rows = grown;
+    const dirty = new Uint8Array(size);
+    dirty.set(this.dirty);
+    this.dirty = dirty;
   }
 
   private rebuildOffsets(): void {

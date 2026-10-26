@@ -43,6 +43,8 @@ interface ParseState {
   allowHtml: boolean;
   /** 单个换行（GFM breaks）：\n 直接算硬换行 */
   breaks: boolean;
+  /** Setext 标题：段落下一行的 `===` / `---` 作为标题下划线 */
+  setext: boolean;
 }
 
 const indentOf = (text: string): number => {
@@ -352,6 +354,15 @@ const toWindowLines = (src: string, from: number, to: number): SourceLine[] => {
   return lines;
 };
 
+/**
+ * front matter 头部区域允许出现的行：空行、缩进续行、列表项、键值行。
+ *
+ * 闭合线只能在这个头部区域里找。否则开头的 `---` 一旦没闭合（比如闭合线被误改成
+ * `---ab`），扫描会一路吃到正文里某条 `---` 分割线，把整篇都当成 front matter
+ * 置空——预览瞬间变成空白。闭合线之前出现第一行不像元数据的正文，就放弃识别。
+ */
+const METADATA_LINE = /^(?:\s*$|\s+\S|\s*-\s|\s*["']?[\w.-]+["']?\s*:(?:\s|$))/;
+
 /** 预扫描：front matter / 链接定义 / 脚注定义 */
 const extractDefinitions = (lines: SourceLine[], st: ParseState): { frontmatter: ParsedDocument["frontmatter"] } => {
   let frontmatter: ParsedDocument["frontmatter"] = null;
@@ -371,6 +382,8 @@ const extractDefinitions = (lines: SourceLine[], st: ParseState): { frontmatter:
         for (let k = 0; k <= i; k++) lines[k].text = "";
         break;
       }
+      // 闭合线之前出现了正文：这段不是 front matter，按普通文本渲染
+      if (!METADATA_LINE.test(lines[i].text)) break;
     }
   }
 
@@ -864,7 +877,8 @@ const parseBlocks = (lines: SourceLine[], st: ParseState, depth: number): BlockN
       while (j < lines.length) {
         const next = lines[j].text;
         if (blank(next)) break;
-        const underline = /^ {0,3}(=+|-+)[ \t]*$/.exec(next);
+        // 关掉 Setext 时 `---` 走 startsNewBlock 的 isHr 分支，段落就此收尾
+        const underline = st.setext ? /^ {0,3}(=+|-+)[ \t]*$/.exec(next) : null;
         if (underline) {
           setext = underline[1][0] === "=" ? 1 : 2;
           setextLineEnd = lines[j].offset + next.length;
@@ -908,7 +922,7 @@ const parseBlocks = (lines: SourceLine[], st: ParseState, depth: number): BlockN
 /** 入口：解析整篇 Markdown */
 export function parseMarkdown(
   src: string,
-  options: { allowHtml?: boolean; breaks?: boolean } = {},
+  options: { allowHtml?: boolean; breaks?: boolean; setext?: boolean } = {},
 ): ParsedDocument {
   const text = src.replace(/\r\n?/g, "\n");
   const st: ParseState = {
@@ -920,6 +934,7 @@ export function parseMarkdown(
     outline: [],
     allowHtml: options.allowHtml ?? true,
     breaks: options.breaks ?? false,
+    setext: options.setext ?? true,
   };
 
   const lines = toLines(text);
@@ -1237,7 +1252,7 @@ export function parseMarkdownIncremental(
     offsets?: Float64Array;
   },
   nextText: string,
-  options: { allowHtml?: boolean; breaks?: boolean } = {},
+  options: { allowHtml?: boolean; breaks?: boolean; setext?: boolean } = {},
   nextCache?: { lines: readonly string[]; offsets: Float64Array },
 ): ParsedDocument | null {
   const prevText = previous.text;
@@ -1345,6 +1360,7 @@ export function parseMarkdownIncremental(
       outline: [],
       allowHtml: options.allowHtml ?? true,
       breaks: options.breaks ?? false,
+      setext: options.setext ?? true,
     } satisfies ParseState;
     frontmatter = extractDefinitions(scanned, definitionState).frontmatter;
     windowSource = scanned.slice(startLine, endLine);
@@ -1360,6 +1376,7 @@ export function parseMarkdownIncremental(
         outline: [],
         allowHtml: true,
         breaks: false,
+        setext: true,
       } satisfies ParseState;
       extractDefinitions(toLines(prevText), previousDefinitions);
       if (
@@ -1379,6 +1396,7 @@ export function parseMarkdownIncremental(
       outline: [],
       allowHtml: options.allowHtml ?? true,
       breaks: options.breaks ?? false,
+      setext: options.setext ?? true,
     } satisfies ParseState;
     windowSource = toWindowLines(nextText, startLine, endLine);
   }
@@ -1393,6 +1411,7 @@ export function parseMarkdownIncremental(
     outline: [],
     allowHtml: options.allowHtml ?? true,
     breaks: options.breaks ?? false,
+    setext: options.setext ?? true,
   };
   const prevHeadings = headingIndexOf(prevDoc);
   const headingStart = headingCountBefore(prevHeadings, headCount);

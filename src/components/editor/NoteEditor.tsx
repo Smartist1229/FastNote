@@ -105,6 +105,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const hasPendingSaveRef = useRef(false);
   /** 与上次落盘的内容是否有差异（决定是否真的调 onSave） */
   const hasUnsavedChangesRef = useRef(false);
+  /**
+   * 切走时排队补写的快照（按笔记 id）。
+   *
+   * 补写要排在正在进行的写库之后，是个异步窗口：这期间切回来，宿主手里的
+   * `note.content` 可能还是补写前的旧值。直接采用会把刚打的字回填掉，编辑器
+   * 的受控 value 一变，光标就掉回文首。只要快照还没落库，切换与同步都以它为准。
+   */
+  const pendingWritesRef = useRef(
+    new Map<number, { title: string; content: string; categoryId: number | null }>(),
+  );
   /** 防抖计时器 id；切笔记时清掉，防止把旧笔记内容写进新笔记 */
   const saveTimerRef = useRef<number | null>(null);
   const currentNoteIdRef = useRef<number | null>(null);
@@ -265,6 +275,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       content: latestContentRef.current,
       categoryId: latestCategoryIdRef.current,
     };
+    const pending = pendingWritesRef.current;
+    pending.set(noteId, snapshot);
     hasUnsavedChangesRef.current = false;
     const write = async () => {
       // 最多等 2s：正常写库是毫秒级，超时就按顺序直接写，不让切换卡死
@@ -274,10 +286,17 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       }
       await onSaveRef.current(noteId, snapshot.title, snapshot.content, snapshot.categoryId);
     };
-    void write().catch((error) => {
-      console.error("切换笔记前保存失败:", error);
-      showToast("保存失败，请重试", "error");
-    });
+    void write().then(
+      () => {
+        // 期间又排了更新的快照就留着它，别把新的删掉
+        if (pending.get(noteId) === snapshot) pending.delete(noteId);
+      },
+      (error) => {
+        // 快照保留：宿主手里的旧内容不能拿来覆盖这次没写进去的输入
+        console.error("切换笔记前保存失败:", error);
+        showToast("保存失败，请重试", "error");
+      },
+    );
   };
 
   /**
@@ -293,11 +312,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         // 先把上一篇没存完的输入补写掉，再切换（用切换前的 id，不能用 note.id）
         flushPendingSave(lastNoteIdRef.current);
         currentNoteIdRef.current = note.id;
-        setTitle(note.title);
-        setContent(note.content);
-        latestTitleRef.current = note.title;
-        latestContentRef.current = note.content;
-        latestCategoryIdRef.current = note.category_id;
+        /*
+         * 这篇上次切走时还有补写没落库：宿主手里的 note 是补写前的旧值，
+         * 用快照顶上，否则刚打的字会被旧内容回填、光标跟着掉回文首。
+         */
+        const pending = pendingWritesRef.current.get(note.id);
+        const initialTitle = pending?.title ?? note.title;
+        const initialContent = pending?.content ?? note.content;
+        setTitle(initialTitle);
+        setContent(initialContent);
+        latestTitleRef.current = initialTitle;
+        latestContentRef.current = initialContent;
+        latestCategoryIdRef.current = pending ? pending.categoryId : note.category_id;
         lastNoteIdRef.current = note.id;
         hasUnsavedChangesRef.current = false;
         hasPendingSaveRef.current = false;
@@ -324,9 +350,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   /**
    * 同一篇笔记被外部改写时（如列表刷新回来的数据）同步进编辑器；
    * 本地有未保存改动就不覆盖，否则用户的输入会被旧数据冲掉。
+   * 切走时排队的补写没落库前，宿主的数据也可能比它旧，同样不能覆盖。
    */
   useEffect(() => {
-    if (!note || lastNoteIdRef.current !== note.id || hasUnsavedChangesRef.current) return;
+    if (!note || lastNoteIdRef.current !== note.id) return;
+    if (pendingWritesRef.current.has(note.id) || hasUnsavedChangesRef.current) return;
     if (note.title !== latestTitleRef.current) {
       setTitle(note.title);
       latestTitleRef.current = note.title;
@@ -377,7 +405,10 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       try {
         do {
           hasPendingSaveRef.current = false;
-          await onSaveExternalRef.current?.(latestContentRef.current);
+          const savedContent = latestContentRef.current;
+          await onSaveExternalRef.current?.(savedContent);
+          // 写入期间又敲了字：脏标记不能被这次（旧快照的）写入清掉，否则丢字
+          if (latestContentRef.current !== savedContent) hasPendingSaveRef.current = true;
           if (!hasPendingSaveRef.current) {
             hasUnsavedChangesRef.current = false;
             setLastSavedAt(new Date().toISOString());
@@ -410,14 +441,25 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     try {
       do {
         hasPendingSaveRef.current = false;
-        await onSave(
-          savingNoteId,
-          latestTitleRef.current,
-          latestContentRef.current,
-          latestCategoryIdRef.current
-        );
+        const savedTitle = latestTitleRef.current;
+        const savedContent = latestContentRef.current;
+        const savedCategoryId = latestCategoryIdRef.current;
+        await onSave(savingNoteId, savedTitle, savedContent, savedCategoryId);
+        /*
+         * 写入期间又改了内容：这次写进去的是旧快照，脏标记不能清。
+         * 否则宿主把旧内容回声进 note 时，下面的同步 effect 会拿旧文本覆盖新输入，
+         * 编辑器的受控 value 一缩，光标就跟着掉回文首。
+         */
+        if (
+          latestTitleRef.current !== savedTitle ||
+          latestContentRef.current !== savedContent ||
+          latestCategoryIdRef.current !== savedCategoryId
+        ) {
+          hasPendingSaveRef.current = true;
+        }
         if (!hasPendingSaveRef.current) {
           hasUnsavedChangesRef.current = false;
+          pendingWritesRef.current.delete(savingNoteId);
           setLastSavedAt(new Date().toISOString());
         }
       } while (hasPendingSaveRef.current && currentNoteIdRef.current === savingNoteId);
@@ -523,6 +565,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={historyPreview.onRollback}
+              title="恢复此版本，并删除它及之后的所有历史版本"
               className="text-[11px] px-2 py-0.5 rounded-md text-on-accent bg-primary-500 hover:bg-primary-600 transition-colors"
             >
               回滚到此版本

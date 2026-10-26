@@ -78,6 +78,23 @@ const SELECT_PAD = 64;
 const MAX_RANGES = 400;
 
 /**
+ * 由浏览器原生挪光标的按键。
+ *
+ * 这些键之后到达的 selectionchange 是用户操作；其余按键的落点都由编辑器自己写，
+ * 不需要（也不应该）把 DOM 选区当真相。
+ */
+const CARET_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
+/**
  * 一次最多铺多少个代码 token 区间。
  *
  * token 比查找命中密得多（一行十几个很常见），但只覆盖可视区间，
@@ -256,6 +273,14 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
     const selRef = useRef({ start: 0, end: 0 });
     /** 待落回 DOM 的选区 */
     const pendingSelection = useRef<[number, number] | null>(null);
+    /**
+     * 下一次量光标时，顺便把光标所在的行滚进视口。
+     *
+     * 只有本地编辑（`emit`：打字、回车、粘贴、命令）会置位；程序化跳转各自有滚动策略
+     * （`setSelection` 的 reveal、查找的居中），不能再被这里补一次。
+     * 由 `syncCaret` 消费：那里本来就算好了光标的坐标，不必为滚动再量一遍排版。
+     */
+    const followCaret = useRef(false);
     /** 上一次渲染出来的行文本：组合结束后做前后缀差分要用 */
     const renderedRef = useRef<{ first: number; texts: string[] } | null>(null);
     /**
@@ -279,6 +304,16 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
      * 表现为「跳转之后没有光标」。所以记住它，每次渲染后确认一次，掉了就补回去。
      */
     const guardSelection = useRef<[number, number] | null>(null);
+    /**
+     * 用户是不是正在主动挪光标（点击、拖选、方向键、输入法组合、右键菜单）。
+     *
+     * `selectionchange` 分不清「用户点的」和「浏览器自己塌的」：换掉整批 `.mde-line`
+     * 之后，浏览器会把选区丢到一个随意的落点（常见是第一行 0 号位置），
+     * 而那一刻恰好没有行外节点可以识别。没有手势时一律不信 DOM 选区，
+     * 把逻辑选区补回去；否则下一次输入就会插到文首。
+     */
+    const selectionIntent = useRef(false);
+    const intentTimer = useRef(0);
     const composing = useRef(false);
     /** 浏览器会自己改 DOM 的那几次输入（组合以外的漏网之鱼），到 `input` 事件里读回来 */
     const nativeMutation = useRef(false);
@@ -293,6 +328,13 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
      * NotFoundError；换掉行容器则只删 `.mde-lines` 自己（父节点没被动过），连带清掉整批脏节点。
      */
     const [domEpoch, setDomEpoch] = useState(0);
+    /**
+     * 输入法组合中（会触发渲染的那份状态）。
+     *
+     * `composing` 是给事件处理路径读的 ref；占位提示要跟着组合隐藏，必须走 state：
+     * 组合期间 value 还是空串，占位提示会正好压在拼音上。
+     */
+    const [composingState, setComposingState] = useState(false);
 
     const setElement = useCallback(
       (next: HTMLDivElement | null) => {
@@ -309,6 +351,8 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         pendingTextRef.current = next.text;
         pendingSelection.current = [next.start, next.end];
         selRef.current = { start: next.start, end: next.end };
+        // 光标是本地的编辑推过去的，落稳之后要让它留在视口里
+        followCaret.current = true;
         onChange(next, source);
       },
       [onChange],
@@ -339,14 +383,27 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
 
     const lines = splitLines(value);
     const totalLines = lines.length;
-    /** 渲染区间：[first, last)。待落的选区在附近时把它一起渲染出来，否则光标落不上去 */
+    /**
+     * 渲染区间：[first, last)。待落的选区、以及刚落稳的选区（guard）在附近时
+     * 都把它一起渲染出来，否则光标落不上去。
+     *
+     * guard 也要算进来：文末按回车时新行刚加进来，`range.last` 还是旧的
+     * （旧行数就是它的上界），待落选区一清掉，这一行就会从 DOM 里被撤走；
+     * 浏览器把选区塌到容器上，补选区又只能退到窗口边缘——光标就回到上一行末尾。
+     */
     const window = ((): { first: number; last: number } => {
       const start = range.first;
       const end = range.last > range.first ? range.last : Math.min(totalLines, FALLBACK_LINES);
-      const pending = pendingSelection.current;
-      if (!pending || !totalLines) return { first: start, last: end };
-      const low = lineAtOffset(value, Math.min(pending[0], pending[1])).line;
-      const high = lineAtOffset(value, Math.max(pending[0], pending[1])).line;
+      const anchors: [number, number][] = [];
+      if (pendingSelection.current) anchors.push(pendingSelection.current);
+      if (guardSelection.current) anchors.push(guardSelection.current);
+      if (!anchors.length || !totalLines) return { first: start, last: end };
+      let low = totalLines;
+      let high = 0;
+      for (const [from, to] of anchors) {
+        low = Math.min(low, lineAtOffset(value, Math.min(from, to)).line);
+        high = Math.max(high, lineAtOffset(value, Math.max(from, to)).line);
+      }
       return {
         // 只补近处的：远处的（全选到文末那种）不值得为它渲染整篇
         first: low >= start - SELECT_PAD ? Math.max(0, Math.min(start, low)) : start,
@@ -665,6 +722,11 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       const focused = content.ownerDocument.activeElement === content;
       const { start, end } = selRef.current;
       if (!focused || start !== end || composing.current) {
+        /*
+         * 这次跟不到光标（失焦/有选区/组合中）：放弃跟随。
+         * 组合结束若有文字落进文档，`readback` 会重新置位。
+         */
+        followCaret.current = false;
         caretPoint.current = null;
         paintCaret();
         return;
@@ -672,6 +734,7 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       const at = lineAtOffset(valueRef.current, start);
       const point = ruler.caretPoint(content, at.line, start - at.start);
       if (!point) {
+        followCaret.current = false;
         caretPoint.current = null;
         paintCaret();
         return;
@@ -687,16 +750,37 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
        */
       const caretWidth = caret.offsetWidth || 2;
       const tracking = style ? parseFloat(style.letterSpacing) || 0 : 0;
+      const y = (style ? parseFloat(style.paddingTop) || 0 : 0) + point.y;
       caretPoint.current = {
         x: (style ? parseFloat(style.paddingLeft) || 0 : 0) + point.x - tracking / 2 - caretWidth / 2,
-        y: (style ? parseFloat(style.paddingTop) || 0 : 0) + point.y,
+        y,
       };
+      /*
+       * 本地编辑把光标推走时，视口要跟着走。
+       *
+       * 程序化写选区不会让浏览器像跟随原生光标那样滚动，连续回车超过一屏之后
+       * 光标就跑到视口外、画面还停在原处。这里正好量到了光标坐标，只补最小位移：
+       * 光标从下边越界就往下挪一行，回到上边越界就往上挪，连按回车是一行一行跟着走的。
+       */
+      if (followCaret.current) {
+        followCaret.current = false;
+        const unit = ruler.advance || ruler.unit || config.editor.fontSize * config.editor.lineHeight;
+        const margin = Math.min(unit, 8);
+        const top = content.scrollTop;
+        const height = Math.max(1, content.clientHeight);
+        if (y - margin < top) {
+          content.scrollTop = Math.max(0, y - margin);
+        } else if (y + unit + margin > top + height) {
+          const max = Math.max(0, content.scrollHeight - height);
+          content.scrollTop = Math.min(max, y + unit + margin - height);
+        }
+      }
       paintCaret();
       // 重新起一次闪烁：正在动的时候是实心的，停手之后才开始闪（和原生光标一致）
       caret.classList.remove("is-blinking");
       void caret.offsetWidth;
       caret.classList.add("is-blinking");
-    }, [paintCaret, ruler]);
+    }, [config.editor.fontSize, config.editor.lineHeight, paintCaret, ruler]);
 
     /** 敲一个字往往同时触发 input 与 selectionchange，合并到下一帧只量一次 */
     const scheduleCaret = useCallback(() => {
@@ -731,6 +815,46 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
     );
 
     /**
+     * 把光标所在的行滚进视口（只做最小位移）。
+     *
+     * 打字与回车走的是程序化写选区：浏览器不会像跟随原生光标那样替我们滚动。
+     * 连续回车超过一屏之后，光标已经落到视口外，画面却还停在原处——
+     * 所以本地编辑落完选区后要自己补这一步。
+     *
+     * 与 `revealOffset` 的区别：那边是「跳转」，目标不可见时居中；
+     * 这里是「跟手」，只在光标真的越出视口时挪最小的距离，连按回车时视图是一行一行跟着走的。
+     */
+    const revealCaretAt = useCallback(
+      (offset: number) => {
+        const content = contentRef.current;
+        if (!content) return;
+        // 失焦时不抢滚动位置：工具栏/外部写入也可能走到这里
+        if (content.ownerDocument.activeElement !== content) return;
+        const text = valueRef.current;
+        const at = lineAtOffset(text, Math.max(0, Math.min(offset, text.length)));
+        const point = ruler.lines.length
+          ? ruler.caretPoint(content, at.line, Math.max(0, offset - at.start))
+          : null;
+        if (!point) return;
+        const view = content.ownerDocument.defaultView;
+        const style = view ? view.getComputedStyle(content) : null;
+        const unit = ruler.advance || ruler.unit || config.editor.fontSize * config.editor.lineHeight;
+        // 光标坐标是相对 `.mde-lines` 的；滚动容器自己还有上内边距
+        const y = (style ? parseFloat(style.paddingTop) || 0 : 0) + point.y;
+        const margin = Math.min(unit, 8);
+        const top = content.scrollTop;
+        const height = Math.max(1, content.clientHeight);
+        if (y - margin < top) {
+          content.scrollTop = Math.max(0, y - margin);
+        } else if (y + unit + margin > top + height) {
+          const max = Math.max(0, content.scrollHeight - height);
+          content.scrollTop = Math.min(max, y + unit + margin - height);
+        }
+      },
+      [config.editor.fontSize, config.editor.lineHeight, ruler],
+    );
+
+    /**
      * 把待落的选区写进 DOM。
      *
      * 每次渲染都试一次：文本改完、区间重算完、rAF 兜底都会走到这里。
@@ -744,19 +868,31 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         const pending = pendingSelection.current;
         if (!pending) return;
         const [start, end] = pending;
-        if (writeDomSelection(start, end, true)) {
+        const reveal = followCaret.current;
+        const settle = () => {
           pendingSelection.current = null;
           selRef.current = { start, end };
           guardSelection.current = [start, end];
           scheduleCaret();
+        };
+        if (writeDomSelection(start, end, true)) {
+          settle();
           return;
         }
         if (!lineWillRender(start) || !lineWillRender(end)) {
+          /*
+           * 本地编辑把光标推到了渲染窗口之外（连续回车最典型）：先滚过去，
+           * 让下一趟把目标行渲染出来再落精确选区。原来这里直接退到窗口边缘，
+           * 光标就被钉在旧位置，视口也不会跟。
+           */
+          if (reveal && retry < 3) {
+            revealCaretAt(start);
+            sync();
+            requestAnimationFrame(() => applyPending(retry + 1));
+            return;
+          }
           if (!writeDomSelection(start, end, false)) return;
-          pendingSelection.current = null;
-          selRef.current = { start, end };
-          guardSelection.current = [start, end];
-          scheduleCaret();
+          settle();
           return;
         }
         /*
@@ -769,13 +905,69 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         sync();
         requestAnimationFrame(() => applyPending(retry + 1));
       },
-      [lineWillRender, scheduleCaret, sync, writeDomSelection],
+      [lineWillRender, revealCaretAt, scheduleCaret, sync, writeDomSelection],
     );
 
     /** 下一帧再试一次：区间刚变、这一帧还没有对应行时的兜底 */
     const queueApply = useCallback(() => {
       requestAnimationFrame(() => applyPending());
     }, [applyPending]);
+
+    /** 手势期间一直相信 DOM 选区；松手 / 按键动作结束后再留一小段，接住异步到达的 selectionchange */
+    const holdSelectionIntent = useCallback(() => {
+      selectionIntent.current = true;
+      if (intentTimer.current) {
+        globalThis.clearTimeout(intentTimer.current);
+        intentTimer.current = 0;
+      }
+    }, []);
+
+    const lingerSelectionIntent = useCallback((hold = 160) => {
+      selectionIntent.current = true;
+      if (intentTimer.current) globalThis.clearTimeout(intentTimer.current);
+      intentTimer.current = globalThis.setTimeout(() => {
+        intentTimer.current = 0;
+        selectionIntent.current = false;
+      }, hold);
+    }, []);
+
+    const clearSelectionIntent = useCallback(() => {
+      if (intentTimer.current) {
+        globalThis.clearTimeout(intentTimer.current);
+        intentTimer.current = 0;
+      }
+      selectionIntent.current = false;
+    }, []);
+
+    /** 正在按着的指针是不是从编辑区里按下的：只有这种松手才延续选区意图 */
+    const pointerPressed = useRef(false);
+
+    const restoreFrame = useRef(0);
+    /**
+     * 把逻辑选区补回 DOM。
+     *
+     * 浏览器在行节点被换掉之后自己塌下来的选区不是用户挪的：读进 `selRef` 的话，
+     * 下一次输入就会按它挑的落点插入（常见是第一行开头）。这里只补 DOM，
+     * 逻辑选区原样保留；有排队中的选区时优先落那一份。
+     */
+    const restoreSelection = useCallback(() => {
+      if (restoreFrame.current) return;
+      restoreFrame.current = requestAnimationFrame(() => {
+        restoreFrame.current = 0;
+        const content = contentRef.current;
+        if (!content || content.ownerDocument.activeElement !== content) return;
+        // 这一帧里开始了组合输入：选区归输入法，别补
+        if (composing.current) return;
+        if (pendingSelection.current) {
+          applyPending();
+          return;
+        }
+        const target = guardSelection.current ?? [selRef.current.start, selRef.current.end];
+        const current = readDomSelection();
+        if (current && current.start === target[0] && current.end === target[1]) return;
+        writeDomSelection(target[0], target[1], false);
+      });
+    }, [applyPending, readDomSelection, writeDomSelection]);
 
     /**
      * 每次渲染都做两件事：试落一次选区，再看住上一次落好的选区。
@@ -803,8 +995,20 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       if (!content) return;
       const doc = content.ownerDocument;
       const handleSelectionChange = () => {
+        /*
+         * 焦点不在编辑区里时，DOM 选区归别处管：用户可能正在标题框 / 笔记列表里选字，
+         * 编辑器不该把手伸回去。失焦本身由 handleBlur 清掉守住的状态。
+         */
+        if (doc.activeElement !== content) return;
         const selection = doc.getSelection();
+        /*
+         * `appliedRef` 是**一次性令牌**：它只用来吞掉我们刚写选区后浏览器回的那一次
+         * selectionchange。以前它一直留着，用户挪开再挪回同一个落点（刚编辑过的那一行、
+         * 光标原处）时，真实变化会被当成回声吞掉——逻辑选区与自绘光标都停在别处，
+         * 表现为「那一行点不进去、上下键也跳过它」。读取后立刻作废，回声只认一次。
+         */
         const applied = appliedRef.current;
+        appliedRef.current = null;
         if (selection && applied) {
           if (
             selection.anchorNode === applied.anchorNode &&
@@ -816,27 +1020,29 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
           }
         }
         /*
-         * 选区掉在容器上（换掉整批行节点时浏览器常这么干）：这不是用户挪的光标。
-         * 当成第 0 个字符的话，自绘光标会跳到文首，方向键也再也回不到刚才那一行。
-         * 逻辑选区保持不动，下一帧把它重新落回行里。
+         * 选区有一端掉在行外（换掉整批行节点时浏览器常这么干）：这不是用户挪的光标。
+         * 只认「两端都在行内」的选区——一端在行外时 `pointToOffset` 只能把它贴到
+         * 文档两端，逻辑选区会被改写成 0（文首），自绘光标跳走、方向键也再也回不到
+         * 刚才那一行。逻辑选区保持不动，下一帧把它重新落回行里。
          */
-        if (selection && !rowOf(selection.anchorNode) && !rowOf(selection.focusNode)) {
-          requestAnimationFrame(() => {
-            const target = contentRef.current;
-            if (!target || target.ownerDocument.activeElement !== target) return;
-            if (pendingSelection.current) {
-              applyPending();
-              return;
-            }
-            if (selectionInRows()) return;
-            const guard = guardSelection.current ?? [selRef.current.start, selRef.current.end];
-            writeDomSelection(guard[0], guard[1], false);
-          });
+        if (selection && (!rowOf(selection.anchorNode) || !rowOf(selection.focusNode))) {
+          // 组合期间浏览器正拿着真实 DOM 改字，别去抢选区
+          if (!composing.current) restoreSelection();
           return;
         }
         const next = readDomSelection();
         if (!next) return;
-        if (next.start === selRef.current.start && next.end === selRef.current.end) return;
+        const same = next.start === selRef.current.start && next.end === selRef.current.end;
+        /*
+         * 两端都在行内也未必是用户挪的：浏览器塌陷时最常落在第一行 0 号位置，
+         * 那是合法的行内位置，光看节点判断不出来。只认用户手势期间的选区变化，
+         * 其余当边框抖动处理，把逻辑选区补回去。
+         */
+        if (!selectionIntent.current && !pointerPressed.current && !composing.current) {
+          if (!same) restoreSelection();
+          return;
+        }
+        if (same) return;
         selRef.current = next;
         // 光标真的被用户挪走了：不再需要看住上一次跳转落下的那个点
         guardSelection.current = null;
@@ -845,16 +1051,52 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       };
       doc.addEventListener("selectionchange", handleSelectionChange);
       return () => doc.removeEventListener("selectionchange", handleSelectionChange);
-    }, [
-      applyPending,
-      element,
-      onSelectionChange,
-      readDomSelection,
-      rowOf,
-      scheduleCaret,
-      selectionInRows,
-      writeDomSelection,
-    ]);
+    }, [element, onSelectionChange, readDomSelection, restoreSelection, rowOf, scheduleCaret]);
+
+    /**
+     * 标记「用户正在挪光标」的手势。
+     *
+     * 用原生监听而不是 React 事件：`selectstart` 没有对应的 React 事件，
+     * 而且手势和 selectionchange 之间不能隔一层合成事件，否则顺序不可靠。
+     */
+    useEffect(() => {
+      const content = element;
+      if (!content) return;
+      const onPointerDown = () => {
+        pointerPressed.current = true;
+        holdSelectionIntent();
+      };
+      const onPointerUp = () => {
+        if (!pointerPressed.current) return;
+        pointerPressed.current = false;
+        lingerSelectionIntent();
+      };
+      const onSelectStart = () => lingerSelectionIntent(4000);
+      const onKeyDown = (event: KeyboardEvent) => {
+        // 这些键由浏览器原生挪光标，落点需要被接受；其余键的落点由我们自己写
+        if (CARET_KEYS.has(event.key)) lingerSelectionIntent(180);
+      };
+      const onContextMenu = () => lingerSelectionIntent(800);
+      const onWindowBlur = () => clearSelectionIntent();
+      content.addEventListener("pointerdown", onPointerDown);
+      globalThis.addEventListener("pointerup", onPointerUp);
+      globalThis.addEventListener("pointercancel", onPointerUp);
+      globalThis.addEventListener("blur", onWindowBlur);
+      content.addEventListener("selectstart", onSelectStart);
+      content.addEventListener("keydown", onKeyDown);
+      content.addEventListener("contextmenu", onContextMenu);
+      return () => {
+        content.removeEventListener("pointerdown", onPointerDown);
+        globalThis.removeEventListener("pointerup", onPointerUp);
+        globalThis.removeEventListener("pointercancel", onPointerUp);
+        globalThis.removeEventListener("blur", onWindowBlur);
+        content.removeEventListener("selectstart", onSelectStart);
+        content.removeEventListener("keydown", onKeyDown);
+        content.removeEventListener("contextmenu", onContextMenu);
+        pointerPressed.current = false;
+        clearSelectionIntent();
+      };
+    }, [clearSelectionIntent, element, holdSelectionIntent, lingerSelectionIntent]);
 
     /* ---------- 查找命中 ---------- */
 
@@ -1219,18 +1461,28 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
 
     const handleCompositionStart = useCallback(() => {
       composing.current = true;
+      // 组合期间浏览器会为了拼音串 / 候选框挪选区，这些是真实变化，照单全收
+      holdSelectionIntent();
+      setComposingState(true);
       // 组合期间交回浏览器画（候选框旁边那根原生光标），自绘的收起来
       scheduleCaret();
-    }, [scheduleCaret]);
+    }, [holdSelectionIntent, scheduleCaret]);
 
     const handleCompositionEnd = useCallback(() => {
       composing.current = false;
+      /*
+       * 组合结束紧接着会重挂行容器（重新渲染的几行节点被换掉），浏览器会自己
+       * 塌一次选区——这不是用户挪的，不能当真相读进来。清掉手势，交给 `emit`
+       * 排下的选区去落；落不下去时 restoreSelection 会补。
+       */
+      clearSelectionIntent();
       // 先把浏览器改过的 DOM 读回全文，再整块换掉行容器：
       // 顺序反了会先用旧值渲染，组合进去的字要等下一帧才出现。
       readback();
       setDomEpoch((epoch) => epoch + 1);
+      setComposingState(false);
       scheduleCaret();
-    }, [readback, scheduleCaret]);
+    }, [clearSelectionIntent, readback, scheduleCaret]);
 
     /*
      * beforeinput / input / composition 都挂原生监听。
@@ -1267,6 +1519,8 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       const inRow = anchor && content.contains(anchor) && rowOf(anchor);
       if (!inRow) {
         pendingSelection.current = [selRef.current.start, selRef.current.end];
+        // 落回光标是「恢复」，不替用户滚动
+        followCaret.current = false;
         applyPending();
       }
       scheduleCaret();
@@ -1276,6 +1530,8 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       setFocused(false);
       // 失焦之后不再替用户看住上一次跳转的落点，也不再画当前行
       guardSelection.current = null;
+      pointerPressed.current = false;
+      clearSelectionIntent();
       scheduleCaret();
     };
 
@@ -1323,6 +1579,7 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         event.preventDefault();
         pendingSelection.current = [0, text.length];
         selRef.current = { start: 0, end: text.length };
+        followCaret.current = false;
         applyPending();
         queueApply();
         onSelectionChange?.(0, text.length);
@@ -1369,6 +1626,7 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         if (content && canTakeFocus(content)) content.focus({ preventScroll: true });
         pendingSelection.current = [start, end];
         selRef.current = { start, end };
+        followCaret.current = false;
         applyPending();
         queueApply();
         onSelectionChange?.(start, end);
@@ -1400,6 +1658,8 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
           if (focus && canTakeFocus(content)) content.focus({ preventScroll: true });
           pendingSelection.current = [start, end];
           selRef.current = { start, end };
+          // 滚动策略由调用方决定（revealOffset / 查找自己的居中），不要叠加「跟手」滚动
+          followCaret.current = false;
           // 目标行可能在渲染窗口之外：先滚过去，再重算区间，最后落选区
           if (reveal) revealOffset(start);
           sync();
@@ -1410,6 +1670,7 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         queueSelection: (start, end = start) => {
           pendingSelection.current = [start, end];
           selRef.current = { start, end };
+          followCaret.current = false;
         },
         scrollToLine: (line) => {
           const content = contentRef.current;
@@ -1542,7 +1803,7 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
               {rows}
             </div>
           </div>
-          {value === "" && <div className="mde-placeholder">{placeholder}</div>}
+          {value === "" && !composingState && <div className="mde-placeholder">{placeholder}</div>}
         </div>
       </div>
     );

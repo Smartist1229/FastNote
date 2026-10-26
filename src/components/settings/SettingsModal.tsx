@@ -30,6 +30,7 @@ import type {
   SettingsSection,
 } from "@/interface/settingsModal";
 import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
+import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
 import { EDITOR_SETTING_SPECS } from "@/config/editorSettingSpecs";
 import {
   APP_AUTHOR,
@@ -712,13 +713,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           onChange: (v: string) => setApp("editor", spec.field, v),
         };
       }
-      // segment 与 select 的行形状相同（value + options），只是渲染控件不同
+      // segment 与 select 的行形状相同（value + options），只是渲染控件不同。
+      // 选项值统一是字符串，但 Tab 宽度这类字段在设置对象里是 number：
+      // 展示时转成字符串，写回时再转回 number，否则分段按钮选不中、落库后也读不回来。
+      const numeric = typeof DEFAULT_EDITOR_SETTINGS[spec.field] === "number";
+      const raw = editor[spec.field] as string | number;
       return {
         ...base,
         kind: spec.kind,
-        value: editor[spec.field] as string,
+        value: numeric ? String(raw) : (raw as string),
         options: spec.options,
-        onChange: (v: string) => setApp("editor", spec.field, v),
+        onChange: (v: string) => setApp("editor", spec.field, numeric ? Number(v) : v),
       };
     });
 
@@ -758,14 +763,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         section: "general",
         kind: "number",
         scope: "live",
-        title: "笔记历史版本上限",
-        desc: "每篇笔记最多保留多少个历史版本；超出后自动删除最早的。改小后，已有笔记会在下次编辑时收敛到新上限。",
-        keywords: "历史 版本 回滚 history version 快照",
+        title: "最近历史版本保留数",
+        desc: "每篇笔记保留多少个最近自动版本；最早一版始终额外保留，过去 30 天每天也会留一条，方便找回最初内容。手动「存版本」与固定的版本不计入上限、不会被自动清理。改小后，已有笔记会在下次编辑时收敛到新上限。",
+        keywords: "历史 版本 回滚 history version 快照 上限 固定",
         value: appSettings.general.noteHistoryLimit,
         min: 1,
         max: 100,
         unit: "个",
         onChange: (v) => setApp("general", "noteHistoryLimit", v),
+      },
+      {
+        section: "general",
+        kind: "number",
+        scope: "live",
+        title: "自动历史版本间隔",
+        desc: "自动保存不会每次都记历史：距上一条历史满这个间隔才再记一条，内容没有变化也不重复记；打开笔记时的基线与手动「存版本」不受此间隔限制。调小记录更细，但更早的版本会被更快挤出保留窗口；调大更省空间，中间过程记录更少。",
+        keywords: "历史 版本 间隔 快照 history interval",
+        value: appSettings.general.noteHistoryIntervalMinutes,
+        min: 1,
+        max: 60,
+        unit: "分钟",
+        onChange: (v) => setApp("general", "noteHistoryIntervalMinutes", v),
       },
       ...editorRows,
       {

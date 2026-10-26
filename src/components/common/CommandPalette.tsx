@@ -6,7 +6,10 @@
  * - 结果是纯派生：笔记来自内存里的全量列表，正文匹配由 `lib/noteJump` 分片扫描，面板本身不发请求
  *   （只有按标签筛选时才走一次 `listNotesByTag`）；
  * - 行是「可选中」与「分组标题」两种混排，键盘上下只跳过可选中项；
- * - 鼠标按下时阻止默认行为，焦点始终留在输入框里——否则点一下结果再按方向键就没反应了。
+ * - 鼠标按下时阻止默认行为，焦点始终留在输入框里——否则点一下结果再按方向键就没反应了；
+ * - **命令是标准指令**：每条命令有 snake_case 的 `token`，输入 `token 参数` 可直接执行；
+ *   无参数命令选中即执行；二级命令选中后列出固定选项；自定义参数命令只填 token，补完参数再 Enter，
+ *   这样命令文本始终可改。
  */
 import {
   useCallback,
@@ -26,9 +29,43 @@ import type { Category, Note, Tag } from "@/interface/note";
 
 export type PaletteMode = "jump" | "command";
 
-/** 一条可执行的命令；`hint` 会作为副标题常显，方便不认识某条命令时看说明 */
+/** 自定义参数：选中命令后停在输入框里等用户补全，如 `create_note 周报` */
+export interface PaletteCommandArg {
+  /** 参数占位名（显示在 token 后面），如「笔记标题」 */
+  placeholder: string;
+  /** 可选值或示例，显示在参数提示行里 */
+  hint?: string;
+  /** 必填参数缺少时不执行；默认 false，省略参数按命令的默认行为执行 */
+  required?: boolean;
+}
+
+/** 二级命令：参数只能从固定列表里选，如 `settings general` */
+export interface PaletteSubcommand {
+  /** 参数值，也是 `token value` 里的 value */
+  value: string;
+  title: string;
+  hint?: string;
+  icon?: string;
+  /** 额外搜索词，方便用中文或别名匹配 */
+  keywords?: string;
+}
+
+/**
+ * 一条可执行的命令。按参数形态分三类：
+ * - 无 `arg` / `subcommands`：普通命令，选中即执行（如 `open_trash`）；
+ * - 有 `subcommands`：二级命令，选中后列出固定选项（如 `settings general`）；
+ * - 有 `arg`：自定义参数命令，选中后只填 token，等用户补参数（如 `create_note 周报`）。
+ */
 export interface PaletteCommand {
   id: string;
+  /** 标准指令名：输入 `token 参数` 即可执行，选中命令时也会先填入它 */
+  token: string;
+  /** 别名：只参与指令解析，如 setting 与 settings 等价 */
+  aliases?: string[];
+  /** 自定义参数定义 */
+  arg?: PaletteCommandArg;
+  /** 二级命令的固定选项 */
+  subcommands?: PaletteSubcommand[];
   title: string;
   /** 一句话说明（显示在标题下方） */
   hint?: string;
@@ -42,7 +79,8 @@ export interface PaletteCommand {
   /** 当前场景下不可用（如没打开笔记时的「导出」） */
   disabled?: boolean;
   disabledReason?: string;
-  run: () => void;
+  /** 参数来自 token 之后的文字，或选中的二级命令值；无参数时为 undefined */
+  run: (arg?: string) => void;
 }
 
 export interface CommandPaletteProps {
@@ -53,8 +91,6 @@ export interface CommandPaletteProps {
   tags: Tag[];
   commands: PaletteCommand[];
   currentNoteId?: number | null;
-  /** 打开时预填的查询词（命令「按标签筛选…」用它直接进 # 模式） */
-  seedQuery?: string;
   onClose: () => void;
   onOpenNote: (note: Note) => void;
   /** 按标签取笔记（选中标签后在本面板内列出来） */
@@ -65,7 +101,28 @@ type Row =
   | { kind: "group"; id: string; label: string }
   | { kind: "note"; id: string; note: Note; hit?: JumpHit; isCurrent?: boolean }
   | { kind: "tag"; id: string; tag: Tag }
-  | { kind: "command"; id: string; command: PaletteCommand };
+  | { kind: "command"; id: string; command: PaletteCommand }
+  | { kind: "subcommand"; id: string; command: PaletteCommand; subcommand: PaletteSubcommand };
+
+interface ParsedCommandToken {
+  command: PaletteCommand;
+  arg: string;
+}
+
+/** 首个词与 token（或别名）完全相等时按标准指令解析，剩下整段都是参数（允许中文与空格） */
+const parseCommandToken = (query: string, commands: PaletteCommand[]): ParsedCommandToken | null => {
+  const trimmed = query.trim();
+  if (!trimmed) return null;
+  const split = /^(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  if (!split) return null;
+  const token = split[1].toLowerCase();
+  const command = commands.find(
+    (item) =>
+      item.token.toLowerCase() === token ||
+      item.aliases?.some((alias) => alias.toLowerCase() === token),
+  );
+  return command ? { command, arg: (split[2] ?? "").trim() } : null;
+};
 
 /** 「3 分钟前」这种粗粒度相对时间：跳转列表只需要"新旧感"，不需要精确到秒 */
 const relativeTime = (iso: string): string => {
@@ -106,7 +163,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   tags,
   commands,
   currentNoteId,
-  seedQuery,
   onClose,
   onOpenNote,
   onLoadTagNotes,
@@ -124,13 +180,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   useEffect(() => {
     if (!open) return;
     setMode(initialMode);
-    setQuery(seedQuery ?? "");
+    setQuery("");
     setActive(0);
     setTagFilter(null);
     setTagNotes([]);
     const raf = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(raf);
-  }, [open, initialMode, seedQuery]);
+  }, [open, initialMode]);
 
   /** 换查询、换 tab、换标签都回到第一项 */
   useEffect(() => {
@@ -138,6 +194,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   }, [query, mode, tagFilter]);
 
   const q = query.trim();
+  /** 命令模式的输入被识别为标准指令时，只展示这一条并把它后面的文字当作参数 */
+  const tokenQuery = useMemo(
+    () => (mode === "command" ? parseCommandToken(q, commands) : null),
+    [mode, q, commands],
+  );
   /** `#` 前缀：查标签（只打一个 `#` 时列出全部标签，按使用篇数排） */
   const isTagMode = q.startsWith("#");
   const tagQuery = isTagMode ? q.slice(1).trim() : "";
@@ -194,25 +255,68 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           push({ kind: "note", id: `n${hit.note.id}`, note: hit.note, hit, isCurrent: hit.note.id === currentNoteId }, `n${hit.note.id}`);
         }
       }
+    } else if (tokenQuery) {
+      const { command, arg } = tokenQuery;
+      if (command.subcommands?.length) {
+        // 二级命令：只展示固定选项。没写参数时保留声明顺序，写了参数按匹配置信度排。
+        const matched = command.subcommands
+          .map((subcommand) => ({
+            subcommand,
+            hit: arg
+              ? fuzzyMatch(`${subcommand.value} ${subcommand.title} ${subcommand.keywords ?? ""}`, arg)
+              : { score: 0, ranges: [] },
+          }))
+          .filter(
+            (item): item is { subcommand: PaletteSubcommand; hit: NonNullable<ReturnType<typeof fuzzyMatch>> } =>
+              item.hit !== null,
+          )
+          .sort((a, b) => (arg ? b.hit.score - a.hit.score : 0));
+        if (matched.length) group(`g-cmd-${command.group}`, command.group);
+        for (const { subcommand } of matched) {
+          const id = `s-${command.id}-${subcommand.value}`;
+          push({ kind: "subcommand", id, command, subcommand }, id);
+        }
+      } else {
+        // 普通/自定义参数命令：后面的文字都是参数，不再参与模糊搜索
+        group(`g-cmd-${command.group}`, command.group);
+        push({ kind: "command", id: command.id, command }, command.id);
+      }
     } else {
       const scored = commands
         .map((command) => ({
           command,
-          hit: q ? fuzzyMatch(`${command.title} ${command.hint ?? ""} ${command.keywords ?? ""}`, q) : { score: 0, ranges: [] },
+          hit: q
+            ? fuzzyMatch(
+                `${command.token} ${command.aliases?.join(" ") ?? ""} ${command.title} ${command.hint ?? ""} ${command.keywords ?? ""}`,
+                q,
+              )
+            : { score: 0, ranges: [] },
         }))
         .filter((item): item is { command: PaletteCommand; hit: NonNullable<ReturnType<typeof fuzzyMatch>> } => item.hit !== null)
         .sort((a, b) => (q ? b.hit.score - a.hit.score : 0));
-      let lastGroup = "";
+      // 按分数排序后同一分类会分散在多处：先归拢再输出，保证每个分类只出一个标题。
+      // 这同时避免了 `g-cmd-分类` 作为 key 重复出现——重复 key 会让 React 在列表变短时留下旧节点。
+      const buckets = new Map<string, PaletteCommand[]>();
       for (const { command } of scored) {
-        if (command.group !== lastGroup) {
-          group(`g-cmd-${command.group}`, command.group);
-          lastGroup = command.group;
+        const bucket = buckets.get(command.group);
+        if (bucket) bucket.push(command);
+        else buckets.set(command.group, [command]);
+      }
+      for (const [label, groupCommands] of buckets) {
+        group(`g-cmd-${label}`, label);
+        for (const command of groupCommands) {
+          push({ kind: "command", id: command.id, command }, command.id);
         }
-        push({ kind: "command", id: command.id, command }, command.id);
       }
     }
-    return { rows: out, selectable: keys };
-  }, [mode, q, tagFilter, tagNotes, isTagMode, tagQuery, tags, notes, jump.hits, commands, currentNoteId]);
+    // 分组标题只有后面跟着可选中项时才保留：搜不到命令时不能只剩一排空分类
+    const visible = out.filter((row, index) => {
+      if (row.kind !== "group") return true;
+      const next = out[index + 1];
+      return next !== undefined && next.kind !== "group";
+    });
+    return { rows: visible, selectable: keys };
+  }, [mode, q, tokenQuery, tagFilter, tagNotes, isTagMode, tagQuery, tags, notes, jump.hits, commands, currentNoteId]);
 
   /** 结果变少（异步扫描、标签加载完）时把选中项拉回范围内，否则 Enter 会落到空处 */
   useEffect(() => {
@@ -228,12 +332,42 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         onClose();
         return;
       }
+      if (row.kind === "subcommand") {
+        if (row.command.disabled) return;
+        // 二级命令的选项本身就是完整指令，选中即执行
+        onClose();
+        row.command.run(row.subcommand.value);
+        return;
+      }
       if (row.kind === "command") {
         if (row.command.disabled) return;
-        // 先关面板再执行：命令多半会开另一个窗口（设置 / 文件对话框），
-        // 面板留在下面会挡住刚打开的东西
-        onClose();
-        row.command.run();
+        const parsed = tokenQuery?.command.id === row.command.id ? tokenQuery : null;
+        const needsInput = Boolean(row.command.arg || row.command.subcommands?.length);
+
+        // 输入框已经是这条标准指令：无参数命令直接执行；有参数时参数齐了才执行
+        if (parsed) {
+          // 二级命令的选项以独立行展示，执行走上面的 subcommand 分支
+          if (row.command.subcommands?.length) return;
+          if (row.command.arg?.required && !parsed.arg) return;
+          // 先关面板再执行：命令多半会开另一个窗口（设置 / 文件对话框），
+          // 面板留在下面会挡住刚打开的东西
+          onClose();
+          row.command.run(parsed.arg || undefined);
+          return;
+        }
+        // 无参数命令：从列表里选中即执行，不需要再按一次 Enter
+        if (!needsInput) {
+          onClose();
+          row.command.run();
+          return;
+        }
+        // 有参数 / 二级命令：只把标准指令填进输入框，等用户补全
+        setQuery(`${row.command.token} `);
+        requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          const end = inputRef.current?.value.length ?? 0;
+          inputRef.current?.setSelectionRange(end, end);
+        });
         return;
       }
       if (row.kind === "tag") {
@@ -247,7 +381,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           .finally(() => setTagLoading(false));
       }
     },
-    [onClose, onLoadTagNotes, onOpenNote],
+    [onClose, onLoadTagNotes, onOpenNote, tokenQuery],
   );
 
   const rowOf = (selectableIndex: number): Row | undefined => {
@@ -322,7 +456,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             ? `没有匹配「${tagQuery}」的标签`
             : "还没有标签：在笔记属性里加一个试试"
           : `没有找到匹配「${q}」的笔记`
-      : `没有匹配「${q}」的命令`;
+      : tokenQuery?.command.subcommands?.length
+        ? `没有匹配「${tokenQuery.arg}」的分区`
+        : `没有匹配「${q}」的命令`;
 
   return (
     <div
@@ -355,7 +491,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                   ? tagFilter
                     ? `在「${tagFilter.name}」里筛选…`
                     : "搜索笔记标题与正文，输入 # 查标签…"
-                  : "输入命令，或直接浏览下面的说明…"
+                  : "输入命令，如 settings theme 或 create_note 周报…"
               }
               className="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-body placeholder:text-faint-soft focus:outline-none focus-visible:shadow-none"
               spellCheck={false}
@@ -372,6 +508,28 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             )}
             <span className="text-[10px] text-faint-soft flex-shrink-0 tabular-nums">{jumpCount} 项</span>
           </div>
+
+          {/* 标准指令的参数提示：自定义参数说明还缺什么，二级命令说明参数是固定选项 */}
+          {mode === "command" && tokenQuery && (tokenQuery.command.arg || tokenQuery.command.subcommands?.length) && (
+            <div className="flex items-center gap-1.5 px-1 text-[10px] text-faint-soft">
+              <span className="font-mono text-faint">{tokenQuery.command.token}</span>
+              {tokenQuery.command.subcommands?.length ? (
+                <>
+                  <span className="font-mono text-primary-500">分区名</span>
+                  <span>· 如 general / theme · 回车打开高亮项</span>
+                </>
+              ) : (
+                <>
+                  <span className="font-mono text-primary-500">{tokenQuery.command.arg!.placeholder}</span>
+                  {tokenQuery.command.arg!.hint && <span>· {tokenQuery.command.arg!.hint}</span>}
+                  {tokenQuery.command.arg!.required && !tokenQuery.arg && (
+                    <span className="text-warning">· 必填</span>
+                  )}
+                  {!tokenQuery.command.arg!.required && !tokenQuery.arg && <span>· 可省略</span>}
+                </>
+              )}
+            </div>
+          )}
 
           {/* 模式页签做成 segmented，和下面的结果列表区分开 */}
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -409,8 +567,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           </div>
         </div>
 
-        {/* 结果列表 */}
-        <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto chat-scrollbar px-2 py-2">
+        {/* 结果列表。key 跟随模式与空态：切换 tab 或搜到无结果时整块重建，
+            避免旧结果节点（尤其是分组的重复 key）残留下来。 */}
+        <div
+          key={`${mode}-${selectable.length === 0 ? "empty" : "results"}`}
+          ref={listRef}
+          className="flex-1 min-h-0 overflow-y-auto chat-scrollbar px-2 py-2"
+        >
           {selectable.length === 0 ? (
             <div className="py-10 text-center text-xs text-faint">
               {mode === "jump" && jump.scanning ? "正在搜索正文…" : emptyHint}
@@ -482,6 +645,28 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                   </div>
                 );
               }
+              if (row.kind === "subcommand") {
+                return (
+                  <div key={row.id} {...common}>
+                    <Icon
+                      name={row.subcommand.icon ?? row.command.icon ?? "ai-bolt"}
+                      className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "text-primary-500" : "text-faint"}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className={`truncate text-xs font-medium ${isActive ? "text-ink" : "text-body"}`}>
+                        {row.subcommand.title}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-faint-soft truncate">
+                        <span className="font-mono text-[10px] text-faint">
+                          {row.command.token} {row.subcommand.value}
+                        </span>
+                        {row.subcommand.hint && <span>{" · "}{row.subcommand.hint}</span>}
+                      </p>
+                    </div>
+                    <Icon name="welcome-chevron-right" className="w-3 h-3 text-faint-soft flex-shrink-0" />
+                  </div>
+                );
+              }
               return (
                 <div
                   key={row.id}
@@ -496,11 +681,20 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     <p className={`truncate text-xs font-medium ${isActive ? "text-ink" : "text-body"}`}>
                       {row.command.title}
                     </p>
-                    {(row.command.hint || row.command.disabled) && (
-                      <p className="mt-0.5 text-[11px] text-faint-soft truncate">
-                        {row.command.disabled ? row.command.disabledReason ?? row.command.hint : row.command.hint}
-                      </p>
-                    )}
+                    <p className="mt-0.5 text-[11px] text-faint-soft truncate">
+                      <span className="font-mono text-[10px] text-faint">
+                        {row.command.token}
+                        {row.command.arg ? ` ${row.command.arg.placeholder}` : ""}
+                      </span>
+                      {(row.command.hint || row.command.disabled) && (
+                        <span>
+                          {" · "}
+                          {row.command.disabled
+                            ? row.command.disabledReason ?? row.command.hint
+                            : row.command.hint}
+                        </span>
+                      )}
+                    </p>
                   </div>
                   {row.command.keys && <KeyChips accelerator={row.command.keys} />}
                 </div>
@@ -530,6 +724,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           </span>
           {mode === "jump" && !tagFilter && !isTagMode && (
             <span className="ml-auto">提示：输入 # 可按标签筛选</span>
+          )}
+          {mode === "command" && (
+            <span className="ml-auto">提示：无参数命令选中即执行，带参数的可继续输入</span>
           )}
         </div>
       </div>

@@ -211,7 +211,6 @@ function AppContent() {
    */
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("jump");
-  const [paletteSeed, setPaletteSeed] = useState("");
   const [paletteNonce, setPaletteNonce] = useState(0);
   const [paletteTags, setPaletteTags] = useState<Tag[]>([]);
   /** 编辑器的命令式动作（切换视图 / 全屏 / 查找），由 NoteEditor 挂载时注册 */
@@ -454,10 +453,9 @@ function AppContent() {
     setShowSettings(true);
   }, []);
 
-  /** 打开命令面板；seed 用于预填查询词（「按标签筛选」直接进 # 模式） */
-  const openPalette = useCallback((mode: PaletteMode, seed = "") => {
+  /** 打开命令面板；每次打开换一个 key，避免上次的查询词与选中项残留 */
+  const openPalette = useCallback((mode: PaletteMode) => {
     setPaletteMode(mode);
-    setPaletteSeed(seed);
     setPaletteNonce((nonce) => nonce + 1);
     setPaletteOpen(true);
   }, []);
@@ -592,6 +590,9 @@ function AppContent() {
     }, 40);
 
     setSelectedNote(note);
+    // 会话基线：打开时先记一条，长时间编辑也不会丢掉“这次打开时的样子”。
+    // 与最新历史相同时后端直接跳过，所以反复点同一条笔记不会堆积版本。
+    void notesApi.snapshotNoteSession(note.id).catch(() => {});
   }, []);
 
   /** 展开/收起 AI 对话面板（只改当前界面，不写设置） */
@@ -689,8 +690,8 @@ function AppContent() {
   /** 保存串行队列：连续保存串成 Promise 链，避免写库乱序让旧内容覆盖新内容 */
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  /** 新建「无标题」笔记并选中；省略 categoryId 用当前分组，成功后广播 data-changed */
-  const handleCreateNote = async (categoryId?: number | null) => {
+  /** 新建笔记并选中；省略 categoryId 用当前分组，title 省略时叫「无标题」 */
+  const handleCreateNote = async (categoryId?: number | null, title?: string) => {
     const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
     // 新建笔记：撤掉上层叠着的电脑文件 / AI 预览
     if (externalFileRef.current) {
@@ -701,7 +702,12 @@ function AppContent() {
     setHistoryPreview(null);
     setExternalFile(null);
     try {
-      const note = await notesApi.createNote("无标题", "", targetCategory, defaultNoteAiAccess);
+      const note = await notesApi.createNote(
+        title?.trim() || "无标题",
+        "",
+        targetCategory,
+        defaultNoteAiAccess,
+      );
       setNotes((prev) => [...prev, note]);
       setSelectedNote(note);
       setSelectedCategoryId(targetCategory);
@@ -1112,6 +1118,22 @@ function AppContent() {
     }
   };
 
+  /** 命令面板的 create_category <名称>：直接建分组；名称为空时退回新建弹窗 */
+  const handleCreateCategoryNamed = async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      handleCreateCategory();
+      return;
+    }
+    try {
+      await categoriesApi.createCategory(trimmed, defaultCategoryAiAccess);
+      await loadData();
+      showToast(`已创建分组「${trimmed}」`, "success");
+    } catch (error) {
+      showToast("创建分组失败：" + error, "error");
+    }
+  };
+
   const handleDeleteCategory = (category: Category) => {
     setDeletingCategory(category);
     setDeleteCategoryNotes(false);
@@ -1198,7 +1220,7 @@ function AppContent() {
 
   /**
    * 把某个历史版本写回笔记，并同步列表与编辑器里的同一篇。
-   * 后端回滚本身不再写历史，反复回滚不会让历史越滚越多。成功返回 true。
+   * 后端会同时删掉这条版本及所有更新的版本，且不会生成新的历史。成功返回 true。
    */
   const applyHistoryRollback = async (entry: NoteHistoryEntry): Promise<boolean> => {
     try {
@@ -1220,7 +1242,9 @@ function AppContent() {
   };
 
   const handleRollbackNoteHistory = async (entry: NoteHistoryEntry) => {
-    if (await applyHistoryRollback(entry)) showToast("已回滚到所选历史版本", "success");
+    if (await applyHistoryRollback(entry)) {
+      showToast("已回滚到所选历史版本（该版本及更新的版本已删除）", "success");
+    }
   };
 
   /** 属性窗「预览」：关掉属性窗，用伪笔记在编辑器里只读展示这个版本 */
@@ -1234,7 +1258,7 @@ function AppContent() {
     if (!historyPreview) return;
     if (await applyHistoryRollback(historyPreview)) {
       setHistoryPreview(null);
-      showToast("已回滚到所选历史版本", "success");
+      showToast("已回滚到所选历史版本（该版本及更新的版本已删除）", "success");
     }
   };
 
@@ -1371,6 +1395,30 @@ function AppContent() {
     }
   };
 
+  /** 手动把当前状态存成一个历史版本；内容没变时后端不会重复写 */
+  const handleCreateNoteHistoryVersion = async () => {
+    if (propertiesNoteId === null) return;
+    try {
+      const created = await notesApi.createNoteHistoryVersion(propertiesNoteId);
+      setNoteHistory(await notesApi.getNoteHistory(propertiesNoteId));
+      showToast(created ? "已保存当前版本" : "当前内容与最新版本相同", created ? "success" : "info");
+    } catch (error) {
+      showToast("保存版本失败：" + error, "error");
+    }
+  };
+
+  /** 固定 / 取消固定历史版本：固定的版本不会被自动清理 */
+  const handleToggleNoteHistoryPinned = async (entry: NoteHistoryEntry) => {
+    try {
+      const pinned = !entry.pinned;
+      await notesApi.setNoteHistoryPinned(entry.id, pinned);
+      setNoteHistory((prev) => prev.map((item) => (item.id === entry.id ? { ...item, pinned } : item)));
+      showToast(pinned ? "已固定该版本" : "已取消固定", "success");
+    } catch (error) {
+      showToast("操作失败：" + error, "error");
+    }
+  };
+
   /**
    * 当前笔记的生效档位 = min(笔记, 所属分组)；没有打开笔记时按"完全"处理（不限制面板本身）。
    * AI 面板据此决定要不要附正文、以及输入区显示「未授权 / 只读」。
@@ -1399,31 +1447,37 @@ function AppContent() {
    * 刻意**不用 useMemo**：每条命令的 run 都闭包着当次渲染的状态（当前笔记、排序、主题），
    * 缓存一份旧闭包反而会执行到过期数据；面板关闭时直接给空数组，开销为零。
    * 每条都写 hint（面板里的说明行）与 keywords（别名 / 英文 / 拼音首字母），
-   * 保证「记得有这个功能但想不起叫什么」也能搜到。
+   * 保证「记得有这个功能但想不起叫什么」也能搜到；token 是面板里可输入的标准指令，
+   * 带 arg 的命令（如 create_note）选中后只填入 token，等用户补参数再执行。
    */
   const paletteCommands: PaletteCommand[] = paletteOpen
     ? [
         /* ---------- 笔记 ---------- */
         {
           id: "note.create",
+          token: "create_note",
           title: "新建笔记",
-          hint: `在「${categories.find((c) => c.id === selectedCategoryId)?.name ?? "未分类"}」里新建一篇空笔记`,
+          hint: `在「${categories.find((c) => c.id === selectedCategoryId)?.name ?? "未分类"}」里新建笔记，参数是笔记标题`,
           group: "笔记",
           icon: "sidebar-plus",
           keywords: "new note 新建 创建 create",
-          run: () => void handleCreateNote(),
+          arg: { placeholder: "笔记标题", hint: "省略则叫「无标题」" },
+          run: (title) => void handleCreateNote(undefined, title),
         },
         {
           id: "note.createCategory",
+          token: "create_category",
           title: "新建分组",
-          hint: "创建一个新的分组来归类笔记",
+          hint: "直接创建分组，参数是分组名称",
           group: "笔记",
           icon: "sidebar-folder-plus",
           keywords: "new category 分组 分类 创建 folder",
-          run: handleCreateCategory,
+          arg: { placeholder: "分组名称", hint: "省略则打开新建弹窗" },
+          run: (name) => void handleCreateCategoryNamed(name ?? ""),
         },
         {
           id: "note.export",
+          token: "export_note",
           title: "导出当前笔记",
           hint: "另存为 Markdown 文件，与 Ctrl+S 等价",
           group: "笔记",
@@ -1436,6 +1490,7 @@ function AppContent() {
         },
         {
           id: "note.properties",
+          token: "note_properties",
           title: "当前笔记属性",
           hint: "改标题、移动分组、管理标签、AI 访问权限",
           group: "笔记",
@@ -1448,7 +1503,22 @@ function AppContent() {
           },
         },
         {
+          id: "note.history",
+          token: "note_history",
+          title: "当前笔记：历史版本",
+          hint: "在属性窗里查看、预览、恢复、删除或清空这篇笔记的历史版本",
+          group: "笔记",
+          icon: "sidebar-clock",
+          keywords: "history 历史 版本 回滚 恢复 snapshot",
+          disabled: !selectedNote || overlayActive,
+          disabledReason: overlayActive ? "AI 预览 / 电脑文件没有历史版本" : "先打开一篇笔记",
+          run: () => {
+            if (selectedNote) setPropertiesTarget({ kind: "note", note: selectedNote });
+          },
+        },
+        {
           id: "note.trash",
+          token: "open_trash",
           title: "打开回收站",
           hint: "查看、还原或彻底删除已删除的笔记",
           group: "笔记",
@@ -1458,6 +1528,7 @@ function AppContent() {
         },
         {
           id: "note.openFile",
+          token: "open_file",
           title: "打开电脑上的文本文件…",
           hint: "直接在编辑器里编辑 md / txt，保存时写回原文件",
           group: "笔记",
@@ -1469,6 +1540,7 @@ function AppContent() {
         /* ---------- 视图 ---------- */
         {
           id: "view.sidebar",
+          token: "toggle_sidebar",
           title: isSidebarCollapsed ? "显示侧边栏" : "隐藏侧边栏",
           hint: "分组与笔记列表",
           group: "视图",
@@ -1478,6 +1550,7 @@ function AppContent() {
         },
         {
           id: "view.groups",
+          token: "view_groups",
           title: "切换到分组视图",
           hint: "按分组浏览全部笔记",
           group: "视图",
@@ -1489,6 +1562,7 @@ function AppContent() {
         },
         {
           id: "view.favorites",
+          token: "view_favorites",
           title: "切换到收藏视图",
           hint: "只看置顶 / 收藏的笔记",
           group: "视图",
@@ -1500,6 +1574,7 @@ function AppContent() {
         },
         {
           id: "view.aiPanel",
+          token: "toggle_ai_panel",
           title: aiPanelOpen ? "关闭 AI 面板" : "打开 AI 面板",
           hint: "与 AI 对话，可读写当前笔记",
           group: "视图",
@@ -1513,6 +1588,7 @@ function AppContent() {
         /* ---------- 编辑器 ---------- */
         {
           id: "editor.code",
+          token: "editor_code",
           title: "编辑器：源码视图",
           hint: "只看 Markdown 源文",
           group: "编辑器",
@@ -1524,6 +1600,7 @@ function AppContent() {
         },
         {
           id: "editor.split",
+          token: "editor_split",
           title: "编辑器：分栏视图",
           hint: "左边源码、右边预览",
           group: "编辑器",
@@ -1535,6 +1612,7 @@ function AppContent() {
         },
         {
           id: "editor.read",
+          token: "editor_read",
           title: "编辑器：阅读视图",
           hint: "只看渲染结果",
           group: "编辑器",
@@ -1546,6 +1624,7 @@ function AppContent() {
         },
         {
           id: "editor.fullscreen",
+          token: "toggle_fullscreen",
           title: "编辑器全屏 / 退出全屏",
           hint: "隐藏侧边栏与 AI 面板，只留正文",
           group: "编辑器",
@@ -1558,6 +1637,7 @@ function AppContent() {
         },
         {
           id: "editor.find",
+          token: "find_in_note",
           title: "在笔记中查找",
           hint: "Ctrl+F 也能打开",
           group: "编辑器",
@@ -1570,6 +1650,7 @@ function AppContent() {
         },
         {
           id: "editor.replace",
+          token: "replace_in_note",
           title: "查找并替换",
           hint: "阅读视图下不可用",
           group: "编辑器",
@@ -1583,11 +1664,12 @@ function AppContent() {
 
         /* ---------- 排序 ---------- */
         ...[
-          { id: "sort.updated", value: "updated_at", title: "按更新时间排序", hint: "最近改过的排在前面", keywords: "sort updated 排序 更新 时间" },
-          { id: "sort.created", value: "created_at", title: "按创建时间排序", hint: "按新建顺序排列", keywords: "sort created 排序 创建 时间" },
-          { id: "sort.title", value: "title", title: "按标题排序", hint: "按标题字母 / 拼音顺序", keywords: "sort title 排序 标题 名称" },
+          { id: "sort.updated", token: "sort_updated", value: "updated_at", title: "按更新时间排序", hint: "最近改过的排在前面", keywords: "sort updated 排序 更新 时间" },
+          { id: "sort.created", token: "sort_created", value: "created_at", title: "按创建时间排序", hint: "按新建顺序排列", keywords: "sort created 排序 创建 时间" },
+          { id: "sort.title", token: "sort_title", value: "title", title: "按标题排序", hint: "按标题字母 / 拼音顺序", keywords: "sort title 排序 标题 名称" },
         ].map<PaletteCommand>((option) => ({
           id: option.id,
+          token: option.token,
           title: option.title,
           hint: option.hint,
           group: "排序",
@@ -1599,6 +1681,7 @@ function AppContent() {
         })),
         {
           id: "sort.order",
+          token: "toggle_sort_order",
           title: sortOrder === "asc" ? "改为降序排列" : "改为升序排列",
           hint: "在当前的排序字段上翻转方向",
           group: "排序",
@@ -1609,11 +1692,12 @@ function AppContent() {
 
         /* ---------- 主题 ---------- */
         ...[
-          { id: "theme.light", mode: "light" as const, title: "主题：明亮", hint: "浅色外观", keywords: "theme light 明亮 浅色 白色" },
-          { id: "theme.dark", mode: "dark" as const, title: "主题：暗黑", hint: "深色外观", keywords: "theme dark 暗黑 深色 夜间" },
-          { id: "theme.system", mode: "system" as const, title: "主题：跟随系统", hint: "随操作系统的深浅色切换", keywords: "theme system auto 跟随 系统 自动" },
+          { id: "theme.light", token: "theme_light", mode: "light" as const, title: "主题：明亮", hint: "浅色外观", keywords: "theme light 明亮 浅色 白色" },
+          { id: "theme.dark", token: "theme_dark", mode: "dark" as const, title: "主题：暗黑", hint: "深色外观", keywords: "theme dark 暗黑 深色 夜间" },
+          { id: "theme.system", token: "theme_system", mode: "system" as const, title: "主题：跟随系统", hint: "随操作系统的深浅色切换", keywords: "theme system auto 跟随 系统 自动" },
         ].map<PaletteCommand>((option) => ({
           id: option.id,
+          token: option.token,
           title: option.title,
           hint: option.hint,
           group: "主题",
@@ -1624,33 +1708,31 @@ function AppContent() {
           run: () => handleThemeChange({ ...theme, mode: option.mode }),
         })),
 
-        /* ---------- 标签 ---------- */
-        {
-          id: "tag.filter",
-          title: "按标签筛选笔记…",
-          hint: "也可以直接输入 # 加标签名",
-          group: "标签",
-          icon: "shared-tag",
-          keywords: "tag 标签 筛选 分类 主题",
-          run: () => openPalette("jump", "#"),
-        },
-
         /* ---------- 设置 ---------- */
-        ...SETTINGS_SECTIONS.filter(
-          (section) => appSettings.general.enableAI || !["provider", "chat", "context", "memory", "access"].includes(section.key),
-        ).map<PaletteCommand>((section) => ({
-          id: `settings.${section.key}`,
-          title: `打开设置：${section.label}`,
-          hint: "打开设置窗口并定位到该分区",
+        {
+          id: "settings.open",
+          token: "settings",
+          aliases: ["setting"],
+          title: "打开设置",
+          hint: "后面可跟分区名直接定位，如 settings theme",
           group: "设置",
-          icon: section.icon,
-          keywords: `settings 设置 ${section.key}`,
-          run: () => openSettings(section.key),
-        })),
+          icon: "ai-settings",
+          keywords: "settings 设置 配置 偏好 preferences options",
+          subcommands: SETTINGS_SECTIONS.filter(
+            (section) => appSettings.general.enableAI || !["provider", "chat", "context", "memory", "access"].includes(section.key),
+          ).map((section) => ({
+            value: section.key,
+            title: section.label,
+            icon: section.icon,
+            keywords: `settings 设置 ${section.key}`,
+          })),
+          run: (section) => openSettings((section ?? "general") as SettingsSection),
+        },
 
         /* ---------- 数据 ---------- */
         {
           id: "data.refresh",
+          token: "refresh_notes",
           title: "刷新笔记列表",
           hint: "重新从数据库读取分组与笔记",
           group: "数据",
@@ -1660,6 +1742,7 @@ function AppContent() {
         },
         {
           id: "data.clearSearch",
+          token: "clear_search",
           title: "清空侧边栏搜索",
           hint: "把搜索框与搜索结果一起清掉",
           group: "数据",
@@ -2023,7 +2106,6 @@ function AppContent() {
           key={paletteNonce}
           open={paletteOpen}
           initialMode={paletteMode}
-          seedQuery={paletteSeed}
           notes={notes}
           categories={categories}
           tags={paletteTags}
@@ -2063,6 +2145,8 @@ function AppContent() {
         onRollbackHistory={handleRollbackNoteHistory}
         onDeleteHistory={handleDeleteNoteHistory}
         onClearHistory={handleClearNoteHistory}
+        onCreateHistoryVersion={handleCreateNoteHistoryVersion}
+        onToggleHistoryPinned={handleToggleNoteHistoryPinned}
       />
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}

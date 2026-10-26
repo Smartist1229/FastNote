@@ -219,6 +219,7 @@ interface ParsedSnapshot {
   text: string;
   allowHtml: boolean;
   breaks: boolean;
+  setext: boolean;
   doc: ParsedDocument;
   /** 与 doc 配套的切行结果与行首偏移：增量解析、块复用直接拿去用，省掉每键一次全文切行 */
   lines: string[];
@@ -294,9 +295,26 @@ const hasTaskItem = (node: ParsedDocument["blocks"][number]): boolean => {
  */
 const shareBlocks = (
   next: ParsedSnapshot,
-  previous: { text: string; doc: ParsedDocument } | null,
+  previous: {
+    text: string;
+    allowHtml: boolean;
+    breaks: boolean;
+    setext: boolean;
+    doc: ParsedDocument;
+  } | null,
 ): ParsedDocument => {
   if (!previous) return next.doc;
+  /*
+   * 解析选项变过（关 HTML、开关单换行 / Setext）时，同一段文本的 AST 已经不同了：
+   * 行内换行、标题结构都跟着选项走。此时一律不复用旧块，否则开关看着没反应。
+   */
+  if (
+    previous.allowHtml !== next.allowHtml ||
+    previous.breaks !== next.breaks ||
+    previous.setext !== next.setext
+  ) {
+    return next.doc;
+  }
   if (previous.text === next.text) return previous.doc;
   // 差分是解析快照构建时按行算好的；基准对不上（链断过）就不复用，正确性不受影响
   const edit = next.editBase === previous.text ? next.edit : null;
@@ -526,8 +544,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
 
   /* ---------- 解析 ---------- */
   const parseOptions = useMemo(
-    () => ({ allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
-    [config.preview.allowHtml, config.preview.breaks],
+    () => ({
+      allowHtml: config.preview.allowHtml,
+      breaks: config.preview.breaks,
+      /*
+       * 单换行即换行时 `文字\n---` 应当是段落 + 分割线；Setext 会把同一段文字
+       * 变成二级标题，两种语义互斥，所以 breaks 打开就强制停用 Setext。
+       */
+      setext: config.preview.setext && !config.preview.breaks,
+    }),
+    [config.preview.allowHtml, config.preview.breaks, config.preview.setext],
   );
 
   /**
@@ -545,7 +571,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    */
   const lastSnapshot = useRef<ParsedSnapshot | null>(null);
   const makeSnapshot = useCallback(
-    (text: string, options: { allowHtml: boolean; breaks: boolean }): ParsedSnapshot => {
+    (text: string, options: { allowHtml: boolean; breaks: boolean; setext: boolean }): ParsedSnapshot => {
       const previous = lastSnapshot.current;
       const parseText = text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
       const lines = splitLines(parseText);
@@ -553,7 +579,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       let edit: TextEdit | null = null;
       let editBase: string | null = null;
       let doc: ParsedDocument;
-      if (previous && previous.allowHtml === options.allowHtml && previous.breaks === options.breaks) {
+      if (
+        previous &&
+        previous.allowHtml === options.allowHtml &&
+        previous.breaks === options.breaks &&
+        previous.setext === options.setext
+      ) {
         if (parseText !== previous.text && !text.includes("\r") && !previous.text.includes("\r")) {
           edit = diffLinesEdit(previous.lines, previous.offsets, lines, offsets);
           editBase = previous.text;
@@ -564,7 +595,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       }
       const optionsChanged =
         previous !== null &&
-        (previous.allowHtml !== options.allowHtml || previous.breaks !== options.breaks);
+        (previous.allowHtml !== options.allowHtml ||
+          previous.breaks !== options.breaks ||
+          previous.setext !== options.setext);
       const wholesale =
         previous === null ||
         optionsChanged ||
@@ -573,6 +606,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         text,
         allowHtml: options.allowHtml,
         breaks: options.breaks,
+        setext: options.setext,
         doc,
         lines,
         offsets,
@@ -624,7 +658,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     const upToDate =
       debounced.text === value &&
       debounced.allowHtml === parseOptions.allowHtml &&
-      debounced.breaks === parseOptions.breaks;
+      debounced.breaks === parseOptions.breaks &&
+      debounced.setext === parseOptions.setext;
     if (upToDate) return debounced;
     if (!config.preview.debounce || isWholesaleChange(debounced.text, value, null, selectionRef.current.start)) {
       return makeSnapshot(value, parseOptions);
@@ -641,13 +676,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     const committed =
       debounced.text === value &&
       debounced.allowHtml === parseOptions.allowHtml &&
-      debounced.breaks === parseOptions.breaks;
+      debounced.breaks === parseOptions.breaks &&
+      debounced.setext === parseOptions.setext;
     if (committed) return;
     // 这一帧已经同步解析过（换笔记 / 整篇替换）：到点直接落库，别再白解析一遍
     const alreadyParsed =
       parsed.text === value &&
       parsed.allowHtml === parseOptions.allowHtml &&
-      parsed.breaks === parseOptions.breaks;
+      parsed.breaks === parseOptions.breaks &&
+      parsed.setext === parseOptions.setext;
     const timer = window.setTimeout(
       () => setDebounced(alreadyParsed ? parsed : makeSnapshot(value, parseOptions)),
       delay,
@@ -667,7 +704,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       setDebounced((previous) =>
         previous.text === value &&
         previous.allowHtml === parseOptions.allowHtml &&
-        previous.breaks === parseOptions.breaks
+        previous.breaks === parseOptions.breaks &&
+        previous.setext === parseOptions.setext
           ? previous
           : makeSnapshot(value, parseOptions),
       );
@@ -684,10 +722,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
    *
    * 缓存里存的是「快照」而不是 value：只有和 doc 配套的那段文本才能当复用基准。
    */
-  const lastDoc = useRef<{ text: string; doc: ParsedDocument } | null>(null);
+  const lastDoc = useRef<{
+    text: string;
+    allowHtml: boolean;
+    breaks: boolean;
+    setext: boolean;
+    doc: ParsedDocument;
+  } | null>(null);
   const doc = useMemo(() => {
     const next = shareBlocks(parsed, lastDoc.current);
-    lastDoc.current = { text: parsed.text, doc: next };
+    lastDoc.current = {
+      text: parsed.text,
+      allowHtml: parsed.allowHtml,
+      breaks: parsed.breaks,
+      setext: parsed.setext,
+      doc: next,
+    };
     return next;
   }, [parsed]);
 
@@ -1712,13 +1762,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     getOutline: () => {
       // 代码视图可能刻意没解析：取大纲是显式请求，按当前文本现算一份，别给旧标题
       if (parsedRef.current.text === valueRef.current) return docRef.current.outline;
-      return parseMarkdown(valueRef.current, {
-        allowHtml: config.preview.allowHtml,
-        breaks: config.preview.breaks,
-      }).outline;
+      return parseMarkdown(valueRef.current, parseOptions).outline;
     },
-    getDocument: () =>
-      parseMarkdown(valueRef.current, { allowHtml: config.preview.allowHtml, breaks: config.preview.breaks }),
+    getDocument: () => parseMarkdown(valueRef.current, parseOptions),
     runCommand: (name) => runToolbar(name),
     undo,
     redo,

@@ -178,7 +178,8 @@ export const Demo = () => {
 | `imagePreview` | `boolean` | `true` | 点击图片放大预览（窗口级浮层，不受编辑器裁剪）；`render` 模式不弹 |
 | `imageZoom` | `{ step, min, max }` | `1.2 / 0.2 / 8` | 放大浮层：滚轮倍率与区间、按住拖动平移、双击复位、`Esc` / 点遮罩关闭 |
 | `allowHtml` | `boolean` | `true` | 允许 HTML |
-| `breaks` | `boolean` | `false` | 单个换行即换行（GFM breaks） |
+| `breaks` | `boolean` | `false` | 单个换行即换行（GFM breaks）；开启时强制停用 Setext |
+| `setext` | `boolean` | `true` | Setext 标题（段落下一行 `===` / `---`）；`breaks` 开启时不生效 |
 | `sanitizeHtml` | `boolean` | `true` | 基础净化（去 `script` / `on*` / `javascript:`） |
 | `linkTarget` | `"_blank" \| "_self"` | `"_blank"` | |
 | `emptyText` | `string` | `""` | 空文档文案 |
@@ -496,6 +497,16 @@ CommonMark 主体 + GFM（表格、任务列表、删除线、自动链接）+ �
 
 解析器是自研的（`parser/`），没有第三方 Markdown 依赖；块级节点带编辑区偏移，
 滚动同步与任务勾选都依赖它。
+
+front matter 只在文档开头识别：首行必须是 `---`，并且在头部元数据区域内找到
+`---` 或 `...` 闭合线。头部区域允许空行、`key: value`、列表项和缩进续行；闭合线
+之前一旦出现正文（标题、引用、普通段落等），整段就按普通 Markdown 渲染——未闭合
+时不会把后面的正文一起吞掉。
+
+Setext 标题由 `preview.setext` 控制：开启时段落下一行的 `===` / `---` 会把整段变成
+一级 / 二级标题；关闭后这行 `---` 是分割线，`===` 则并入段落正文。它与
+`preview.breaks` 互斥——开启单换行即换行后 Setext 强制停用，`文字\n---` 始终渲染成
+段落 + 分割线。
 
 由于是自研解析器，以下边界与 CommonMark 不完全一致：极端嵌套强调、表格不支持跨行合并、
 HTML 净化是正则级（渲染不可信内容建议 `allowHtml: false`）、大纲只取顶层标题、

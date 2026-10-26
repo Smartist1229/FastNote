@@ -66,8 +66,10 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   semanticModel: DEFAULT_SEMANTIC_MODEL_ID,
   /** 下载线程数：模型与工具箱下载共用，默认 32（后端会夹到 1–128） */
   downloadThreads: 32,
-  /** 每篇笔记保留的历史版本数：默认 10（后端会夹到 1–100） */
+  /** 每篇笔记保留的最近历史版本数：默认 10（后端会夹到 1–100；最早一条始终额外保留） */
   noteHistoryLimit: 10,
+  /** 自动历史版本最小间隔（分钟）：默认 5，避免打字停顿刷爆历史（后端会夹到 1–60） */
+  noteHistoryIntervalMinutes: 5,
 };
 
 /* ---------- Editor ---------- */
@@ -177,6 +179,8 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   taskInteractive: true,
   /** 单个换行即换行（GFM breaks） */
   breaks: false,
+  /** Setext 标题（=== / --- 下划线）；为 true 时每段软换行按标准 Markdown 处理 */
+  setext: true,
   /** 允许 HTML 标签 */
   allowHtml: true,
   /** 渲染前净化 HTML */
