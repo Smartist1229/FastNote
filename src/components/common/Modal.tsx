@@ -11,6 +11,7 @@
  * 目前没有任何调用方用它（设置窗自己实现的浮窗外壳，属性窗已经改回模态）；
  * 确认框这类必须挡住全屏的仍走模态。
  */
+import { useI18n } from "@/i18n";
 import type { ModalProps } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
 import { useDraggable } from "@/components/common/useDraggable";
@@ -23,6 +24,7 @@ const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
 };
 
 export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = "lg", width, height, floating = false }) => {
+  const { t } = useI18n();
   // hooks 不能条件调用：非浮窗时 enabled=false，startDrag 直接返回
   const drag = useDraggable(floating && isOpen);
 
@@ -62,7 +64,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
           <button
             onClick={onClose}
             className="toolbar-btn hover:!bg-surface-alt"
-            title="关闭"
+            title={t("关闭")}
           >
             <Icon name="modal-close" className="w-4 h-4" />
           </button>

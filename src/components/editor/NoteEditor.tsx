@@ -3,12 +3,13 @@
  *
  * 保存链路：编辑 → scheduleSave（500ms 防抖）→ saveNow → onSave 写库；
  * 外部文件模式改走 onSaveExternal 直接写回磁盘，临时预览（AI 回复）永不落库。
- * 防抖与保存状态都由 ref 承载，saveNow 的依赖里只有 onSave，避免回调反复重建。
+ * 防抖与保存状态都由 ref 承载；saveNow 仅依赖保存回调、通知和当前语言，不依赖正文。
  * 输入法组合期间（compositionstart → end）不排保存，结束后统一补一次。
  *
  * 编辑器（src/markdown-editor）是受控的：内容与模式都由这里持有，
  * 配色由 config/markdownEditor.ts 从软件主题令牌换算后注入，跟随设置与主题实时变化。
  */
+import { useI18n } from "@/i18n";
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import type { NoteEditorProps, NoteEditorActions } from "@/interface/editor";
 import type { MarkdownEditorInstance, MarkdownEditorMode } from "@/markdown-editor";
@@ -63,6 +64,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onRegisterActions,
   enableAI,
 }) => {
+  const { locale, t } = useI18n();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [contentCounts, setContentCounts] = useState(() => countContent(""));
@@ -152,8 +154,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
    * 设置整对象进依赖：任一改动都会重建配置并即时生效（编辑器内部按 config 深合并）。
    */
   const editorConfig = useMemo(
-    () => buildNoteEditorConfig(settings, themeTokens, resolvedThemeMode, editorFontSize),
-    [settings, themeTokens, resolvedThemeMode, editorFontSize],
+    () => buildNoteEditorConfig(settings, themeTokens, resolvedThemeMode, editorFontSize, locale),
+    [settings, themeTokens, resolvedThemeMode, editorFontSize, locale],
   );
   /** 用 ref 承载临时标记，避免它进入 saveNow 的依赖链 */
   const isTemporaryRef = useRef(false);
@@ -193,13 +195,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (!note) return;
     try {
       if (await saveNoteAsFile(title, content)) {
-        showToast("导出成功！", "success");
+        showToast(t("导出成功！"), "success");
       }
     } catch (error) {
       console.error("导出失败:", error);
-      showToast("导出失败，请重试", "error");
+      showToast(t("导出失败，请重试"), "error");
     }
-  }, [note, title, content, showToast]);
+  }, [note, title, content, showToast, t]);
 
   // 把「保存笔记到文件」交给外部调用（侧边栏笔记右键菜单）
   useEffect(() => {
@@ -250,12 +252,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const handleCopyContent = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(content);
-      showToast("内容已复制到剪贴板", "success");
+      showToast(t("内容已复制到剪贴板"), "success");
     } catch (err) {
       console.error("复制失败:", err);
-      showToast("复制失败", "error");
+      showToast(t("复制失败"), "error");
     }
-  }, [content, showToast]);
+  }, [content, showToast, t]);
 
   /** onSave 的 ref 镜像：切换笔记时的补写不能进 effect 依赖，否则每次渲染都会重跑切换逻辑 */
   const onSaveRef = useRef(onSave);
@@ -294,7 +296,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       (error) => {
         // 快照保留：宿主手里的旧内容不能拿来覆盖这次没写进去的输入
         console.error("切换笔记前保存失败:", error);
-        showToast("保存失败，请重试", "error");
+        showToast(t("保存失败，请重试"), "error");
       },
     );
   };
@@ -345,7 +347,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       latestCategoryIdRef.current = null;
       lastNoteIdRef.current = null;
     }
-  }, [note]);
+  }, [note, t]);
 
   /**
    * 同一篇笔记被外部改写时（如列表刷新回来的数据）同步进编辑器；
@@ -467,14 +469,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       // 写库失败：保留脏标记，下次输入或切笔记时会再试一次；同时必须提示，否则用户以为已保存
       hasUnsavedChangesRef.current = true;
       console.error("保存笔记失败:", error);
-      showToast("保存失败，请重试", "error");
+      showToast(t("保存失败，请重试"), "error");
     } finally {
       isSavingRef.current = false;
     }
     if (hasPendingSaveRef.current && currentNoteIdRef.current !== savingNoteId) {
       void saveNow();
     }
-  }, [onSave, showToast]);
+  }, [onSave, showToast, t]);
 
   /** saveNow 的 ref：供 keydown 在定义顺序更早的位置调用 */
   const saveNowRef = useRef<() => void>(() => {});
@@ -530,26 +532,26 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const wordCount = contentCounts.chars;
   const lineCount = contentCounts.lines;
   /** 已保存时间戳只显示 时:分；非法日期返回空串（new Date 不抛错，必须显式判断 Invalid Date） */
-  const formatSavedTime = (t: string | null) => {
-    if (!t) return "";
-    const d = new Date(t);
+  const formatSavedTime = (value: string | null) => {
+    if (!value) return "";
+    const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "";
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   };
 
   /** 外部文件写回状态（顶部提示条用） */
   const externalStatus = saveError
-    ? { text: "保存失败", cls: "text-danger" }
+    ? { text: t("保存失败"), cls: "text-danger" }
     : hasUnsavedChangesRef.current
-    ? { text: "保存中…", cls: "text-info" }
+    ? { text: t("保存中…"), cls: "text-info" }
     : lastSavedAt
-    ? { text: `已保存 ${formatSavedTime(lastSavedAt)}`, cls: "text-success" }
+    ? { text: t("已保存 {time}", { time: formatSavedTime(lastSavedAt) }), cls: "text-success" }
     : null;
 
   if (!note) {
     return (
       <div className="h-full flex items-center justify-center text-faint text-sm">
-        <p>选择一个笔记或创建新笔记</p>
+        <p>{t("选择一个笔记或创建新笔记")}</p>
       </div>
     );
   }
@@ -560,33 +562,33 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       {historyPreview && (
         <div className="px-4 py-2 bg-info-soft/70 border-b border-info-line flex items-center justify-between gap-2 flex-shrink-0">
           <span className="text-[11px] text-info-deep truncate">
-            历史版本预览 · {historyPreview.savedAt} · 内容只读，不会保存
+            {t("历史版本预览 · {time} · 内容只读，不会保存", { time: historyPreview.savedAt })}
           </span>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={historyPreview.onRollback}
-              title="恢复此版本，并删除它及之后的所有历史版本"
+              title={t("恢复此版本，并删除它及之后的所有历史版本")}
               className="text-[11px] px-2 py-0.5 rounded-md text-on-accent bg-primary-500 hover:bg-primary-600 transition-colors"
             >
-              回滚到此版本
+              {t("回滚到此版本")}
             </button>
             <button
               onClick={historyPreview.onExit}
               className="text-[11px] px-2 py-0.5 rounded-md text-info-deep hover:bg-info-soft transition-colors"
             >
-              退出预览
+              {t("退出预览")}
             </button>
           </div>
         </div>
       )}
       {isTemporary && (
         <div className="px-4 py-2 bg-warning-soft/70 border-b border-warning-line flex items-center justify-between flex-shrink-0">
-          <span className="text-[11px] text-warning-deep">临时预览 · 来自 AI 回复，不会保存为笔记</span>
+          <span className="text-[11px] text-warning-deep">{t("临时预览 · 来自 AI 回复，不会保存为笔记")}</span>
           <button
             onClick={onCloseTemporary}
             className="text-[11px] px-2 py-0.5 rounded-md text-warning-deep hover:bg-warning-soft transition-colors"
           >
-            关闭
+            {t("关闭")}
           </button>
         </div>
       )}
@@ -596,14 +598,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           <div className="flex items-center gap-1 min-w-0">
             <Icon name="ai-file-text" className="w-3.5 h-3.5 text-info flex-shrink-0" />
             <span className="text-[11px] text-info-deep truncate" title={externalFilePath ?? undefined}>
-              正在编辑电脑文件
+              {t("正在编辑电脑文件")}
             </span>
             {externalStatus && (
               <span className={`text-[11px] flex-shrink-0 ${externalStatus.cls}`}>· {externalStatus.text}</span>
             )}
             {enableAI && (
-              <span className="text-[11px] text-faint truncate" title="AI 无法读取内容，请保存到分组">
-                AI 无法读取该内容，请先保存到分组。
+              <span className="text-[11px] text-faint truncate" title={t("AI 无法读取内容，请保存到分组")}>
+                {t("AI 无法读取该内容，请先保存到分组。")}
               </span>
             )}
           </div>
@@ -611,7 +613,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             onClick={onCloseExternal}
             className="text-[11px] px-1.5 py-0.5 rounded-md text-info-deep hover:bg-info-soft transition-colors"
           >
-            关闭
+            {t("关闭")}
           </button>
         </div>
       )}
@@ -626,12 +628,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}
             readOnly={isReadOnly}
-            placeholder="输入笔记标题..."
+            placeholder={t("输入笔记标题...")}
             title={
               historyPreview
-                ? "历史版本预览不可编辑"
+                ? t("历史版本预览不可编辑")
                 : isExternal
-                  ? "标题即电脑上的文件名，不可修改"
+                  ? t("标题即电脑上的文件名，不可修改")
                   : undefined
             }
             className="title-input flex-1 px-4 py-2.5 text-lg font-semibold text-ink placeholder:text-faint bg-transparent"
@@ -640,7 +642,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             <button
               onClick={onDelete}
               className="toolbar-btn hover:!bg-danger-soft hover:!text-danger"
-              title="删除笔记"
+              title={t("删除笔记")}
             >
               <Icon name="editor-trash" className="w-4 h-4" />
             </button>
@@ -664,7 +666,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                         ? "bg-primary-50 text-primary-500"
                         : "text-muted hover:bg-surface-alt hover:text-body"
                     }`}
-                    title={isSavingToCategory ? "保存中..." : "保存到分组"}
+                    title={isSavingToCategory ? t("保存中...") : t("保存到分组")}
                   >
                     <Icon name="editor-save-to-group" className="w-3.5 h-3.5" />
                   </button>
@@ -674,7 +676,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                         onClick={() => handleSaveToCategory(null)}
                         className="w-full text-left px-3 py-1.5 text-[12px] text-body hover:bg-app transition-colors"
                       >
-                        未分组
+                        {t("未分组")}
                       </button>
                       {categories.map((category) => (
                         <button
@@ -693,7 +695,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             ) : hasUnsavedChangesRef.current ? (
               <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-warning-soft text-warning">
                 <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse-dot" />
-                <span className="text-[11px] font-medium">编辑中</span>
+                <span className="text-[11px] font-medium">{t("编辑中")}</span>
               </span>
             ) : lastSavedAt ? (
               <span className="flex items-center gap-1.5 px-2 py-1 rounded-md text-faint">
@@ -710,7 +712,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               <button
                 onClick={onToggleAiPanel}
                 className={`toolbar-btn relative ${isAiPanelOpen ? "!bg-primary-50 !text-primary-500" : ""}`}
-                title={isAiPanelOpen ? "关闭 AI 对话" : "打开 AI 对话"}
+                title={isAiPanelOpen ? t("关闭 AI 对话") : t("打开 AI 对话")}
                 aria-pressed={isAiPanelOpen}
               >
                 <AiSparkleIcon className="w-3.5 h-3.5" />
@@ -728,7 +730,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             <button
               onClick={handleExport}
               className="toolbar-btn"
-              title="导出笔记 (Ctrl+S)"
+              title={t("导出笔记 (Ctrl+S)")}
             >
               <Icon name="editor-export" className="w-3.5 h-3.5" />
             </button>
@@ -738,7 +740,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           <button
             onClick={handleCopyContent}
             className="toolbar-btn"
-            title="复制内容"
+            title={t("复制内容")}
           >
             <Icon name="editor-copy" className="w-3.5 h-3.5" />
           </button>
@@ -747,8 +749,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
           {/* 统计 */}
           <div className="flex items-center gap-2 text-[11px] text-faint-soft select-none">
-            <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title="字数">{wordCount} 字</span>
-            <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title="行数">{lineCount} 行</span>
+            <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title={t("字数")}>{t(wordCount === 1 ? "1 字" : "{count} 字", { count: wordCount.toLocaleString(locale) })}</span>
+            <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title={t("行数")}>{t(lineCount === 1 ? "1 行" : "{count} 行", { count: lineCount.toLocaleString(locale) })}</span>
           </div>
 
           {/* 字体大小显示：点击还原为设置里的默认字号 */}
@@ -759,7 +761,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                 ? "text-faint-soft cursor-default"
                 : "text-faint hover:bg-surface-alt hover:text-body"
             }`}
-            title={`点击还原默认字号（${defaultFontSize} px）`}
+            title={t("点击还原默认字号（{size} px）", { size: defaultFontSize })}
           >
             {editorFontSize} px
           </button>
@@ -772,7 +774,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           <Suspense
             fallback={
               <div className="h-full flex items-center justify-center text-sm text-faint">
-                正在加载 Markdown 编辑器...
+                {t("正在加载 Markdown 编辑器...")}
               </div>
             }
           >

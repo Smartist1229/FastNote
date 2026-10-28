@@ -18,7 +18,8 @@ import type {
 import { hexToRgba, normalizeHex, normalizeHexList } from "@/lib/theme";
 import type { ResolvedThemeMode, ThemeTokens } from "@/interface/theme";
 import type { EditorSettings } from "@/interface/settings";
-import { APP_MONO_FONT_STACK, APP_UI_FONT_STACK, FONT_SIZE_MAX, FONT_SIZE_MIN } from "@/config/appDefaults";
+import { APP_MONO_FONT_STACK, APP_UI_FONT_STACK, DEFAULT_EDITOR_LOCALE, FONT_SIZE_MAX, FONT_SIZE_MIN } from "@/config/appDefaults";
+import type { AppLocale } from "@/i18n/locale";
 
 /** 夹取到 [min, max]：设置里的数值型项在写入前已夹过一次，这里只防脏数据 */
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -115,12 +116,11 @@ export const buildEditorColors = (
  * 其余全部由 EditorSettings 决定（见 buildNoteEditorConfig）。
  */
 export const NOTE_EDITOR_CONFIG: DeepPartial<MarkdownEditorConfig> = {
-  locale: "zh-CN",
+  locale: DEFAULT_EDITOR_LOCALE,
   mode: {
     available: ["split", "code", "read"],
   },
   editor: {
-    placeholder: "开始书写 Markdown…",
     // 编辑区用等宽栈（组件默认是同一套 MONO，这里显式写死为软件的默认值），
     // 字体不放进设置面板，改 config/appDefaults.ts 即全软件生效
     fontFamily: APP_MONO_FONT_STACK,
@@ -168,11 +168,13 @@ export const buildNoteEditorConfig = (
   tokens: ThemeTokens,
   themeMode: ResolvedThemeMode,
   fontSize?: number,
+  locale: AppLocale = DEFAULT_EDITOR_LOCALE,
 ): DeepPartial<MarkdownEditorConfig> => {
   const bodyFontSize = clamp(fontSize ?? settings.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX);
 
   return {
     ...NOTE_EDITOR_CONFIG,
+    locale,
     mode: {
       ...NOTE_EDITOR_CONFIG.mode,
       defaultMode: settings.defaultMode,
@@ -348,8 +350,9 @@ export const buildAiRenderConfig = (
   settings: EditorSettings,
   tokens: ThemeTokens,
   themeMode: ResolvedThemeMode,
+  locale: AppLocale = DEFAULT_EDITOR_LOCALE,
 ): DeepPartial<MarkdownEditorConfig> => ({
-  locale: "zh-CN",
+  locale,
   mode: { defaultMode: "render", available: [], showSwitch: false },
   preview: {
     debounce: 0,

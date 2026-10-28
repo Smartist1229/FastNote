@@ -1,52 +1,35 @@
-/**
- * 公式渲染节点。
- *
- * KaTeX 是可选依赖：加载失败或语法错误时退回显示原文（行内用 `<code>`，块级用 `<pre>`），
- * 保证「能读到内容」永远优先于「排版好看」。
- */
+/** 公式渲染失败时保留源码；只本地化错误提示，不改公式本身。 */
 import { useEffect, useState } from "react";
+import { LABELS } from "../locales";
 import { renderMath } from "./highlight";
 
-/** 行内公式 */
-export const MathInline: React.FC<{ code: string; enabled: boolean }> = ({ code, enabled }) => {
-  const [html, setHtml] = useState("");
+interface MathProps {
+  code: string;
+  enabled: boolean;
+  errorLabel?: string;
+}
 
+const useMath = (code: string, enabled: boolean, displayMode: boolean) => {
+  const [result, setResult] = useState<{ code: string; html: string; failed: boolean } | null>(null);
   useEffect(() => {
-    if (!enabled) {
-      setHtml("");
-      return;
-    }
+    if (!enabled) return;
     let alive = true;
-    renderMath(code, false).then((result) => {
-      if (alive && result && result.html) setHtml(result.html);
+    renderMath(code, displayMode).then((next) => {
+      if (alive) setResult({ code, html: next?.html ?? "", failed: !next?.html });
     });
-    return () => {
-      alive = false;
-    };
-  }, [code, enabled]);
-
-  if (!enabled || !html) return <code className="mde-inline-math">{code}</code>;
-  return <span className="mde-math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
+    return () => { alive = false; };
+  }, [code, enabled, displayMode]);
+  return enabled && result?.code === code ? result : null;
 };
 
-/** 块级公式 */
-export const MathBlock: React.FC<{ code: string; enabled: boolean }> = ({ code, enabled }) => {
-  const [html, setHtml] = useState("");
+export const MathInline: React.FC<MathProps> = ({ code, enabled, errorLabel = LABELS["en-US"].mathRenderFailed }) => {
+  const result = useMath(code, enabled, false);
+  if (!result?.html) return <code className="mde-inline-math" title={result?.failed ? errorLabel : undefined}>{code}</code>;
+  return <span className="mde-math-inline" dangerouslySetInnerHTML={{ __html: result.html }} />;
+};
 
-  useEffect(() => {
-    if (!enabled) {
-      setHtml("");
-      return;
-    }
-    let alive = true;
-    renderMath(code, true).then((result) => {
-      if (alive && result && result.html) setHtml(result.html);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [code, enabled]);
-
-  if (!enabled || !html) return <pre className="mde-math-fallback">{code}</pre>;
-  return <div className="mde-math-block" dangerouslySetInnerHTML={{ __html: html }} />;
+export const MathBlock: React.FC<MathProps> = ({ code, enabled, errorLabel = LABELS["en-US"].mathRenderFailed }) => {
+  const result = useMath(code, enabled, true);
+  if (!result?.html) return <pre className="mde-math-fallback" title={result?.failed ? errorLabel : undefined}>{code}</pre>;
+  return <div className="mde-math-block" dangerouslySetInnerHTML={{ __html: result.html }} />;
 };

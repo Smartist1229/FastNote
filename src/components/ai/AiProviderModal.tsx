@@ -11,8 +11,9 @@ import * as aiApi from "@/api/ai";
 import type { AiProvider, AiProviderType } from "@/interface/ai";
 import type { AiProviderModalProps } from "@/interface/aiProvider";
 import { useToast } from "@/components/common/Toast";
-import { useConfirm } from "@/components/common/ConfirmDialog";
+import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";
+import { t as translate, useI18n } from "@/i18n";
 
 /**
  * 三种协议的默认名称与地址，新建配置时填入草稿。
@@ -43,7 +44,7 @@ const providerDefaults: Record<AiProviderType, { name: string; baseUrl: string; 
  * invoke 失败多以字符串 reject，其次才是 Error；两者都不匹配时兜底序列化，保证原因不被吞掉。
  */
 const formatError = (error: unknown): string => {
-  if (error == null) return "未知错误";
+  if (error == null) return translate("未知错误");
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   try {
@@ -77,7 +78,7 @@ const emptyProvider = (type: AiProviderType = "openai"): AiProvider => {
   const defaults = providerDefaults[type];
   return {
     id: 0,
-    name: defaults.name,
+    name: translate(defaults.name),
     provider_type: type,
     api_base_url: defaults.baseUrl,
     api_key: "",
@@ -97,14 +98,16 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   onProvidersChange,
   onSelectedProviderChange,
 }) => {
+  const { t } = useI18n();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [draftProvider, setDraftProvider] = useState<AiProvider>(emptyProvider());
+  const [draftProvider, setDraftProvider] = useState<AiProvider>(() => emptyProvider());
   const [models, setModels] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const { showToast } = useToast();
-  const { confirm, confirmDialog } = useConfirm();
+  // 只存目标数据，弹窗文案在渲染时翻译；切换语言不会重开或重置确认状态。
+  const [deleteTarget, setDeleteTarget] = useState<AiProvider | null>(null);
   /** 用户是否手动调过勾选（手动清空后，重新获取模型不应再自动全选） */
   const hasUserPickedModelsRef = useRef(false);
   /** 同步守卫：state 更新是异步的，连点会穿透并写入多条记录 */
@@ -198,7 +201,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       publishProviders(listProviders.map((p) => (p.id === nextProvider.id ? nextProvider : p)));
       window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
     } catch {
-      showToast("模型保存失败", "error");
+      showToast(translate("模型保存失败"), "error");
     }
   };
 
@@ -221,7 +224,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     setDraftProvider((prev) => ({
       ...prev,
       provider_type: type,
-      name: prev.id === 0 ? defaults.name : prev.name,
+      name: prev.id === 0 ? t(defaults.name) : prev.name,
       api_base_url: defaults.baseUrl,
       api_path: defaults.path,
       enabled_model: null,
@@ -239,15 +242,15 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   const saveDraftProvider = async () => {
     if (savingRef.current) return;
     if (!draftProvider.name.trim()) {
-      showToast("请输入提供商名称", "error");
+      showToast(t("请输入提供商名称"), "error");
       return null;
     }
     if (!draftProvider.api_base_url.trim()) {
-      showToast("请输入 API Base URL", "error");
+      showToast(t("请输入 API Base URL"), "error");
       return null;
     }
     if (!draftProvider.api_key.trim()) {
-      showToast("请输入 API Key", "error");
+      showToast(t("请输入 API Key"), "error");
       return null;
     }
 
@@ -268,11 +271,11 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         );
         savedId = created.id;
         onSelectedProviderChange(created.id);
-        showToast("AI 配置已保存", "success");
+        showToast(translate("AI 配置已保存"), "success");
       } else {
         await aiApi.updateAiProvider({ ...draftProvider, enabled_models: checked });
         savedId = draftProvider.id;
-        showToast("AI 配置已更新", "success");
+        showToast(translate("AI 配置已更新"), "success");
       }
 
       // 写入已成功，后续刷新失败不应再报"保存失败"
@@ -293,7 +296,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       return saved;
     } catch (error) {
       console.error("保存 AI 配置失败:", error);
-      showToast(`保存 AI 配置失败：${formatError(error)}`, "error");
+      showToast(translate("保存 AI 配置失败：{error}", { error: formatError(error) }), "error");
       return null;
     } finally {
       savingRef.current = false;
@@ -309,7 +312,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   const handleFetchModels = async () => {
     if (fetchingRef.current) return;
     if (!draftProvider.api_base_url.trim() || !draftProvider.api_key.trim()) {
-      showToast("请先填写 API Base URL 与 API Key", "error");
+      showToast(t("请先填写 API Base URL 与 API Key"), "error");
       return;
     }
     fetchingRef.current = true;
@@ -317,7 +320,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     try {
       const fetchedModels = await aiApi.fetchAiModels(draftProvider);
       if (fetchedModels.length === 0) {
-        showToast("没有获取到模型，请检查地址与密钥", "error");
+        showToast(translate("没有获取到模型，请检查地址与密钥"), "error");
         return;
       }
       // 并集：保留已勾选的模型，避免重新获取后勾选状态丢失
@@ -339,10 +342,10 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
           } catch { /* 忽略：保存时仍会写入 */ }
         }
       }
-      showToast(`已获取 ${fetchedModels.length} 个模型，可自行勾选需要的`, "success");
+      showToast(translate("已获取 {count} 个模型，可自行勾选需要的", { count: fetchedModels.length }), "success");
     } catch (error) {
       console.error("获取模型失败:", error);
-      showToast(`获取模型失败：${formatError(error)}`, "error");
+      showToast(translate("获取模型失败：{error}", { error: formatError(error) }), "error");
     } finally {
       fetchingRef.current = false;
       setIsFetchingModels(false);
@@ -378,7 +381,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       );
       window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
     } catch {
-      showToast("模型保存失败", "error");
+      showToast(translate("模型保存失败"), "error");
     }
   };
 
@@ -386,19 +389,16 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
    * 删除服务商：二次确认，连同本机保存的 API Key 一起移除。
    * 删的若是当前选中项，自动切到剩余第一条；没有剩余则置 0 表示"未选择"。
    */
-  const handleDeleteProvider = async (provider: AiProvider) => {
-    const p = provider;
-    if (p.id === 0) {
-      closeForm();
-      return;
-    }
-    const ok = await confirm({
-      title: "删除 AI 服务商",
-      message: `确定删除「${p.name}」吗？该配置与本机保存的 API Key 会被移除，无法撤销。`,
-      confirmText: "删除",
-      danger: true,
-    });
-    if (!ok) return;
+  const requestDeleteProvider = (provider: AiProvider) => {
+    if (provider.id === 0) closeForm();
+    else setDeleteTarget(provider);
+  };
+
+  const deletingRef = useRef(false);
+  const handleDeleteProvider = async (p: AiProvider) => {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleteTarget(null);
     try {
       await aiApi.deleteAiProvider(p.id);
       const nextProviders = listProviders.filter((x) => x.id !== p.id);
@@ -407,9 +407,11 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         onSelectedProviderChange(nextProviders.length > 0 ? nextProviders[0].id : 0);
       }
       closeForm();
-      showToast("AI 配置已删除", "success");
+      showToast(translate("AI 配置已删除"), "success");
     } catch {
-      showToast("删除 AI 配置失败", "error");
+      showToast(translate("删除 AI 配置失败"), "error");
+    } finally {
+      deletingRef.current = false;
     }
   };
 
@@ -429,7 +431,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         {!showForm && (
           <>
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <h3 className="text-sm font-semibold text-body flex-shrink-0">已配置的服务商</h3>
+              <h3 className="text-sm font-semibold text-body flex-shrink-0">{t("已配置的服务商")}</h3>
               <div className="flex gap-1.5 flex-wrap">
                 {(["openai", "google", "claude"] as AiProviderType[]).map((type) => (
                   <button
@@ -446,7 +448,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
 
             {listProviders.length === 0 ? (
               <div className="py-10 text-center text-sm text-faint">
-                暂无服务商配置，点击上方按钮添加
+                {t("暂无服务商配置，点击上方按钮添加")}
               </div>
             ) : (
               <div className="space-y-1.5 max-h-[260px] overflow-y-auto chat-scrollbar pr-1 -mr-1">
@@ -470,8 +472,8 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-body truncate">{p.name}</div>
                       <div className="text-xs text-faint truncate">
-                        {p.enabled_model || "未选择模型"}
-                        {normalizeModelList(p).length > 1 && `（共选 ${normalizeModelList(p).length} 个）`}
+                        {p.enabled_model || t("未选择模型")}
+                        {normalizeModelList(p).length > 1 && t("（共选 {count} 个）", { count: normalizeModelList(p).length })}
                         {" · "}
                         {p.api_base_url.replace(/^https?:\/\//, "").split("/")[0]}
                       </div>
@@ -481,13 +483,13 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                         onClick={(e) => { e.stopPropagation(); openEdit(p); }}
                         className="px-1.5 py-1 text-[11px] text-faint hover:text-primary-500 rounded-md hover:bg-primary-50 transition-colors"
                       >
-                        编辑
+                        {t("编辑")}
                       </button>
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteProvider(p); }}
+                        onClick={(e) => { e.stopPropagation(); requestDeleteProvider(p); }}
                         className="px-1.5 py-1 text-[11px] text-faint hover:text-danger rounded-md hover:bg-danger-soft transition-colors"
                       >
-                        删除
+                        {t("删除")}
                       </button>
                     </div>
                     {p.id === selectedProviderId && (
@@ -500,10 +502,10 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
 
             {activeProvider && (
               <div className="text-center text-xs text-faint">
-                当前使用：<span className="text-primary-500 font-medium">{activeProvider.name}</span>
+                {t("当前使用：")}<span className="text-primary-500 font-medium">{activeProvider.name}</span>
                 {activeProvider.enabled_model && ` · ${activeProvider.enabled_model}`}
                 {normalizeModelList(activeProvider).length > 1 &&
-                  `（已启用 ${normalizeModelList(activeProvider).length} 个模型）`}
+                  t("（已启用 {count} 个模型）", { count: normalizeModelList(activeProvider).length })}
               </div>
             )}
           </>
@@ -513,11 +515,11 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         {showForm && (
           <>
             <div className="flex items-center gap-2 mb-2">
-              <button onClick={closeForm} className="p-1 rounded-lg hover:bg-surface-alt text-faint transition-colors">
+              <button onClick={closeForm} title={t("返回")} aria-label={t("返回")} className="p-1 rounded-lg hover:bg-surface-alt text-faint transition-colors">
                 <Icon name="provider-back" className="w-4 h-4" />
               </button>
               <h3 className="text-sm font-semibold text-body">
-                {editingId ? "编辑服务商" : "添加服务商"}
+                {editingId ? t("编辑服务商") : t("添加服务商")}
               </h3>
             </div>
 
@@ -540,7 +542,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
             <input
               value={draftProvider.name}
               onChange={(e) => updateDraft("name", e.target.value)}
-              placeholder="提供商名称"
+              placeholder={t("提供商名称")}
               className="w-full px-3 py-2 text-sm input-modern"
             />
             <input
@@ -573,7 +575,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                 disabled={isFetchingModels || isSaving}
                 className="btn-primary flex-1 px-4 py-2 text-sm disabled:opacity-50"
               >
-                {isFetchingModels ? "获取中..." : "获取模型"}
+                {isFetchingModels ? t("获取中...") : t("获取模型")}
               </button>
               <button
                 type="button"
@@ -581,23 +583,23 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                 disabled={isSaving || isFetchingModels}
                 className="btn-ghost flex-1 px-4 py-2 text-sm bg-surface-alt disabled:opacity-50"
               >
-                {isSaving ? "保存中..." : "保存配置"}
+                {isSaving ? t("保存中...") : t("保存配置")}
               </button>
               <button
-                onClick={() => handleDeleteProvider(draftProvider)}
+                onClick={() => requestDeleteProvider(draftProvider)}
                 className="px-4 py-2 text-sm rounded-xl text-danger bg-surface-alt hover:bg-danger-soft transition-colors"
               >
-                删除
+                {t("删除")}
               </button>
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs text-faint font-medium">
-                  可用模型（可多选）
+                  {t("可用模型（可多选）")}
                 </label>
                 <span className="text-[11px] text-faint">
-                  已选 {checkedModels.length}
+                  {t("已选 {count}", { count: checkedModels.length })}
                   {availableModels.length > 0 && ` / ${availableModels.length}`}
                 </span>
               </div>
@@ -605,8 +607,8 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
               {availableModels.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-line px-3 py-4 text-center text-xs text-faint">
                   {isFetchingModels
-                    ? "正在获取模型列表..."
-                    : "还没有模型列表，点击上方「获取模型」后再勾选"}
+                    ? t("正在获取模型列表...")
+                    : t("还没有模型列表，点击上方「获取模型」后再勾选")}
                 </div>
               ) : (
                 <>
@@ -616,14 +618,14 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                       onClick={() => handleCheckAllModels(true)}
                       className="text-[11px] px-2 py-0.5 rounded-md text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors"
                     >
-                      全选
+                      {t("全选")}
                     </button>
                     <button
                       type="button"
                       onClick={() => handleCheckAllModels(false)}
                       className="text-[11px] px-2 py-0.5 rounded-md text-muted bg-surface-alt hover:bg-surface-strong transition-colors"
                     >
-                      清空
+                      {t("清空")}
                     </button>
                   </div>
 
@@ -648,7 +650,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                           </span>
                           {draftProvider.enabled_model === model && (
                             <span className="ml-auto flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-primary-100 text-primary-600">
-                              当前使用
+                              {t("当前使用")}
                             </span>
                           )}
                         </label>
@@ -661,8 +663,23 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
           </>
         )}
 
-        {/* 删除确认弹窗（列表行与编辑页共用） */}
-        {confirmDialog}
+        {/* 删除确认弹窗（列表行与编辑页共用，所有文案随语言实时更新） */}
+        <Modal isOpen={isOpen && !!deleteTarget} onClose={() => setDeleteTarget(null)} title={t("删除 AI 服务商")}>
+          <div className="space-y-4" onKeyDown={(event) => {
+            if (event.key === "Enter" && deleteTarget) {
+              event.preventDefault();
+              void handleDeleteProvider(deleteTarget);
+            }
+          }}>
+            <p className="text-sm text-body leading-relaxed">
+              {t("确定删除「{name}」吗？该配置与本机保存的 API Key 会被移除，无法撤销。", { name: deleteTarget?.name ?? "" })}
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setDeleteTarget(null)} className="btn-ghost px-4 py-2 text-sm">{t("取消")}</button>
+              <button autoFocus onClick={() => { if (deleteTarget) void handleDeleteProvider(deleteTarget); }} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-sm">{t("删除")}</button>
+            </div>
+          </div>
+        </Modal>
       </div>
   );
 };

@@ -14,6 +14,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { Icon } from "@/components/common/Icon";
 import { AiConfirmCard } from "@/components/ai/AiConfirmCard";
+import { t as translate, useI18n } from "@/i18n";
 import * as notesApi from "@/api/notes";
 import * as categoriesApi from "@/api/categories";
 import * as tagsApi from "@/api/tags";
@@ -120,7 +121,10 @@ const TOOL_LABELS: Record<string, string> = {
  * 工具轨迹右侧的目标信息：执行前用入参拼，执行后用结果补得更具体。
  * 只负责展示，不做业务校验；未知工具走 default 分支，保证轨迹永远有内容可显示。
  */
-const toolDetail = (name: string, args: Record<string, unknown>, result: unknown): string => {
+// 原始轨迹/模型上下文保留中文源文；只有界面消费时才传入 t。
+const sourceText: typeof translate = (source, params) => source.replace(/\{(\w+)\}/g, (match, key: string) => String(params?.[key] ?? match));
+
+const toolDetail = (name: string, args: Record<string, unknown>, result: unknown, t: typeof translate = sourceText): string => {
   const isObj = !!result && typeof result === "object";
   const r = (isObj && !Array.isArray(result) ? result : {}) as Record<string, unknown>;
   const arr = Array.isArray(result) ? (result as Record<string, unknown>[]) : null;
@@ -135,10 +139,10 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
   /** 目标笔记的统一写法：#ID · 《标题》（结果里的 id/noteId 都认，标题也可以从入参兜底） */
   const target = [head(r.id ?? r.noteId ?? args.noteId), title].filter(Boolean).join(" · ");
   /** 失败时轨迹上直接显示原因（红色行），不用点开才知道 */
-  const failure = typeof r.error === "string" && r.error ? `失败：${clip(r.error, 40)}` : "";
+  const failure = typeof r.error === "string" && r.error ? t("失败：{error}", { error: clip(r.error, 40) }) : "";
   switch (name) {
     case "selectNote":
-      return target ? `已打开 ${target}` : failure;
+      return target ? t("已打开 {target}", { target }) : failure;
     case "getNoteContent":
     case "getCurrentNote":
     case "readNoteLines": {
@@ -147,9 +151,9 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
       const total = num(r.totalLines);
       const chars = num(r.totalChars);
       const parts = [target];
-      if (range) parts.push(`第 ${range} 行`);
-      if (Number.isFinite(total) && total > 0) parts.push(`共 ${total} 行`);
-      if (Number.isFinite(chars) && chars > 0 && !range) parts.push(`${chars} 字`);
+      if (range) parts.push(t("第 {range} 行", { range }));
+      if (Number.isFinite(total) && total > 0) parts.push(t("共 {count} 行", { count: total }));
+      if (Number.isFinite(chars) && chars > 0 && !range) parts.push(t("{count} 字", { count: chars }));
       return parts.filter(Boolean).join(" · ") || failure;
     }
     case "findInNote": {
@@ -158,30 +162,30 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
         ? (r.matches as { line?: unknown }[]).map((m) => num(m.line)).filter((n) => Number.isFinite(n)).slice(0, 6)
         : [];
       const parts = [target, args.query ? `「${clip(args.query, 14)}」` : ""];
-      if (Number.isFinite(count)) parts.push(`命中 ${count} 处`);
-      if (lines.length > 0) parts.push(`第 ${lines.join("、")}${count > lines.length ? "…" : ""} 行`);
+      if (Number.isFinite(count)) parts.push(t("命中 {count} 处", { count }));
+      if (lines.length > 0) parts.push(t("第 {range} 行", { range: `${lines.join("、")}${count > lines.length ? "…" : ""}` }));
       return parts.filter(Boolean).join(" · ");
     }
     case "replaceLines": {
       const total = num(r.totalLines);
-      return [target, `改第 ${args.startLine}-${args.endLine} 行`, Number.isFinite(total) ? `现共 ${total} 行` : ""].filter(Boolean).join(" · ");
+      return [target, t("改第 {start}-{end} 行", { start: String(args.startLine), end: String(args.endLine) }), Number.isFinite(total) ? t("现共 {count} 行", { count: total }) : ""].filter(Boolean).join(" · ");
     }
     case "insertLines": {
       const total = num(r.totalLines);
       const text = String(args.text ?? "");
-      return [target, `第 ${args.afterLine} 行后插入 ${text ? text.split("\n").length : 0} 行`, Number.isFinite(total) ? `现共 ${total} 行` : ""].filter(Boolean).join(" · ");
+      return [target, t("第 {line} 行后插入 {count} 行", { line: String(args.afterLine), count: text ? text.split("\n").length : 0 }), Number.isFinite(total) ? t("现共 {count} 行", { count: total }) : ""].filter(Boolean).join(" · ");
     }
     case "deleteLines": {
       const total = num(r.totalLines);
-      return [target, `删第 ${args.startLine}-${args.endLine} 行`, Number.isFinite(total) ? `现共 ${total} 行` : ""].filter(Boolean).join(" · ");
+      return [target, t("删第 {start}-{end} 行", { start: String(args.startLine), end: String(args.endLine) }), Number.isFinite(total) ? t("现共 {count} 行", { count: total }) : ""].filter(Boolean).join(" · ");
     }
     case "replaceInNote": {
       const replaced = num(r.replaced);
-      return [target, `替换 ${Number.isFinite(replaced) ? replaced : 1} 处`, args.oldText ? `「${clip(args.oldText, 12)}」` : ""].filter(Boolean).join(" · ");
+      return [target, t("替换 {count} 处", { count: Number.isFinite(replaced) ? replaced : 1 }), args.oldText ? `「${clip(args.oldText, 12)}」` : ""].filter(Boolean).join(" · ");
     }
     case "appendToNote": {
       const len = num(r.appendedLength);
-      return [target, Number.isFinite(len) ? `追加 ${len} 字` : args.text ? `追加 ${String(args.text).length} 字` : ""].filter(Boolean).join(" · ");
+      return [target, Number.isFinite(len) ? t("追加 {count} 字", { count: len }) : args.text ? t("追加 {count} 字", { count: String(args.text).length }) : ""].filter(Boolean).join(" · ");
     }
     case "createNote":
     case "updateNote":
@@ -189,11 +193,11 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
       // 写操作要说清"改了哪些字段"，光一个标题看不出做了什么
       const changed: string[] = [];
       if (name !== "createNote") {
-        if (args.title !== undefined) changed.push("标题");
-        if (args.content !== undefined) changed.push("正文");
-        if (args.categoryName !== undefined) changed.push("分组");
+        if (args.title !== undefined) changed.push(t("标题"));
+        if (args.content !== undefined) changed.push(t("正文"));
+        if (args.categoryName !== undefined) changed.push(t("分组"));
       } else if (args.content) {
-        changed.push(`${String(args.content).length} 字`);
+        changed.push(t("{count} 字", { count: String(args.content).length }));
       }
       return [target, changed.length > 0 ? changed.join("/") : ""].filter(Boolean).join(" · ");
     }
@@ -201,164 +205,165 @@ const toolDetail = (name: string, args: Record<string, unknown>, result: unknown
       const created = Array.isArray(r.created) ? (r.created as { id?: unknown; title?: unknown }[]) : [];
       if (created.length > 0) {
         const names = created.slice(0, 3).map((c) => `#${c.id}《${clip(c.title, 10)}》`).join("、");
-        return `创建 ${created.length} 篇：${names}${created.length > 3 ? "…" : ""}`;
+        return t("创建 {count} 篇：{names}", { count: created.length, names: names + (created.length > 3 ? "…" : "") });
       }
-      return Array.isArray(args.notes) ? `${(args.notes as unknown[]).length} 篇` : "";
+      return Array.isArray(args.notes) ? t("{count} 篇", { count: args.notes.length }) : "";
     }
     case "getCategories": {
       const list = Array.isArray(result) ? (result as { name?: unknown }[]) : [];
       const names = list.slice(0, 3).map((c) => clip(c.name, 8)).join("、");
-      return list.length > 0 ? `${list.length} 个分组${names ? `：${names}${list.length > 3 ? "…" : ""}` : ""}` : "";
+      return list.length > 0 ? t("{count} 个分组", { count: list.length }) + (names ? `：${names}${list.length > 3 ? "…" : ""}` : "") : "";
     }
     case "moveNote": {
-      const to = typeof r.category === "string" && r.category ? `→「${clip(r.category, 12)}」` : args.categoryId !== undefined ? `→分组 #${args.categoryId}` : "";
+      const to = typeof r.category === "string" && r.category ? `→「${clip(r.category, 12)}」` : args.categoryId !== undefined ? t("→分组 #{id}", { id: String(args.categoryId) }) : "";
       return [head(r.id ?? args.noteId), to].filter(Boolean).join(" ");
     }
     case "emptyTrash": {
       const deleted = num(r.deleted);
-      return Number.isFinite(deleted) ? `清空 ${deleted} 篇` : "";
+      return Number.isFinite(deleted) ? t("清空 {count} 篇", { count: deleted }) : "";
     }
     case "searchNotes": {
       const q = args.query ? `「${clip(args.query, 14)}」` : "";
       const total = num(r.total);
-      const fuzzy = r.fuzzy === true ? "（模糊）" : "";
-      return [q + fuzzy, Number.isFinite(total) ? `命中 ${total} 篇` : ""].filter(Boolean).join(" · ");
+      const fuzzy = r.fuzzy === true ? t("（模糊）") : "";
+      return [q + fuzzy, Number.isFinite(total) ? t("命中 {count} 篇", { count: total }) : ""].filter(Boolean).join(" · ");
     }
     case "searchNotesSemantic": {
       const q = args.query ? `「${clip(args.query, 14)}」` : "";
       const total = num(r.total);
-      return [q, Number.isFinite(total) ? `命中 ${total} 篇` : "", failure].filter(Boolean).join(" · ");
+      return [q, Number.isFinite(total) ? t("命中 {count} 篇", { count: total }) : "", failure].filter(Boolean).join(" · ");
     }
     case "listNotes": {
-      const scope = args.categoryName ? `「${clip(args.categoryName)}」` : "全部";
+      const scope = args.categoryName ? `「${clip(args.categoryName)}」` : t("全部");
       const total = num(r.total);
       const shown = Array.isArray(r.notes) ? r.notes.length : NaN;
-      return [scope, Number.isFinite(total) ? `${total} 篇${Number.isFinite(shown) ? `（列出 ${shown}）` : ""}` : ""].filter(Boolean).join(" · ");
+      return [scope, Number.isFinite(total) ? t("{count} 篇", { count: total }) + (Number.isFinite(shown) ? t("（列出 {count}）", { count: shown }) : "") : ""].filter(Boolean).join(" · ");
     }
     /* ---- 标签：轨迹要能看出"加了哪几个词"，光一个数字看不出做了什么 ---- */
     case "listTags": {
       const total = num(r.total);
       const list = Array.isArray(r.tags) ? (r.tags as { name?: unknown }[]) : [];
       const names = list.slice(0, 3).map((t) => clip(t.name, 8)).join("、");
-      return [Number.isFinite(total) ? `${total} 个标签` : "", names ? `：${names}${list.length > 3 ? "…" : ""}` : ""].filter(Boolean).join("");
+      return [Number.isFinite(total) ? t("{count} 个标签", { count: total }) : "", names ? `：${names}${list.length > 3 ? "…" : ""}` : ""].filter(Boolean).join("");
     }
     case "getNoteTags": {
       const list = Array.isArray(r.tags) ? (r.tags as { name?: unknown }[]) : [];
-      return [target, list.length > 0 ? list.slice(0, 4).map((t) => clip(t.name, 8)).join("、") : "暂无标签"].filter(Boolean).join(" · ");
+      return [target, list.length > 0 ? list.slice(0, 4).map((tag) => clip(tag.name, 8)).join("、") : t("暂无标签")].filter(Boolean).join(" · ");
     }
     case "findNotesByTag": {
       const tag = args.tagName ? `「${clip(args.tagName, 14)}」` : "";
       const total = num(r.total);
-      return [tag, Number.isFinite(total) ? `${total} 篇` : ""].filter(Boolean).join(" · ") || failure;
+      return [tag, Number.isFinite(total) ? t("{count} 篇", { count: total }) : ""].filter(Boolean).join(" · ") || failure;
     }
     case "addNoteTags": {
       const added = Array.isArray(r.added) ? (r.added as unknown[]) : [];
-      return [target, added.length > 0 ? `加「${added.slice(0, 4).map((t) => clip(t, 8)).join("、")}」` : "未新增"].filter(Boolean).join(" · ");
+      return [target, added.length > 0 ? t("加「{names}」", { names: added.slice(0, 4).map((tag) => clip(tag, 8)).join("、") }) : t("未新增")].filter(Boolean).join(" · ");
     }
     case "setNoteTags": {
       const tags = Array.isArray(r.aiTags) ? (r.aiTags as unknown[]) : [];
-      return [target, tags.length > 0 ? `标签：${tags.slice(0, 4).map((t) => clip(t, 8)).join("、")}` : "已清空"].filter(Boolean).join(" · ");
+      return [target, tags.length > 0 ? t("标签：{names}", { names: tags.slice(0, 4).map((tag) => clip(tag, 8)).join("、") }) : t("已清空")].filter(Boolean).join(" · ");
     }
     case "removeNoteTags": {
       const removed = Array.isArray(r.removed) ? (r.removed as unknown[]) : [];
       const skipped = Array.isArray(r.skipped) ? (r.skipped as unknown[]) : [];
-      const parts = [target, removed.length > 0 ? `移除「${removed.slice(0, 4).map((t) => clip(t, 8)).join("、")}」` : "没有可移除的"];
-      if (skipped.length > 0) parts.push(`${skipped.length} 个跳过（用户标签）`);
+      const parts = [target, removed.length > 0 ? t("移除「{names}」", { names: removed.slice(0, 4).map((tag) => clip(tag, 8)).join("、") }) : t("没有可移除的")];
+      if (skipped.length > 0) parts.push(t("{count} 个跳过（用户标签）", { count: skipped.length }));
       return parts.filter(Boolean).join(" · ");
     }
     case "renameTag":
       return args.tagName ? `「${clip(args.tagName, 10)}」→「${clip(args.newName, 10)}」` : failure;
     case "deleteTag":
-      return [args.tagName ? `「${clip(args.tagName, 14)}」` : "", "已删除（连带所有笔记）"].filter(Boolean).join(" ") || failure;
+      return [args.tagName ? `「${clip(args.tagName, 14)}」` : "", t("已删除（连带所有笔记）")].filter(Boolean).join(" ") || failure;
     case "listTrash": {
       const total = num(r.total);
-      return Number.isFinite(total) ? `${total} 篇` : "";
+      return Number.isFinite(total) ? t("{count} 篇", { count: total }) : "";
     }
     case "deleteNote":
-      return [target, "已移入回收站（可还原）"].filter(Boolean).join(" · ") || failure;
+      return [target, t("已移入回收站（可还原）")].filter(Boolean).join(" · ") || failure;
     case "restoreNote":
-      return [target, "已还原"].filter(Boolean).join(" · ") || failure;
+      return [target, t("已还原")].filter(Boolean).join(" · ") || failure;
     case "deleteFromTrash":
-      return [target, "已彻底删除（不可恢复）"].filter(Boolean).join(" · ") || failure;
+      return [target, t("已彻底删除（不可恢复）")].filter(Boolean).join(" · ") || failure;
     case "createCategory":
       return [head(r.id), args.name ? `「${clip(args.name)}」` : ""].filter(Boolean).join(" · ") || failure;
     case "renameCategory":
-      return [head(r.id ?? args.categoryId), args.name ? `改名为「${clip(args.name)}」` : ""].filter(Boolean).join(" · ") || failure;
+      return [head(r.id ?? args.categoryId), args.name ? t("改名为「{name}」", { name: clip(args.name) }) : ""].filter(Boolean).join(" · ") || failure;
     case "deleteCategory": {
       const cnt = num(r.noteCount);
-      const mode = r.notesMovedToTrash === true ? (Number.isFinite(cnt) && cnt > 0 ? `组内 ${cnt} 篇已移入回收站` : "组内笔记已移入回收站") : "组内笔记已变为未分类";
+      const mode = r.notesMovedToTrash === true ? (Number.isFinite(cnt) && cnt > 0 ? t("组内 {count} 篇已移入回收站", { count: cnt }) : t("组内笔记已移入回收站")) : t("组内笔记已变为未分类");
       return [head(r.id ?? args.categoryId), r.name ? `「${clip(r.name)}」` : "", mode].filter(Boolean).join(" · ") || failure;
     }
     default: {
       // 兜底：任何工具都至少说清"做了什么/多大/几项"，不留空白
       if (failure) return failure;
-      if (arr) return `${arr.length} 项`;
+      if (arr) return t("{count} 项", { count: arr.length });
       if (target) return target;
       const keys = Object.keys(r).filter(k => k !== "success" && k !== "note");
       if (keys.length > 0) return clip(JSON.stringify(r), 40);
-      return r.note ? clip(r.note, 40) : "已完成";
+      return r.note ? clip(r.note, 40) : t("已完成");
     }
   }
 };
 
 
 /** 确认弹窗里的一句话说明：让用户在点"确认执行"前看懂这批写操作会改什么 */
-const summarizeToolCall = (c: ToolCall): string => {
+const summarizeToolCall = (c: ToolCall, t: typeof translate): string => {
+  const id = String(c.args.noteId);
   switch (c.name) {
     case "createNote":
-      return `创建笔记「${(String(c.args.title || "")).substring(0, 30)}」并填入内容`;
+      return t("创建笔记「{title}」并填入内容", { title: String(c.args.title || "").substring(0, 30) });
     case "updateNote": {
       const parts: string[] = [];
-      if (c.args.title) parts.push(`标题：「${String(c.args.title).substring(0, 30)}」`);
-      if (c.args.content) parts.push(`内容已更新`);
-      if (c.args.categoryName) parts.push(`移至分组「${String(c.args.categoryName)}」`);
-      return `修改笔记 #${c.args.noteId}${parts.length > 0 ? `（${parts.join("，")}）` : ""}`;
+      if (c.args.title) parts.push(t("标题：「{title}」", { title: String(c.args.title).substring(0, 30) }));
+      if (c.args.content) parts.push(t("内容已更新"));
+      if (c.args.categoryName) parts.push(t("移至分组「{name}」", { name: String(c.args.categoryName) }));
+      return t("修改笔记 #{id}", { id }) + (parts.length > 0 ? ` (${parts.join(" / ")})` : "");
     }
     case "updateCurrentNote": {
       const parts: string[] = [];
-      if (c.args.title) parts.push(`标题改为「${String(c.args.title).substring(0, 30)}」`);
-      if (c.args.content) parts.push(`正文将被覆盖`);
-      if (c.args.categoryName) parts.push(`移至分组「${String(c.args.categoryName)}」`);
-      return `修改当前打开的笔记${parts.length > 0 ? `（${parts.join("，")}）` : ""}`;
+      if (c.args.title) parts.push(t("标题改为「{title}」", { title: String(c.args.title).substring(0, 30) }));
+      if (c.args.content) parts.push(t("正文将被覆盖"));
+      if (c.args.categoryName) parts.push(t("移至分组「{name}」", { name: String(c.args.categoryName) }));
+      return t("修改当前打开的笔记") + (parts.length > 0 ? ` (${parts.join(" / ")})` : "");
     }
     case "deleteNote":
-      return `删除笔记 #${c.args.noteId}`;
+      return t("删除笔记 #{id}", { id });
     case "replaceLines":
-      return `替换笔记 #${c.args.noteId} 的第 ${c.args.startLine}-${c.args.endLine} 行（只改这一段，其余保留）`;
+      return t("替换笔记 #{id} 的第 {start}-{end} 行（只改这一段，其余保留）", { id, start: String(c.args.startLine), end: String(c.args.endLine) });
     case "insertLines":
-      return `在笔记 #${c.args.noteId} 第 ${c.args.afterLine} 行后插入内容（约 ${String(c.args.text || "").length} 字）`;
+      return t("在笔记 #{id} 第 {line} 行后插入内容（约 {count} 字）", { id, line: String(c.args.afterLine), count: String(c.args.text || "").length });
     case "deleteLines":
-      return `删除笔记 #${c.args.noteId} 的第 ${c.args.startLine}-${c.args.endLine} 行`;
+      return t("删除笔记 #{id} 的第 {start}-{end} 行", { id, start: String(c.args.startLine), end: String(c.args.endLine) });
     case "replaceInNote": {
       const all = c.args.replaceAll === true || c.args.replaceAll === "true";
-      return `在笔记 #${c.args.noteId} 里把「${String(c.args.oldText || "").slice(0, 20)}」替换为「${String(c.args.newText || "").slice(0, 20)}」${all ? "（全部匹配）" : "（仅第一处）"}`;
+      return t("在笔记 #{id} 里把「{oldText}」替换为「{newText}」{scope}", { id, oldText: String(c.args.oldText || "").slice(0, 20), newText: String(c.args.newText || "").slice(0, 20), scope: all ? t("（全部匹配）") : t("（仅第一处）") });
     }
     case "restoreNote":
-      return `从回收站还原笔记 #${c.args.noteId}`;
+      return t("从回收站还原笔记 #{id}", { id });
     case "deleteFromTrash":
-      return `彻底删除回收站中的笔记 #${c.args.noteId}（不可恢复）`;
+      return t("彻底删除回收站中的笔记 #{id}（不可恢复）", { id });
     case "emptyTrash":
-      return `清空回收站（不可恢复）`;
+      return t("清空回收站（不可恢复）");
     case "appendToNote": {
-      const target = c.args.noteId ? `笔记 #${c.args.noteId}` : "当前打开的笔记";
-      return `在${target}末尾追加内容（约 ${String(c.args.text || "").length} 字）`;
+      const target = c.args.noteId ? t("笔记 #{id}", { id }) : t("当前打开的笔记");
+      return t("在{target}末尾追加内容（约 {count} 字）", { target, count: String(c.args.text || "").length });
     }
     case "createNotes": {
-      const n = Array.isArray(c.args.notes) ? (c.args.notes as unknown[]).length : 0;
-      return `一次创建 ${n} 篇笔记`;
+      const count = Array.isArray(c.args.notes) ? c.args.notes.length : 0;
+      return t("一次创建 {count} 篇笔记", { count });
     }
     case "createCategory":
-      return `创建分组「${String(c.args.name || "").substring(0, 20)}」`;
+      return t("创建分组「{name}」", { name: String(c.args.name || "").substring(0, 20) });
     case "renameCategory":
-      return `重命名分组为「${String(c.args.name || "").substring(0, 20)}」`;
+      return t("重命名分组为「{name}」", { name: String(c.args.name || "").substring(0, 20) });
     case "deleteCategory":
       return c.args.deleteNotes === true || c.args.deleteNotes === "true"
-        ? `删除分组（组内笔记移入回收站，可还原）`
-        : `删除分组（组内笔记变为未分类）`;
+        ? t("删除分组（组内笔记移入回收站，可还原）")
+        : t("删除分组（组内笔记变为未分类）");
     case "moveNote":
-      return `移动笔记到其他分组`;
+      return t("移动笔记到其他分组");
     default:
-      return c.name;
+      return TOOL_LABELS[c.name] ? t(TOOL_LABELS[c.name]) : c.name;
   }
 };
 
@@ -808,7 +813,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
         };
       }
       const r = await notesApi.createNote(
-        String(it.title ?? "无标题"),
+        String(it.title ?? translate("无标题")),
         String(it.content ?? ""),
         cat?.id ?? null,
         ctx.defaultNoteAiAccess,
@@ -1173,7 +1178,7 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
 const ChatMessageRow = memo(function ChatMessageRow({
   msg, index, expanded, thoughtOpen, toolOpen, live, isSending, showToolTrace, editorSettings, onToggleGroup, onToggleThought, onToggleTool, onInsertText, onReplaceContent, onCopyText, onOpenInEditor,
 }: {
-  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number };
+  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number; uiNotice?: UiNotice };
   index: number;
   /** 「深度思考」父折叠是否展开（思考中默认展开，回答结束后默认收起） */
   expanded: boolean;
@@ -1197,19 +1202,27 @@ const ChatMessageRow = memo(function ChatMessageRow({
   /** 在编辑器里临时打开这条 AI 回复 */
   onOpenInEditor: (content: string) => void;
 }) {
+  const { t } = useI18n();
   const msgThinking = msg.thinking;
   const msgTools = msg.tools;
+  const content = useMemo(() => msg.role === "assistant" && msg.uiNotice
+    ? renderUiNotice(msg.uiNotice, msgTools, t)
+    : msg.content, [msg.role, msg.uiNotice, msgTools, msg.content, t]);
   const delay = `${Math.min(index, 5) * 15}ms`;
   /** 实际展示的工具轨迹（设置里关掉就当作没有） */
-  const traceTools = showToolTrace && msgTools ? msgTools : [];
+  const traceTools = useMemo(() => showToolTrace && msgTools
+    ? msgTools.map(tool => ({ ...tool, detail: tool.result === CONFIRM_CANCELLED
+      ? t("用户已取消")
+      : toolDetail(tool.name, tool.args ?? {}, tool.result, t) }))
+    : [], [showToolTrace, msgTools, t]);
   /** 还有工具没跑完：父折叠上直接标"执行中…" */
   const toolRunning = traceTools.some((t) => t.ok === null || t.ok === undefined);
   /** 只要思考或工具轨迹存在，就把它们统一收进一个「深度思考」父折叠 */
   const hasTrace = !!msgThinking || traceTools.length > 0;
   /** 底部元信息：时间 · 用时 · token（AI 回复的 token 含思考过程与工具调用） */
   const metaText = [
-    msg.at ? formatMessageTime(msg.at) : "",
-    msg.thinkMs ? `用时 ${(msg.thinkMs / 1000).toFixed(1)}s` : "",
+    msg.at ? formatMessageTime(msg.at, t) : "",
+    msg.thinkMs ? t("用时 {seconds}s", { seconds: (msg.thinkMs / 1000).toFixed(1) }) : "",
     `${formatTokens(msgTokens(msg))} tok`,
   ].filter(Boolean).join(" · ");
 
@@ -1218,11 +1231,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
       <div data-chat-anchor="true" className="group/msg flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
         <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-surface-alt text-body max-w-[85%]">{msg.content}</div>
         <div className="mt-0.5 mr-1 flex items-center gap-0.5">
-          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-faint-soft tabular-nums select-none" title="整条消息的估算 token">{msg.at ? `${formatMessageTime(msg.at)} · ` : ""}{formatTokens(msgTokens(msg))} tok</span>
+          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-faint-soft tabular-nums select-none" title={t("整条消息的估算 token")}>{msg.at ? `${formatMessageTime(msg.at, t)} · ` : ""}{formatTokens(msgTokens(msg))} tok</span>
           <button
-            onClick={() => onCopyText(msg.content)}
+            onClick={() => onCopyText(content)}
             className={MSG_ACTION_BTN}
-            title="复制消息"
+            title={t("复制消息")}
           >
             <CopyIcon />
           </button>
@@ -1240,17 +1253,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
           <button
             onClick={() => onToggleGroup(index, !expanded)}
             className="flex w-full items-center gap-1.5 text-left text-[11.5px] text-faint hover:text-body transition-colors py-0.5"
-            title={expanded ? "收起思考与工具调用" : "展开思考与工具调用"}
+            title={expanded ? t("收起思考与工具调用") : t("展开思考与工具调用")}
           >
             <Icon name="ai-lightbulb" className="w-3 h-3 flex-shrink-0" />
-            <span className="flex-shrink-0">分析</span>
+            <span className="flex-shrink-0">{t("分析")}</span>
             {/* 父折叠只留标题，不带思考预览：过程内容都在展开后的子折叠里 */}
             <span className="min-w-0 flex-1" />
             {live || toolRunning ? (
-              <span className="flex-shrink-0 text-[10.5px] text-primary-400">{toolRunning ? "执行中…" : "思考中…"}</span>
+              <span className="flex-shrink-0 text-[10.5px] text-primary-400">{toolRunning ? t("执行中…") : t("思考中…")}</span>
             ) : null}
             <span className="flex-shrink-0 text-[10.5px] text-faint-soft opacity-0 group-hover/depth:opacity-100 transition-opacity">
-              {expanded ? "收起" : "展开"}
+              {expanded ? t("收起") : t("展开")}
             </span>
             <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 transition-transform " + (expanded ? "rotate-90" : "")} />
           </button>
@@ -1262,15 +1275,15 @@ const ChatMessageRow = memo(function ChatMessageRow({
                   <button
                     onClick={() => onToggleThought(index)}
                     className="flex w-full items-center gap-1.5 text-left text-[11.5px] text-faint hover:text-body transition-colors py-0.5"
-                    title={thoughtOpen ? "收起思考过程" : "展开思考过程"}
+                    title={thoughtOpen ? t("收起思考过程") : t("展开思考过程")}
                   >
                     <Icon name="ai-lightbulb" className="w-3 h-3 flex-shrink-0 text-faint-soft" />
-                    <span className="flex-shrink-0">思考</span>
+                    <span className="flex-shrink-0">{t("思考")}</span>
                     {/* 预览始终保留：展开/收起只靠右侧箭头旋转表示，不要把内容换成"收起"两个字 */}
                     <span className="text-faint-soft flex-shrink-0">·</span>
                     <span className="min-w-0 flex-1 truncate">{firstLine(msgThinking)}</span>
                     <span className="flex-shrink-0 text-[10.5px] text-faint-soft opacity-0 group-hover/thinking:opacity-100 transition-opacity">
-                      {thoughtOpen ? "收起" : "展开"}
+                      {thoughtOpen ? t("收起") : t("展开")}
                     </span>
                     <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 transition-transform " + (thoughtOpen ? "rotate-90" : "")} />
                   </button>
@@ -1290,7 +1303,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
                       className={`flex w-full items-center gap-1.5 text-left text-[11.5px] transition-colors py-0.5 ${
                         tool.ok === false ? 'text-danger hover:text-danger-strong' : 'text-faint hover:text-body'
                       }`}
-                      title="展开查看调用参数与结果"
+                      title={t("展开查看调用参数与结果")}
                     >
                       {running ? (
                         <span className="w-3 h-3 flex items-center justify-center flex-shrink-0">
@@ -1301,15 +1314,16 @@ const ChatMessageRow = memo(function ChatMessageRow({
                       ) : (
                         <Icon name="ai-alert-triangle" className="w-3 h-3 flex-shrink-0" />
                       )}
-                      <span className="flex-shrink-0">{TOOL_LABELS[tool.name] || tool.name}</span>
+                      <span className="flex-shrink-0">{TOOL_LABELS[tool.name] ? t(TOOL_LABELS[tool.name]) : tool.name}</span>
                       {tool.detail ? (<><span className="text-faint-soft flex-shrink-0">·</span><span className="truncate" title={tool.detail}>{tool.detail}</span></>) : null}
-                      {running ? <span className="flex-shrink-0 text-faint-soft">执行中…</span> : null}
+                      {running ? <span className="flex-shrink-0 text-faint-soft">{t("执行中…")}</span> : null}
                       <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 text-faint-soft transition-transform " + (open ? "rotate-90" : "")} />
                     </button>
                     {open && (
-                      <pre className="mt-0.5 mb-1 ml-[18px] px-2 py-1.5 rounded-lg bg-app border border-line-soft text-[10.5px] leading-relaxed text-muted whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{`调用 ${JSON.stringify({ name: tool.name, args: tool.args })}　结果 ${
-                        running ? '（执行中）' : JSON.stringify(tool.result ?? null).slice(0, 400)
-                      }`}</pre>
+                      <pre className="mt-0.5 mb-1 ml-[18px] px-2 py-1.5 rounded-lg bg-app border border-line-soft text-[10.5px] leading-relaxed text-muted whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{t("调用 {call}　结果 {result}", {
+                        call: JSON.stringify({ name: tool.name, args: tool.args }),
+                        result: running ? t("（执行中）") : JSON.stringify(tool.result ?? null).slice(0, 400),
+                      })}</pre>
                     )}
                   </div>
                 );
@@ -1320,7 +1334,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       ) : null}
       {msg.content ? (
         <div className="text-[13px] leading-[1.75] text-body">
-          <AiMarkdown content={msg.content} editorSettings={editorSettings} />
+          <AiMarkdown content={content} editorSettings={editorSettings} />
         </div>
       ) : null}
       {/* 时间 + 操作按钮：同一行固定展示（与用户消息对称，AI 这条在左下角） */}
@@ -1328,13 +1342,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
         <div className="pt-0.5 flex items-center gap-0.5">
           {msg.content && !isSending && (
             <>
-              <button onClick={() => onInsertText(msg.content)} className={MSG_ACTION_BTN} title="将内容插入到光标处"><Icon name="ai-plus" className="w-3.5 h-3.5" /></button>
-              <button onClick={() => onReplaceContent(msg.content)} className={`${MSG_ACTION_BTN} hover:!text-warning hover:!bg-warning-soft`} title="覆盖当前打开的笔记"><Icon name="ai-replace" className="w-3.5 h-3.5" /></button>
-              <button onClick={() => onCopyText(msg.content)} className={MSG_ACTION_BTN} title="复制消息"><CopyIcon /></button>
-              <button onClick={() => onOpenInEditor(msg.content)} className={`${MSG_ACTION_BTN} hover:!text-info hover:!bg-info-soft`} title="在编辑器中打开（临时预览，不会保存为笔记）"><Icon name="open-in-editor" className="w-3.5 h-3.5" /></button>
+              <button onClick={() => onInsertText(content)} className={MSG_ACTION_BTN} title={t("将内容插入到光标处")}><Icon name="ai-plus" className="w-3.5 h-3.5" /></button>
+              <button onClick={() => onReplaceContent(content)} className={`${MSG_ACTION_BTN} hover:!text-warning hover:!bg-warning-soft`} title={t("覆盖当前打开的笔记")}><Icon name="ai-replace" className="w-3.5 h-3.5" /></button>
+              <button onClick={() => onCopyText(content)} className={MSG_ACTION_BTN} title={t("复制消息")}><CopyIcon /></button>
+              <button onClick={() => onOpenInEditor(content)} className={`${MSG_ACTION_BTN} hover:!text-info hover:!bg-info-soft`} title={t("在编辑器中打开（临时预览，不会保存为笔记）")}><Icon name="open-in-editor" className="w-3.5 h-3.5" /></button>
             </>
           )}
-          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-faint-soft tabular-nums select-none" title="整条回复的估算 token（含思考过程与工具调用）">{metaText}</span>
+          <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-faint-soft tabular-nums select-none" title={t("整条回复的估算 token（含思考过程与工具调用）")}>{metaText}</span>
         </div>
       ) : null}
     </div>
@@ -1375,13 +1389,14 @@ const AnchorRail = memo(function AnchorRail({
   onScroll: () => void;
 }) {
   // hooks 必须在任何早退之前
+  const { t } = useI18n();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (anchors.length < 2) return null;
   // 当前活跃的那条：取原始序号不超过 activeOriginal 的最后一个可见条
   let activeBar = 0;
   anchors.forEach((a, i) => { if (a.index <= activeOriginal) activeBar = i; });
   return (
-    <nav className="chat-anchor-rail" aria-label="对话历史" onScroll={onScroll}>
+    <nav className="chat-anchor-rail" aria-label={t("对话历史")} onScroll={onScroll}>
       <div className="chat-anchor-list" style={{ gap }}>
         {anchors.map((anchor, i) => {
           const isActive = i === activeBar;
@@ -1406,7 +1421,7 @@ const AnchorRail = memo(function AnchorRail({
               onFocus={(e) => { setHoverIdx(i); onHover(anchor.index, e.currentTarget); }}
               onBlur={() => { setHoverIdx(null); onLeave(); }}
               style={{ height: RAIL_ITEM_H }}
-              aria-label={`跳到第 ${anchor.index + 1} 条消息（第 ${i + 1} 个锚点）：${anchor.preview}`}
+              aria-label={t("跳到第 {message} 条消息（第 {anchor} 个锚点）：{preview}", { message: anchor.index + 1, anchor: i + 1, preview: anchor.preview })}
               aria-current={isActive ? "true" : undefined}
             >
               <span className="chat-anchor-line" style={{ transform: `scaleX(${sx.toFixed(3)}) scaleY(${sy.toFixed(3)})` }} />
@@ -1424,26 +1439,56 @@ const CONFIRM_CANCELLED = "用户已取消";
 const CONFIRM_TIMEOUT_MS = 180000;
 
 /** 对话列表里的相对时间：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD */
-const relativeTime = (iso?: string): string => {
+const relativeTime = (iso: string | undefined, t: typeof translate): string => {
   if (!iso) return "";
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "";
-  const diff = Date.now() - t;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  const d = new Date(t);
+  const timestamp = Date.parse(iso);
+  if (Number.isNaN(timestamp)) return "";
+  const diff = Date.now() - timestamp;
+  if (diff < 60_000) return t("刚刚");
+  if (diff < 3_600_000) return t("{count} 分钟前", { count: Math.floor(diff / 60_000) });
+  const d = new Date(timestamp);
   const today = new Date();
   const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const dayDiff = Math.round((dayStart(today) - dayStart(d)) / 86_400_000);
   if (dayDiff === 0) return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  if (dayDiff === 1) return "昨天";
-  if (dayDiff < 7) return `${dayDiff} 天前`;
+  if (dayDiff === 1) return t("昨天");
+  if (dayDiff < 7) return t("{count} 天前", { count: dayDiff });
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
 /** 工具轨迹的中文一句话摘要：写进正文，让用户/模型都能看清做了什么 */
-const describeTools = (tools: ToolTrace[] | undefined): string[] =>
-  (tools || []).map(t => `${TOOL_LABELS[t.name] || t.name}${t.detail ? ` · ${t.detail}` : ""}`);
+const describeTools = (tools: ToolTrace[] | undefined, t: typeof translate): string[] =>
+  (tools || []).map(tool => {
+    const label = TOOL_LABELS[tool.name] ? t(TOOL_LABELS[tool.name]) : tool.name;
+    const detail = tool.result === CONFIRM_CANCELLED ? t("用户已取消") : toolDetail(tool.name, tool.args ?? {}, tool.result, t);
+    return `${label}${detail ? ` · ${detail}` : ""}`;
+  });
+
+/** 仅应用自己生成的通知携带标记；聊天正文、模型输出与持久化历史不按文本猜测翻译。 */
+interface UiNotice {
+  kind: "failure" | "no-progress" | "limit" | "empty" | "stopped" | "reply";
+  error?: string;
+  prefix?: string;
+  source?: string;
+  unverified?: string[];
+}
+
+const renderUiNotice = (notice: UiNotice, tools: ToolTrace[] | undefined, t: typeof translate): string => {
+  if (notice.kind === "reply") {
+    const body = [notice.prefix, notice.source ? t(notice.source) : ""].filter(Boolean).join("\n\n");
+    return body + (notice.unverified?.length ? `\n\n> ${t("提示：本次回答里并没有实际执行「{actions}」，上面的相关表述未经工具结果确认，请以左侧笔记列表的实际状态为准。", { actions: notice.unverified.map(label => t(label)).join(" / ") })}` : "");
+  }
+  if (notice.kind === "stopped") return [notice.prefix, t("已停止")].filter(Boolean).join("\n\n");
+  if (notice.kind === "empty") return t("（模型没有返回有效内容，请重试，或把需求说得更具体一些。）");
+  const actions = describeTools(tools, t).map(detail => `- ${detail}`).join("\n");
+  if (notice.kind === "failure") {
+    return t("本轮请求失败了：{error}\n\n可以检查一下：服务商配置/模型是否可用、网络是否正常，然后重发或点「继续」。", { error: notice.error ?? t("未知错误") })
+      + (actions ? `\n\n${t("失败前已完成的操作：\n{actions}", { actions })}` : "");
+  }
+  return notice.kind === "no-progress"
+    ? t("（模型连续两轮重复请求同样的数据、没有新进展，已先停下。已完成的操作为：\n{actions}\n\n还需要继续的话，回一句「继续」并说明下一步要做什么。）", { actions })
+    : t("（本次操作步骤已达上限，先停在这里。已完成的操作为：\n{actions}\n\n还需要继续的话，回一句「继续」就行。）", { actions });
+};
 
 /* ---------- 上下文瘦身（记忆管理） ---------- */
 
@@ -1547,7 +1592,7 @@ const readNoteWindow = async (n: any, startLineArg?: unknown, lineCountArg?: unk
  * 消息时间显示：今天只显示 时:分，昨天加"昨天"，更早带上日期。
  * 遇到非法/缺失的时间戳返回空串，绝不显示 NaN。
  */
-const formatMessageTime = (at?: number): string => {
+const formatMessageTime = (at: number | undefined, t: typeof translate): string => {
   if (!at || Number.isNaN(at)) return "";
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return "";
@@ -1556,7 +1601,7 @@ const formatMessageTime = (at?: number): string => {
   const startOfDay = (t: Date) => new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
   const dayDiff = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86400000);
   if (dayDiff <= 0) return `${hh}:${mm}`;
-  if (dayDiff === 1) return `昨天 ${hh}:${mm}`;
+  if (dayDiff === 1) return t("昨天 {time}", { time: `${hh}:${mm}` });
   const md = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   if (d.getFullYear() === new Date().getFullYear()) return `${md} ${hh}:${mm}`;
   return `${d.getFullYear()}-${md} ${hh}:${mm}`;
@@ -1577,6 +1622,7 @@ const formatMessageTime = (at?: number): string => {
  * fastnote-select-note 通知外部刷新列表与切换笔记。
  */
 export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, editorSettings, onClose, enableAI, isExternalFile }) => {
+  const { t } = useI18n();
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
   const [sessions, setSessions] = useState<AiChatSession[]>([]);
@@ -1841,10 +1887,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   );
 
   /** 把一段结果说明写回对话：优先就地替换占位气泡，没有占位就追加 */
-  const commitNotice = useCallback(async (sid: number, text: string, leftover: any) => {
+  const commitNotice = useCallback(async (sid: number, uiNotice: UiNotice, leftover: any) => {
+    // 全局 t 在异步请求结束时读取当前语言；渲染时仍通过 uiNotice 订阅切换。
+    const text = renderUiNotice(uiNotice, leftover?.tools, translate);
     const usedMs = turnStartedAtRef.current ? Date.now() - turnStartedAtRef.current : 0;
     setMessages(m => {
-      const msg = { role: 'assistant' as const, content: text, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now(), thinkMs: usedMs || undefined } as any;
+      const msg = { role: 'assistant' as const, content: text, uiNotice, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now(), thinkMs: usedMs || undefined } as any;
       const idx = leftover ? m.findIndex(x => x === leftover) : -1;
       return idx >= 0 ? [...m.slice(0, idx), msg] : [...m, msg];
     });
@@ -2074,7 +2122,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         const at = Date.parse(x.created_at);
         return {
           role: x.role as "user" | "assistant",
-          content: p ? finalReplyText(p) : x.content,
+          content: p ? finalReplyText(p, translate) : x.content,
           thinking: p?.thinkingDisplay,
           at: Number.isNaN(at) ? undefined : at,
         };
@@ -2111,7 +2159,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       titleGenRef.current = null; // 失败时允许下次重试
     }
   };
-  const handleRenameSession = async (sid: number) => { const title = editTitle.trim(); if (!title) return; try { await aiApi.updateChatSessionTitle(sid, title); setEditingSessionId(null); setEditTitle(''); await loadSessions(); } catch { showToast('重命名失败', 'error'); } };
+  const handleRenameSession = async (sid: number) => { const title = editTitle.trim(); if (!title) return; try { await aiApi.updateChatSessionTitle(sid, title); setEditingSessionId(null); setEditTitle(''); await loadSessions(); } catch { showToast(translate('重命名失败'), 'error'); } };
   /**
    * 工具循环主体：反复"请求模型 → 解析 → 执行工具 → 回灌结果"，直到模型给出纯文本回复。
    * - 每轮只维护一个占位气泡（placeholderRef），工具轨迹逐条回填，避免"深度思考"重复出现。
@@ -2306,7 +2354,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           setTurnActive(false);
           resetStreaming();
           // 正文已剥离全部标签（含未闭合片段），工具调用只会出现在思考区
-          const finalReply = finalReplyText(parsed);
+          const finalReply = finalReplyText(parsed, translate);
           // 先把占位对象抓成局部变量、并清空 ref，再调用 setMessages：
           // updater 必须是纯函数——StrictMode 在开发模式下会执行两次，
           // 若在里面改 ref，第二次就会找不到占位而"追加"出一条重复消息。
@@ -2315,7 +2363,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           // 工具调用之前已经写给用户的正文（如"先总结剧情，再打开下一篇"里的总结）要保留；
           // 并对"声称已完成却没执行"做事实校验（见 buildFinalContent）。
           const carriedTools = placeholderAtFinal?.tools as ToolTrace[] | undefined;
-          const finalContent = buildFinalContent(finalReply, String(placeholderAtFinal?.content || ''), carriedTools || []);
+          const finalContent = buildFinalContent(finalReply, String(placeholderAtFinal?.content || ''), carriedTools || [], translate);
           // 时间沿用占位气泡（这一轮开始的时间），没有占位就用此刻
           const finalAt: number = placeholderAtFinal?.at ?? Date.now();
           // 本轮总用时：从按下发送到出结果（含工具执行），显示在消息时间旁边
@@ -2447,10 +2495,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         resetStreaming();
         const leftover: any = placeholderRef.current;
         placeholderRef.current = null;
-        const doneTools = describeTools(leftover?.tools);
-        const failure = `⚠️ 本轮请求失败了：${formatError(e)}\n\n可以检查一下：服务商配置/模型是否可用、网络是否正常，然后重发或点「继续」。`
-          + (doneTools.length > 0 ? `\n\n失败前已完成的操作：\n${doneTools.map(d => `- ${d}`).join("\n")}` : "");
-        await commitNotice(sid, failure, leftover);
+        await commitNotice(sid, { kind: "failure", error: e == null ? undefined : formatError(e) }, leftover);
         return;
       }
     }
@@ -2462,14 +2507,11 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     resetStreaming();
     const leftover: any = placeholderRef.current;
     placeholderRef.current = null;
-    const doneTools = describeTools(leftover?.tools);
     // 这份清单同时是给模型看的上下文：工具调用记录只存在于界面，不在对话历史里，
     // 写进正文用户下次说"继续"时模型才知道自己刚做了什么。
-    const notice = doneTools.length > 0
-      ? (noProgressRounds >= 2
-          ? `（模型连续两轮重复请求同样的数据、没有新进展，已先停下。已完成的操作为：\n${doneTools.map(d => `- ${d}`).join("\n")}\n\n还需要继续的话，回一句「继续」并说明下一步要做什么。）`
-          : `（本次操作步骤已达上限，先停在这里。已完成的操作为：\n${doneTools.map(d => `- ${d}`).join("\n")}\n\n还需要继续的话，回一句「继续」就行。）`)
-      : "（模型没有返回有效内容，请重试，或把需求说得更具体一些。）";
+    const notice: UiNotice = { kind: leftover?.tools?.length
+      ? (noProgressRounds >= 2 ? "no-progress" : "limit")
+      : "empty" };
     await commitNotice(sid, notice, leftover);
   };
 
@@ -2512,14 +2554,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       .trim();
 
     const title = cleaned.length > 20 ? `${cleaned.slice(0, 20)}…` : cleaned;
-    openInEditorRef.current(title || `AI 回复 ${stamp}`, content);
-  }, []);
+    openInEditorRef.current(title || t("AI 回复 {time}", { time: stamp }), content);
+  }, [t]);
   const copyTextStable = useCallback((text: string) => {
     navigator.clipboard.writeText(text).then(
-      () => showToast("已复制", "success"),
-      () => showToast("复制失败", "error")
+      () => showToast(t("已复制"), "success"),
+      () => showToast(t("复制失败"), "error")
     );
-  }, [showToast]);
+  }, [showToast, t]);
 
   /**
    * 工具执行是逐个进行的，这里把"正在执行"的一条轨迹立刻追加到当前助手气泡上，
@@ -2601,10 +2643,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (sendLockRef.current || isSendingRef.current) {
       // 正常流式输出时按钮是"停止"，不会走到这里；能走到这里说明是异常态
       // （例如上一轮卡在等待确认）——必须明确告诉用户，否则就是"点了发送没反应"。
-      if (!isSendingRef.current) showToast("上一条请求还没结束（可能在等待确认），本次发送已忽略", "error");
+      if (!isSendingRef.current) showToast(t("上一条请求还没结束（可能在等待确认），本次发送已忽略"), "error");
       return;
     }
-    if (!activeProvider?.id || !activeModel) { showToast("请先在设置中勾选可用模型", "error"); return; }
+    if (!activeProvider?.id || !activeModel) { showToast(t("请先在设置中勾选可用模型"), "error"); return; }
     const myRun = ++runIdRef.current;
     turnStartedAtRef.current = Date.now();
     /*
@@ -2661,7 +2703,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     setMessages(m => {
       const stopped = {
         role: 'assistant' as const,
-        content: placeholder?.content ? `${placeholder.content}\n\n已停止` : '已停止',
+        content: renderUiNotice({ kind: "stopped", prefix: placeholder?.content }, undefined, t),
+        uiNotice: { kind: "stopped", prefix: placeholder?.content } as UiNotice,
         thinking: placeholder?.thinking,
         tools: placeholder?.tools,
         at: placeholder?.at ?? Date.now(),
@@ -2673,7 +2716,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     // 用户点了停止：这一轮到此为止，「分析」折叠收起
     setTurnActive(false);
     resetStreaming();
-    if (activeSessionId) aiApi.saveChatMessage(activeSessionId, 'assistant', '已停止').catch(()=>{});
+    if (activeSessionId) aiApi.saveChatMessage(activeSessionId, 'assistant', t('已停止')).catch(()=>{});
   };
 
   const onResize = useCallback((e: React.MouseEvent) => {
@@ -2778,12 +2821,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           index: acc.length,
           preview: plain
             ? (plain.length > ANCHOR_PREVIEW_LEN ? `${plain.slice(0, ANCHOR_PREVIEW_LEN)}…` : plain)
-            : '（空消息）',
+            : t('（空消息）'),
         });
       }
       return acc;
     }, []),
-    [messages]
+    [messages, t]
   );
   /** 切换会话后旧索引可能越界，渲染前夹一下，保证总有一个点处于高亮态 */
   const activeDotIndex = Math.min(activeAnchor, Math.max(0, userAnchors.length - 1));
@@ -2849,7 +2892,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const sessionQueryValue = sessionQuery.trim().toLowerCase();
   const sessionGroups = (() => {
     const filtered = sessionQueryValue
-      ? sessions.filter(s => (s.title || "新对话").toLowerCase().includes(sessionQueryValue))
+      ? sessions.filter(s => (!s.title || s.title === "新对话" ? t("新对话") : s.title).toLowerCase().includes(sessionQueryValue))
       : sessions;
     const buckets: { label: string; items: typeof sessions }[] = [
       { label: "今天", items: [] },
@@ -2882,35 +2925,35 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         <button
           className="ai-session-btn"
           onClick={() => { setShowSessionPicker(true); setEditingSessionId(null); setEditTitle(''); setSessionQuery(''); }}
-          title="切换 / 管理对话"
+          title={t("切换 / 管理对话")}
         >
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12.5px] font-medium text-body">{activeSession?.title || "新对话"}</span>
+            <span className="block truncate text-[12.5px] font-medium text-body">{!activeSession?.title || activeSession.title === "新对话" ? t("新对话") : activeSession.title}</span>
             <span className="block truncate text-[10.5px] text-faint">
-              {activeProvider ? `${activeProvider.name}${activeModel ? ` · ${activeModel}` : " · 未选模型"}` : "未配置服务商"}
+              {activeProvider ? `${activeProvider.name} · ${activeModel || t("未选模型")}` : t("未配置服务商")}
             </span>
           </span>
           <Icon name="ai-chevron-down" className="w-3 h-3 flex-shrink-0 text-faint-soft" />
         </button>
 
-        <button className="ai-icon-btn" onClick={handleNewSession} title="新建对话">
+        <button className="ai-icon-btn" onClick={handleNewSession} title={t("新建对话")}>
           <Icon name="ai-plus-bold" className="w-3.5 h-3.5" />
         </button>
-        <button className="ai-icon-btn" onClick={onOpenAiMemory} title="AI 记忆 / 前置提示词">
+        <button className="ai-icon-btn" onClick={onOpenAiMemory} title={t("AI 记忆 / 前置提示词")}>
           <Icon name="ai-lightbulb-bold" className="w-3.5 h-3.5" />
         </button>
-        <button className="ai-icon-btn" onClick={onOpenProviderSettings} title="AI 设置">
+        <button className="ai-icon-btn" onClick={onOpenProviderSettings} title={t("AI 设置")}>
           <Icon name="ai-settings" className="w-3.5 h-3.5" />
         </button>
         {onClose && (
-          <button className="ai-icon-btn" title="关闭 AI 对话" onClick={onClose}>
+          <button className="ai-icon-btn" title={t("关闭 AI 对话")} onClick={onClose}>
             <Icon name="ai-close" className="w-3.5 h-3.5" />
           </button>
         )}
       </div>
       {providersError && (
         <div className="selectable mx-3 mt-2 px-3 py-2 rounded-lg bg-danger-soft border border-danger-line text-[11px] text-danger-strong leading-relaxed break-all">
-          读取 AI 服务商失败：{providersError}
+          {t("读取 AI 服务商失败：{error}", { error: providersError })}
         </div>
       )}
       {/* 消息视口：右侧锚点导轨与"回到最新"按钮都相对这一层定位，因此不会跟着内容滚动 */}
@@ -2927,35 +2970,35 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         {!activeProvider ? (
           <div className="ai-empty">
             <div className="ai-empty-icon"><Icon name="ai-bolt" className="w-5 h-5" /></div>
-            <p className="ai-empty-title">还没有可用的 AI 服务商</p>
-            <p className="ai-empty-desc">填一个 API Key 就能用：支持 OpenAI 兼容 / Claude / Gemini 协议。</p>
-            <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">去配置服务商</button>
+            <p className="ai-empty-title">{t("还没有可用的 AI 服务商")}</p>
+            <p className="ai-empty-desc">{t("填一个 API Key 就能用：支持 OpenAI 兼容 / Claude / Gemini 协议。")}</p>
+            <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">{t("去配置服务商")}</button>
           </div>
         ) : enableAI && isExternalFile ? (
           <div className="ai-empty">
             <div className="ai-empty-icon"><Icon name="ai-file-text" className="w-5 h-5" /></div>
-            <p className="ai-empty-title">AI 无法读取内容</p>
+            <p className="ai-empty-title">{t("AI 无法读取内容")}</p>
             <p className="ai-empty-desc">
-              请先保存该文件到分组，再使用 AI 功能。
+              {t("请先保存该文件到分组，再使用 AI 功能。")}
             </p>
           </div>
         ) : allMsgs.length === 0 ? (
           <div className="ai-empty">
             <div className="ai-empty-icon"><Icon name="ai-sparkles" className="w-5 h-5" /></div>
-            <p className="ai-empty-title">{activeModel ? "开始对话" : "还没有勾选模型"}</p>
+            <p className="ai-empty-title">{activeModel ? t("开始对话") : t("还没有勾选模型")}</p>
             <p className="ai-empty-desc">
               {activeModel
-                ? "可以让它整理笔记、改写润色、查找内容，也可以直接问问题。"
-                : "在设置里获取并勾选一个模型即可开始。"}
+                ? t("可以让它整理笔记、改写润色、查找内容，也可以直接问问题。")
+                : t("在设置里获取并勾选一个模型即可开始。")}
             </p>
             {activeModel ? (
               <div className="ai-empty-chips">
-                {["总结当前这篇笔记", "把这篇文章扩写", "新建一篇读书笔记", "我的笔记都写了什么"].map((t) => (
-                  <button key={t} className="ai-empty-chip" onClick={() => { setInput(t); inputRef.current?.focus(); }}>{t}</button>
+                {["总结当前这篇笔记", "把这篇文章扩写", "新建一篇读书笔记", "我的笔记都写了什么"].map((source) => (
+                  <button key={source} className="ai-empty-chip" onClick={() => { setInput(source); inputRef.current?.focus(); }}>{t(source)}</button>
                 ))}
               </div>
             ) : (
-              <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">打开设置</button>
+              <button onClick={onOpenProviderSettings} className="btn-primary px-4 py-2 text-xs mt-3">{t("打开设置")}</button>
             )}
           </div>
         ) : (allMsgs.map((msg, i) => (
@@ -2982,7 +3025,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         {isSending && (
           <div className="ai-thinking-live">
             <span className="thinking-dots"><span /><span /><span /></span>
-            <span>{streamingPreview?.reply ? "生成中" : "思考中"}</span>
+            <span>{streamingPreview?.reply ? t("生成中") : t("思考中")}</span>
             {elapsedSec > 0 && <span className="elapsed">{elapsedSec}s</span>}
           </div>
         )}
@@ -3018,8 +3061,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           type="button"
           className="chat-jump-latest absolute right-8 bottom-3 z-20"
           onClick={jumpToLatest}
-          title="回到最新回复"
-          aria-label="回到最新回复"
+          title={t("回到最新回复")}
+          aria-label={t("回到最新回复")}
         >
           <Icon name="ai-arrow-down" className="w-3.5 h-3.5" />
         </button>
@@ -3035,7 +3078,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             call={pendingConfirm.call}
             index={pendingConfirm.index}
             total={pendingConfirm.total}
-            summary={summarizeToolCall(pendingConfirm.call)}
+            summary={summarizeToolCall(pendingConfirm.call, t)}
             onRun={() => settleConfirm(true)}
             onCancel={() => settleConfirm(false)}
           />
@@ -3077,7 +3120,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             document.addEventListener("mouseup", onUp);
           }}
           onDoubleClick={() => onAiSettingsChange?.({ composerHeight: 0 })}
-          title="上下拖动调整输入框高度（双击恢复自动高度）"
+          title={t("上下拖动调整输入框高度（双击恢复自动高度）")}
         />
 
         {/* 模型下拉：fixed 定位，紧贴在模型 chip 按钮上方 */}
@@ -3093,7 +3136,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             }}
           >
             {models.length === 0 ? (
-              <div className="px-3 py-2 text-[11.5px] text-faint">还没有勾选可用模型</div>
+              <div className="px-3 py-2 text-[11.5px] text-faint">{t("还没有勾选可用模型")}</div>
             ) : models.map((m) => (
               <button
                 key={m}
@@ -3112,7 +3155,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             <div className="composer-menu-sep" />
             <button className="composer-menu-item" onClick={() => { setModelMenuOpen(false); onOpenProviderSettings(); }}>
               <Icon name="ai-settings-bold" className="w-3 h-3 flex-shrink-0" />
-              <span>管理模型 / 服务商…</span>
+              <span>{t("管理模型 / 服务商…")}</span>
             </button>
           </div>
         )}
@@ -3142,7 +3185,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 else handleSend();
               }
             }}
-            placeholder="输入消息…（Enter 发送 / Shift+Enter 换行）"
+            placeholder={t("输入消息…（Enter 发送 / Shift+Enter 换行）")}
             rows={2}
             className="composer-input chat-scrollbar"
           />
@@ -3160,27 +3203,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 setModelMenuOpen(v => !v);
               }}
               disabled={!activeProvider}
-              title={models.length === 0 ? "尚未勾选模型，点开去设置" : `当前模型：${activeModel || "未选"}（点击切换）`}
+              title={models.length === 0 ? t("尚未勾选模型，点开去设置") : t("当前模型：{model}（点击切换）", { model: activeModel || t("未选") })}
             >
               <Icon name="ai-monitor" className="w-3 h-3 flex-shrink-0" />
-              <span className="truncate">{models.length === 0 ? (activeProvider ? "未勾选模型" : "无服务商") : (activeModel || "选择模型")}</span>
+              <span className="truncate">{models.length === 0 ? (activeProvider ? t("未勾选模型") : t("无服务商")) : (activeModel || t("选择模型"))}</span>
               <Icon name="ai-chevron-up" className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (modelMenuOpen ? "rotate-180" : "")} />
             </button>
 
             {models.length === 0 && activeProvider && (
-              <button className="composer-chip is-warn" onClick={onOpenProviderSettings} title="尚未勾选模型，点击去设置">
+              <button className="composer-chip is-warn" onClick={onOpenProviderSettings} title={t("尚未勾选模型，点击去设置")}>
                 <Icon name="ai-alert-triangle" className="w-3 h-3 flex-shrink-0" />
-                {!compact && <span>去设置</span>}
+                {!compact && <span>{t("去设置")}</span>}
               </button>
             )}
 
             <button
               className={"composer-chip" + (confirmMode ? " is-on" : "") + (compact ? " is-compact" : "")}
               onClick={() => setConfirmMode(!confirmMode)}
-              title={confirmMode ? "写操作执行前需要确认（点击改为自动执行）" : "写操作直接执行（点击改为需确认）"}
+              title={confirmMode ? t("写操作执行前需要确认（点击改为自动执行）") : t("写操作直接执行（点击改为需确认）")}
             >
               <Icon name="ai-shield-check" className="w-3 h-3 flex-shrink-0" />
-              {!compact && <span>{confirmMode ? "需确认" : "自动"}</span>}
+              {!compact && <span>{confirmMode ? t("需确认") : t("自动")}</span>}
             </button>
 
             {noteContent ? (
@@ -3190,31 +3233,31 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                   className={"composer-chip is-warn" + (compact ? " is-compact" : "")}
                   title={
                     aiSettings.aiAccessEnabled
-                      ? "当前笔记对 AI 禁止访问，正文不会作为上下文发送（可在「笔记属性」或设置 → AI 访问权限里改）"
-                      : "已关闭「允许 AI 访问笔记」，正文不会作为上下文发送（设置 → AI 访问权限）"
+                      ? t("当前笔记对 AI 禁止访问，正文不会作为上下文发送（可在「笔记属性」或设置 → AI 访问权限里改）")
+                      : t("已关闭「允许 AI 访问笔记」，正文不会作为上下文发送（设置 → AI 访问权限）")
                   }
                 >
                   <Icon name="ai-shield-check" className="w-3 h-3 flex-shrink-0" />
-                  {!compact && <span>未授权</span>}
+                  {!compact && <span>{t("未授权")}</span>}
                 </span>
               ) : (
                 <>
                   <button
                     className={"composer-chip" + (attachNote ? " is-on" : "") + (compact ? " is-compact" : "")}
                     onClick={() => setAttachNote(v => !v)}
-                    title={attachNote ? `已附上当前笔记《${noteTitle || "未命名"}》作为上下文（点击取消）` : "不附上当前笔记（点击改为附上）"}
+                    title={attachNote ? t("已附上当前笔记《{title}》作为上下文（点击取消）", { title: noteTitle || t("未命名") }) : t("不附上当前笔记（点击改为附上）")}
                   >
                     <Icon name="ai-file-text" className="w-3 h-3 flex-shrink-0" />
-                    {!compact && <span>附笔记</span>}
+                    {!compact && <span>{t("附笔记")}</span>}
                   </button>
                   {/* 只读档：能读不能改，提前告知，省得模型反复尝试写入后失败 */}
                   {currentLevel === 1 && (
                     <span
                       className={"composer-chip is-warn" + (compact ? " is-compact" : "")}
-                      title="当前笔记对 AI 只读：可以阅读和总结，但不会替用户修改（在「笔记属性」里可改为完全）"
+                      title={t("当前笔记对 AI 只读：可以阅读和总结，但不会替用户修改（在「笔记属性」里可改为完全）")}
                     >
                       <Icon name="ai-shield-check" className="w-3 h-3 flex-shrink-0" />
-                      {!compact && <span>只读</span>}
+                      {!compact && <span>{t("只读")}</span>}
                     </span>
                   )}
                 </>
@@ -3224,21 +3267,21 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
             {/* 右：字数（够宽才显示）+ 清空 + 发送/停止。固定不压缩，保证永远点得到 */}
             {showCount && input.length > 0 && (
-              <span className={"text-[10.5px] tabular-nums flex-shrink-0 " + (input.length > 2000 ? "text-warning" : "text-faint-soft")} title={input.length > 2000 ? "内容较长，发送前会先做瘦身" : ""}>
-                {input.length > 2000 ? `${input.length} 字 · 较长` : `${input.length} 字`}
+              <span className={"text-[10.5px] tabular-nums flex-shrink-0 " + (input.length > 2000 ? "text-warning" : "text-faint-soft")} title={input.length > 2000 ? t("内容较长，发送前会先做瘦身") : ""}>
+                {input.length > 2000 ? t("{count} 字 · 较长", { count: input.length }) : t("{count} 字", { count: input.length })}
               </span>
             )}
             {messages.length > 0 && !isSending && (
               <button
                 className="p-1.5 rounded-lg text-faint-soft hover:text-danger hover:bg-danger-soft transition-colors"
-                title="清空当前会话的显示内容"
+                title={t("清空当前会话的显示内容")}
                 onClick={() => { setMessages([]); resetStreaming(); resetToLatest(); }}
               >
                 <Icon name="ai-trash" className="w-3.5 h-3.5" />
               </button>
             )}
             {isSending ? (
-              <button className="composer-send composer-stop" onClick={handleStop} title="停止生成（Esc）" aria-label="停止生成">
+              <button className="composer-send composer-stop" onClick={handleStop} title={t("停止生成（Esc）")} aria-label={t("停止生成")}>
                 <Icon name="ai-stop" className="w-3.5 h-3.5" />
               </button>
             ) : (
@@ -3246,8 +3289,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 className="composer-send"
                 onClick={handleSend}
                 disabled={!input.trim() || !activeModel}
-                title={!activeModel ? "请先选择模型" : "发送（Enter）"}
-                aria-label="发送"
+                title={!activeModel ? t("请先选择模型") : t("发送（Enter）")}
+                aria-label={t("发送")}
               >
                 <Icon name="ai-send" className="w-4 h-4" />
               </button>
@@ -3256,7 +3299,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         </div>
 
         <div className="composer-hint">
-          {compact ? "Enter 发送 · Shift+Enter 换行" : `Enter 发送 · Shift+Enter 换行 · Esc ${isSending ? "停止" : "清空"} · ↑ 召回上一条 · 拖上边缘调高度（双击复位）`}
+          {compact ? t("Enter 发送 · Shift+Enter 换行") : t("Enter 发送 · Shift+Enter 换行 · Esc {action} · ↑ 召回上一条 · 拖上边缘调高度（双击复位）", { action: isSending ? t("停止") : t("清空") })}
         </div>
       </div>
     </aside>
@@ -3264,16 +3307,16 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       <div className="ai-modal-overlay">
         <div className="ai-modal">
           <div className="ai-modal-head">
-            <span className="ai-modal-title">对话记录</span>
+            <span className="ai-modal-title">{t("对话记录")}</span>
             <div className="flex items-center gap-1">
               <button
                 className="ai-icon-btn"
-                title="新建对话"
+                title={t("新建对话")}
                 onClick={() => { setShowSessionPicker(false); handleNewSession(); }}
               >
                 <Icon name="ai-plus-bold" className="w-3.5 h-3.5" />
               </button>
-              <button className="ai-icon-btn" title="关闭" onClick={() => setShowSessionPicker(false)}>
+              <button className="ai-icon-btn" title={t("关闭")} onClick={() => setShowSessionPicker(false)}>
                 <Icon name="ai-close" className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -3287,7 +3330,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                 value={sessionQuery}
                 onChange={(e) => setSessionQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Escape") setShowSessionPicker(false); }}
-                placeholder="搜索对话标题…"
+                placeholder={t("搜索对话标题…")}
                 className="w-full pl-7 pr-2.5 py-1.5 text-xs rounded-lg border border-line bg-app/60 focus:bg-surface focus:border-primary-300 outline-none transition-colors"
               />
             </div>
@@ -3296,11 +3339,11 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           <div className="ai-modal-list chat-scrollbar">
             {sessionGroups.length === 0 ? (
               <div className="py-8 text-center text-[11.5px] text-faint">
-                {sessions.length === 0 ? "还没有对话，开始聊一句就有了" : "没有匹配的对话"}
+                {sessions.length === 0 ? t("还没有对话，开始聊一句就有了") : t("没有匹配的对话")}
               </div>
             ) : sessionGroups.map((group) => (
               <div key={group.label}>
-                <div className="ai-group-label">{group.label}</div>
+                <div className="ai-group-label">{t(group.label)}</div>
                 {group.items.map((s) => (
                   <div
                     key={s.id}
@@ -3323,22 +3366,22 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                         />
                       ) : (
                         <>
-                          <div className="ai-session-name truncate">{s.title || "新对话"}</div>
-                          <div className="ai-session-meta truncate">{relativeTime(s.updated_at || s.created_at)}</div>
+                          <div className="ai-session-name truncate">{!s.title || s.title === "新对话" ? t("新对话") : s.title}</div>
+                          <div className="ai-session-meta truncate">{relativeTime(s.updated_at || s.created_at, t)}</div>
                         </>
                       )}
                     </div>
                     <div className="ai-session-actions">
                       <button
                         className="ai-icon-btn !w-6 !h-6"
-                        title="重命名"
+                        title={t("重命名")}
                         onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditTitle(s.title); }}
                       >
                         <Icon name="ai-edit" className="w-3 h-3" />
                       </button>
                       <button
                         className="ai-icon-btn is-danger !w-6 !h-6"
-                        title="删除这个对话"
+                        title={t("删除这个对话")}
                         onClick={async (e) => {
                           e.stopPropagation();
                           try {
@@ -3349,7 +3392,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
                               if (rest.length > 0) { setActiveSessionId(rest[0].id); titleGenRef.current = null; await loadSessionMessages(rest[0].id); }
                               else { setActiveSessionId(0); setMessages([]); }
                             }
-                          } catch { showToast("删除失败", "error"); }
+                          } catch { showToast(translate("删除失败"), "error"); }
                         }}
                       >
                         <Icon name="ai-trash" className="w-3 h-3" />

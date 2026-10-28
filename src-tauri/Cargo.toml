@@ -52,3 +52,5 @@ tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-
 ndarray = "0.17"
 # 模型下载的异步文件写入（Tauri 本身已带 tokio，这里只是显式启用 fs/io-util）
 tokio = { version = "1", features = ["fs", "io-util", "time", "macros"] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"

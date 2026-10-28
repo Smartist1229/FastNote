@@ -1,3 +1,4 @@
+import { t, useI18n } from "@/i18n";
 /**
  * 设置 · 语义搜索：本地模型选择、下载进度与向量索引状态。
  *
@@ -25,6 +26,18 @@ import type {
   SemanticModelProgress,
   SemanticStatus,
 } from "@/interface/semantic";
+
+// Built-in metadata is application copy; custom model names are user data.
+const modelName = (info: SemanticModelInfo): string => info.custom ? info.name : t(info.name);
+const modelDescription = (info: SemanticModelInfo): string => {
+  if (!info.custom) return t(info.description);
+  const generated = /^本地导入的模型：(d+) 维，(CLS|Mean) 池化，最大 (d+) token。$/.exec(info.description);
+  return generated
+    ? t("本地导入的模型：{dim} 维，{pooling} 池化，最大 {tokens} token。", {
+        dim: generated[1], pooling: generated[2], tokens: generated[3],
+      })
+    : info.description;
+};
 
 const percent = (done: number, total: number): number =>
   total > 0 ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
@@ -72,6 +85,7 @@ const ToggleRow: React.FC<{
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={title}
       onClick={() => onChange(!checked)}
       className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${
         checked ? "bg-primary-500" : "bg-surface-strong"
@@ -105,6 +119,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
   modelId,
   onModelChange,
 }) => {
+  const { t } = useI18n();
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
   const guard = useActionGuard();
@@ -191,9 +206,8 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
         }
 
         // done / error：进度条立即收起，再回查真实状态
-        const name =
-          statusRef.current?.models.find((model) => model.id === progress.model_id)?.name ??
-          progress.model_id;
+        const info = statusRef.current?.models.find((model) => model.id === progress.model_id);
+        const name = info ? modelName(info) : progress.model_id;
         setModelProgress(null);
         speedSampleRef.current = null;
         setSpeed(0);
@@ -204,14 +218,14 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
           const willIndex = enabledRef.current && autoIndexRef.current && isCurrentModel;
           const manualHint =
             enabledRef.current && !autoIndexRef.current && isCurrentModel
-              ? "；自动索引已关闭，可手动重建索引"
+              ? t("；自动索引已关闭，可手动重建索引")
               : "";
           showToast(
-            `模型「${name}」下载完成${willIndex ? "，正在建立索引" : manualHint}`,
+            t("模型「{name}」下载完成{value2}", { name: name, value2: willIndex ? t("，正在建立索引") : manualHint }),
             "success",
           );
         } else {
-          showToast(`模型「${name}」下载失败：${progress.error ?? "未知错误"}`, "error");
+          showToast(t("模型「{name}」下载失败：{value2}", { name: name, value2: progress.error ?? t("未知错误") }), "error");
         }
         void refresh();
       });
@@ -241,7 +255,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       aliveRef.current = false;
       unlisteners.forEach((off) => off());
     };
-  }, [refresh, patchDownloading, showToast]);
+  }, [refresh, patchDownloading, showToast, t]);
 
   // 切换所选模型后重新取一次：设置落库是异步的，稍等一拍再读，避免读到旧值
   useEffect(() => {
@@ -269,7 +283,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       : status?.downloading_model ?? null;
   const downloading = downloadingModelId !== null;
   const downloadingInfo = status?.models.find((model) => model.id === downloadingModelId);
-  const downloadingName = downloadingInfo?.name ?? downloadingModelId ?? "模型";
+  const downloadingName = downloadingInfo ? modelName(downloadingInfo) : downloadingModelId ?? t("模型");
   const verifying = modelProgress?.stage === "verify";
 
   /**
@@ -295,19 +309,19 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       : null;
   const segmentLabel =
     modelProgress && modelProgress.segments > 1
-      ? `${modelProgress.segments} 段并发`
+      ? t("{segments} 段并发", { segments: modelProgress.segments })
       : modelProgress?.segments === 1
-        ? "单线程"
+        ? t("单线程")
         : "";
   const downloadDetail = verifying
-    ? "文件已下载，正在自检"
+    ? t("文件已下载，正在自检")
     : shownProgress && shownProgress.total > 0
       ? `${formatBytes(shownProgress.downloaded)} / ${formatBytes(shownProgress.total)}${
           speed > 0 ? ` · ${formatSpeed(speed)}` : ""
         }${segmentLabel ? ` · ${segmentLabel}` : ""}`
       : speed > 0
         ? formatSpeed(speed)
-        : "准备下载…";
+        : t("准备下载…");
 
   const indexing = indexProgress ? indexProgress.running : Boolean(status?.indexing);
   const indexDone = indexProgress?.done ?? 0;
@@ -345,7 +359,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       await refresh();
     } catch (e) {
       patchDownloading(false, null);
-      showToast(`开始下载失败：${errorText(e)}`, "error");
+      showToast(t("开始下载失败：{value1}", { value1: errorText(e) }), "error");
       void refresh();
     } finally {
       setPending(null);
@@ -356,13 +370,9 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
     const current = info.id === modelId;
     const size = info.installed_size ? `（${formatBytes(info.installed_size)}）` : "";
     const ok = await confirm({
-      title: `删除模型「${info.name}」`,
-      message: `将删除本机的「${info.name}」模型${size}${
-        current ? "，并清空全部笔记向量" : ""
-      }。笔记本身不受影响；${
-        info.custom ? "需要时可重新从本地导入。" : "之后可以重新下载。"
-      }`,
-      confirmText: "删除",
+      title: t("删除模型「{name}」", { name: modelName(info) }),
+      message: t("将删除本机的「{name}」模型{size}{value3}。笔记本身不受影响；{value4}", { name: modelName(info), size: size, value3: current ? t("，并清空全部笔记向量") : "", value4: info.custom ? t("需要时可重新从本地导入。") : t("之后可以重新下载。") }),
+      confirmText: t("删除"),
       danger: true,
     });
     if (!ok) return;
@@ -375,9 +385,9 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       if (aliveRef.current) applyStatus(next);
       // 删除的是当前模型时，后端会回退到推荐项；把设置里的悬空 id 一并改掉
       if (current && next.selected_model !== info.id) onModelChange(next.selected_model);
-      showToast(`模型「${info.name}」已删除`, "success");
+      showToast(t("模型「{name}」已删除", { name: modelName(info) }), "success");
     } catch (e) {
-      showToast(`删除失败：${errorText(e)}`, "error");
+      showToast(t("删除失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
       setPending(null);
     }
@@ -389,9 +399,9 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       await semanticApi.rebuildSemanticIndex();
       setIndexProgress(null);
       await refresh();
-      showToast("已清空索引，后台将在几秒内开始重建", "success");
+      showToast(t("已清空索引，后台将在几秒内开始重建"), "success");
     } catch (e) {
-      showToast(`重建失败：${errorText(e)}`, "error");
+      showToast(t("重建失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
       setPending(null);
     }
@@ -401,9 +411,9 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
     setPending("cancel");
     try {
       await semanticApi.cancelSemanticIndex();
-      showToast("已请求取消索引，当前批次结束后停止", "info");
+      showToast(t("已请求取消索引，当前批次结束后停止"), "info");
     } catch (e) {
-      showToast(`取消失败：${errorText(e)}`, "error");
+      showToast(t("取消失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
       setPending(null);
     }
@@ -414,9 +424,9 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
     if (!path) return;
     try {
       await navigator.clipboard.writeText(path);
-      showToast("模型目录已复制", "success");
+      showToast(t("模型目录已复制"), "success");
     } catch {
-      showToast("复制失败，请手动选中路径复制", "error");
+      showToast(t("复制失败，请手动选中路径复制"), "error");
     }
   };
 
@@ -427,20 +437,20 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
     try {
       await openAppFolder(path);
     } catch (e) {
-      showToast(`打开模型目录失败：${errorText(e)}`, "error");
+      showToast(t("打开模型目录失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
   const copyError = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      showToast("错误信息已复制", "success");
+      showToast(t("错误信息已复制"), "success");
     } catch {
-      showToast("复制失败，请手动选中文字复制", "error");
+      showToast(t("复制失败，请手动选中文字复制"), "error");
     }
   };
 
-  const statusLabel = !enabled ? "未启用" : selectedInstalled ? "已启用" : "已启用 · 缺少模型";
+  const statusLabel = !enabled ? t("未启用") : selectedInstalled ? t("已启用") : t("已启用 · 缺少模型");
   const statusTone: "neutral" | "success" | "warning" = !enabled
     ? "neutral"
     : selectedInstalled
@@ -451,14 +461,14 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
     <div className="space-y-3">
       {/* 语义搜索的总开关只放在本分区，避免「通用」里出现重复项 */}
       <ToggleRow
-        title="启用语义搜索"
-        desc="开启后，侧边栏搜索会额外给出「语义相关」结果。模型与索引都在本机运行，不联网。"
+        title={t("启用语义搜索")}
+        desc={t("开启后，侧边栏搜索会额外给出「语义相关」结果。模型与索引都在本机运行，不联网。")}
         checked={enabled}
         onChange={onEnabledChange}
       />
       <ToggleRow
-        title="自动建立索引"
-        desc="模型下载完成后自动建立索引，之后笔记改动也会自动增量更新。关闭后只在手动点「重建索引」时建立。"
+        title={t("自动建立索引")}
+        desc={t("模型下载完成后自动建立索引，之后笔记改动也会自动增量更新。关闭后只在手动点「重建索引」时建立。")}
         checked={autoIndex}
         onChange={onAutoIndexChange}
       />
@@ -467,17 +477,16 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       <div className="flex items-start gap-2 rounded-xl border border-warning-line/60 bg-warning-soft px-3 py-2.5">
         <Icon name="ai-warning" className="w-3.5 h-3.5 text-warning mt-[1px] flex-shrink-0" />
         <p className="text-[11px] leading-relaxed text-warning">
-          <span className="font-medium">测试功能：</span>
-          语义搜索依赖所选模型与本地向量索引，不同模型的语言支持和区分能力不同，结果未必精准；功能与性能仍在调整，建议保留普通文本搜索作为主要查找方式。
-        </p>
+          <span className="font-medium">{t("测试功能：")}</span>
+          {t("语义搜索依赖所选模型与本地向量索引，不同模型的语言支持和区分能力不同，结果未必精准；功能与性能仍在调整，建议保留普通文本搜索作为主要查找方式。")}</p>
       </div>
       {enabled && !selectedInstalled && !downloading && (
         <div className="flex items-start gap-2 rounded-xl border border-warning-line/60 bg-warning-soft px-3 py-2.5">
           <Icon name="ai-warning" className="w-3.5 h-3.5 text-warning mt-[1px] flex-shrink-0" />
           <p className="text-[11px] leading-relaxed text-warning">
             {selectedInfo?.custom
-              ? "所选自定义模型的文件缺失或已被修改，暂时不会返回语义结果；原有文本搜索不受影响。请重新导入或删除后换用其他模型。"
-              : "所选模型还没下载，暂时不会返回语义结果；原有文本搜索不受影响。"}
+              ? t("所选自定义模型的文件缺失或已被修改，暂时不会返回语义结果；原有文本搜索不受影响。请重新导入或删除后换用其他模型。")
+              : t("所选模型还没下载，暂时不会返回语义结果；原有文本搜索不受影响。")}
           </p>
         </div>
       )}
@@ -485,9 +494,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       {enabled && selectedInstalled && !autoIndex && !indexing && notIndexed > 0 && (
         <div className="flex items-start gap-2 rounded-xl border border-line bg-app px-3 py-2.5">
           <Icon name="toast-info" className="w-3.5 h-3.5 text-faint mt-[1px] flex-shrink-0" />
-          <p className="text-[11px] leading-relaxed text-faint">
-            自动索引已关闭，还有 {notIndexed} 篇笔记没有建立索引。需要时点下方「重建索引」。
-          </p>
+          <p className="text-[11px] leading-relaxed text-faint">{t("自动索引已关闭，还有 {notIndexed} 篇笔记没有建立索引。需要时点下方「重建索引」。", { notIndexed: notIndexed })}</p>
         </div>
       )}
 
@@ -495,26 +502,23 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       <div className="overflow-hidden rounded-xl border border-line">
         <div className="flex items-start justify-between gap-2 px-3.5 py-2.5">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-body">本地模型</p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-              选择要下载和使用的模型。开启「自动建立索引」时，切换后后台会按新模型重建全部向量；关闭时需手动重建。
-            </p>
+            <p className="text-xs font-medium text-body">{t("本地模型")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("选择要下载和使用的模型。开启「自动建立索引」时，切换后后台会按新模型重建全部向量；关闭时需手动重建。")}</p>
           </div>
           <button
             type="button"
             onClick={() => setImportOpen(true)}
             disabled={importOpen || downloading || pending !== null}
-            title="从本地目录导入自定义模型"
+            title={t("从本地目录导入自定义模型")}
             className="mt-0.5 flex flex-shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[10px] text-body transition-colors hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Icon name="sidebar-folder-plus" className="w-3 h-3" />
-            导入模型
-          </button>
+            {t("导入模型")}</button>
         </div>
 
         <div
           role="radiogroup"
-          aria-label="语义模型"
+          aria-label={t("语义模型")}
           className="divide-y divide-line-soft border-t border-line-soft"
         >
           {status ? (
@@ -549,20 +553,17 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
 
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-xs font-medium text-body">{info.name}</span>
-                      {info.recommended && <Badge tone="primary">推荐</Badge>}
-                      {info.custom && <Badge tone="neutral">自定义</Badge>}
-                      {info.custom && !info.installed && <Badge tone="warning">文件缺失</Badge>}
-                      {info.installed && <Badge tone="success">已安装</Badge>}
-                      {isDownloading && <Badge tone="primary">下载中</Badge>}
+                      <span className="text-xs font-medium text-body">{modelName(info)}</span>
+                      {info.recommended && <Badge tone="primary">{t("推荐")}</Badge>}
+                      {info.custom && <Badge tone="neutral">{t("自定义")}</Badge>}
+                      {info.custom && !info.installed && <Badge tone="warning">{t("文件缺失")}</Badge>}
+                      {info.installed && <Badge tone="success">{t("已安装")}</Badge>}
+                      {isDownloading && <Badge tone="primary">{t("下载中")}</Badge>}
                     </div>
                     <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-                      {info.description}
+                      {modelDescription(info)}
                     </p>
-                    <p className="mt-1 text-[10px] text-faint-soft">
-                      {info.tag} · {info.dim} 维 · {info.custom ? "本地导入" : `约 ${formatBytes(info.approx_size)}`}
-                      {info.installed_size > 0 && ` · 已占用 ${formatBytes(info.installed_size)}`}
-                    </p>
+                    <p className="mt-1 text-[10px] text-faint-soft">{t("{tag} · {dim} 维 · {value3}{value4}", { tag: info.custom && info.tag !== "自定义" ? info.tag : t(info.tag), dim: info.dim, value3: info.custom ? t("本地导入") : t("约 {value1}", { value1: formatBytes(info.approx_size) }), value4: info.installed_size > 0 ? t(" · 已占用 {value1}", { value1: formatBytes(info.installed_size) }) : "" })}</p>
                   </div>
 
                   {(info.installed || info.custom) && !selected && (
@@ -573,7 +574,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
                         void guard(() => handleDelete(info));
                       }}
                       disabled={pending !== null || downloading}
-                      title={`删除「${info.name}」`}
+                      title={t("删除「{name}」", { name: modelName(info) })}
                       className="mt-[1px] flex flex-shrink-0 items-center justify-center rounded-md p-1 text-faint transition-colors hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <Icon name="ai-trash" className="w-3.5 h-3.5" />
@@ -583,7 +584,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
               );
             })
           ) : (
-            <p className="px-3.5 py-3 text-[11px] text-faint">正在读取模型清单…</p>
+            <p className="px-3.5 py-3 text-[11px] text-faint">{t("正在读取模型清单…")}</p>
           )}
         </div>
       </div>
@@ -603,11 +604,11 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
               }
               onModelChange(id);
               const hint = !enabledRef.current
-                ? "，可在需要时启用语义搜索"
+                ? t("，可在需要时启用语义搜索")
                 : autoIndexRef.current
-                  ? "，后台会开始建立索引"
-                  : "；自动索引已关闭，可手动重建索引";
-              showToast(`模型「${name}」导入成功${hint}`, "success");
+                  ? t("，后台会开始建立索引")
+                  : t("；自动索引已关闭，可手动重建索引");
+              showToast(t("模型「{name}」导入成功{hint}", { name: name, hint: hint }), "success");
             })();
           }}
         />
@@ -619,32 +620,30 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
           <ProgressBar
             value={downloadPercent}
             label={
-              verifying ? `正在校验「${downloadingName}」…` : `正在下载「${downloadingName}」`
+              verifying ? t("正在校验「{downloadingName}」…", { downloadingName: downloadingName }) : t("正在下载「{downloadingName}」", { downloadingName: downloadingName })
             }
             detail={downloadDetail}
           />
           <p className="mt-2 text-[10px] leading-relaxed text-faint">
             {autoIndex
-              ? "下载完成后会自动校验并建立索引；期间可以继续使用其他功能。"
-              : "下载完成后会自动校验；自动索引已关闭，之后需手动点「重建索引」。"}
+              ? t("下载完成后会自动校验并建立索引；期间可以继续使用其他功能。")
+              : t("下载完成后会自动校验；自动索引已关闭，之后需手动点「重建索引」。")}
           </p>
         </div>
       )}
 
       <div className="divide-y divide-line-soft rounded-xl border border-line">
-        <StatRow label="状态">
+        <StatRow label={t("状态")}>
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge tone={statusTone}>{statusLabel}</Badge>
-            {selectedInfo && <span className="text-[11px] text-faint">{selectedInfo.name}</span>}
+            {selectedInfo && <span className="text-[11px] text-faint">{modelName(selectedInfo)}</span>}
           </div>
         </StatRow>
 
-        <StatRow label="索引">
+        <StatRow label={t("索引")}>
           {indexing ? (
             <div>
-              <span className="text-primary-600">
-                索引中{indexTotal > 0 ? ` ${indexDone}/${indexTotal}` : "…"}
-              </span>
+              <span className="text-primary-600">{t("索引中{value1}", { value1: indexTotal > 0 ? ` ${indexDone}/${indexTotal}` : "…" })}</span>
               <ProgressBar
                 className="mt-1.5"
                 value={indexTotal > 0 ? percent(indexDone, indexTotal) : null}
@@ -655,22 +654,20 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
             </div>
           ) : (
             <span>
-              {status ? `${status.indexed_notes} / ${status.total_notes} 篇` : "—"}
-              {status && status.total_chunks > 0 ? ` · ${status.total_chunks} 个块` : ""}
+              {status ? t("{indexed_notes} / {total_notes} 篇", { indexed_notes: status.indexed_notes, total_notes: status.total_notes }) : "—"}
+              {status && status.total_chunks > 0 ? t(" · {total_chunks} 个块", { total_chunks: status.total_chunks }) : ""}
               {notIndexed > 0 && !indexing && (
-                <span className="ml-1 text-faint">（{notIndexed} 篇待索引）</span>
+                <span className="ml-1 text-faint">{t("（{notIndexed} 篇待索引）", { notIndexed: notIndexed })}</span>
               )}
             </span>
           )}
         </StatRow>
 
-        <StatRow label="向量维度">
-          <span className="text-faint">
-            {selectedInfo?.dim ?? status?.dim ?? "—"} 维 · 余弦相似度
-          </span>
+        <StatRow label={t("向量维度")}>
+          <span className="text-faint">{t("{value1} 维 · 余弦相似度", { value1: selectedInfo?.dim ?? status?.dim ?? "—" })}</span>
         </StatRow>
 
-        <StatRow label="模型目录">
+        <StatRow label={t("模型目录")}>
           <p className="break-all font-mono text-[10px] leading-relaxed text-faint">
             {selectedInfo?.dir || status?.model_dir || "—"}
           </p>
@@ -681,25 +678,23 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
               onClick={() => void guard(copyPath)}
               disabled={!(selectedInfo?.dir || status?.model_dir)}
               className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-faint hover:bg-surface-alt hover:text-body disabled:cursor-not-allowed disabled:opacity-40"
-              title="复制模型目录"
+              title={t("复制模型目录")}
             >
               <Icon name="ai-copy" className="w-3 h-3" />
-              复制
-            </button>
+              {t("复制")}</button>
             <button
               type="button"
               onClick={() => void guard(openDir)}
               disabled={!selectedInstalled || !(selectedInfo?.dir || status?.model_dir)}
               title={
                 selectedInstalled
-                  ? "在文件管理器中打开模型目录"
-                  : "模型下载完成后才有目录"
+                  ? t("在文件管理器中打开模型目录")
+                  : t("模型下载完成后才有目录")
               }
               className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-faint hover:bg-surface-alt hover:text-body disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="sidebar-folder-thin" className="w-3 h-3" />
-              打开目录
-            </button>
+              {t("打开目录")}</button>
           </div>
         </StatRow>
       </div>
@@ -707,45 +702,37 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
       {indexProgress?.error && (
         <div className="flex items-start gap-2 rounded-xl border border-danger-line/60 bg-danger-soft px-3 py-2.5">
           <Icon name="ai-alert-triangle" className="w-3.5 h-3.5 text-danger mt-[1px] flex-shrink-0" />
-          <p className="selectable min-w-0 flex-1 break-all text-[11px] leading-relaxed text-danger">
-            索引失败：{indexProgress.error}
-          </p>
+          <p className="selectable min-w-0 flex-1 break-all text-[11px] leading-relaxed text-danger">{t("索引失败：{error}", { error: indexProgress.error ?? "" })}</p>
           <button
             type="button"
-            onClick={() => void copyError(`索引失败：${indexProgress.error}`)}
+            onClick={() => void copyError(t("索引失败：{error}", { error: indexProgress.error ?? "" }))}
             className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-danger transition-colors hover:bg-surface-alt"
-            title="复制错误信息"
+            title={t("复制错误信息")}
           >
             <Icon name="ai-copy" className="w-3 h-3" />
-            复制
-          </button>
+            {t("复制")}</button>
         </div>
       )}
 
       {status?.last_error && !indexing && !downloading && (
         <div className="flex items-start gap-2 rounded-xl border border-warning-line/60 bg-warning-soft px-3 py-2.5">
           <Icon name="ai-warning" className="w-3.5 h-3.5 text-warning mt-[1px] flex-shrink-0" />
-          <p className="selectable min-w-0 flex-1 break-all text-[11px] leading-relaxed text-warning">
-            最近一次失败：{status.last_error}
-          </p>
+          <p className="selectable min-w-0 flex-1 break-all text-[11px] leading-relaxed text-warning">{t("最近一次失败：{last_error}", { last_error: status.last_error ?? "" })}</p>
           <button
             type="button"
-            onClick={() => void copyError(`最近一次失败：${status.last_error}`)}
+            onClick={() => void copyError(t("最近一次失败：{last_error}", { last_error: status.last_error ?? "" }))}
             className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-warning transition-colors hover:bg-surface-alt"
-            title="复制错误信息"
+            title={t("复制错误信息")}
           >
             <Icon name="ai-copy" className="w-3 h-3" />
-            复制
-          </button>
+            {t("复制")}</button>
         </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
         {selectedInfo?.custom && !selectedInstalled ? (
           <>
-            <span className="text-[11px] text-warning">
-              模型文件缺失或已被修改，请重新导入，或删除这条模型记录。
-            </span>
+            <span className="text-[11px] text-warning">{t("模型文件缺失或已被修改，请重新导入，或删除这条模型记录。")}</span>
             <button
               type="button"
               onClick={() => void guard(() => handleDelete(selectedInfo))}
@@ -753,8 +740,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
               className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs text-danger transition-colors hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="ai-trash" className="w-3.5 h-3.5" />
-              删除模型
-            </button>
+              {t("删除模型")}</button>
           </>
         ) : !selectedInstalled ? (
           <button
@@ -765,10 +751,8 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
           >
             <Icon name="editor-export" className="w-3.5 h-3.5" />
             {downloading
-              ? "正在下载…"
-              : `下载「${selectedInfo?.name ?? "模型"}」${
-                  selectedInfo ? `（${formatBytes(selectedInfo.approx_size)}）` : ""
-                }`}
+              ? t("正在下载…")
+              : t("下载「{value1}」{value2}", { value1: selectedInfo ? modelName(selectedInfo) : t("模型"), value2: selectedInfo ? `（${formatBytes(selectedInfo.approx_size)}）` : "" })}
           </button>
         ) : (
           <>
@@ -779,8 +763,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
               className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs text-body transition-colors hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="sidebar-refresh" className="w-3.5 h-3.5" />
-              重建索引
-            </button>
+              {t("重建索引")}</button>
             {indexing && (
               <button
                 type="button"
@@ -789,8 +772,7 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
                 className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs text-body transition-colors hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Icon name="ai-stop" className="w-3.5 h-3.5" />
-                取消索引
-              </button>
+                {t("取消索引")}</button>
             )}
             <button
               type="button"
@@ -799,15 +781,12 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
               className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs text-danger transition-colors hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="ai-trash" className="w-3.5 h-3.5" />
-              删除模型
-            </button>
+              {t("删除模型")}</button>
           </>
         )}
       </div>
 
-      <p className="text-[11px] leading-relaxed text-faint">
-        开启「自动建立索引」时，后台会为已有笔记建立向量索引，之后新增或修改的笔记会自动增量更新；关闭后只在手动点「重建索引」时建立。删除模型或重建索引不会影响笔记内容。下载线程与工具箱共用，可在「设置 → 工具箱」调整。
-      </p>
+      <p className="text-[11px] leading-relaxed text-faint">{t("开启「自动建立索引」时，后台会为已有笔记建立向量索引，之后新增或修改的笔记会自动增量更新；关闭后只在手动点「重建索引」时建立。删除模型或重建索引不会影响笔记内容。下载线程与工具箱共用，可在「设置 → 工具箱」调整。")}</p>
 
       {confirmDialog}
     </div>

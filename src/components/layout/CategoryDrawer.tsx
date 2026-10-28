@@ -7,6 +7,7 @@
  * 折叠动画走 .drawer-notes-grid 的 grid-template-rows 0fr → 1fr，所以列表节点始终挂载。
  * DrawerNoteItem 上的 data-note-id 是 Sidebar 指针拖拽的锚点，不能去掉。
  */
+import { useI18n } from "@/i18n";
 import { useEffect, useRef } from 'react';
 import type { Note } from "@/interface/note";
 import type { CategoryDrawerProps } from "@/interface/sidebar";
@@ -58,6 +59,7 @@ export const DrawerNoteItem: React.FC<{
    */
   hit?: NoteSearchHit;
 }> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onTogglePin, showIcon = false, onContextMenu, hit }) => {
+  const { t } = useI18n();
   const itemRef = useRef<HTMLDivElement>(null);
 
   // AI 打开笔记时聚焦高亮：延迟 60ms 再滚动，等抽屉展开动画把元素位置定下来，否则会滚偏
@@ -96,7 +98,7 @@ export const DrawerNoteItem: React.FC<{
               isSelected ? 'text-on-accent' : 'text-body'
             }`}
           >
-            {hit ? highlightSegments(note.title || '无标题', hit.titleRanges) : note.title || '无标题'}
+            {hit ? highlightSegments(note.title || t("无标题"), hit.titleRanges) : note.title || t("无标题")}
           </h4>
           {/* 搜索视图才有的上下文行：大部分命中都在正文中间，只显示标题等于没告诉用户为什么命中 */}
           {hit && !hit.titleOnly && hit.snippet && (
@@ -119,7 +121,7 @@ export const DrawerNoteItem: React.FC<{
               ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
               : 'text-faint-soft hover:bg-danger-soft hover:text-danger'
           }`}
-          title="移到回收站"
+          title={t("移到回收站")}
         >
           <Icon name="sidebar-trash" className="w-3 h-3" />
         </button>
@@ -139,7 +141,7 @@ export const DrawerNoteItem: React.FC<{
                     : 'text-faint-soft hover:bg-primary-50 hover:text-primary-500'
                 }`
           }`}
-          title={note.is_pinned ? '取消收藏' : '收藏'}
+          title={note.is_pinned ? t("取消收藏") : t("收藏")}
         >
           <Icon name={note.is_pinned ? 'sidebar-star-filled' : 'sidebar-star'} className="w-3 h-3" />
         </button>
@@ -170,6 +172,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   headerIcon,
   hits,
 }) => {
+  const { t } = useI18n();
   // 搜索视图存在多个 category 为 null 的虚拟分组，用 headerIcon 保证 list id 唯一
   const noteListId = `drawer-notes-${category ? category.id : headerIcon ?? 'all'}`;
   const open = isExpanded;
@@ -201,7 +204,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         aria-expanded={open}
         aria-controls={noteListId}
         className={`${headerBase} ${activeHeader}`}
-        title={open ? '收起' : '展开'}
+        title={open ? t("收起") : t("展开")}
       >
         {/* 展开箭头 */}
         <Icon
@@ -217,7 +220,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         />
 
         <span className="text-[13px] leading-tight flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
-          {headerTitle ?? (isAllNotes ? '全部笔记' : category?.name)}
+          {headerTitle ?? (isAllNotes ? t("全部笔记") : category?.name)}
         </span>
 
         {/* 悬停操作按钮（仅分组） */}
@@ -226,7 +229,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
             <span
               data-drawer-action="create-note"
               className="p-1 rounded-md transition-colors hover:bg-surface-alt"
-              title="在此分组新建笔记"
+              title={t("在此分组新建笔记")}
             >
               <Icon name="sidebar-plus-bold" className="w-3 h-3 pointer-events-none" />
             </span>
@@ -247,7 +250,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         <div className="overflow-hidden">
           <div className="pt-0 pb-0.5 pl-2 pr-0.5 ml-3.5 border-l border-line/70">
             {notes.length === 0 ? (
-              <p className="text-[11px] text-faint-soft py-0.5 pl-2">暂无笔记</p>
+              <p className="text-[11px] text-faint-soft py-0.5 pl-2">{t("暂无笔记")}</p>
             ) : (
               <div className="space-y-0.5 pl-1.5">
                 {notes.map((note) => (
@@ -297,6 +300,7 @@ export const UncategorizedDrawer: React.FC<{
   onNoteContextMenu,
   onContextMenu,
 }) => {
+  const { t } = useI18n();
   const noteListId = 'drawer-notes-uncategorized';
   const open = isExpanded;
   return (
@@ -308,7 +312,7 @@ export const UncategorizedDrawer: React.FC<{
         aria-expanded={open}
         aria-controls={noteListId}
         className={`drawer-header relative w-full text-left px-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-muted hover:bg-surface/80 hover:text-ink border-line-strong/70 hover:border-line-strong`}
-        title={open ? '收起' : '展开'}
+        title={open ? t("收起") : t("展开")}
       >
         <Icon
           name="sidebar-chevron-right-bold"
@@ -320,7 +324,7 @@ export const UncategorizedDrawer: React.FC<{
           name="sidebar-list"
           className="w-4 h-4 flex-shrink-0 text-faint"
         />
-        <span className="text-[13px] leading-tight flex-1 truncate font-medium">未分类</span>
+        <span className="text-[13px] leading-tight flex-1 truncate font-medium">{t("未分类")}</span>
         <span className="badge text-[10px] flex-shrink-0 bg-surface-alt text-muted">
           {notes.length}
         </span>
@@ -330,7 +334,7 @@ export const UncategorizedDrawer: React.FC<{
         <div className="overflow-hidden">
           <div className="pt-0 pb-0.5 pl-2 pr-0.5 ml-3.5 border-l border-line/70">
             {notes.length === 0 ? (
-              <p className="text-[11px] text-faint-soft py-0.5 pl-2">暂无笔记</p>
+              <p className="text-[11px] text-faint-soft py-0.5 pl-2">{t("暂无笔记")}</p>
             ) : (
               <div className="space-y-0.5 pl-1.5">
                 {notes.map((note) => (
@@ -379,6 +383,7 @@ export const ChildNotesDrawer: React.FC<{
   onTogglePin,
   onNoteContextMenu,
 }) => {
+  const { t } = useI18n();
   const noteListId = 'drawer-notes-children';
   const open = isExpanded;
   return (
@@ -389,13 +394,13 @@ export const ChildNotesDrawer: React.FC<{
         aria-expanded={open}
         aria-controls={noteListId}
         className="drawer-header w-full text-left pl-6 pr-2.5 py-1 rounded-lg transition-all duration-200 flex items-center gap-2 border border-dashed text-faint hover:bg-surface/70 hover:text-body border-line"
-        title={open ? '收起' : '展开'}
+        title={open ? t("收起") : t("展开")}
       >
         <Icon
           name="sidebar-chevron-right-bold"
           className={`w-3 h-3 flex-shrink-0 text-faint transition-transform duration-300 ease-spring ${open ? 'rotate-90' : ''}`}
         />
-        <span className="text-[11.5px] flex-1 truncate">未归类</span>
+        <span className="text-[11.5px] flex-1 truncate">{t("未归类")}</span>
         <span className="badge text-[10px] flex-shrink-0 bg-surface/70 text-muted">{notes.length}</span>
       </button>
 

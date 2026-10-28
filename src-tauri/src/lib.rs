@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod download;
 mod fingerprint;
+mod i18n;
 mod opener;
 mod semantic;
 mod webdav;
@@ -5532,15 +5533,50 @@ fn nudge_webview_repaint(window: tauri::WebviewWindow) {
     });
 }
 
+struct AppLocaleState(Mutex<String>);
+
+#[tauri::command]
+fn get_system_locale() -> Option<String> {
+    i18n::system_locale()
+}
+
+fn tray_menu(app: &AppHandle, locale: &str) -> tauri::Result<Menu<tauri::Wry>> {
+    let (show, quit) = if locale == "zh-CN" {
+        ("显示 FastNote", "退出")
+    } else {
+        ("Show FastNote", "Quit")
+    };
+    let show_item = MenuItem::with_id(app, "show", show, true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", quit, true, None::<&str>)?;
+    Menu::with_items(app, &[&show_item, &quit_item])
+}
+
+#[tauri::command]
+fn set_app_locale(app: AppHandle, locale: String) -> Result<(), String> {
+    if locale != "zh-CN" && locale != "en-US" {
+        return Err("Unsupported application locale".to_string());
+    }
+    let state = app.state::<AppLocaleState>();
+    let mut current = state.0.lock().map_err(|e| e.to_string())?;
+    if *current == locale {
+        return Ok(());
+    }
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let menu = tray_menu(&app, &locale).map_err(|e| e.to_string())?;
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+    *current = locale;
+    Ok(())
+}
+
 /// 创建托盘图标（已存在则跳过）
 fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     if app.tray_by_id(TRAY_ID).is_some() {
         return Ok(());
     }
 
-    let show_item = MenuItem::with_id(app, "show", "显示 FastNote", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let locale = app.state::<AppLocaleState>().0.lock().unwrap().clone();
+    let menu = tray_menu(app, &locale)?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("FastNote")
@@ -5711,6 +5747,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        // 自动更新：检查 / 下载 / 安装由 updater 负责，安装后重启由 process 负责
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             create_category,
             get_categories,
@@ -5779,6 +5818,8 @@ pub fn run() {
             export_notes_ebook,
             read_text_file,
             write_text_file,
+            get_system_locale,
+            set_app_locale,
             set_tray_enabled,
             set_autostart_enabled,
             should_show_on_startup,
@@ -5817,6 +5858,11 @@ pub fn run() {
             };
 
             app.manage(state);
+            let language = read_setting_string(app.handle(), "app.config.general.language", "system");
+            let system = i18n::system_locale();
+            app.manage(AppLocaleState(Mutex::new(
+                i18n::resolve_locale(&language, system.as_deref()).to_string(),
+            )));
             webdav::spawn_auto_backup(app.handle().clone());
             // 旧版本模型放在应用数据目录，搬进便携数据目录后再启动索引
             semantic::model::migrate_legacy(app.handle());

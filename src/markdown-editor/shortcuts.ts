@@ -11,6 +11,9 @@
  * 键名是 `KeyboardEvent.code` 归一化后的结果（见 MarkdownEditor 的 `acceleratorOf`）：
  * `mod` = Windows / Linux 的 Ctrl、macOS 的 ⌘。
  */
+import { resolveLocaleLabels } from "./locales";
+import type { MarkdownEditorLocale } from "./types";
+
 export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "mod+b": "bold",
   "mod+i": "italic",
@@ -39,28 +42,25 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
  * 顺序就是快捷键说明表里的顺序（先常用行内格式，再块级，最后标题级别），
  * 文案与工具栏保持一致，避免同一动作在两处叫不同名字。
  */
-export const FORMAT_ACTIONS: ReadonlyArray<{ action: string; label: string }> = [
-  { action: "bold", label: "加粗" },
-  { action: "italic", label: "斜体" },
-  { action: "strike", label: "删除线" },
-  { action: "inlineCode", label: "行内代码" },
-  { action: "codeBlock", label: "代码块" },
-  { action: "link", label: "插入链接" },
-  { action: "image", label: "插入图片" },
-  { action: "quote", label: "引用" },
-  { action: "orderedList", label: "有序列表" },
-  { action: "bulletList", label: "无序列表" },
-  { action: "taskList", label: "任务列表" },
-  { action: "math", label: "行内公式" },
-  { action: "footnote", label: "脚注" },
-  { action: "heading1", label: "一级标题" },
-  { action: "heading2", label: "二级标题" },
-  { action: "heading3", label: "三级标题" },
-  { action: "heading4", label: "四级标题" },
-  { action: "heading5", label: "五级标题" },
-  { action: "heading6", label: "六级标题" },
-  { action: "heading0", label: "转为正文" },
+const FORMAT_ACTION_NAMES = [
+  "bold", "italic", "strike", "inlineCode", "codeBlock", "link", "image", "quote",
+  "orderedList", "bulletList", "taskList", "math", "footnote",
+  "heading1", "heading2", "heading3", "heading4", "heading5", "heading6", "heading0",
 ];
+
+/** 静态元数据保留原 API；动态展示可按编辑器相同的 locale/labels 解析。 */
+export const resolveFormatActions = (
+  locale: MarkdownEditorLocale = "en-US",
+  overrides: Record<string, string> = {},
+): ReadonlyArray<{ action: string; label: string }> => {
+  const labels = resolveLocaleLabels(locale, overrides);
+  return FORMAT_ACTION_NAMES.map((action) => ({
+    action,
+    label: action === "link" || action === "image" ? labels[`shortcut.${action}`] : labels[action],
+  }));
+};
+
+export const FORMAT_ACTIONS = resolveFormatActions();
 
 /** 动作 → 键位（个别动作可绑多个键，如「重做」的 shift+z 与 y） */
 export const SHORTCUTS_BY_ACTION: Record<string, string[]> = (() => {

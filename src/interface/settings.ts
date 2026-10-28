@@ -7,9 +7,11 @@
  * 这些类型只描述配置内容，运行时状态另有各 store / useState 持有。
  */
 import type { CodeThemePreset, MarkdownEditorMode } from "@/markdown-editor";
+import type { AppLanguage } from "@/i18n/locale";
 
 /** 通用设置：启动行为、托盘、关闭方式与 AI 总开关 */
 export interface GeneralSettings {
+  language: AppLanguage;
   /** 启动时清空回收站（永久删除，仅初始化时执行一次） */
   cleanTrashOnStartup: boolean;
   /** 是否显示托盘图标 */

@@ -1,7 +1,7 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "2.6.6",
+  "version": "2.6.7",
   "type": "module",
   "scripts": {
     "vite:dev": "vite",
@@ -16,6 +16,8 @@
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@tauri-apps/plugin-fs": "~2.5.1",
     "@tauri-apps/plugin-opener": "~2.5.4",
+    "@tauri-apps/plugin-process": "~2.4.0",
+    "@tauri-apps/plugin-updater": "~2.14.0",
     "date-fns": "^4.1.0",
     "highlight.js": "^11.12.0",
     "katex": "^0.16.28",

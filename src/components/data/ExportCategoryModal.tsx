@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
 import type { Note } from "@/interface/note";
@@ -41,6 +42,7 @@ const errorText = (e: unknown) => (typeof e === 'string' ? e : e instanceof Erro
  * 「其他文件格式」只在压缩包模式下出现，逐篇后缀受纯文本白名单约束。
  */
 export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target, onClose, onDone }) => {
+  const { t } = useI18n();
   const { showToast } = useToast();
   const [mode, setMode] = useState<'zip' | 'ebook'>('zip');
   const [zipFormat, setZipFormat] = useState<ZipFormatChoice>('md');
@@ -190,8 +192,8 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
         defaultPath: isZip ? `${baseName}.zip` : `${baseName}.${current.ext}`,
         filters: [
           isZip
-            ? { name: 'ZIP 压缩包', extensions: ['zip'] }
-            : { name: current.label, extensions: [current.ext] },
+            ? { name: t('ZIP 压缩包'), extensions: ['zip'] }
+            : { name: t(current.label), extensions: [current.ext] },
         ],
       });
       if (!path) return;
@@ -207,30 +209,30 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
               : undefined,
           )
         : await exportApi.exportNotesEbook(selectedNoteIds, path, ebookFormat);
-      showToast(`已导出 ${count} 篇笔记`, 'success');
+      showToast(t(count === 1 ? "已导出 1 篇笔记" : "已导出 {count} 篇笔记", { count }), 'success');
       onDone?.();
       onClose();
     } catch (e) {
-      showToast(`导出失败：${errorText(e)}`, 'error');
+      showToast(t("导出失败：{error}", { error: errorText(e) }), 'error');
       setBusy(false);
     }
   };
 
   return (
-    <Modal isOpen={!!target} onClose={onClose} title="导出笔记">
+    <Modal isOpen={!!target} onClose={onClose} title={t("导出笔记")}>
       <div className="space-y-4">
         <p className="text-xs text-muted">
-          分组：<span className="font-medium text-body">{target?.name}</span>
+          {t("分组：")}<span className="font-medium text-body">{target?.name}</span>
           <span className="ml-2 text-faint">
             {isZip
-              ? '压缩包内按创建时间正序，最早创建的笔记在最前面'
-              : '电子书章节按下方列表顺序排列，可拖动左侧手柄调整'}
+              ? t("压缩包内按创建时间正序，最早创建的笔记在最前面")
+              : t("电子书章节按下方列表顺序排列，可拖动左侧手柄调整")}
           </span>
         </p>
 
         {/* 文件名：默认填好分组对应的名称，可改，也可一键填回默认 */}
         <div>
-          <p className="text-xs font-medium text-body mb-2">文件名</p>
+          <p className="text-xs font-medium text-body mb-2">{t("文件名")}</p>
           <div className="flex items-center gap-2">
             <div className="relative flex-1 min-w-0">
               <input
@@ -248,16 +250,16 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
             <button
               onClick={() => setFileName(target?.defaultFileName ?? '')}
               className="btn-ghost px-3 py-1.5 text-xs flex-shrink-0"
-              title="把文件名填回该分组对应的默认名称"
+              title={t("把文件名填回该分组对应的默认名称")}
             >
-              填充默认分组名
+              {t("填充默认分组名")}
             </button>
           </div>
         </div>
 
         {/* 导出类型 */}
         <div>
-          <p className="text-xs font-medium text-body mb-2">导出为</p>
+          <p className="text-xs font-medium text-body mb-2">{t("导出为")}</p>
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => setMode('zip')}
@@ -267,8 +269,8 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
             >
               <Icon name="app-backup" className={`w-4 h-4 mt-0.5 flex-shrink-0 ${isZip ? 'text-primary-500' : 'text-faint'}`} />
               <span className="min-w-0">
-                <span className={`block text-sm font-medium ${isZip ? 'text-primary-600' : 'text-body'}`}>压缩包</span>
-                <span className="block text-[11px] text-faint mt-0.5">一篇笔记一个文件</span>
+                <span className={`block text-sm font-medium ${isZip ? 'text-primary-600' : 'text-body'}`}>{t("压缩包")}</span>
+                <span className="block text-[11px] text-faint mt-0.5">{t("一篇笔记一个文件")}</span>
               </span>
             </button>
             <button
@@ -279,8 +281,8 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
             >
               <Icon name="editor-export" className={`w-4 h-4 mt-0.5 flex-shrink-0 ${!isZip ? 'text-primary-500' : 'text-faint'}`} />
               <span className="min-w-0">
-                <span className={`block text-sm font-medium ${!isZip ? 'text-primary-600' : 'text-body'}`}>电子书</span>
-                <span className="block text-[11px] text-faint mt-0.5">整组合成一本书</span>
+                <span className={`block text-sm font-medium ${!isZip ? 'text-primary-600' : 'text-body'}`}>{t("电子书")}</span>
+                <span className="block text-[11px] text-faint mt-0.5">{t("整组合成一本书")}</span>
               </span>
             </button>
           </div>
@@ -288,29 +290,29 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
 
         {/* 文件格式 */}
         <div>
-          <p className="text-xs font-medium text-body mb-2">文件格式</p>
+          <p className="text-xs font-medium text-body mb-2">{t("文件格式")}</p>
           <div className="flex flex-wrap gap-1.5">
             {formats.map((f) => (
               <button
                 key={f.value}
                 onClick={() => (isZip ? setZipFormat(f.value as ZipFormatChoice) : setEbookFormat(f.value as CategoryEbookFormat))}
-                title={f.desc}
+                title={t(f.desc)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
                   format === f.value
                     ? 'border-primary-300 bg-primary-50 text-primary-600'
                     : 'border-line text-muted hover:bg-app'
                 }`}
               >
-                {f.label}
+                {t(f.label)}
               </button>
             ))}
           </div>
           <p className="text-[11px] text-faint mt-2">
             {!isZip
-              ? `整组导出为单个 .${current.ext} 文件，章节名就是笔记标题`
+              ? t("整组导出为单个 .{ext} 文件，章节名就是笔记标题", { ext: current.ext })
               : isOtherExt
-              ? '压缩包里每篇笔记一个文件，后缀按每篇笔记各自的选择（仅限纯文本格式）'
-              : `压缩包里每篇笔记一个 .${current.ext} 文件`}
+              ? t("压缩包里每篇笔记一个文件，后缀按每篇笔记各自的选择（仅限纯文本格式）")
+              : t("压缩包里每篇笔记一个 .{ext} 文件", { ext: current.ext })}
           </p>
         </div>
 
@@ -327,10 +329,10 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                 onChange={toggleAll}
                 className="w-3.5 h-3.5 rounded border-line-strong text-primary-500 focus:ring-primary-300"
               />
-              选择笔记 ({selectedIds.size}/{notes.length})
+              {t("选择笔记 ({selected}/{total})", { selected: selectedIds.size, total: notes.length })}
             </label>
             <span className="text-[11px] text-faint">
-              {selectedNoteIds.length} 个已选中
+              {t("{count} 个已选中", { count: selectedNoteIds.length })}
             </span>
           </div>
 
@@ -351,8 +353,8 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                       <span
                         role="button"
                         tabIndex={-1}
-                        title="拖动调整章节顺序"
-                        aria-label={`拖动调整《${note.title || '无标题笔记'}》的章节顺序`}
+                        title={t("拖动调整章节顺序")}
+                        aria-label={t("拖动调整《{title}》的章节顺序", { title: note.title || t("无标题笔记") })}
                         onPointerDown={(e) => beginEbookDrag(e, note.id)}
                         onPointerMove={moveEbookDrag}
                         onPointerUp={endEbookDrag}
@@ -389,7 +391,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                       className="w-3.5 h-3.5 rounded border-line-strong text-primary-500 focus:ring-primary-300"
                     />
                     <span className="truncate min-w-0 flex-1" title={note.title}>
-                      {note.title || '无标题笔记'}
+                      {note.title || t("无标题笔记")}
                     </span>
                   </label>
                   {/* 压缩包里每篇笔记是独立文件，标注落盘后缀；电子书整组一个文件，无需后缀 */}
@@ -404,7 +406,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                             ? 'border-primary-300 bg-primary-50 text-primary-600'
                             : 'border-line bg-surface text-muted hover:border-primary-300 hover:text-primary-600'
                         }`}
-                        title="选择这篇笔记的文件后缀"
+                        title={t("选择这篇笔记的文件后缀")}
                       >
                         .{noteExt(note.id)}
                       </button>
@@ -419,14 +421,14 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
 
         <div className="flex justify-end gap-2 pt-1">
           <button onClick={onClose} className="btn-ghost px-4 py-2 text-sm">
-            取消
+            {t("取消")}
           </button>
           <button
             onClick={handleExport}
             disabled={busy || selectedNoteIds.length === 0}
             className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
           >
-            {busy ? '导出中...' : '导出'}
+            {busy ? t("导出中...") : t("导出")}
           </button>
         </div>
       </div>

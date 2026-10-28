@@ -402,7 +402,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
 
   const baseConfig = useMemo(
     () => resolveConfig(configPatch as DeepPartial<MarkdownEditorConfig>),
-    [configPatch],
+    [configPatch, configPatch?.locale],
   );
 
   /* ---------- 字号缩放（Ctrl/⌘ + 滚轮 / `=` / `-` / `0`） ---------- */
@@ -451,6 +451,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     [baseConfig, effectiveFontSize],
   );
   const labels = useMemo(() => resolveLabels(config), [config]);
+  const labelsRef = useRef(labels);
+  labelsRef.current = labels;
   const resolvedTheme = useResolvedTheme(config.theme.mode);
   const themeVars = useMemo(() => buildThemeVars(config, resolvedTheme).vars, [config, resolvedTheme]);
   /**
@@ -920,9 +922,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     (kind: string) => {
       const resolved = resolveTarget();
       if (!resolved) return;
-      applyToTarget(resolved.target, applyAdmonition(resolved.state, kind));
+      applyToTarget(resolved.target, applyAdmonition(resolved.state, kind, "", labels["template.callout"]));
     },
-    [applyToTarget, resolveTarget],
+    [applyToTarget, labels, resolveTarget],
   );
 
   /**
@@ -933,7 +935,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     (prop: InlineColorProp, value: string | null) => {
       const resolved = resolveTarget();
       if (!resolved) return;
-      const next = applyInlineColor(resolved.state, prop, value, labels.placeholderText || "文本");
+      const next = applyInlineColor(resolved.state, prop, value, labels.placeholderText);
       applyToTarget(resolved.target, next);
     },
     [applyToTarget, labels, resolveTarget],
@@ -1000,8 +1002,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   const handleToggleOutline = useCallback(() => toggleOutline(), [toggleOutline]);
 
   /* ---------- 复制 / 图片 ---------- */
-  const copyAll = useCallback(() => {
-    void navigator.clipboard?.writeText(valueRef.current);
+  // 保存消息键而非翻译后的文本，提示显示期间切语言也能立即更新。
+  const [feedback, setFeedback] = useState<{ key: string } | null>(null);
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = window.setTimeout(() => setFeedback(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [feedback]);
+  const copyAll = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(valueRef.current);
+      setFeedback({ key: "copySuccess" });
+    } catch {
+      setFeedback({ key: "copyFailed" });
+    }
   }, []);
 
   const insertMarkdown = useCallback(
@@ -1029,10 +1043,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     async (file: File) => {
       const paste = imagePasteRef.current;
       if (!paste) return;
-      const url = await paste(file);
-      if (!url) return;
-      const alt = file.name.replace(/\.[^.]+$/, "") || "image";
-      insertMarkdown(`![${alt}](${url})`);
+      try {
+        const url = await paste(file);
+        if (!url) return;
+        const alt = file.name.replace(/\.[^.]+$/, "") || labelsRef.current.image;
+        insertMarkdown(`![${alt}](${url})`);
+      } catch {
+        setFeedback({ key: "imagePasteFailed" });
+      }
     },
     [insertMarkdown],
   );
@@ -1736,6 +1754,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   closeSearchRef.current = closeSearch;
 
   /* ---------- 命令式 API ---------- */
+  // onReady 返回的句柄可能被长期保存；命令仍需读取最新语言/配置。
+  const runToolbarRef = useRef(runToolbar);
+  runToolbarRef.current = runToolbar;
   const apiRef = useRef<MarkdownEditorInstance | null>(null);
   const api: MarkdownEditorInstance = {
     focus: () => sourceRef.current?.focus(),
@@ -1765,7 +1786,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       return parseMarkdown(valueRef.current, parseOptions).outline;
     },
     getDocument: () => parseMarkdown(valueRef.current, parseOptions),
-    runCommand: (name) => runToolbar(name),
+    runCommand: (name) => runToolbarRef.current(name),
     undo,
     redo,
     scrollToLine,
@@ -1925,6 +1946,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         className ? ` ${className}` : ""
       }${config.theme.className ? ` ${config.theme.className}` : ""}`}
       style={rootStyle}
+      lang={config.locale}
       data-theme={resolvedTheme}
       data-mode={mode}
       onKeyDownCapture={handleRootKeyDownCapture}
@@ -2049,6 +2071,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
               className="mde-divider"
               role="separator"
               aria-orientation="vertical"
+              aria-label={labels.splitResize}
               onPointerDown={(event) => {
                 event.preventDefault();
                 const container = event.currentTarget.parentElement;
@@ -2114,11 +2137,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
         <StatusBar config={config} labels={labels} stats={stats} mode={mode} />
       )}
 
+      {feedback && chromeVisible && <div className="mde-status" role="status">{labels[feedback.key]}</div>}
+
       {viewingImage && (
         <ImageViewer
           src={viewingImage.src}
           alt={viewingImage.alt}
           config={config.preview.imageZoom}
+          labels={labels}
+          locale={config.locale}
           themeVars={themeVars}
           onClose={() => setViewingImage(null)}
         />

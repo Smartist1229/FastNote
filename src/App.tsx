@@ -70,6 +70,9 @@ import { useConfirm } from "@/components/common/ConfirmDialog";
 import { useRecentFiles } from "@/lib/recentFiles";
 import { useSearchHistory } from "@/lib/searchHistory";
 import { Icon } from "@/components/common/Icon";
+import { setLanguage, t as translateNow, useI18n } from "@/i18n";
+import { scheduleStartupCheck } from "@/stores/updaterStore";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 /** 编辑器依赖 CodeMirror，体积较大：懒加载让首屏先出侧栏与欢迎页，Suspense 负责占位 */
 const NoteEditor = lazy(() =>
@@ -78,15 +81,20 @@ const NoteEditor = lazy(() =>
   }))
 );
 
-/** 历史版本时间：本地时区到分钟；非法值原样返回，避免出现 Invalid Date */
-const formatHistoryTime = (iso: string): string => {
+/** 历史版本时间：按界面语言显示本地时间到分钟；非法值原样返回。 */
+const formatHistoryTime = (iso: string, locale: string): string => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return d.toLocaleString(locale, {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
 };
 
 function AppContent() {
+  const { locale, t } = useI18n();
+  useEffect(() => {
+    if (isTauri()) void invoke("set_app_locale", { locale }).catch(console.error);
+  }, [locale]);
   /** 全量笔记：分组抽屉、收藏视图、搜索都从它派生，因此不按当前分组裁剪 */
   const [notes, setNotes] = useState<Note[]>([]);
   /** 分组列表：loadData 统一刷新，AI 侧改库后依靠事件重新拉取 */
@@ -225,6 +233,9 @@ function AppContent() {
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   /** 软件设置是否已从数据库读回：读回前不碰开机启动快捷方式，避免用默认值覆盖用户设置 */
   const [appSettingsLoaded, setAppSettingsLoaded] = useState(false);
+  useEffect(() => {
+    if (appSettingsLoaded) setLanguage(appSettings.general.language);
+  }, [appSettings.general.language, appSettingsLoaded]);
   /** 语义索引是否在后台构建：只为搜索框下的提示，开启语义搜索后才订阅 */
   const [semanticIndexing, setSemanticIndexing] = useState(false);
   /**
@@ -302,6 +313,19 @@ function AppContent() {
   }, [aiPrompts, aiConfigLoaded]);
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
+  /**
+   * 启动后静默检查一次更新：只提示有新版本，不自动下载。
+   * 文案用 translateNow 在触发时取当前语言，避免用了首帧的旧语言。
+   */
+  useEffect(() => {
+    if (!appSettingsLoaded) return;
+    scheduleStartupCheck((info) => {
+      showToast(
+        translateNow("发现新版本 {value1}，可在「设置 → 关于」中更新", { value1: info.version }),
+        "info",
+      );
+    });
+  }, [appSettingsLoaded, showToast]);
   /** 最新选中项 / 笔记列表的镜像：供零依赖回调与事件处理器读取，避免闭包过期 */
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
@@ -498,9 +522,9 @@ function AppContent() {
   /** 恢复软件默认设置：删库里全部 app.config.* 键，运行时状态同步回默认 */
   const handleResetAppSettings = useCallback(async () => {
     const ok = await confirm({
-      title: "恢复软件默认设置",
-      message: "将把通用（含托盘图标、关闭窗口行为、开机自启动）、编辑器、笔记列表、界面布局、主题等软件设置恢复为默认值（AI 设置不受影响）。",
-      confirmText: "恢复默认",
+      title: t("恢复软件默认设置"),
+      message: t("将把通用（含托盘图标、关闭窗口行为、开机自启动）、编辑器、笔记列表、界面布局、主题等软件设置恢复为默认值（AI 设置不受影响）。"),
+      confirmText: t("恢复默认"),
       danger: true,
     });
     if (!ok) return;
@@ -516,36 +540,36 @@ function AppContent() {
     // 排序是实时生效项，立即同步；布局是启动项，只落默认值、下次启动才应用
     setSortBy(d.view.sortBy);
     setSortOrder(d.view.sortOrder);
-    showToast("已恢复软件默认设置", "success");
-  }, [confirm, showToast, saveAllAppSettings]);
+    showToast(translateNow("已恢复软件默认设置"), "success");
+  }, [confirm, showToast, saveAllAppSettings, t]);
 
   /** 只恢复编辑器设置：其他软件设置、主题与 AI 设置都不动 */
   const handleResetEditorSettings = useCallback(async () => {
     const ok = await confirm({
-      title: "恢复编辑器默认设置",
-      message: "将把字号、行高、间距、工具栏、颜色预设等编辑器选项恢复为默认值。主题、其他软件设置与 AI 设置不受影响。",
-      confirmText: "恢复默认",
+      title: t("恢复编辑器默认设置"),
+      message: t("将把字号、行高、间距、工具栏、颜色预设等编辑器选项恢复为默认值。主题、其他软件设置与 AI 设置不受影响。"),
+      confirmText: t("恢复默认"),
       danger: true,
     });
     if (!ok) return;
     await resetEditorSettings();
     setAppSettings((prev) => ({ ...prev, editor: { ...DEFAULT_APP_SETTINGS.editor } }));
-    showToast("已恢复编辑器默认设置", "success");
-  }, [confirm, showToast]);
+    showToast(t("已恢复编辑器默认设置"), "success");
+  }, [confirm, showToast, t]);
 
   /** 只恢复主题设置：其他软件设置与 AI 设置都不动 */
   const handleResetThemeSettings = useCallback(async () => {
     const ok = await confirm({
-      title: "恢复主题默认设置",
-      message: "将把明暗模式、预设配色、自定义取色与「我的主题」恢复为默认值。其他软件设置与 AI 设置不受影响。",
-      confirmText: "恢复默认",
+      title: t("恢复主题默认设置"),
+      message: t("将把明暗模式、预设配色、自定义取色与「我的主题」恢复为默认值。其他软件设置与 AI 设置不受影响。"),
+      confirmText: t("恢复默认"),
       danger: true,
     });
     if (!ok) return;
     await resetThemeSettings();
     setTheme(DEFAULT_THEME_SETTINGS);
-    showToast("已恢复主题默认设置", "success");
-  }, [confirm, showToast]);
+    showToast(t("已恢复主题默认设置"), "success");
+  }, [confirm, showToast, t]);
 
   /* ---------- 运行时状态 ↔ 设置同步 ---------- */
 
@@ -703,7 +727,7 @@ function AppContent() {
     setExternalFile(null);
     try {
       const note = await notesApi.createNote(
-        title?.trim() || "无标题",
+        title?.trim() || t("无标题"),
         "",
         targetCategory,
         defaultNoteAiAccess,
@@ -729,11 +753,11 @@ function AppContent() {
       setHistoryPreview(null);
       setExternalFile(null);
       setSelectedNote(note);
-      showToast("已保存为笔记", "success");
+      showToast(t("已保存为笔记"), "success");
       window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
     } catch (error) {
       console.error("Failed to save preview as note:", error);
-      showToast("保存失败，请重试", "error");
+      showToast(t("保存失败，请重试"), "error");
       throw error;
     }
   };
@@ -763,7 +787,8 @@ function AppContent() {
       // 读成功了才记进最近列表：打不开的文件不值得占一个位置
       pushRecentFile(path, file.name);
     } catch (e) {
-      showToast(typeof e === "string" ? e : "打开文件失败", "error");
+      // 文件拖拽监听持有这个回调：全局翻译读取最新语言，不因切换语言重新注册监听。
+      showToast(typeof e === "string" ? e : translateNow("打开文件失败"), "error");
     }
   }, [showToast, pushRecentFile]);
 
@@ -786,11 +811,11 @@ function AppContent() {
       setHistoryPreview(null);
       setExternalFile(null);
       setSelectedNote(note);
-      showToast("已保存为笔记", "success");
+      showToast(t("已保存为笔记"), "success");
       window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
     } catch (error) {
       console.error("Failed to save external file as note:", error);
-      showToast("保存失败，请重试", "error");
+      showToast(t("保存失败，请重试"), "error");
       throw error;
     }
   };
@@ -806,9 +831,9 @@ function AppContent() {
   const handleDropFileToCategory = useCallback(async (path: string, categoryId: number) => {
     const category = categoriesRef.current.find((c) => c.id === categoryId);
     const ok = await confirm({
-      title: "导入文件到分组",
-      message: `是否将文件内容导入分组「${category?.name ?? ""}」？`,
-      confirmText: "导入",
+      title: translateNow("导入文件到分组"),
+      message: translateNow("是否将文件内容导入分组「{name}」？", { name: category?.name ?? "" }),
+      confirmText: translateNow("导入"),
     });
     if (!ok) return;
     try {
@@ -816,21 +841,23 @@ function AppContent() {
       await notesApi.createNote(file.name, file.content, categoryId, defaultNoteAiAccess);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId);
-      showToast("已导入到分组", "success");
+      showToast(translateNow("已导入到分组"), "success");
       window.dispatchEvent(new CustomEvent('fastnote-data-changed'));
     } catch (e) {
-      showToast(typeof e === "string" ? e : "导入失败", "error");
+      showToast(typeof e === "string" ? e : translateNow("导入失败"), "error");
     }
   }, [confirm, defaultNoteAiAccess, showToast]);
 
   /** 欢迎页「打开文本文件」：系统文件选择框 → 按外部文件模式打开 */
   const handleOpenTextFileDialog = useCallback(async () => {
     try {
-      const selected = await openFileDialog({ multiple: false, directory: false });
+      const selected = await openFileDialog({
+        title: translateNow("打开文本文件"), multiple: false, directory: false,
+      });
       if (typeof selected === "string") await openExternalFile(selected);
     } catch (e) {
       console.error("打开文件失败:", e);
-      showToast("打开文件失败", "error");
+      showToast(translateNow("打开文件失败"), "error");
     }
   }, [openExternalFile, showToast]);
 
@@ -920,11 +947,11 @@ function AppContent() {
     }
     try {
       if (await saveNoteAsFile(note.title, note.content)) {
-        showToast("导出成功！", "success");
+        showToast(t("导出成功！"), "success");
       }
     } catch (e) {
       console.error("导出失败:", e);
-      showToast("导出失败，请重试", "error");
+      showToast(t("导出失败，请重试"), "error");
     }
   };
 
@@ -935,7 +962,7 @@ function AppContent() {
   const applyAiContentChange = async (nextContent: string) => {
     const current = selectedNoteRef.current;
     if (!current) {
-      showToast("请先选择一条笔记", "error");
+      showToast(t("请先选择一条笔记"), "error");
       return;
     }
 
@@ -950,7 +977,7 @@ function AppContent() {
   const handleAiInsertText = async (text: string) => {
     const current = selectedNoteRef.current;
     if (!current) {
-      showToast("请先选择一条笔记", "error");
+      showToast(t("请先选择一条笔记"), "error");
       return;
     }
     const offset = Math.max(0, Math.min(editorCursorOffsetRef.current, current.content.length));
@@ -961,14 +988,14 @@ function AppContent() {
     const nextContent = `${prefix}${separatorBefore}${text}${separatorAfter}${suffix}`;
     await applyAiContentChange(nextContent);
     editorCursorOffsetRef.current = offset + separatorBefore.length + text.length + separatorAfter.length;
-    showToast("已插入到笔记", "success");
+    showToast(t("已插入到笔记"), "success");
   };
 
   /** AI「替换」：整篇覆盖，并把光标移到文末 */
   const handleAiReplaceContent = async (text: string) => {
     await applyAiContentChange(text);
     editorCursorOffsetRef.current = text.length;
-    showToast("已替换笔记内容", "success");
+    showToast(t("已替换笔记内容"), "success");
   };
 
   /** 删除当前笔记：软删除进回收站，刷新列表后清空选中 */
@@ -976,9 +1003,9 @@ function AppContent() {
     if (!selectedNote) return;
     const noteId = selectedNote.id;
     const confirmed = await confirm({
-      title: "删除笔记",
-      message: "确定要将这条笔记移入回收站吗？",
-      confirmText: "移入回收站",
+      title: t("删除笔记"),
+      message: t("确定要将这条笔记移入回收站吗？"),
+      confirmText: t("移入回收站"),
       danger: true,
     });
     if (!confirmed) return;
@@ -986,10 +1013,10 @@ function AppContent() {
       await notesApi.moveToTrash(noteId);
       await loadData();
       setSelectedNote((current) => (current?.id === noteId ? null : current));
-      showToast("删除成功！", "success");
+      showToast(t("删除成功！"), "success");
     } catch (error) {
       console.error("Failed to delete note:", error);
-      showToast("删除失败，请重试", "error");
+      showToast(t("删除失败，请重试"), "error");
     }
   };
 
@@ -1003,7 +1030,7 @@ function AppContent() {
       setShowTrashModal(true);
     } catch (error) {
       console.error("Failed to load trash:", error);
-      showToast("加载回收站失败", "error");
+      showToast(t("加载回收站失败"), "error");
     }
   };
 
@@ -1013,9 +1040,9 @@ function AppContent() {
       setTrashNotes((prev) => prev.filter((n) => n.id !== id));
       setSelectedTrashIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       await loadData();
-      showToast("笔记已还原", "success");
+      showToast(t("笔记已还原"), "success");
     } catch (error) {
-      showToast("还原失败", "error");
+      showToast(t("还原失败"), "error");
     }
   };
 
@@ -1024,18 +1051,18 @@ function AppContent() {
       await notesApi.deleteNotePermanently(id);
       setTrashNotes((prev) => prev.filter((n) => n.id !== id));
       setSelectedTrashIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-      showToast("笔记已永久删除", "success");
+      showToast(t("笔记已永久删除"), "success");
     } catch (error) {
-      showToast("删除失败", "error");
+      showToast(t("删除失败"), "error");
     }
   };
 
   const handleEmptyTrash = async () => {
     if (trashNotes.length === 0) return;
     const confirmed = await confirm({
-      title: "清空回收站",
-      message: "确定要清空回收站吗？此操作不可恢复。",
-      confirmText: "清空回收站",
+      title: t("清空回收站"),
+      message: t("确定要清空回收站吗？此操作不可恢复。"),
+      confirmText: t("清空回收站"),
       danger: true,
     });
     if (!confirmed) return;
@@ -1044,9 +1071,9 @@ function AppContent() {
       setTrashNotes([]);
       setSelectedTrashIds(new Set());
       await loadData();
-      showToast("回收站已清空", "success");
+      showToast(t("回收站已清空"), "success");
     } catch (error) {
-      showToast("清空回收站失败", "error");
+      showToast(t("清空回收站失败"), "error");
     }
   };
 
@@ -1058,9 +1085,9 @@ function AppContent() {
   const handleDeleteSelected = async () => {
     if (selectedTrashIds.size === 0) return;
     const confirmed = await confirm({
-      title: "永久删除",
-      message: "确定要永久删除选中的笔记吗？此操作不可恢复。",
-      confirmText: "永久删除",
+      title: t("永久删除"),
+      message: t("确定要永久删除选中的笔记吗？此操作不可恢复。"),
+      confirmText: t("永久删除"),
       danger: true,
     });
     if (!confirmed) return;
@@ -1070,9 +1097,9 @@ function AppContent() {
       setTrashNotes((prev) => prev.filter((n) => !ids.includes(n.id)));
       setSelectedTrashIds(new Set());
       await loadData();
-      showToast("已永久删除", "success");
+      showToast(t("已永久删除"), "success");
     } catch (error) {
-      showToast("删除失败", "error");
+      showToast(t("删除失败"), "error");
     }
   };
 
@@ -1084,13 +1111,8 @@ function AppContent() {
     });
   };
 
-  const formatTrashDate = (dateStr: string | null) => {
-    if (!dateStr) return "-";
-    try {
-      const d = new Date(dateStr);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    } catch { return dateStr; }
-  };
+  const formatTrashDate = (dateStr: string | null) =>
+    dateStr ? formatHistoryTime(dateStr, locale) : "-";
 
   /* ---------- 分组操作 ---------- */
   /** 打开新建分组弹窗：清空编辑态与输入值 */
@@ -1128,9 +1150,9 @@ function AppContent() {
     try {
       await categoriesApi.createCategory(trimmed, defaultCategoryAiAccess);
       await loadData();
-      showToast(`已创建分组「${trimmed}」`, "success");
+      showToast(t("已创建分组「{name}」", { name: trimmed }), "success");
     } catch (error) {
-      showToast("创建分组失败：" + error, "error");
+      showToast(t("创建分组失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1145,9 +1167,9 @@ function AppContent() {
     try {
       await categoriesApi.updateCategory(category.id, name);
       await loadData();
-      showToast("已更新分组名称", "success");
+      showToast(t("已更新分组名称"), "success");
     } catch {
-      showToast("更新失败", "error");
+      showToast(t("更新失败"), "error");
     }
   };
 
@@ -1156,9 +1178,9 @@ function AppContent() {
     try {
       await notesApi.pinNote(note.id, !note.is_pinned);
       await loadData();
-      showToast(note.is_pinned ? "已取消收藏" : "已收藏", "success");
+      showToast(note.is_pinned ? t("已取消收藏") : t("已收藏"), "success");
     } catch {
-      showToast("操作失败", "error");
+      showToast(t("操作失败"), "error");
     }
   };
 
@@ -1173,9 +1195,11 @@ function AppContent() {
       await notesApi.setNoteAiAccess(note.id, level);
       setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, ai_access: level } : n)));
       setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, ai_access: level } : prev));
-      showToast(`「${note.title || "无标题"}」的 AI 访问已设为${AI_ACCESS_LABELS[level]}`, "success");
+      showToast(t("「{name}」的 AI 访问已设为{level}", {
+        name: note.title || t("无标题"), level: t(AI_ACCESS_LABELS[level]),
+      }), "success");
     } catch {
-      showToast("操作失败，请重试", "error");
+      showToast(t("操作失败，请重试"), "error");
     }
   };
 
@@ -1185,9 +1209,11 @@ function AppContent() {
     try {
       await categoriesApi.setCategoryAiAccess(category.id, level);
       setCategories((prev) => prev.map((c) => (c.id === category.id ? { ...c, ai_access: level } : c)));
-      showToast(`「${category.name}」的 AI 访问已设为${AI_ACCESS_LABELS[level]}`, "success");
+      showToast(t("「{name}」的 AI 访问已设为{level}", {
+        name: category.name, level: t(AI_ACCESS_LABELS[level]),
+      }), "success");
     } catch {
-      showToast("操作失败，请重试", "error");
+      showToast(t("操作失败，请重试"), "error");
     }
   };
 
@@ -1198,9 +1224,9 @@ function AppContent() {
       await notesApi.updateNote(note.id, note.title, note.content, categoryId);
       await loadData();
       setSelectedCategoryId(categoryId);
-      showToast("移动成功", "success");
+      showToast(t("移动成功"), "success");
     } catch {
-      showToast("移动失败", "error");
+      showToast(t("移动失败"), "error");
     }
   };
 
@@ -1212,9 +1238,9 @@ function AppContent() {
       if (selectedNoteRef.current?.id === note.id) {
         setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, title } : prev));
       }
-      showToast("已更新笔记标题", "success");
+      showToast(t("已更新笔记标题"), "success");
     } catch {
-      showToast("重命名失败，请重试", "error");
+      showToast(t("重命名失败，请重试"), "error");
     }
   };
 
@@ -1236,14 +1262,14 @@ function AppContent() {
       setNoteHistory(await notesApi.getNoteHistory(updated.id));
       return true;
     } catch (error) {
-      showToast("回滚失败：" + error, "error");
+      showToast(t("回滚失败：{error}", { error: String(error) }), "error");
       return false;
     }
   };
 
   const handleRollbackNoteHistory = async (entry: NoteHistoryEntry) => {
     if (await applyHistoryRollback(entry)) {
-      showToast("已回滚到所选历史版本（该版本及更新的版本已删除）", "success");
+      showToast(t("已回滚到所选历史版本（该版本及更新的版本已删除）"), "success");
     }
   };
 
@@ -1258,7 +1284,7 @@ function AppContent() {
     if (!historyPreview) return;
     if (await applyHistoryRollback(historyPreview)) {
       setHistoryPreview(null);
-      showToast("已回滚到所选历史版本（该版本及更新的版本已删除）", "success");
+      showToast(t("已回滚到所选历史版本（该版本及更新的版本已删除）"), "success");
     }
   };
 
@@ -1270,9 +1296,11 @@ function AppContent() {
     try {
       const next = await tagsApi.addNoteTags(note.id, names, "user");
       setNoteTags(next);
-      showToast(names.length > 1 ? `已添加 ${names.length} 个标签` : `已添加标签「${names[0]}」`, "success");
+      showToast(names.length > 1
+        ? t("已添加 {count} 个标签", { count: names.length })
+        : t("已添加标签「{name}」", { name: names[0] }), "success");
     } catch (error) {
-      showToast("添加标签失败：" + error, "error");
+      showToast(t("添加标签失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1281,9 +1309,9 @@ function AppContent() {
       // 不传 source：用户在自己的属性窗里操作，看到的都是自己能删的（AI 标签没有删除按钮）
       const next = await tagsApi.removeNoteTags(note.id, [name]);
       setNoteTags(next);
-      showToast(`已移除标签「${name}」`, "success");
+      showToast(t("已移除标签「{name}」", { name }), "success");
     } catch (error) {
-      showToast("移除标签失败：" + error, "error");
+      showToast(t("移除标签失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1293,9 +1321,9 @@ function AppContent() {
       await tagsApi.renameTag(id, name);
       const noteId = propertiesTargetLive?.kind === "note" ? propertiesTargetLive.note.id : null;
       if (noteId != null) setNoteTags(await tagsApi.listNoteTags(noteId));
-      showToast("已重命名标签", "success");
+      showToast(t("已重命名标签"), "success");
     } catch (error) {
-      showToast("重命名失败：" + error, "error");
+      showToast(t("重命名失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1310,10 +1338,10 @@ function AppContent() {
       if (selectedCategoryId === deletingCategory.id) { setSelectedCategoryId(null); }
       await loadData();
       setShowDeleteCategoryModal(false);
-      showToast("删除成功", "success");
+      showToast(t("删除成功"), "success");
     } catch (error) {
       console.error("Failed to delete category:", error);
-      showToast("删除失败: " + error, "error");
+      showToast(t("删除失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1377,9 +1405,9 @@ function AppContent() {
     try {
       await notesApi.deleteNoteHistoryEntry(entry.id);
       setNoteHistory((prev) => prev.filter((item) => item.id !== entry.id));
-      showToast("已删除该历史版本", "success");
+      showToast(t("已删除该历史版本"), "success");
     } catch (error) {
-      showToast("删除失败：" + error, "error");
+      showToast(t("删除失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1389,9 +1417,9 @@ function AppContent() {
     try {
       await notesApi.clearNoteHistory(propertiesNoteId);
       setNoteHistory([]);
-      showToast("已清空历史版本", "success");
+      showToast(t("已清空历史版本"), "success");
     } catch (error) {
-      showToast("清空失败：" + error, "error");
+      showToast(t("清空失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1401,9 +1429,9 @@ function AppContent() {
     try {
       const created = await notesApi.createNoteHistoryVersion(propertiesNoteId);
       setNoteHistory(await notesApi.getNoteHistory(propertiesNoteId));
-      showToast(created ? "已保存当前版本" : "当前内容与最新版本相同", created ? "success" : "info");
+      showToast(created ? t("已保存当前版本") : t("当前内容与最新版本相同"), created ? "success" : "info");
     } catch (error) {
-      showToast("保存版本失败：" + error, "error");
+      showToast(t("保存版本失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1413,9 +1441,9 @@ function AppContent() {
       const pinned = !entry.pinned;
       await notesApi.setNoteHistoryPinned(entry.id, pinned);
       setNoteHistory((prev) => prev.map((item) => (item.id === entry.id ? { ...item, pinned } : item)));
-      showToast(pinned ? "已固定该版本" : "已取消固定", "success");
+      showToast(pinned ? t("已固定该版本") : t("已取消固定"), "success");
     } catch (error) {
-      showToast("操作失败：" + error, "error");
+      showToast(t("操作失败：{error}", { error: String(error) }), "error");
     }
   };
 
@@ -1456,48 +1484,50 @@ function AppContent() {
         {
           id: "note.create",
           token: "create_note",
-          title: "新建笔记",
-          hint: `在「${categories.find((c) => c.id === selectedCategoryId)?.name ?? "未分类"}」里新建笔记，参数是笔记标题`,
-          group: "笔记",
+          title: t("新建笔记"),
+          hint: t("在「{name}」里新建笔记，参数是笔记标题", {
+            name: categories.find((c) => c.id === selectedCategoryId)?.name ?? t("未分类"),
+          }),
+          group: t("笔记"),
           icon: "sidebar-plus",
           keywords: "new note 新建 创建 create",
-          arg: { placeholder: "笔记标题", hint: "省略则叫「无标题」" },
+          arg: { placeholder: t("笔记标题"), hint: t("省略则叫「无标题」") },
           run: (title) => void handleCreateNote(undefined, title),
         },
         {
           id: "note.createCategory",
           token: "create_category",
-          title: "新建分组",
-          hint: "直接创建分组，参数是分组名称",
-          group: "笔记",
+          title: t("新建分组"),
+          hint: t("直接创建分组，参数是分组名称"),
+          group: t("笔记"),
           icon: "sidebar-folder-plus",
           keywords: "new category 分组 分类 创建 folder",
-          arg: { placeholder: "分组名称", hint: "省略则打开新建弹窗" },
+          arg: { placeholder: t("分组名称"), hint: t("省略则打开新建弹窗") },
           run: (name) => void handleCreateCategoryNamed(name ?? ""),
         },
         {
           id: "note.export",
           token: "export_note",
-          title: "导出当前笔记",
-          hint: "另存为 Markdown 文件，与 Ctrl+S 等价",
-          group: "笔记",
+          title: t("导出当前笔记"),
+          hint: t("另存为 Markdown 文件，与 Ctrl+S 等价"),
+          group: t("笔记"),
           icon: "editor-export",
           keys: "mod+s",
           keywords: "export 导出 保存 另存为 save file",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => exportNoteRef.current?.(),
         },
         {
           id: "note.properties",
           token: "note_properties",
-          title: "当前笔记属性",
-          hint: "改标题、移动分组、管理标签、AI 访问权限",
-          group: "笔记",
+          title: t("当前笔记属性"),
+          hint: t("改标题、移动分组、管理标签、AI 访问权限"),
+          group: t("笔记"),
           icon: "ai-settings",
           keywords: "properties 属性 详情 标签 权限",
           disabled: !selectedNote || overlayActive,
-          disabledReason: overlayActive ? "AI 预览 / 电脑文件没有笔记属性" : "先打开一篇笔记",
+          disabledReason: overlayActive ? t("AI 预览 / 电脑文件没有笔记属性") : t("先打开一篇笔记"),
           run: () => {
             if (selectedNote) setPropertiesTarget({ kind: "note", note: selectedNote });
           },
@@ -1505,13 +1535,13 @@ function AppContent() {
         {
           id: "note.history",
           token: "note_history",
-          title: "当前笔记：历史版本",
-          hint: "在属性窗里查看、预览、恢复、删除或清空这篇笔记的历史版本",
-          group: "笔记",
+          title: t("当前笔记：历史版本"),
+          hint: t("在属性窗里查看、预览、恢复、删除或清空这篇笔记的历史版本"),
+          group: t("笔记"),
           icon: "sidebar-clock",
           keywords: "history 历史 版本 回滚 恢复 snapshot",
           disabled: !selectedNote || overlayActive,
-          disabledReason: overlayActive ? "AI 预览 / 电脑文件没有历史版本" : "先打开一篇笔记",
+          disabledReason: overlayActive ? t("AI 预览 / 电脑文件没有历史版本") : t("先打开一篇笔记"),
           run: () => {
             if (selectedNote) setPropertiesTarget({ kind: "note", note: selectedNote });
           },
@@ -1519,9 +1549,9 @@ function AppContent() {
         {
           id: "note.trash",
           token: "open_trash",
-          title: "打开回收站",
-          hint: "查看、还原或彻底删除已删除的笔记",
-          group: "笔记",
+          title: t("打开回收站"),
+          hint: t("查看、还原或彻底删除已删除的笔记"),
+          group: t("笔记"),
           icon: "sidebar-trash",
           keywords: "trash 回收站 删除 还原 recycle",
           run: () => void handleOpenTrash(),
@@ -1529,9 +1559,9 @@ function AppContent() {
         {
           id: "note.openFile",
           token: "open_file",
-          title: "打开电脑上的文本文件…",
-          hint: "直接在编辑器里编辑 md / txt，保存时写回原文件",
-          group: "笔记",
+          title: t("打开电脑上的文本文件…"),
+          hint: t("直接在编辑器里编辑 md / txt，保存时写回原文件"),
+          group: t("笔记"),
           icon: "welcome-file-empty",
           keywords: "open file 打开 电脑 本地 txt md 文件",
           run: () => void handleOpenTextFileDialog(),
@@ -1541,9 +1571,9 @@ function AppContent() {
         {
           id: "view.sidebar",
           token: "toggle_sidebar",
-          title: isSidebarCollapsed ? "显示侧边栏" : "隐藏侧边栏",
-          hint: "分组与笔记列表",
-          group: "视图",
+          title: isSidebarCollapsed ? t("显示侧边栏") : t("隐藏侧边栏"),
+          hint: t("分组与笔记列表"),
+          group: t("视图"),
           icon: "sidebar-list",
           keywords: "sidebar 侧边栏 收起 展开 toggle",
           run: () => setIsSidebarCollapsed((collapsed) => !collapsed),
@@ -1551,37 +1581,37 @@ function AppContent() {
         {
           id: "view.groups",
           token: "view_groups",
-          title: "切换到分组视图",
-          hint: "按分组浏览全部笔记",
-          group: "视图",
+          title: t("切换到分组视图"),
+          hint: t("按分组浏览全部笔记"),
+          group: t("视图"),
           icon: "sidebar-folder",
           keywords: "groups 分组 视图",
           disabled: sidebarView === "groups",
-          disabledReason: "当前已经是分组视图",
+          disabledReason: t("当前已经是分组视图"),
           run: () => setSidebarView("groups"),
         },
         {
           id: "view.favorites",
           token: "view_favorites",
-          title: "切换到收藏视图",
-          hint: "只看置顶 / 收藏的笔记",
-          group: "视图",
+          title: t("切换到收藏视图"),
+          hint: t("只看置顶 / 收藏的笔记"),
+          group: t("视图"),
           icon: "sidebar-star",
           keywords: "favorites 收藏 置顶 star pinned",
           disabled: sidebarView === "favorites",
-          disabledReason: "当前已经是收藏视图",
+          disabledReason: t("当前已经是收藏视图"),
           run: () => setSidebarView("favorites"),
         },
         {
           id: "view.aiPanel",
           token: "toggle_ai_panel",
-          title: aiPanelOpen ? "关闭 AI 面板" : "打开 AI 面板",
-          hint: "与 AI 对话，可读写当前笔记",
-          group: "视图",
+          title: aiPanelOpen ? t("关闭 AI 面板") : t("打开 AI 面板"),
+          hint: t("与 AI 对话，可读写当前笔记"),
+          group: t("视图"),
           icon: "ai-chat",
           keywords: "ai 面板 chat 对话 助手",
           disabled: !appSettings.general.enableAI,
-          disabledReason: "AI 能力已在设置里关闭",
+          disabledReason: t("AI 能力已在设置里关闭"),
           run: toggleAiPanel,
         },
 
@@ -1589,102 +1619,102 @@ function AppContent() {
         {
           id: "editor.code",
           token: "editor_code",
-          title: "编辑器：源码视图",
-          hint: "只看 Markdown 源文",
-          group: "编辑器",
+          title: t("编辑器：源码视图"),
+          hint: t("只看 Markdown 源文"),
+          group: t("编辑器"),
           icon: "ai-edit",
           keywords: "mode code 源码 编辑 视图",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => editorActionsRef.current?.setMode("code"),
         },
         {
           id: "editor.split",
           token: "editor_split",
-          title: "编辑器：分栏视图",
-          hint: "左边源码、右边预览",
-          group: "编辑器",
+          title: t("编辑器：分栏视图"),
+          hint: t("左边源码、右边预览"),
+          group: t("编辑器"),
           icon: "sidebar-edit-square",
           keywords: "mode split 分栏 预览 视图",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => editorActionsRef.current?.setMode("split"),
         },
         {
           id: "editor.read",
           token: "editor_read",
-          title: "编辑器：阅读视图",
-          hint: "只看渲染结果",
-          group: "编辑器",
+          title: t("编辑器：阅读视图"),
+          hint: t("只看渲染结果"),
+          group: t("编辑器"),
           icon: "sidebar-eye",
           keywords: "mode read 阅读 预览 视图",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => editorActionsRef.current?.setMode("read"),
         },
         {
           id: "editor.fullscreen",
           token: "toggle_fullscreen",
-          title: "编辑器全屏 / 退出全屏",
-          hint: "隐藏侧边栏与 AI 面板，只留正文",
-          group: "编辑器",
+          title: t("编辑器全屏 / 退出全屏"),
+          hint: t("隐藏侧边栏与 AI 面板，只留正文"),
+          group: t("编辑器"),
           icon: "sidebar-edit-square",
           keys: "mod+alt+enter",
           keywords: "fullscreen 全屏 沉浸",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => editorActionsRef.current?.toggleFullscreen(),
         },
         {
           id: "editor.find",
           token: "find_in_note",
-          title: "在笔记中查找",
-          hint: "Ctrl+F 也能打开",
-          group: "编辑器",
+          title: t("在笔记中查找"),
+          hint: t("Ctrl+F 也能打开"),
+          group: t("编辑器"),
           icon: "ai-search",
           keys: "mod+f",
           keywords: "find search 查找 搜索",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => editorActionsRef.current?.openSearch(false),
         },
         {
           id: "editor.replace",
           token: "replace_in_note",
-          title: "查找并替换",
-          hint: "阅读视图下不可用",
-          group: "编辑器",
+          title: t("查找并替换"),
+          hint: t("阅读视图下不可用"),
+          group: t("编辑器"),
           icon: "ai-replace",
           keys: "mod+h",
           keywords: "replace 替换 查找",
           disabled: !editorNote,
-          disabledReason: "先打开一篇笔记",
+          disabledReason: t("先打开一篇笔记"),
           run: () => editorActionsRef.current?.openSearch(true),
         },
 
         /* ---------- 排序 ---------- */
         ...[
-          { id: "sort.updated", token: "sort_updated", value: "updated_at", title: "按更新时间排序", hint: "最近改过的排在前面", keywords: "sort updated 排序 更新 时间" },
-          { id: "sort.created", token: "sort_created", value: "created_at", title: "按创建时间排序", hint: "按新建顺序排列", keywords: "sort created 排序 创建 时间" },
-          { id: "sort.title", token: "sort_title", value: "title", title: "按标题排序", hint: "按标题字母 / 拼音顺序", keywords: "sort title 排序 标题 名称" },
+          { id: "sort.updated", token: "sort_updated", value: "updated_at", title: t("按更新时间排序"), hint: t("最近改过的排在前面"), keywords: "sort updated 排序 更新 时间" },
+          { id: "sort.created", token: "sort_created", value: "created_at", title: t("按创建时间排序"), hint: t("按新建顺序排列"), keywords: "sort created 排序 创建 时间" },
+          { id: "sort.title", token: "sort_title", value: "title", title: t("按标题排序"), hint: t("按标题字母 / 拼音顺序"), keywords: "sort title 排序 标题 名称" },
         ].map<PaletteCommand>((option) => ({
           id: option.id,
           token: option.token,
           title: option.title,
           hint: option.hint,
-          group: "排序",
+          group: t("排序"),
           icon: "sidebar-clock",
           keywords: option.keywords,
           disabled: sortBy === option.value,
-          disabledReason: "当前就是这种排序",
+          disabledReason: t("当前就是这种排序"),
           run: () => handleSortByChange(option.value),
         })),
         {
           id: "sort.order",
           token: "toggle_sort_order",
-          title: sortOrder === "asc" ? "改为降序排列" : "改为升序排列",
-          hint: "在当前的排序字段上翻转方向",
-          group: "排序",
+          title: sortOrder === "asc" ? t("改为降序排列") : t("改为升序排列"),
+          hint: t("在当前的排序字段上翻转方向"),
+          group: t("排序"),
           icon: "ai-arrow-down",
           keywords: "order asc desc 升序 降序 排序",
           run: handleToggleSortOrder,
@@ -1692,19 +1722,19 @@ function AppContent() {
 
         /* ---------- 主题 ---------- */
         ...[
-          { id: "theme.light", token: "theme_light", mode: "light" as const, title: "主题：明亮", hint: "浅色外观", keywords: "theme light 明亮 浅色 白色" },
-          { id: "theme.dark", token: "theme_dark", mode: "dark" as const, title: "主题：暗黑", hint: "深色外观", keywords: "theme dark 暗黑 深色 夜间" },
-          { id: "theme.system", token: "theme_system", mode: "system" as const, title: "主题：跟随系统", hint: "随操作系统的深浅色切换", keywords: "theme system auto 跟随 系统 自动" },
+          { id: "theme.light", token: "theme_light", mode: "light" as const, title: t("主题：明亮"), hint: t("浅色外观"), keywords: "theme light 明亮 浅色 白色" },
+          { id: "theme.dark", token: "theme_dark", mode: "dark" as const, title: t("主题：暗黑"), hint: t("深色外观"), keywords: "theme dark 暗黑 深色 夜间" },
+          { id: "theme.system", token: "theme_system", mode: "system" as const, title: t("主题：跟随系统"), hint: t("随操作系统的深浅色切换"), keywords: "theme system auto 跟随 系统 自动" },
         ].map<PaletteCommand>((option) => ({
           id: option.id,
           token: option.token,
           title: option.title,
           hint: option.hint,
-          group: "主题",
+          group: t("主题"),
           icon: "settings-theme",
           keywords: option.keywords,
           disabled: theme.mode === option.mode,
-          disabledReason: "当前就是这个主题",
+          disabledReason: t("当前就是这个主题"),
           run: () => handleThemeChange({ ...theme, mode: option.mode }),
         })),
 
@@ -1713,18 +1743,18 @@ function AppContent() {
           id: "settings.open",
           token: "settings",
           aliases: ["setting"],
-          title: "打开设置",
-          hint: "后面可跟分区名直接定位，如 settings theme",
-          group: "设置",
+          title: t("打开设置"),
+          hint: t("后面可跟分区名直接定位，如 settings theme"),
+          group: t("设置"),
           icon: "ai-settings",
           keywords: "settings 设置 配置 偏好 preferences options",
           subcommands: SETTINGS_SECTIONS.filter(
             (section) => appSettings.general.enableAI || !["provider", "chat", "context", "memory", "access"].includes(section.key),
           ).map((section) => ({
             value: section.key,
-            title: section.label,
+            title: t(section.label),
             icon: section.icon,
-            keywords: `settings 设置 ${section.key}`,
+            keywords: `settings 设置 ${section.key} ${section.label}`,
           })),
           run: (section) => openSettings((section ?? "general") as SettingsSection),
         },
@@ -1733,9 +1763,9 @@ function AppContent() {
         {
           id: "data.refresh",
           token: "refresh_notes",
-          title: "刷新笔记列表",
-          hint: "重新从数据库读取分组与笔记",
-          group: "数据",
+          title: t("刷新笔记列表"),
+          hint: t("重新从数据库读取分组与笔记"),
+          group: t("数据"),
           icon: "sidebar-refresh",
           keywords: "refresh reload 刷新 重新加载",
           run: () => void loadData(),
@@ -1743,13 +1773,13 @@ function AppContent() {
         {
           id: "data.clearSearch",
           token: "clear_search",
-          title: "清空侧边栏搜索",
-          hint: "把搜索框与搜索结果一起清掉",
-          group: "数据",
+          title: t("清空侧边栏搜索"),
+          hint: t("把搜索框与搜索结果一起清掉"),
+          group: t("数据"),
           icon: "ai-close",
           keywords: "clear 清空 搜索 search",
           disabled: !searchQuery,
-          disabledReason: "当前没有搜索关键词",
+          disabledReason: t("当前没有搜索关键词"),
           run: () => setSearchQuery(""),
         },
       ]
@@ -1795,9 +1825,9 @@ function AppContent() {
             onMoveToCategory={handleMoveNoteToCategory}
             onDeleteNote={async (note) => {
               const confirmed = await confirm({
-                title: "删除笔记",
-                message: "确定要将这条笔记移入回收站吗？",
-                confirmText: "移入回收站",
+                title: t("删除笔记"),
+                message: t("确定要将这条笔记移入回收站吗？"),
+                confirmText: t("移入回收站"),
                 danger: true,
               });
               if (!confirmed) return;
@@ -1805,9 +1835,9 @@ function AppContent() {
                 await notesApi.moveToTrash(note.id);
                 await loadData();
                 if (selectedNote?.id === note.id) setSelectedNote(null);
-                showToast("删除成功！", "success");
+                showToast(t("删除成功！"), "success");
               } catch {
-                showToast("删除失败", "error");
+                showToast(t("删除失败"), "error");
               }
             } }
             onOpenTrash={handleOpenTrash}
@@ -1845,11 +1875,11 @@ function AppContent() {
                 setIsSidebarCollapsed(false);
                 setIsRevealHandleVisible(false);
               }}
-              title="显示分组侧边栏"
-              aria-label="显示分组侧边栏"
+              title={t("显示分组侧边栏")}
+              aria-label={t("显示分组侧边栏")}
             >
               <Icon name="app-chevron-right" className="w-3.5 h-3.5" />
-              <span className="sidebar-reveal-label">分组</span>
+              <span className="sidebar-reveal-label">{t("分组")}</span>
             </button>
           </>
         )}
@@ -1861,7 +1891,7 @@ function AppContent() {
               fallback={
                 <div className="h-full flex flex-col items-center justify-center gap-3">
                   <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
-                  <p className="text-sm text-faint">正在加载编辑器...</p>
+                  <p className="text-sm text-faint">{t("正在加载编辑器...")}</p>
                 </div>
               }
             >
@@ -1875,7 +1905,7 @@ function AppContent() {
                     historyPreview={
                       historyPreview
                         ? {
-                            savedAt: formatHistoryTime(historyPreview.saved_at),
+                            savedAt: formatHistoryTime(historyPreview.saved_at, locale),
                             onRollback: () => void handleRollbackFromPreview(),
                             onExit: () => setHistoryPreview(null),
                           }
@@ -1957,33 +1987,33 @@ function AppContent() {
       </div>
 
       {/* 分类弹窗 */}
-      <Modal isOpen={showCategoryModal} onClose={() => setShowCategoryModal(false)} title={editingCategory ? "编辑分类" : "创建分类"}>
+      <Modal isOpen={showCategoryModal} onClose={() => setShowCategoryModal(false)} title={editingCategory ? t("编辑分类") : t("创建分类")}>
         <div className="space-y-4">
           <input
             type="text"
             value={categoryName}
             onChange={(e) => setCategoryName(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") handleSaveCategory(); }}
-            placeholder="输入分类名称..."
+            placeholder={t("输入分类名称...")}
             autoFocus
             className="w-full px-4 py-2.5 input-modern text-sm"
           />
           <div className="flex gap-2 justify-end">
             <button onClick={() => setShowCategoryModal(false)} className="btn-ghost px-4 py-2 text-sm">
-              取消
+              {t("取消")}
             </button>
             <button onClick={handleSaveCategory} className="btn-primary px-4 py-2 text-sm">
-              保存
+              {t("保存")}
             </button>
           </div>
         </div>
       </Modal>
 
       {/* 删除分类弹窗 */}
-      <Modal isOpen={showDeleteCategoryModal} onClose={() => setShowDeleteCategoryModal(false)} title="删除分类">
+      <Modal isOpen={showDeleteCategoryModal} onClose={() => setShowDeleteCategoryModal(false)} title={t("删除分类")}>
         <div className="space-y-4" onKeyDown={(e) => { if (e.key === "Enter") confirmDeleteCategory(); }}>
           <p className="text-sm text-body">
-            确定要删除分类「<span className="font-medium text-ink">{deletingCategory?.name}</span>」吗？
+            {t("确定要删除分类「{name}」吗？", { name: deletingCategory?.name ?? "" })}
           </p>
           <label className="flex items-center gap-2.5 cursor-pointer group">
             <input
@@ -1992,41 +2022,42 @@ function AppContent() {
               onChange={(e) => setDeleteCategoryNotes(e.target.checked)}
               className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
             />
-            <span className="text-sm text-muted group-hover:text-body transition-colors">同时删除该分类下的所有笔记</span>
+            <span className="text-sm text-muted group-hover:text-body transition-colors">{t("同时删除该分类下的所有笔记")}</span>
           </label>
           <div className="flex gap-2 justify-end pt-1">
             <button onClick={() => setShowDeleteCategoryModal(false)} className="btn-ghost px-4 py-2 text-sm">
-              取消
+              {t("取消")}
             </button>
             <button onClick={confirmDeleteCategory} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-sm">
-              删除
+              {t("删除")}
             </button>
           </div>
         </div>
       </Modal>
 
       {/* 回收站弹窗：固定宽高，列表长短不影响窗口尺寸（内容在内部滚动） */}
-      <Modal isOpen={showTrashModal} onClose={() => setShowTrashModal(false)} title="回收站" width={560} height={520}>
+      <Modal isOpen={showTrashModal} onClose={() => setShowTrashModal(false)} title={t("回收站")} width={560} height={520}>
         <div className="flex h-full min-h-0 flex-col gap-3">
           {trashNotes.length > 0 && (
             <div className="flex items-center justify-between gap-2 flex-shrink-0">
               <div className="flex items-center gap-1.5 text-xs text-faint">
-                <span>共 {trashNotes.length} 条</span>
-                {selectedTrashIds.size > 0 && <span className="text-primary-500 font-medium">，已选 {selectedTrashIds.size} 条</span>}
+                {selectedTrashIds.size > 0
+                  ? <span className="text-primary-500 font-medium">{t("共 {count} 条，已选 {selected} 条", { count: trashNotes.length, selected: selectedTrashIds.size })}</span>
+                  : <span>{t("共 {count} 条", { count: trashNotes.length })}</span>}
               </div>
               <div className="flex items-center gap-1.5">
                 {selectedTrashIds.size > 0 && (
                   <>
                     <button onClick={handleRestoreSelected} className="px-2.5 py-1 text-xs font-medium bg-success text-on-accent rounded-lg hover:bg-success-strong transition-colors">
-                      还原选中
+                      {t("还原选中")}
                     </button>
                     <button onClick={handleDeleteSelected} className="px-2.5 py-1 text-xs font-medium bg-danger text-on-accent rounded-lg hover:bg-danger-strong transition-colors">
-                      删除选中
+                      {t("删除选中")}
                     </button>
                   </>
                 )}
                 <button onClick={handleEmptyTrash} className="px-2.5 py-1 text-xs font-medium text-danger border border-danger-line rounded-lg hover:bg-danger-soft transition-colors">
-                  清空回收站
+                  {t("清空回收站")}
                 </button>
               </div>
             </div>
@@ -2037,7 +2068,7 @@ function AppContent() {
                 <div className="w-12 h-12 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
                   <Icon name="app-trash-thin" className="w-6 h-6 text-faint-soft" />
                 </div>
-                <p className="text-sm text-faint">回收站为空</p>
+                <p className="text-sm text-faint">{t("回收站为空")}</p>
               </div>
             ) : (
               trashNotes.map((note) => (
@@ -2049,14 +2080,14 @@ function AppContent() {
                     className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
                   />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-body truncate">{note.title || "无标题"}</p>
-                    <p className="text-[11px] text-faint mt-0.5">删除于 {formatTrashDate(note.deleted_at)}</p>
+                    <p className="text-sm font-medium text-body truncate">{note.title || t("无标题")}</p>
+                    <p className="text-[11px] text-faint mt-0.5">{t("删除于 {date}", { date: formatTrashDate(note.deleted_at) })}</p>
                   </div>
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-success-soft hover:!text-success" title="还原">
+                    <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-success-soft hover:!text-success" title={t("还原")}>
                       <Icon name="app-restore" className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-danger-soft hover:!text-danger" title="永久删除">
+                    <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-danger-soft hover:!text-danger" title={t("永久删除")}>
                       <Icon name="app-trash" className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -2152,7 +2183,7 @@ function AppContent() {
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}
       {isFileDragActive && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] pointer-events-none px-3.5 py-2 rounded-xl bg-tooltip/90 text-on-accent text-xs shadow-lg">
-          松开即可打开文件 · 拖到某个分组上可导入该分组
+          {t("松开即可打开文件 · 拖到某个分组上可导入该分组")}
         </div>
       )}
 

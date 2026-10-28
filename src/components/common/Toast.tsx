@@ -6,6 +6,7 @@
 import { createContext, useContext, useCallback, useMemo, useState, ReactNode } from "react";
 import type { Toast, ToastContextType, ToastType } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
+import { useI18n } from "@/i18n";
 
 /** 单条提示的存活时间（ms） */
 const TOAST_DURATION_MS = 3000;
@@ -24,6 +25,7 @@ export const useToast = () => useContext(ToastContext);
 
 /** 挂在 App 根部；负责渲染当前堆叠的所有 toast，并在 3 秒后逐条清理 */
 export const ToastProvider = ({ children }: { children: ReactNode }) => {
+  const { t } = useI18n();
   const [toasts, setToasts] = useState<Toast[]>([]);
   /**
    * 追加一条提示并安排超时移除。
@@ -71,7 +73,7 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
               {toast.type === "info" && (
                 <Icon name="toast-info" className="w-4 h-4 text-faint" />
               )}
-              <span className="selectable">{toast.message}</span>
+              <span className="selectable">{t(toast.message)}</span>
             </div>
           </div>
         ))}

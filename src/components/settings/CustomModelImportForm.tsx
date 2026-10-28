@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 /**
  * 设置 · 语义搜索：从本地目录导入自定义模型（内联表单）。
  *
@@ -29,6 +30,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
   onCancel,
   onImported,
 }) => {
+  const { t } = useI18n();
   const [sourceDir, setSourceDir] = useState("");
   const [name, setName] = useState("");
   const [dim, setDim] = useState("768");
@@ -48,7 +50,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
       const picked = await open({
         directory: true,
         multiple: false,
-        title: "选择包含 model.onnx 与 tokenizer.json 的目录",
+        title: t("选择包含 model.onnx 与 tokenizer.json 的目录"),
       });
       if (typeof picked === "string") {
         setSourceDir(picked);
@@ -56,7 +58,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
         setError(null);
       }
     } catch (e) {
-      setError(`无法打开目录选择器：${errorText(e)}`);
+      setError(t("无法打开目录选择器：{value1}", { value1: errorText(e) }));
     }
   };
 
@@ -65,22 +67,22 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
     if (busy) return;
 
     const trimmedName = name.trim();
-    if (!sourceDir.trim()) return setError("请先选择模型所在目录");
-    if (!trimmedName) return setError("请填写模型名称");
-    if (trimmedName.length > 60) return setError("模型名称不能超过 60 个字符");
+    if (!sourceDir.trim()) return setError(t("请先选择模型所在目录"));
+    if (!trimmedName) return setError(t("请填写模型名称"));
+    if (trimmedName.length > 60) return setError(t("模型名称不能超过 60 个字符"));
 
     const parsedDim = Number(dim);
     if (!Number.isInteger(parsedDim) || parsedDim < 16 || parsedDim > 4096) {
-      return setError("向量维度需为 16–4096 之间的整数");
+      return setError(t("向量维度需为 16–4096 之间的整数"));
     }
     const parsedTokens = Number(maxTokens);
     if (!Number.isInteger(parsedTokens) || parsedTokens < 8 || parsedTokens > 4096) {
-      return setError("最大 token 数需为 8–4096 之间的整数");
+      return setError(t("最大 token 数需为 8–4096 之间的整数"));
     }
     const scoreRaw = minScore.trim();
     const parsedScore = scoreRaw === "" ? undefined : Number(scoreRaw);
     if (parsedScore !== undefined && (!Number.isFinite(parsedScore) || parsedScore < 0.05 || parsedScore > 0.95)) {
-      return setError("相似度阈值需在 0.05–0.95 之间，留空则使用默认值 0.35");
+      return setError(t("相似度阈值需在 0.05–0.95 之间，留空则使用默认值 0.35"));
     }
 
     setBusy(true);
@@ -110,16 +112,14 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
     <div className="overflow-hidden rounded-xl border border-line bg-surface">
       <div className="flex items-start justify-between gap-2 px-3.5 py-2.5">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-body">导入本地模型</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-            复制并校验 ONNX 模型；源目录只读，不会移动或删除原文件。
-          </p>
+          <p className="text-xs font-medium text-body">{t("导入本地模型")}</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("复制并校验 ONNX 模型；源目录只读，不会移动或删除原文件。")}</p>
         </div>
         <button
           type="button"
           onClick={cancel}
           disabled={busy}
-          title="收起导入表单"
+          title={t("收起导入表单")}
           className="toolbar-btn hover:!bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Icon name="modal-close" className="w-3.5 h-3.5" />
@@ -129,7 +129,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
       <form className="space-y-3 border-t border-line-soft px-3.5 py-3" onSubmit={submit}>
         <div>
           <div className="flex items-end justify-between gap-2">
-            <span className={label}>模型目录</span>
+            <span className={label}>{t("模型目录")}</span>
             <button
               type="button"
               onClick={() => void pickFolder()}
@@ -137,32 +137,29 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
               className="flex flex-shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[10px] text-body transition-colors hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="sidebar-folder" className="w-3 h-3" />
-              选择文件夹
-            </button>
+              {t("选择文件夹")}</button>
           </div>
           <p className={`mt-1 break-all font-mono text-[10px] leading-relaxed ${sourceDir ? "text-body" : "text-faint-soft"}`}>
-            {sourceDir || "尚未选择"}
+            {sourceDir || t("尚未选择")}
           </p>
-          <p className={hint}>
-            目录内需包含 model.onnx 与 tokenizer.json（单文件模型，暂不支持外部权重文件）。出于安全考虑，自定义模型只从本地目录导入，不直接抓取网络链接。
-          </p>
+          <p className={hint}>{t("目录内需包含 model.onnx 与 tokenizer.json（单文件模型，暂不支持外部权重文件）。出于安全考虑，自定义模型只从本地目录导入，不直接抓取网络链接。")}</p>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className={label} htmlFor="custom-model-name">名称</label>
+            <label className={label} htmlFor="custom-model-name">{t("名称")}</label>
             <input
               id="custom-model-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={60}
               spellCheck={false}
-              placeholder="例如：我的领域模型"
+              placeholder={t("例如：我的领域模型")}
               className={field}
             />
           </div>
           <div>
-            <label className={label} htmlFor="custom-model-score">相似度阈值（可选）</label>
+            <label className={label} htmlFor="custom-model-score">{t("相似度阈值（可选）")}</label>
             <input
               id="custom-model-score"
               type="number"
@@ -178,7 +175,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className={label} htmlFor="custom-model-dim">向量维度</label>
+            <label className={label} htmlFor="custom-model-dim">{t("向量维度")}</label>
             <input
               id="custom-model-dim"
               type="number"
@@ -190,7 +187,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
             />
           </div>
           <div>
-            <label className={label} htmlFor="custom-model-tokens">最大 token 数</label>
+            <label className={label} htmlFor="custom-model-tokens">{t("最大 token 数")}</label>
             <input
               id="custom-model-tokens"
               type="number"
@@ -204,12 +201,12 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
         </div>
 
         <div>
-          <span className={label}>池化方式</span>
-          <div className="mt-1 flex gap-1.5" role="radiogroup" aria-label="池化方式">
+          <span className={label}>{t("池化方式")}</span>
+          <div className="mt-1 flex gap-1.5" role="radiogroup" aria-label={t("池化方式")}>
             {(
               [
-                { value: "cls", title: "CLS", desc: "BGE 等" },
-                { value: "mean", title: "Mean", desc: "MiniLM 等" },
+                { value: "cls", title: "CLS", desc: t("BGE 等") },
+                { value: "mean", title: "Mean", desc: t("MiniLM 等") },
               ] as const
             ).map((option) => (
               <button
@@ -229,14 +226,12 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
               </button>
             ))}
           </div>
-          <p className={hint}>取首 token 用 CLS，对有效 token 求平均用 Mean；填错会在校验时直接报错。阈值留空时使用默认值 0.35。</p>
+          <p className={hint}>{t("取首 token 用 CLS，对有效 token 求平均用 Mean；填错会在校验时直接报错。阈值留空时使用默认值 0.35。")}</p>
         </div>
 
         <div className="flex items-start gap-2 rounded-xl border border-warning-line/60 bg-warning-soft px-3 py-2.5">
           <Icon name="ai-warning" className="w-3.5 h-3.5 text-warning mt-[1px] flex-shrink-0" />
-          <p className="text-[11px] leading-relaxed text-warning">
-            请只导入可信来源的模型文件。ONNX 由本地推理库解析，损坏或恶意的文件可能导致应用崩溃；导入过程不联网。
-          </p>
+          <p className="text-[11px] leading-relaxed text-warning">{t("请只导入可信来源的模型文件。ONNX 由本地推理库解析，损坏或恶意的文件可能导致应用崩溃；导入过程不联网。")}</p>
         </div>
 
         {error && (
@@ -247,10 +242,8 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
 
         {busy && (
           <div className="rounded-lg border border-line bg-app px-2.5 py-2">
-            <ProgressBar value={null} label="正在复制并校验模型…" showPercent={false} />
-            <p className="mt-1 text-[10px] leading-relaxed text-faint-soft">
-              会用填写的维度与池化方式真实嵌入一句话；模型较大时可能需要几秒。
-            </p>
+            <ProgressBar value={null} label={t("正在复制并校验模型…")} showPercent={false} />
+            <p className="mt-1 text-[10px] leading-relaxed text-faint-soft">{t("会用填写的维度与池化方式真实嵌入一句话；模型较大时可能需要几秒。")}</p>
           </div>
         )}
 
@@ -260,16 +253,14 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
             onClick={cancel}
             disabled={busy}
             className="rounded-lg border border-line px-3 py-1.5 text-xs text-body transition-colors hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            取消
-          </button>
+          >{t("取消")}</button>
           <button
             type="submit"
             disabled={busy}
             className="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Icon name="sidebar-folder-plus" className="w-3.5 h-3.5" />
-            {busy ? "正在导入…" : "导入"}
+            {busy ? t("正在导入…") : t("导入")}
           </button>
         </div>
       </form>

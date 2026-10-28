@@ -13,6 +13,8 @@ import type {
   MarkdownThemeColors,
   ToolbarEntry,
 } from "./types";
+import { LABELS, resolveLocaleLabels } from "./locales";
+export { LABELS } from "./locales";
 
 /** 通用字体栈 */
 export const FONT_STACKS = {
@@ -186,7 +188,7 @@ export interface CodeThemeDefinition {
  * resolveCodeTheme 遇到 "follow" 会走那条动态分支，不会用到下面这些透明值。
  */
 const FOLLOW_CODE_THEME: CodeThemeDefinition = {
-  label: "主题",
+  label: LABELS["en-US"]["codeTheme.follow"],
   bg: "transparent",
   headerBg: "transparent",
   text: "inherit",
@@ -422,212 +424,9 @@ export const TOOLBAR_PRESETS: Record<"full" | "default" | "minimal", ToolbarEntr
   minimal: ["bold", "italic", "inlineCode", "codeBlock", "link", "|", "mode"],
 };
 
-/** 内置文案（zh-CN） */
-const ZH_LABELS: Record<string, string> = {
-  undo: "撤销",
-  redo: "重做",
-  heading: "标题",
-  bold: "加粗",
-  italic: "斜体",
-  strike: "删除线",
-  underline: "下划线",
-  textColor: "文字颜色",
-  bgColor: "文字底色",
-  colorCustom: "自定义颜色",
-  colorClear: "清除颜色",
-  mark: "高亮",
-  sup: "上标",
-  sub: "下标",
-  inlineCode: "行内代码",
-  codeBlock: "代码块",
-  quote: "引用",
-  alert: "引用提示块",
-  callout: "警告提示块",
-  bulletList: "无序列表",
-  orderedList: "有序列表",
-  taskList: "任务列表",
-  indent: "增加缩进",
-  outdent: "减少缩进",
-  link: "链接",
-  image: "图片",
-  table: "表格",
-  hr: "分割线",
-  math: "行内公式",
-  mathBlock: "公式块",
-  mermaid: "流程图",
-  footnote: "脚注",
-  toc: "目录",
-  mode: "视图模式",
-  outline: "大纲",
-  fullscreen: "全屏",
-  copy: "复制全文",
-  "mode.split": "分栏预览视图",
-  "mode.code": "编辑视图",
-  "mode.read": "阅读视图",
-  words: "字",
-  chars: "字符",
-  lines: "行",
-  cursor: "行",
-  readingTime: "分钟",
-  copySuccess: "已复制",
-  copyFailed: "复制失败",
-  empty: "开始书写，或用工具栏插入内容",
-  editing: "编辑中",
-  outlineEmpty: "暂无标题",
-  heading1: "一级标题",
-  heading2: "二级标题",
-  heading3: "三级标题",
-  heading4: "四级标题",
-  heading5: "五级标题",
-  heading6: "六级标题",
-  paragraph: "正文",
-  placeholderLink: "链接地址",
-  placeholderImage: "图片地址",
-  placeholderText: "文本",
-  code: "代码",
-  mermaidLabel: "流程图",
-  frontmatter: "文档属性",
-  footnotes: "脚注",
-  tocTitle: "目录",
-  alertNote: "注意",
-  alertTip: "提示",
-  alertImportant: "重要",
-  alertWarning: "警告",
-  alertCaution: "危险",
-  backToText: "返回正文",
-  codeWrapOn: "自动换行",
-  codeWrapOff: "取消自动换行",
-  expandCode: "展开代码",
-  collapseCode: "收起代码",
-  expandCodeLines: "展开全部",
-  searchPlaceholder: "查找",
-  replacePlaceholder: "替换",
-  searchToggleReplace: "切换替换",
-  searchCaseSensitive: "区分大小写",
-  searchRegex: "使用正则表达式",
-  searchPrev: "上一个匹配（Shift+Enter）",
-  searchNext: "下一个匹配（Enter）",
-  searchClose: "关闭（Esc）",
-  searchReplace: "替换",
-  searchReplaceAll: "全部替换",
-  searchReplaceMode: "替换串模式",
-  searchReplaceLiteral: "字面",
-  searchReplaceRegex: "正则",
-  searchReplaceModeLocked: "先打开「使用正则表达式」，才能切换替换串模式",
-  searchReplaceLiteralHint:
-    "替换串按字面贴入。点一下切到「正则」：替换串里写下的查找正则会展开成命中文本",
-  searchReplaceRegexHint:
-    "替换串按正则展开：写下的查找正则就是整个命中。例如查找 [a-z]+、替换 -[a-z]+ 得到 -原词",
-  searchNoResult: "无结果",
-};
-
-/** 内置文案（en-US） */
-const EN_LABELS: Record<string, string> = {
-  undo: "Undo",
-  redo: "Redo",
-  heading: "Heading",
-  bold: "Bold",
-  italic: "Italic",
-  strike: "Strikethrough",
-  underline: "Underline",
-  textColor: "Text color",
-  bgColor: "Background color",
-  colorCustom: "Custom…",
-  colorClear: "Clear color",
-  mark: "Highlight",
-  sup: "Superscript",
-  sub: "Subscript",
-  inlineCode: "Inline code",
-  codeBlock: "Code block",
-  quote: "Quote",
-  alert: "Quote callout",
-  callout: "Admonition",
-  bulletList: "Bullet list",
-  orderedList: "Ordered list",
-  taskList: "Task list",
-  indent: "Indent",
-  outdent: "Outdent",
-  link: "Link",
-  image: "Image",
-  table: "Table",
-  hr: "Divider",
-  math: "Inline math",
-  mathBlock: "Math block",
-  mermaid: "Diagram",
-  footnote: "Footnote",
-  toc: "Table of contents",
-  mode: "View mode",
-  outline: "Outline",
-  fullscreen: "Fullscreen",
-  copy: "Copy all",
-  "mode.split": "Split",
-  "mode.code": "Edit",
-  "mode.read": "Read",
-  words: "words",
-  chars: "chars",
-  lines: "lines",
-  cursor: "Ln",
-  readingTime: "min read",
-  copySuccess: "Copied",
-  copyFailed: "Copy failed",
-  empty: "Start writing, or insert something from the toolbar",
-  editing: "Editing",
-  outlineEmpty: "No headings",
-  heading1: "Heading 1",
-  heading2: "Heading 2",
-  heading3: "Heading 3",
-  heading4: "Heading 4",
-  heading5: "Heading 5",
-  heading6: "Heading 6",
-  paragraph: "Paragraph",
-  placeholderLink: "https://",
-  placeholderImage: "https://",
-  placeholderText: "text",
-  code: "Code",
-  mermaidLabel: "Diagram",
-  frontmatter: "Properties",
-  footnotes: "Footnotes",
-  tocTitle: "Contents",
-  alertNote: "Note",
-  alertTip: "Tip",
-  alertImportant: "Important",
-  alertWarning: "Warning",
-  alertCaution: "Caution",
-  backToText: "Back to content",
-  codeWrapOn: "Wrap lines",
-  codeWrapOff: "Unwrap lines",
-  expandCode: "Expand code",
-  collapseCode: "Collapse code",
-  expandCodeLines: "Show all",
-  searchPlaceholder: "Find",
-  replacePlaceholder: "Replace",
-  searchToggleReplace: "Toggle Replace",
-  searchCaseSensitive: "Match Case",
-  searchRegex: "Use Regular Expression",
-  searchPrev: "Previous match (Shift+Enter)",
-  searchNext: "Next match (Enter)",
-  searchClose: "Close (Esc)",
-  searchReplace: "Replace",
-  searchReplaceAll: "Replace All",
-  searchReplaceMode: "Replacement mode",
-  searchReplaceLiteral: "Text",
-  searchReplaceRegex: "Regex",
-  searchReplaceModeLocked: "Turn on “Use Regular Expression” first",
-  searchReplaceLiteralHint:
-    "Replacement is inserted literally. Click to switch to “Regex”: the search pattern written in the replacement expands to the match",
-  searchReplaceRegexHint:
-    "Replacement is expanded as a pattern: the search regex stands for the whole match. e.g. find [a-z]+ replace -[a-z]+ → -word",
-  searchNoResult: "No results",
-};
-
-export const LABELS: Record<"zh-CN" | "en-US", Record<string, string>> = {
-  "zh-CN": ZH_LABELS,
-  "en-US": EN_LABELS,
-};
-
 /** 默认配置 */
 export const DEFAULT_CONFIG: MarkdownEditorConfig = {
-  locale: "zh-CN",
+  locale: "en-US",
   labels: {},
   mode: {
     defaultMode: "split",
@@ -642,7 +441,7 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     letterSpacing: "0",
     tabSize: 2,
     tabKey: "indent",
-    placeholder: "开始书写 Markdown…",
+    placeholder: LABELS["en-US"].placeholder,
     spellCheck: false,
     // 编辑区里的 `~~`、`->` 是 Markdown 语法本身，连成一坨会误读，默认关掉连字
     fontLigatures: false,
@@ -748,7 +547,7 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     show: false,
     position: "left",
     width: 220,
-    title: "大纲",
+    title: LABELS["en-US"].outline,
     maxDepth: 3,
     indent: true,
     // 点大纲后光标落在行首（`###` 前面）：改标题级别比改文字更常见
@@ -816,15 +615,20 @@ export function mergeDeep<T>(base: T, patch?: DeepPartial<T>): T {
   return out as T;
 }
 
-/** 合并用户配置与默认配置 */
-export const resolveConfig = (patch?: DeepPartial<MarkdownEditorConfig>): MarkdownEditorConfig =>
-  mergeDeep(DEFAULT_CONFIG, patch);
+/** 先按语言解析默认文案，再应用显式配置；不把上一次语言的默认值带入下一次解析。 */
+export const resolveConfig = (patch?: DeepPartial<MarkdownEditorConfig>): MarkdownEditorConfig => {
+  const config = mergeDeep(DEFAULT_CONFIG, patch);
+  const labels = resolveLabels(config);
+  return {
+    ...config,
+    editor: { ...config.editor, placeholder: patch?.editor?.placeholder ?? labels.placeholder },
+    outline: { ...config.outline, title: patch?.outline?.title ?? labels.outline },
+  };
+};
 
-/** 解析文案：内置语言包 + 用户覆盖 */
-export const resolveLabels = (config: MarkdownEditorConfig): Record<string, string> => ({
-  ...LABELS[config.locale],
-  ...config.labels,
-});
+/** 解析文案：内置语言包 + 用户覆盖（undefined 忽略，空字符串保留）。 */
+export const resolveLabels = (config: MarkdownEditorConfig): Record<string, string> =>
+  resolveLocaleLabels(config.locale, config.labels);
 
 /** 判断十六进制颜色是否为深色（用于决定代码块内的选中色、滚动条等细节） */
 const isDarkHex = (hex: string): boolean => {
@@ -841,5 +645,5 @@ const isDarkHex = (hex: string): boolean => {
 export const resolveCodeTheme = (config: MarkdownEditorConfig) => {
   const preset = CODE_THEMES[config.theme.codeTheme] ?? CODE_THEMES.atom;
   const dark = preset.bg === "transparent" ? config.theme.mode === "dark" : isDarkHex(preset.bg);
-  return { ...preset, dark, colors: { ...preset.colors, ...config.theme.codeColors } };
+  return { ...preset, label: resolveLabels(config)[`codeTheme.${config.theme.codeTheme}`] ?? preset.label, dark, colors: { ...preset.colors, ...config.theme.codeColors } };
 };

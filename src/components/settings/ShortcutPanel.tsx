@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 /**
  * 设置 · 快捷键：把全软件键位按用途列成一张只读清单。
  *
@@ -10,22 +11,21 @@
  */
 import { Icon } from "@/components/common/Icon";
 import { KeyChips } from "@/components/common/KeyChips";
-import { SHORTCUT_GROUPS } from "@/config/shortcuts";
+import { buildShortcutGroups } from "@/config/shortcuts";
 import type { AppSettings } from "@/interface/settings";
 
-export const ShortcutPanel: React.FC<{ settings: AppSettings }> = ({ settings }) => (
+export const ShortcutPanel: React.FC<{ settings: AppSettings }> = ({ settings }) => {
+  const { t, locale } = useI18n();
+  const groups = buildShortcutGroups(locale);
+  return (
   <div className="space-y-6">
-    <p className="text-[11px] text-faint leading-relaxed">
-      下表是当前生效的全部键位。<strong className="text-muted">Ctrl</strong> 在 macOS 上是
-      <strong className="text-muted">⌘</strong>，<strong className="text-muted">Alt</strong> 对应
-      <strong className="text-muted">⌥</strong>。部分键位可在「编辑器」分区关闭，关闭后对应行会置灰。
-    </p>
+    <p className="text-[11px] text-faint leading-relaxed">{t("下表是当前生效的全部键位。Ctrl 在 macOS 上是 ⌘，Alt 对应 ⌥。部分键位可在「编辑器」分区关闭，关闭后对应行会置灰。")}</p>
 
-    {SHORTCUT_GROUPS.map((group) => (
+    {groups.map((group) => (
       <div key={group.id}>
-        <div className="flex items-baseline gap-2 mb-1 pb-1.5 border-b border-line-soft">
-          <p className="text-[11px] font-semibold text-muted">{group.title}</p>
-          {group.desc && <p className="text-[10px] text-faint-soft">{group.desc}</p>}
+        <div className="flex flex-wrap items-baseline gap-2 mb-1 pb-1.5 border-b border-line-soft">
+          <p className="text-[11px] font-semibold text-muted">{t(group.id === "app" ? "软件" : group.title)}</p>
+          {group.desc && <p className="text-[10px] text-faint-soft">{t(group.desc)}</p>}
         </div>
         <div className="divide-y divide-line-soft">
           {group.entries.map((entry) => {
@@ -36,15 +36,15 @@ export const ShortcutPanel: React.FC<{ settings: AppSettings }> = ({ settings })
                 className={`flex items-center gap-3 py-2 ${enabled ? "" : "opacity-55"}`}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <p className={`text-xs ${enabled ? "text-body" : "text-faint"}`}>{entry.label}</p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <p className={`text-xs ${enabled ? "text-body" : "text-faint"}`}>{t(entry.label)}</p>
                     {!enabled && (
                       <span className="px-1 rounded text-[9px] text-warning bg-warning-soft border border-warning-line/60">
-                        {entry.offHint ?? "已关闭"}
+                        {t(entry.offHint ?? "已关闭")}
                       </span>
                     )}
                   </div>
-                  {entry.note && <p className="mt-0.5 text-[10px] text-faint-soft">{entry.note}</p>}
+                  {entry.note && <p className="mt-0.5 text-[10px] text-faint-soft">{t(entry.note)}</p>}
                 </div>
                 <KeyChips accelerator={entry.keys} dimmed={!enabled} />
               </div>
@@ -56,9 +56,8 @@ export const ShortcutPanel: React.FC<{ settings: AppSettings }> = ({ settings })
 
     <div className="flex items-start gap-2 rounded-xl border border-line-soft bg-app/60 px-3 py-2.5">
       <Icon name="toast-info" className="w-3.5 h-3.5 text-faint mt-[1px]" />
-      <p className="text-[11px] leading-relaxed text-faint">
-        编辑器里的格式快捷键全部由「编辑器 → 启用快捷键」控制；关闭后仍可用工具栏按钮完成同样的操作。
-      </p>
+      <p className="text-[11px] leading-relaxed text-faint">{t("编辑器里的格式快捷键全部由「编辑器 → 启用快捷键」控制；关闭后仍可用工具栏按钮完成同样的操作。")}</p>
     </div>
   </div>
 );
+};

@@ -14,6 +14,7 @@ import { buildAiRenderConfig } from "@/config/markdownEditor";
 import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
 import type { EditorSettings } from "@/interface/settings";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/themeRuntime";
+import { useI18n } from "@/i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 export interface AiMarkdownProps {
@@ -23,12 +24,13 @@ export interface AiMarkdownProps {
 }
 
 export const AiMarkdown: React.FC<AiMarkdownProps> = memo(function AiMarkdown({ content, editorSettings }) {
+  const { locale } = useI18n();
   const tokens = useActiveThemeTokens();
   const themeMode = useResolvedThemeMode();
   const settings = editorSettings ?? DEFAULT_EDITOR_SETTINGS;
   const config = useMemo(
-    () => buildAiRenderConfig(settings, tokens, themeMode),
-    [settings, tokens, themeMode],
+    () => buildAiRenderConfig(settings, tokens, themeMode, locale),
+    [settings, tokens, themeMode, locale],
   );
 
   return (

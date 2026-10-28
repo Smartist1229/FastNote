@@ -602,10 +602,14 @@ export interface MarkdownThemeConfig {
   cssVars?: Record<string, string>;
 }
 
+/** 内置界面语言；不影响文档内容。 */
+export type MarkdownEditorLocale = "zh-CN" | "en-US";
+
 /** 完整配置 */
 export interface MarkdownEditorConfig {
-  locale: "zh-CN" | "en-US";
-  /** 覆盖内置文案（键名见 README 的文案表） */
+  /** 默认 en-US；更新 config 即时切换界面，不重置文稿、选区或历史。 */
+  locale: MarkdownEditorLocale;
+  /** 覆盖内置文案（键名见 locales.ts），包括空字符串；不随 locale 被覆盖。 */
   labels: Record<string, string>;
   mode: {
     defaultMode: MarkdownEditorMode;

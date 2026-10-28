@@ -6,13 +6,15 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 
 import { TEXT_FORMAT_GROUPS } from '@/config/textFileFormats';
+import { t } from '@/i18n';
 
 /**
  * 保存对话框的格式过滤器（编辑器 Ctrl+S 与侧边栏右键「保存笔记」共用）。
  * 一种格式一个条目：用户选中哪项，系统就按该项的扩展名补后缀，因此不按分组聚合。
+ * 每次打开时翻译，不能在模块初始化时固定语言。
  */
-const NOTE_FILE_FILTERS = TEXT_FORMAT_GROUPS.flatMap((group) =>
-  group.formats.map((format) => ({ name: format.name, extensions: [format.ext] }))
+const buildNoteFileFilters = () => TEXT_FORMAT_GROUPS.flatMap((group) =>
+  group.formats.map((format) => ({ name: t(format.name), extensions: [format.ext] }))
 );
 
 /**
@@ -27,8 +29,8 @@ const NOTE_FILE_FILTERS = TEXT_FORMAT_GROUPS.flatMap((group) =>
  */
 export const saveNoteAsFile = async (title: string, content: string): Promise<boolean> => {
   const filePath = await save({
-    defaultPath: title || '无标题笔记',
-    filters: NOTE_FILE_FILTERS,
+    defaultPath: title || t('无标题笔记'),
+    filters: buildNoteFileFilters(),
   });
   if (!filePath) return false;
   await writeTextFile(filePath, content);

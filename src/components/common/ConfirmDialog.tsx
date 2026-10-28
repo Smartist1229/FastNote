@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { useCallback, useRef, useState } from "react";
 import type { ConfirmOptions } from "@/interface/ui";
 import { Modal } from "@/components/common/Modal";
@@ -9,16 +10,17 @@ const ConfirmDialog: React.FC<{
   onConfirm: () => void;
   onCancel: () => void;
 }> = ({ isOpen, options, onConfirm, onCancel }) => {
+  const { t } = useI18n();
   if (!options) return null;
   const { title, message, confirmText = "确定", cancelText = "取消", danger } = options;
   return (
-    <Modal isOpen={isOpen} onClose={onCancel} title={title}>
+    <Modal isOpen={isOpen} onClose={onCancel} title={t(title)}>
       {/* Enter 绑定在容器上靠冒泡生效，因此确认按钮必须 autoFocus，否则键盘无法确认 */}
       <div className="space-y-4" onKeyDown={(e) => { if (e.key === "Enter") onConfirm(); }}>
-        <p className="text-sm text-body leading-relaxed">{message}</p>
+        <p className="text-sm text-body leading-relaxed">{typeof message === "string" ? t(message) : message}</p>
         <div className="flex gap-2 justify-end pt-1">
           <button onClick={onCancel} className="btn-ghost px-4 py-2 text-sm">
-            {cancelText}
+            {t(cancelText)}
           </button>
           <button
             onClick={onConfirm}
@@ -29,7 +31,7 @@ const ConfirmDialog: React.FC<{
                 : "btn-primary px-4 py-2 text-sm"
             }
           >
-            {confirmText}
+            {t(confirmText)}
           </button>
         </div>
       </div>

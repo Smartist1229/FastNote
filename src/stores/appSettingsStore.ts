@@ -42,6 +42,7 @@ const CATEGORIES = ["general", "editor", "layout", "view", "webdav"] as const;
  * typeof 只挡类型，挡不住手工改库写进来的非法字符串；编辑器分类的约束在规格表里。
  */
 const ENUM_BY_KEY: Record<string, readonly string[]> = {
+  "app.config.general.language": ["system", "zh-CN", "en-US"],
   "general.closeBehavior": ["minimize", "exit"],
   "view.sortOrder": ["asc", "desc"],
   "webdav.autoTarget": ["local", "cloud", "both"],

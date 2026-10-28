@@ -11,8 +11,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom';
 import type { ContextMenuProps } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
+import { useI18n } from "@/i18n";
 
 export const ContextMenu: React.FC<ContextMenuProps> = ({ items, position, onClose }) => {
+  const { locale } = useI18n();
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
   /** 校正后的坐标；sourceX/sourceY 记住它对应哪一次 position，避免沿用上一份菜单的位置 */
@@ -60,7 +62,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ items, position, onClo
       sourceX: position.x,
       sourceY: position.y,
     });
-  }, [position, items.length, getSafePosition]);
+  }, [position, items.length, getSafePosition, locale]);
 
   // scroll 用 capture 阶段：菜单不跟随滚动，任何可滚动祖先一滚就会飘到错误位置，直接关掉最省事
   useEffect(() => {

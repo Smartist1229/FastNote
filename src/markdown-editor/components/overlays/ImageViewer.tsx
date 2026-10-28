@@ -24,6 +24,8 @@ export interface ImageViewerProps {
   alt?: string;
   /** 取 preview.imageZoom 的区间与步长 */
   config: MarkdownEditorConfig["preview"]["imageZoom"];
+  labels: Record<string, string>;
+  locale?: MarkdownEditorConfig["locale"];
   /** 主题变量（`--mde-*`）：portal 到 body 后不再继承 `.mde-root` */
   themeVars?: Record<string, string>;
   onClose: () => void;
@@ -38,8 +40,9 @@ interface ViewState {
 const clampScale = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), Math.max(min, max));
 
-export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, config, themeVars, onClose }) => {
+export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, config, labels, locale, themeVars, onClose }) => {
   const [view, setView] = useState<ViewState>({ scale: 1, x: 0, y: 0 });
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -120,12 +123,12 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, config, them
   }, []);
 
   return createPortal(
-    <div className="mde-image-viewer-portal" style={themeVars as CSSProperties}>
+    <div className="mde-image-viewer-portal" style={themeVars as CSSProperties} lang={locale}>
       <div
         className="mde-image-viewer"
         role="dialog"
         aria-modal="true"
-        aria-label={alt || "图片预览"}
+        aria-label={labels.imagePreview}
         /* 点浮层空白处关闭；图片自身阻止冒泡，拖拽时不会误关 */
         onClick={onClose}
       >
@@ -134,6 +137,8 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, config, them
             className={`mde-image-viewer-img${dragging ? " is-dragging" : ""}`}
             src={src}
             alt={alt}
+            onError={() => setFailedSrc(src)}
+            onLoad={() => setFailedSrc(null)}
             draggable={false}
             style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}
             onClick={(event) => event.stopPropagation()}
@@ -146,9 +151,11 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt, config, them
         </div>
         <div className="mde-image-viewer-bar">
           <span className="mde-image-viewer-scale">{Math.round(view.scale * 100)}%</span>
-          <span className="mde-image-viewer-hint">滚轮缩放 · 拖动平移 · 双击复位</span>
+          <span className="mde-image-viewer-hint" role={failedSrc === src ? "alert" : undefined}>
+            {failedSrc === src ? labels.imageLoadFailed : labels.imageZoomHint}
+          </span>
         </div>
-        <button type="button" className="mde-image-viewer-close" title="关闭（Esc）" onClick={onClose}>
+        <button type="button" className="mde-image-viewer-close" title={labels.imageClose} aria-label={labels.imageClose} onClick={onClose}>
           <MdeIcon name="close" size={16} />
         </button>
       </div>

@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react";
 import type { ToolCall } from "@/interface/aiOutput";
 import { Icon } from "@/components/common/Icon";
+import { useI18n } from "@/i18n";
 
 interface AiConfirmCardProps {
   call: ToolCall;
@@ -27,6 +28,7 @@ interface AiConfirmCardProps {
 }
 
 export const AiConfirmCard: React.FC<AiConfirmCardProps> = ({ call, index, total, summary, onRun, onCancel }) => {
+  const { t } = useI18n();
   /** 是否把 JSON 缩进展开：默认关，避免一屏只有参数 */
   const [pretty, setPretty] = useState(false);
 
@@ -41,9 +43,9 @@ export const AiConfirmCard: React.FC<AiConfirmCardProps> = ({ call, index, total
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <div className="flex items-center gap-1.5 min-w-0">
           <Icon name="ai-warning" className="w-3.5 h-3.5 flex-shrink-0 text-warning" />
-          <span className="text-xs font-medium text-body truncate">AI 要执行的操作</span>
+          <span className="text-xs font-medium text-body truncate">{t("AI 要执行的操作")}</span>
         </div>
-        <span className="flex-shrink-0 text-[10.5px] tabular-nums text-faint" title="第几条 / 共几条（按顺序执行，不能跳）">
+        <span className="flex-shrink-0 text-[10.5px] tabular-nums text-faint" title={t("第几条 / 共几条（按顺序执行，不能跳）")}>
           {index}/{total}
         </span>
       </div>
@@ -59,23 +61,23 @@ export const AiConfirmCard: React.FC<AiConfirmCardProps> = ({ call, index, total
           className={`px-2 py-1 text-[11px] font-medium rounded-lg transition-colors ${
             pretty ? "text-primary-600 bg-primary-50 hover:bg-primary-100" : "text-muted bg-surface-alt hover:bg-surface-strong"
           }`}
-          title={pretty ? "收成一行（原始 JSON）" : "展开成缩进格式，便于核对参数"}
+          title={pretty ? t("收成一行（原始 JSON）") : t("展开成缩进格式，便于核对参数")}
           aria-pressed={pretty}
         >
-          格式化
+          {t("格式化")}
         </button>
         <div className="flex-1" />
         <button
           onClick={onCancel}
           className="px-3 py-1.5 text-xs font-medium text-muted bg-surface-alt hover:bg-surface-strong rounded-lg transition-colors"
         >
-          取消
+          {t("取消")}
         </button>
         <button
           onClick={onRun}
           className="px-3 py-1.5 text-xs font-medium text-on-accent bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors"
         >
-          执行
+          {t("执行")}
         </button>
       </div>
     </div>

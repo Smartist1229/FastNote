@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, type KeyboardEvent } from "react";
 import { MdeIcon } from "../../icons";
+import { buildSearchRegExp } from "../../editor/search";
 import type { MarkdownEditorConfig, SearchOptions } from "../../types";
 
 export interface SearchBoxProps {
@@ -103,11 +104,14 @@ export const SearchBox = ({
     }
   };
 
+  const invalidRegex = Boolean(query && options.regex && !buildSearchRegExp(query, options));
   const countLabel = !query
     ? ""
-    : matchCount === 0
-      ? labels.searchNoResult
-      : `${Math.min(matchIndex + 1, matchCount)}/${matchCount}${matchCapped ? "+" : ""}`;
+    : invalidRegex
+      ? labels.searchInvalidRegex
+      : matchCount === 0
+        ? labels.searchNoResult
+        : `${Math.min(matchIndex + 1, matchCount)}/${matchCount}${matchCapped ? "+" : ""}`;
   const hasMatch = matchCount > 0;
   /** 替换串的模式开关只在查找本身是正则时才有意义 */
   const replaceMode = options.regex && options.regexReplace;
@@ -146,8 +150,10 @@ export const SearchBox = ({
             placeholder={labels.searchPlaceholder}
             onChange={(event) => onQueryChange(event.target.value)}
             aria-label={labels.searchPlaceholder}
+            aria-invalid={invalidRegex || undefined}
+            title={invalidRegex ? labels.searchInvalidRegex : undefined}
           />
-          <span className="mde-search-count">{countLabel}</span>
+          <span className="mde-search-count" role="status">{countLabel}</span>
         </div>
 
         <div className="mde-search-tail">
@@ -268,7 +274,7 @@ export const SearchBox = ({
               <button
                 type="button"
                 className="mde-search-text-btn"
-                title={`${labels.searchReplaceAll}（Ctrl/⌘+Alt+Enter）`}
+                title={`${labels.searchReplaceAll} (Ctrl/⌘+Alt+Enter)`}
                 disabled={readOnly || !hasMatch}
                 onClick={onReplaceAll}
               >

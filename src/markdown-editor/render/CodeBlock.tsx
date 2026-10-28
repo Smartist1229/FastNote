@@ -66,7 +66,7 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
   const codeKey = `${node.lang}\u0000${node.code}`;
   const [colored, setColored] = useState<{ key: string; lines: string[] } | null>(null);
   const lines = colored && colored.key === codeKey ? colored.lines : plain;
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"copySuccess" | "copyFailed" | null>(null);
   const [wrap, setWrap] = useState(false);
   const timer = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -131,11 +131,12 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
   const copy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(node.code);
-      setCopied(true);
-      if (timer.current) window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setCopied(false), 1600);
+      setCopyStatus("copySuccess");
     } catch {
-      setCopied(false);
+      setCopyStatus("copyFailed");
+    } finally {
+      if (timer.current) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopyStatus(null), 1600);
     }
   }, [node.code]);
 
@@ -159,13 +160,14 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
           {config.preview.showCodeLanguage ? node.lang || labels.code : ""}
         </span>
         <span className="mde-code-tools">
+          {copyStatus && <span role="status">{labels[copyStatus]}</span>}
           {config.preview.codeActions.wrap && (
             <button
               type="button"
               className={`mde-code-tool${wrap ? " is-active" : ""}`}
               onClick={() => setWrap((v) => !v)}
-              title={wrap ? "取消自动换行" : "自动换行"}
-              aria-label={wrap ? "取消自动换行" : "自动换行"}
+              title={wrap ? labels.codeWrapOff : labels.codeWrapOn}
+              aria-label={wrap ? labels.codeWrapOff : labels.codeWrapOn}
             >
               <MdeIcon name="wrap" size={13} />
             </button>
@@ -175,10 +177,10 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
               type="button"
               className="mde-code-tool"
               onClick={copy}
-              title={copied ? labels.copySuccess : labels.copy}
-              aria-label={labels.copy}
+              title={copyStatus ? labels[copyStatus] : labels.copyCode}
+              aria-label={copyStatus ? labels[copyStatus] : labels.copyCode}
             >
-              <MdeIcon name={copied ? "check" : "copy"} size={13} />
+              <MdeIcon name={copyStatus === "copySuccess" ? "check" : "copy"} size={13} />
             </button>
           )}
         </span>
@@ -226,11 +228,11 @@ const MermaidBlock: React.FC<CodeBlockProps> = (props) => {
     };
   }, [node.code, config.preview.mermaidTheme]);
 
-  if (failed) return <PlainCodeBlock {...props} />;
+  if (failed) return <div title={props.labels.mermaidRenderFailed}><PlainCodeBlock {...props} /></div>;
 
   if (!svg) {
     return (
-      <div className="mde-mermaid mde-mermaid-loading" aria-busy="true">
+      <div className="mde-mermaid mde-mermaid-loading" aria-busy="true" aria-label={props.labels.mermaidLoading}>
         <span className="mde-mermaid-skeleton" />
       </div>
     );

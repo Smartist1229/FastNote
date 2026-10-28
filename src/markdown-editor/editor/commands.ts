@@ -11,6 +11,7 @@
  * - 行级命令（标题、列表、缩进）会保持光标相对位置，而不是把整段重新选中。
  */
 import type { ToolbarItemName } from "../types";
+import { LABELS, resolveLocaleLabels } from "../locales";
 import { countLines, lineAtOffset } from "./lines";
 
 export interface EditState {
@@ -218,11 +219,16 @@ export const applyCallout = (state: EditState, kind: string): EditState => {
 };
 
 /** `!!!` 提示块：有选区时把选区包进块内，无选区时插入占位并选中 */
-export const applyAdmonition = (state: EditState, kind: string, title = ""): EditState => {
+export const applyAdmonition = (
+  state: EditState,
+  kind: string,
+  title = "",
+  placeholder = LABELS["en-US"]["template.callout"],
+): EditState => {
   const { text, start, end } = state;
   const header = `!!! ${kind}${title ? ` "${title}"` : ""}`;
   const selected = text.slice(start, end);
-  const body = selected || "内容";
+  const body = selected || placeholder;
   const snippet = `${header}\n${body}\n!!!`;
 
   const before = text.slice(0, start);
@@ -254,11 +260,11 @@ const applyIndent = (state: EditState, tabSize: number, outdent: boolean): EditS
 /** 链接：有选中 → 包住并选中地址；无选中 → 插入占位文本 */
 const applyLink = (state: EditState, labels: Record<string, string>, image: boolean): EditState => {
   const { text, start, end } = state;
-  const placeholder = labels.placeholderLink || "https://";
+  const placeholder = image ? labels.placeholderImage : labels.placeholderLink;
   const selected = text.slice(start, end);
 
   if (image) {
-    const alt = selected || labels.placeholderText || "alt";
+    const alt = selected || labels.placeholderText;
     const snippet = `![${alt}](${placeholder})`;
     const nextText = text.slice(0, start) + snippet + text.slice(end);
     const urlStart = start + 2 + alt.length + 2;
@@ -271,29 +277,29 @@ const applyLink = (state: EditState, labels: Record<string, string>, image: bool
     return { text: nextText, start: urlStart, end: urlStart + placeholder.length };
   }
 
-  const labelText = labels.placeholderText || "text";
+  const labelText = labels.placeholderText;
   const snippet = `[${labelText}](${placeholder})`;
   const nextText = text.slice(0, start) + snippet + text.slice(end);
   return { text: nextText, start: start + 1, end: start + 1 + labelText.length };
 };
 
 /** 表格模板 */
-const tableSnippet = (rows: number, cols: number): string => {
-  const header = `| ${Array.from({ length: cols }, (_, i) => `列 ${i + 1}`).join(" | ")} |`;
+const tableSnippet = (rows: number, cols: number, columnLabel: string): string => {
+  const header = `| ${Array.from({ length: cols }, (_, i) => `${columnLabel} ${i + 1}`).join(" | ")} |`;
   const align = `| ${Array.from({ length: cols }, () => "---").join(" | ")} |`;
   const body = Array.from({ length: rows }, () => `| ${Array.from({ length: cols }, () => "  ").join(" | ")} |`);
   return [header, align, ...body].join("\n");
 };
 
 /** 脚注：插入引用并在文末补定义 */
-const applyFootnote = (state: EditState): EditState => {
+const applyFootnote = (state: EditState, placeholder: string): EditState => {
   const used = new Set([...state.text.matchAll(/\[\^([^\]]+)\]/g)].map((m) => m[1]));
   let index = 1;
   while (used.has(String(index))) index++;
   const id = String(index);
   const ref = `[^${id}]`;
   const insertion = state.text.slice(0, state.start) + ref + state.text.slice(state.end);
-  const definition = `\n\n[^${id}]: 脚注内容`;
+  const definition = `\n\n[^${id}]: ${placeholder}`;
   const hasTrailingNewline = insertion.endsWith("\n");
   const nextText = insertion + (hasTrailingNewline ? "" : "\n") + definition;
   const caret = state.start + ref.length;
@@ -774,24 +780,26 @@ export const runCommand = (
   name: ToolbarItemName,
   options: CommandOptions,
 ): EditState | null => {
-  const { tabSize, labels } = options;
+  const { tabSize } = options;
+  // 公共纯函数也兼容只传部分 labels 的既有调用。
+  const labels = resolveLocaleLabels("en-US", options.labels);
   switch (name) {
     case "bold":
-      return wrapInline(state, "**", "**", "粗体文本");
+      return wrapInline(state, "**", "**", labels["template.bold"]);
     case "italic":
-      return wrapInline(state, "_", "_", "斜体文本");
+      return wrapInline(state, "_", "_", labels["template.italic"]);
     case "strike":
-      return wrapInline(state, "~~", "~~", "删除文本");
+      return wrapInline(state, "~~", "~~", labels["template.strike"]);
     case "underline":
-      return wrapInline(state, "<u>", "</u>", "下划线");
+      return wrapInline(state, "<u>", "</u>", labels["template.underline"]);
     case "mark":
-      return wrapInline(state, "==", "==", "高亮文本");
+      return wrapInline(state, "==", "==", labels["template.mark"]);
     case "sup":
-      return wrapInline(state, "^", "^", "上标");
+      return wrapInline(state, "^", "^", labels["template.sup"]);
     case "sub":
-      return wrapInline(state, "~", "~", "下标");
+      return wrapInline(state, "~", "~", labels["template.sub"]);
     case "inlineCode":
-      return wrapInline(state, "`", "`", "代码");
+      return wrapInline(state, "`", "`", labels["template.inlineCode"]);
     case "codeBlock": {
       const selected = state.text.slice(state.start, state.end);
       if (selected) {
@@ -810,7 +818,7 @@ export const runCommand = (
       return insertSnippet(state, snippet, { block: true });
     }
     case "callout":
-      return applyAdmonition(state, "warning");
+      return applyAdmonition(state, "warning", "", labels["template.callout"]);
     case "bulletList":
       return applyList(state, "bullet");
     case "orderedList":
@@ -826,22 +834,18 @@ export const runCommand = (
     case "image":
       return applyLink(state, labels, true);
     case "table":
-      return insertSnippet(state, tableSnippet(2, 3), { block: true });
+      return insertSnippet(state, tableSnippet(2, 3, labels["template.tableColumn"]), { block: true });
     case "hr":
       // 只插入「--- + 换行」，多余空行让用户自己控制
       return insertSnippet(state, "---\n" + CARET, { block: true });
     case "math":
-      return wrapInline(state, "$", "$", "公式");
+      return wrapInline(state, "$", "$", labels["template.math"]);
     case "mathBlock":
       return insertSnippet(state, "$$\n" + CARET + "\n$$", { block: true });
     case "mermaid":
-      return insertSnippet(
-        state,
-        "```mermaid\ngraph TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n  B -->|否| A\n```",
-        { block: true },
-      );
+      return insertSnippet(state, "```mermaid\n" + labels["template.mermaid"] + "\n```", { block: true });
     case "footnote":
-      return applyFootnote(state);
+      return applyFootnote(state, labels["template.footnote"]);
     case "toc":
       return insertSnippet(state, "[TOC]", { block: true });
     case "heading": {

@@ -150,7 +150,7 @@ const renderInlineNode = (node: InlineNode, ctx: PreviewContextValue, key: strin
         </code>
       );
     case "math":
-      return <MathInline key={key} code={node.value} enabled={ctx.config.preview.math} />;
+      return <MathInline key={key} code={node.value} enabled={ctx.config.preview.math} errorLabel={ctx.labels.mathRenderFailed} />;
     case "break":
       return node.hard ? <br key={key} /> : <Fragment key={key}> </Fragment>;
     case "link":
@@ -359,7 +359,7 @@ const BlockViewBase: React.FC<BlockViewProps> = ({ node, topLevel = false }) => 
     case "math":
       return (
         <div {...attrs}>
-          <MathBlock code={node.code} enabled={config.preview.math} />
+          <MathBlock code={node.code} enabled={config.preview.math} errorLabel={labels.mathRenderFailed} />
         </div>
       );
     case "hr":
@@ -525,7 +525,7 @@ export const Footnotes: React.FC<{ doc: ParsedDocument; labels: Record<string, s
             {item.children.map((child, index) => (
               <BlockView key={index} node={child} />
             ))}
-            <a className="mde-fn-back" href={`#mde-fnref-${item.index}`} aria-label="返回正文">
+            <a className="mde-fn-back" href={`#mde-fnref-${item.index}`} aria-label={labels.backToText} title={labels.backToText}>
               ↩
             </a>
           </li>
@@ -738,6 +738,7 @@ const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
             className ? ` ${className}` : ""
           }`}
           style={style}
+          lang={config.locale}
         >
           <div className="mde-preview-content">
             {hasFrontmatter && <FrontmatterCard doc={doc} labels={labels} />}
@@ -754,6 +755,8 @@ const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
             src={viewing.src}
             alt={viewing.alt}
             config={config.preview.imageZoom}
+            labels={labels}
+            locale={config.locale}
             themeVars={themeVars}
             onClose={() => setViewing(null)}
           />

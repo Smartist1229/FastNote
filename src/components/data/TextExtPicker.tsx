@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -27,6 +28,7 @@ const MARGIN = 8;
  * 列表与自定义输入都走纯文本白名单，避免给文本内容配二进制后缀、导出后打不开。
  */
 export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onPick, onClose }) => {
+  const { t } = useI18n();
   const cardRef = useRef<HTMLDivElement>(null);
   const [keyword, setKeyword] = useState('');
   const [custom, setCustom] = useState('');
@@ -58,10 +60,10 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
       TEXT_FORMAT_GROUPS.map((group) => ({
         name: group.name,
         formats: group.formats.filter(
-          (format) => !query || format.ext.includes(query) || format.label.toLowerCase().includes(query)
+          (format) => !query || format.ext.includes(query) || format.label.toLowerCase().includes(query) || t(format.label).toLowerCase().includes(query)
         ),
       })).filter((group) => group.formats.length > 0),
-    [query]
+    [query, t]
   );
 
   // 水平方向先贴住按钮，再夹到视口内，避免窄窗口下右边被裁掉
@@ -105,7 +107,7 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
             autoFocus
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜索后缀，如 py、json"
+            placeholder={t("搜索后缀，如 py、json")}
             className="w-full pl-7 pr-2 py-1.5 text-xs input-modern"
           />
         </div>
@@ -113,11 +115,11 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
 
       <div className="max-h-48 overflow-y-auto py-1">
         {groups.length === 0 ? (
-          <p className="px-3 py-4 text-center text-[11px] text-faint-soft">没有匹配的格式</p>
+          <p className="px-3 py-4 text-center text-[11px] text-faint-soft">{t("没有匹配的格式")}</p>
         ) : (
           groups.map((group) => (
             <div key={group.name}>
-              <p className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-faint">{group.name}</p>
+              <p className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium text-faint">{t(group.name)}</p>
               {group.formats.map((format) => (
                 <button
                   key={format.ext}
@@ -129,7 +131,7 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
                   }`}
                 >
                   <span className="font-medium w-16 flex-shrink-0">.{format.ext}</span>
-                  <span className="truncate min-w-0 flex-1 text-[11px] text-faint">{format.label}</span>
+                  <span className="truncate min-w-0 flex-1 text-[11px] text-faint">{t(format.label)}</span>
                   {format.ext === value && <Icon name="toast-check" className="w-3.5 h-3.5 flex-shrink-0" />}
                 </button>
               ))}
@@ -149,7 +151,7 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
             onKeyDown={(e) => {
               if (e.key === 'Enter') applyCustom();
             }}
-            placeholder="自定义，如 .py"
+            placeholder={t("自定义，如 .py")}
             className="flex-1 min-w-0 px-2 py-1.5 text-xs input-modern"
           />
           <button
@@ -157,13 +159,13 @@ export const TextExtPicker: React.FC<TextExtPickerProps> = ({ anchor, value, onP
             disabled={!customExt}
             className="btn-primary px-2.5 py-1.5 text-xs flex-shrink-0 disabled:opacity-40"
           >
-            应用
+            {t("应用")}
           </button>
         </div>
         {error ? (
-          <p className="mt-1 text-[10px] text-danger">{error}</p>
+          <p className="mt-1 text-[10px] text-danger">{t(error)}</p>
         ) : (
-          <p className="mt-1 text-[10px] text-faint">仅限纯文本格式，二进制格式会打不开</p>
+          <p className="mt-1 text-[10px] text-faint">{t("仅限纯文本格式，二进制格式会打不开")}</p>
         )}
       </div>
     </div>,

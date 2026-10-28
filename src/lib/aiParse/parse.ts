@@ -261,10 +261,10 @@ export const parseStreamContent = (text: string, reasoning?: string): { thinking
  * 优先级：reply → 截断提示 → 仅有工具调用 → 思考区文本 → 空回复提示。
  * 截断提示会引导用户调大「最大输出长度」，或改用分段/按行编辑工具。
  */
-export const finalReplyText = (p: ParsedResponse): string => {
+export const finalReplyText = (p: ParsedResponse, t: (source: string) => string = (source) => source): string => {
   if (p.reply) return p.reply;
-  if (p.truncated) return "（这次回复写到一半就到头了，通常是输出长度上限被用完——一次性写整篇长文、或把整篇内容塞进工具参数最容易触发。可在「AI 设置 → 对话行为」调大「最大输出长度」，或让模型分段写：先给一段再说「继续」；长笔记改用按行编辑工具。）";
-  if (p.toolCalls.length > 0) return "（已发起工具调用，没有正文。）";
+  if (p.truncated) return t("（这次回复写到一半就到头了，通常是输出长度上限被用完——一次性写整篇长文、或把整篇内容塞进工具参数最容易触发。可在「AI 设置 → 对话行为」调大「最大输出长度」，或让模型分段写：先给一段再说「继续」；长笔记改用按行编辑工具。）");
+  if (p.toolCalls.length > 0) return t("（已发起工具调用，没有正文。）");
   if (p.thinkingDisplay) return p.thinkingDisplay;
-  return "（模型没有返回内容，请重试）";
+  return t("（模型没有返回内容，请重试）");
 };

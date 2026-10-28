@@ -10,6 +10,7 @@
  * - 副作用：内部拖拽落点直接调 notesApi.updateNote 写 category_id，成功后 onNotesUpdated() 刷新全局。
  * - 主列表带正文（AI 需要读未打开的笔记），搜索直接在 notes 上匹配，无需额外请求。
  */
+import { useI18n } from "@/i18n";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Category, Note } from "@/interface/note";
 import type { SidebarProps } from "@/interface/sidebar";
@@ -105,11 +106,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   hoverDropCategoryId = null,
   isFileDragActive = false,
 }) => {
+  const { t } = useI18n();
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
   const { showToast } = useToast();
   /** 排序下拉浮层：位置在点击时按按钮 rect 算出，用 fixed 定位避免被列表滚动容器裁掉 */
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const [sortMenu, setSortMenu] = useState<{ open: boolean; top: number; left: number; width: number }>({ open: false, top: 0, left: 0, width: 0 });
+  const currentSortLabel = SORT_OPTIONS.find(o => o.value === sortBy)?.label || "更新时间";
   /** 当前右键命中的笔记；与 groupMenuRef 二选一，两者都有值时优先按分组菜单渲染 */
   const noteContextMenuRef = useRef<Note | null>(null);
   /** 侧边栏滚动容器 ref：拖动笔记时自动滚动 */
@@ -283,7 +286,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const groupMenuRef = useRef<GroupMenuTarget | null>(null);
   /** 分组菜单：菜单项差异交给 config/contextMenus 的构建函数 */
   const buildGroupContextMenu = (target: GroupMenuTarget): ContextMenuItem[] => {
-    const name = target.kind === 'category' ? target.category.name : target.name;
+    const name = target.kind === 'category' ? target.category.name : t(target.name);
     const isSearchGroup = isSearchGroupKind(target.kind);
     const isExpanded =
       target.kind === 'category'
@@ -312,7 +315,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onExport: () =>
         onExportGroup({
           name,
-          defaultFileName: isSearchGroup ? `"${searchQuery.trim()}" 的搜索结果` : name,
+          defaultFileName: isSearchGroup ? t('"{query}" 的搜索结果', { query: searchQuery.trim() }) : name,
           notes: target.notes,
         }),
       onRename: () => {
@@ -324,9 +327,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       },
       onShowProperties: () => {
         if (target.kind === 'category') onShowCategoryProperties(target.category);
-        else onShowGroupProperties(name, target.notes.length);
+        else onShowGroupProperties(target.name, target.notes.length);
       },
-    });
+    }).map((item) => ({ ...item, label: t(item.label) }));
   };
   /** 笔记菜单：交给 config/contextMenus 的构建函数 */
   const buildNoteContextMenu = (note: Note): ContextMenuItem[] =>
@@ -337,7 +340,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onTogglePin: () => onTogglePin(note),
       onDeleteNote: () => onDeleteNote(note),
       onShowProperties: () => onShowNoteProperties(note),
-    });
+    }).map((item) => ({
+      ...item,
+      label: t(item.label),
+      // Only the first submenu entry is built-in; the remaining names belong to users.
+      submenu: item.submenu?.map((sub, index) => index === 0 ? { ...sub, label: t(sub.label) } : sub),
+    }));
   /**
    * 拖拽落点写库：侧边栏里唯一直接改数据的地方。
    * 落点与笔记当前分组相同时直接返回——否则会白白触发一次 update + 全量刷新，列表还会闪一下。
@@ -349,10 +357,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (!note || note.category_id === categoryId) return;
     try {
       await notesApi.updateNote(note.id, note.title, note.content, categoryId);
-      showToast('笔记分组已更新', 'success');
+      showToast(t("笔记分组已更新"), 'success');
       await onNotesUpdated();
     } catch {
-      showToast('更新笔记分组失败', 'error');
+      showToast(t("更新笔记分组失败"), 'error');
     }
   };
   /** 供指针事件回调调用，始终指向最新一次渲染的 handler（避免闭包里的 notes 过期） */
@@ -378,7 +386,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     pointerNoteIdRef.current = id;
     pointerStartRef.current = { x: e.clientX, y: e.clientY };
     isPointerDraggingRef.current = false;
-    pointerTitleRef.current = noteEl.querySelector('h4')?.textContent || '无标题';
+    pointerTitleRef.current = noteEl.querySelector('h4')?.textContent || t("无标题");
   };
   // 指针拖拽：window 级监听只绑定一次（空依赖数组），可变状态全放 ref，避免反复解绑重绑。
   // 位移不足 5px 视为点击，保证单击打开笔记不受影响。
@@ -517,7 +525,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         data-resize-handle="sidebar"
         className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary-200/50 active:bg-primary-300/50 transition-colors z-30"
         onMouseDown={onResizeStart}
-        title="拖拽调整侧边栏宽度"
+        title={t("拖拽调整侧边栏宽度")}
         aria-hidden="true"
       />
       {/* Logo + 头部按钮 */}
@@ -525,7 +533,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="relative flex items-center justify-between">
           <div className="min-w-0">
             <h1 className="text-sm font-bold text-primary-500 leading-none">FastNote</h1>
-            <p className="text-[10px] text-primary-400 mt-0.5">简洁高效</p>
+            <p className="text-[10px] text-primary-400 mt-0.5">{t("简洁高效")}</p>
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
             {/* 设置：全局入口（含 AI 设置与备份恢复） */}
@@ -533,8 +541,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onOpenSettings}
                 className="sidebar-header-btn"
-                title="设置"
-                aria-label="设置"
+                title={t("设置")}
+                aria-label={t("设置")}
               >
                 <Icon name="ai-settings" className="w-4 h-4" />
               </button>
@@ -544,7 +552,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onToggleAiPanel}
                 className={`sidebar-header-btn ${isAiPanelOpen ? 'is-active' : ''}`}
-                title={isAiPanelOpen ? '关闭 AI 对话' : '打开 AI 对话'}
+                title={isAiPanelOpen ? t("关闭 AI 对话") : t("打开 AI 对话")}
                 aria-pressed={isAiPanelOpen}
               >
                 <AiSparkleIcon className="w-4 h-4" />
@@ -554,8 +562,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onToggleCollapse}
                 className={`sidebar-header-btn ${isCollapsed ? 'is-collapsed' : ''}`}
-                title="隐藏分组侧边栏"
-                aria-label="隐藏分组侧边栏"
+                title={t("隐藏分组侧边栏")}
+                aria-label={t("隐藏分组侧边栏")}
               >
                 <Icon name="sidebar-chevron-left" className="w-4 h-4" />
               </button>
@@ -573,7 +581,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
             <input
               type="text"
-              placeholder={useRegex ? "正则搜索笔记..." : "搜索笔记..."}
+              placeholder={useRegex ? t("正则搜索笔记...") : t("搜索笔记...")}
               value={searchQuery}
               onChange={(e) => onSearchQueryChange(e.target.value)}
               onFocus={() => setHistoryOpen(searchHistory.length > 0)}
@@ -595,7 +603,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={() => onSearchQueryChange('')}
                 className="absolute right-7 top-1/2 -translate-y-1/2 p-0.5 rounded-md text-faint-soft hover:text-muted hover:bg-surface-alt transition-colors"
-                title="清空搜索"
+                title={t("清空搜索")}
               >
                 <Icon name="sidebar-close" className="w-3.5 h-3.5" />
               </button>
@@ -607,11 +615,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onClick={() => onRegexChange?.(!useRegex)}
               disabled={!onRegexChange}
               aria-pressed={useRegex}
-              aria-label="正则搜索"
+              aria-label={t("正则搜索")}
               title={
                 useRegex
-                  ? "正则搜索：开（点击关闭）"
-                  : "正则搜索：关（点击开启，支持 (待办|备忘)、^周报\\d+$）"
+                  ? t("正则搜索：开（点击关闭）")
+                  : t("正则搜索：关（点击开启，支持 (待办|备忘)、^周报\\d+$）")
               }
               className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary-300 disabled:opacity-40 ${
                 useRegex
@@ -625,7 +633,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {historyOpen && searchHistory.length > 0 && !isSearching && (
               <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-line bg-surface shadow-card-hover overflow-hidden">
                 <div className="flex items-center justify-between px-2.5 pt-1.5 pb-1">
-                  <span className="text-[10px] text-faint">搜索历史</span>
+                  <span className="text-[10px] text-faint">{t("搜索历史")}</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -634,7 +642,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     }}
                     className="text-[10px] text-faint-soft hover:text-danger transition-colors"
                   >
-                    清空
+                    {t("清空")}
                   </button>
                 </div>
                 {searchHistory.map((item) => (
@@ -657,7 +665,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <button
                       type="button"
                       onClick={() => onRemoveSearchHistory?.(item)}
-                      title="删除这条历史"
+                      title={t("删除这条历史")}
                       className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-faint-soft opacity-0 group-hover:opacity-100 transition-opacity hover:text-danger hover:bg-danger-soft"
                     >
                       <Icon name="sidebar-close" className="w-2.5 h-2.5" />
@@ -670,54 +678,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={() => onCreateNote(selectedCategoryId)}
             className="btn-primary w-7 h-7 flex items-center justify-center flex-shrink-0"
-            title="新建笔记"
+            title={t("新建笔记")}
           >
             <Icon name="sidebar-plus-bold" className="w-3.5 h-3.5" />
           </button>
-          <button onClick={onOpenTrash} className="toolbar-btn !w-7 !h-7 flex-shrink-0" title="回收站">
+          <button onClick={onOpenTrash} className="toolbar-btn !w-7 !h-7 flex-shrink-0" title={t("回收站")}>
             <Icon name="sidebar-trash" className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
       {/* 视图切换（分组 / 收藏）+ 排序 */}
-      <div className="flex items-center justify-between px-3.5 py-1.5 flex-shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0">
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3.5 py-1.5 flex-shrink-0">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           <div className="flex items-center rounded-lg bg-surface/70 border border-line/70 p-0.5">
             <button
               onClick={() => onViewChange('groups')}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
                 view === 'groups' ? 'bg-primary-500 text-on-accent shadow-sm' : 'text-faint hover:text-body'
               }`}
-              title="分组视图"
+              title={t("分组视图")}
             >
               <Icon name="sidebar-folder" className="w-3 h-3" />
-              分组
+              {t("分组")}
             </button>
             <button
               onClick={() => onViewChange('favorites')}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
                 view === 'favorites' ? 'bg-primary-500 text-on-accent shadow-sm' : 'text-faint hover:text-body'
               }`}
-              title="收藏视图"
+              title={t("收藏视图")}
             >
               <Icon name="sidebar-star-filled" className="w-3 h-3" />
-              收藏
+              {t("收藏")}
             </button>
           </div>
         </div>
-        <div className="flex items-center gap-0.5">
+        <div className="ml-auto flex items-center gap-0.5 flex-shrink-0">
           {/* 排序方式：自定义浮层（原生 select 在深/浅主题下样式突兀），fixed 定位避免被滚动容器裁切 */}
           <button
             ref={sortBtnRef}
             className={"sort-trigger" + (sortMenu.open ? " is-open" : "")}
-            title="排序方式"
+            title={t("排序方式：{value1}", { value1: t(currentSortLabel) })}
+            aria-label={t("排序方式：{value1}", { value1: t(currentSortLabel) })}
             onClick={() => {
               const r = sortBtnRef.current?.getBoundingClientRect();
               setSortMenu({ open: !sortMenu.open, top: (r?.bottom ?? 0) + 4, left: r?.left ?? 0, width: r?.width ?? 0 });
             }}
           >
-            <span className="truncate max-w-[56px]">{SORT_OPTIONS.find(o => o.value === sortBy)?.label || "更新时间"}</span>
-            <Icon name="sidebar-chevron-down" className={"w-2.5 h-2.5 flex-shrink-0 transition-transform " + (sortMenu.open ? "rotate-180" : "")} />
+            <Icon name="sidebar-sort" className="w-3.5 h-3.5" />
           </button>
           {sortMenu.open && (
             <>
@@ -730,9 +738,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 style={{
                   position: "fixed",
                   top: sortMenu.top,
-                  // 与按钮左对齐后往回收 40px 让菜单视觉居中，左右都要夹在视口内（窄窗口右侧不出界）
+                  // 菜单居中于图标按钮，并夹在视口内（窄窗口右侧不出界）
                   left: Math.min(
-                    Math.max(8, sortMenu.left - 40),
+                    Math.max(8, sortMenu.left + sortMenu.width / 2 - SORT_MENU_WIDTH / 2),
                     Math.max(8, window.innerWidth - SORT_MENU_WIDTH - 8),
                   ),
                   minWidth: SORT_MENU_WIDTH,
@@ -745,7 +753,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     onClick={() => { onSortByChange(o.value); setSortMenu(m => ({ ...m, open: false })); }}
                   >
                     <Icon name="sidebar-check" className={"w-3 h-3 flex-shrink-0 " + (sortBy === o.value ? "opacity-100" : "opacity-0")} />
-                    <span>{o.label}</span>
+                    <span>{t(o.label)}</span>
                   </button>
                 ))}
               </div>
@@ -754,7 +762,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={onToggleSortOrder}
             className="w-5 h-5 flex items-center justify-center rounded-md text-faint hover:bg-surface/80 hover:text-primary-500 transition-all"
-            title={sortOrder === 'asc' ? '切换为降序' : '切换为升序'}
+            title={sortOrder === 'asc' ? t("切换为降序") : t("切换为升序")}
           >
             <Icon
               name="sidebar-chevron-up"
@@ -764,7 +772,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={onCreateCategory}
             className="w-5 h-5 flex items-center justify-center rounded-md text-faint hover:bg-surface/80 hover:text-primary-500 transition-all"
-            title="创建分组"
+            title={t("创建分组")}
           >
             <Icon name="sidebar-folder-plus" className="w-4 h-4" />
           </button>
@@ -790,15 +798,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="w-10 h-10 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
                 <Icon name="sidebar-search" className="w-5 h-5 text-faint-soft" />
               </div>
-              <p className="text-xs text-faint">{semanticLoading ? '正在按语义查找…' : '无匹配笔记'}</p>
+              <p className="text-xs text-faint">{semanticLoading ? t("正在按语义查找…") : t("无匹配笔记")}</p>
               {/* 开了正则最容易"什么都不出来"—至少说清楚是表达式本身没通过编译，而不是库里没有 */}
               {invalidRegex ? (
                 <p className="text-[10px] text-warning mt-1 text-center px-2">
-                  这不是合法的正则表达式，检查写法或点搜索框里的 .* 按钮关闭正则
+                  {t("这不是合法的正则表达式，检查写法或点搜索框里的 .* 按钮关闭正则")}
                 </p>
               ) : (
                 <p className="text-[10px] text-faint-soft mt-1">
-                  {semanticEnabled && semanticIndexing ? '语义索引构建中，结果可能还不完整' : '换个关键词试试'}
+                  {semanticEnabled && semanticIndexing ? t("语义索引构建中，结果可能还不完整") : t("换个关键词试试")}
                 </p>
               )}
             </div>
@@ -810,7 +818,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 notes={searchMatches}
                 isExpanded={searchGroupOpen.all}
                 isAllNotes={true}
-                headerTitle="全部搜索结果"
+                headerTitle={t("全部搜索结果")}
                 headerIcon="sidebar-search"
                 hits={hitMap}
                 selectedNoteId={selectedNoteId}
@@ -831,7 +839,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 notes={titleMatches}
                 isExpanded={searchGroupOpen.title}
                 isAllNotes={true}
-                headerTitle="标题命中"
+                headerTitle={t("标题命中")}
                 headerIcon="sidebar-note"
                 hits={hitMap}
                 selectedNoteId={selectedNoteId}
@@ -852,7 +860,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 notes={contentMatches}
                 isExpanded={searchGroupOpen.content}
                 isAllNotes={true}
-                headerTitle="正文命中"
+                headerTitle={t("正文命中")}
                 headerIcon="sidebar-list"
                 hits={hitMap}
                 selectedNoteId={selectedNoteId}
@@ -875,7 +883,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   notes={semanticMatches}
                   isExpanded={searchGroupOpen.semantic}
                   isAllNotes={true}
-                  headerTitle="语义相关"
+                  headerTitle={t("语义相关")}
                   headerIcon="ai-bolt"
                   hits={hitMap}
                   selectedNoteId={selectedNoteId}
@@ -894,7 +902,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
               {semanticEnabled && semanticMatches.length > 0 && (
                 <p className="px-3 pt-1 pb-2 text-[10px] leading-relaxed text-faint-soft">
-                  「语义相关」由本地模型按相似度推断，不同模型效果不同，未必精准。
+                  {t("「语义相关」由本地模型按相似度推断，不同模型效果不同，未必精准。")}
                 </p>
               )}
             </div>
@@ -905,8 +913,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="w-10 h-10 rounded-2xl bg-surface-alt flex items-center justify-center mb-3">
                 <Icon name="sidebar-star" className="w-5 h-5 text-faint-soft" />
               </div>
-              <p className="text-xs text-faint">暂无收藏</p>
-              <p className="text-[10px] text-faint-soft mt-1">点击笔记右侧的星标即可收藏</p>
+              <p className="text-xs text-faint">{t("暂无收藏")}</p>
+              <p className="text-[10px] text-faint-soft mt-1">{t("点击笔记右侧的星标即可收藏")}</p>
             </div>
           ) : (
             <div className="space-y-0.5">
@@ -979,8 +987,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {categories.length === 0 && (
               <div className="px-3 py-5 text-center">
                 <Icon name="sidebar-folder-thin" className="w-8 h-8 text-faint-soft mx-auto mb-2" />
-                <p className="text-xs text-faint">暂无分组</p>
-                <p className="text-[10px] text-faint-soft mt-0.5">点击上方 + 创建分组</p>
+                <p className="text-xs text-faint">{t("暂无分组")}</p>
+                <p className="text-[10px] text-faint-soft mt-0.5">{t("点击上方 + 创建分组")}</p>
               </div>
             )}
             {categories.map((category) => {
@@ -1025,14 +1033,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* 底部统计 + 刷新界面：打包后没有浏览器的右键"刷新"，这里给一个常驻入口 */}
       <div className="px-4 py-2 border-t border-line/60 flex-shrink-0">
         <div className="flex items-center justify-between text-[11px] text-faint">
-          <span>{categoryCount} 个分组</span>
+          <span>{t(categoryCount === 1 ? "1 个分组" : "{count} 个分组", { count: categoryCount })}</span>
           <div className="flex items-center gap-1.5">
-            <span>{allNotesCount} 篇笔记</span>
+            <span>{t(allNotesCount === 1 ? "1 篇笔记" : "{count} 篇笔记", { count: allNotesCount })}</span>
             <button
               onClick={() => window.location.reload()}
               className="p-1 -mr-1 rounded-md text-faint-soft hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-90"
-              title="刷新界面"
-              aria-label="刷新界面"
+              title={t("刷新界面")}
+              aria-label={t("刷新界面")}
             >
               <Icon name="sidebar-refresh" className="w-3.5 h-3.5" />
             </button>

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FastNote",
-  "version": "2.6.6",
+  "version": "2.6.7",
   "identifier": "com.smartist.fastnote",
   "build": {
     "beforeDevCommand": "pnpm vite:dev",
@@ -27,9 +27,21 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzRTM5ODdCMUM4QjY0NzIKUldSeVpJc2NlNWpqZy9YVkpSdk81MThaMjhkeE5Ed1JKa1FoOU00dERyYnhsTGhKL05HQ3Yyb2UK",
+      "endpoints": [
+        "https://github.com/Smartist1229/FastNote/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

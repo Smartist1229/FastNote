@@ -133,7 +133,12 @@ export const hasActionClaim = (reply: string): boolean => {
  * 3. 有声称但对应工具都没成功 → 末尾追加引用块提示，列出未验证的动作。
  * 只加标注、不改原文。纯函数，便于单独推演与测试。
  */
-export const buildFinalContent = (finalReply: string, carriedContent: string, tools: ToolTrace[]): string => {
+export const buildFinalContent = (
+  finalReply: string,
+  carriedContent: string,
+  tools: ToolTrace[],
+  t: (source: string, params?: Record<string, string | number>) => string = (source) => source,
+): string => {
   const carried = carriedContent.trim();
   const base = carried && !finalReply.includes(carried) ? `${carried}\n\n${finalReply}` : finalReply;
   const ranTools = new Set(tools.filter(t => t.ok).map(t => t.name));
@@ -141,5 +146,5 @@ export const buildFinalContent = (finalReply: string, carriedContent: string, to
   const claimText = stripQuotedText(base);
   const unverified = ACTION_CLAIM_RULES.filter(rule => rule.re.test(claimText) && !rule.tools.some(t => ranTools.has(t)));
   if (unverified.length === 0) return base;
-  return `${base}\n\n> ⚠️ 提示：本次回答里并没有实际执行「${unverified.map(r => r.label).join("、")}」，上面的相关表述未经工具结果确认，请以左侧笔记列表的实际状态为准。`;
+  return `${base}\n\n> ⚠️ ${t("提示：本次回答里并没有实际执行「{actions}」，上面的相关表述未经工具结果确认，请以左侧笔记列表的实际状态为准。", { actions: unverified.map(r => t(r.label)).join(" / ") })}`;
 };

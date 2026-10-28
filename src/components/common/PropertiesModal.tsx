@@ -3,6 +3,7 @@
  * target 为 null 时不渲染；note / category / group 三种目标互斥，各渲染一套字段。
  * group 指默认分组或搜索视图的虚拟分组：没有 id、也没有可写回的对象，因此全部只读。
  */
+import { useI18n } from "@/i18n";
 import { useEffect, useState } from "react";
 import type { Category, Note, NoteHistoryEntry, NoteHistoryKind, Tag } from "@/interface/note";
 import type { AiAccessLevel } from "@/interface/aiAccess";
@@ -12,19 +13,20 @@ import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
 
-/** 把库里的时间串格式化为「YYYY-MM-DD HH:mm」，异常时原样返回 */
-const formatDateTime = (value: string | null) => {
+/** 按软件语言展示日期时间，异常时原样返回 */
+const formatDateTime = (value: string | null, locale: string) => {
   if (!value) return "—";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toLocaleString(locale, {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
 };
 
 /** 属性行：左侧字段名，中间内容，右侧操作按钮 */
 const Row: React.FC<{ label: string; content: React.ReactNode; action?: React.ReactNode }> = ({ label, content, action }) => (
   <div className="flex items-center gap-3 py-2 border-b border-line-soft last:border-0 min-h-[38px]">
-    <span className="w-[68px] flex-shrink-0 text-xs text-faint">{label}</span>
+    <span className="w-[92px] flex-shrink-0 text-xs text-faint">{label}</span>
     <div className="flex-1 min-w-0 flex items-center gap-1.5">
       <div className="flex-1 min-w-0 text-[13px] text-body leading-5 break-all">{content}</div>
       {action}
@@ -101,13 +103,14 @@ const TagChip: React.FC<{
   onRemove: () => void;
   onStartRename: () => void;
 }> = ({ tag, editable, onRemove, onStartRename }) => {
+  const { t } = useI18n();
   const byAi = tag.source === "ai";
   return (
     <span
       className={`group inline-flex items-center gap-1 max-w-full px-2 py-0.5 rounded-md text-[12px] leading-5 ${
         byAi ? "border border-dashed border-line text-faint bg-transparent" : "bg-surface-alt text-body"
       }`}
-      title={byAi ? `AI 生成（${tag.note_count} 篇），不可手动修改` : `用户添加（${tag.note_count} 篇）`}
+      title={byAi ? t(tag.note_count === 1 ? "AI 生成（1 篇），不可手动修改" : "AI 生成（{count} 篇），不可手动修改", { count: tag.note_count }) : t(tag.note_count === 1 ? "用户添加（1 篇）" : "用户添加（{count} 篇）", { count: tag.note_count })}
     >
       <Icon name="shared-tag" className="w-3 h-3 flex-none opacity-60" />
       <span className="truncate">{tag.name}</span>
@@ -115,7 +118,7 @@ const TagChip: React.FC<{
         <span className="flex items-center gap-0.5 ml-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             type="button"
-            title="重命名标签（全局生效）"
+            title={t("重命名标签（全局生效）")}
             onClick={onStartRename}
             className="w-4 h-4 rounded flex items-center justify-center text-faint-soft hover:text-primary-500 hover:bg-primary-50"
           >
@@ -123,7 +126,7 @@ const TagChip: React.FC<{
           </button>
           <button
             type="button"
-            title="移除此标签"
+            title={t("移除此标签")}
             onClick={onRemove}
             className="w-4 h-4 rounded flex items-center justify-center text-faint-soft hover:text-danger hover:bg-danger-soft"
           >
@@ -197,6 +200,7 @@ export const PropertiesModal: React.FC<{
   onCreateHistoryVersion,
   onToggleHistoryPinned,
 }) => {
+  const { locale, t } = useI18n();
   const note: Note | null = target?.kind === "note" ? target.note : null;
   const category: Category | null = target?.kind === "category" ? target.category : null;
   const virtualGroup = target?.kind === "group" ? target : null;
@@ -231,8 +235,8 @@ export const PropertiesModal: React.FC<{
   /** 笔记所属分组名；分组已删除时退化为占位文案，避免显示成空白 */
   const categoryName = note
     ? note.category_id === null
-      ? "未分类"
-      : categories.find((c) => c.id === note.category_id)?.name ?? "未知分组"
+      ? t("未分类")
+      : categories.find((c) => c.id === note.category_id)?.name ?? t("未知分组")
     : "";
 
   /** 笔记所属分组的 AI 档位：分组更严格时，笔记实际只能到这个上限 */
@@ -302,12 +306,12 @@ export const PropertiesModal: React.FC<{
   const closeGroupMenu = () => setGroupMenu((m) => ({ ...m, open: false }));
 
   return (
-    <Modal isOpen={target !== null} onClose={onClose} title={note ? "笔记属性" : "分组属性"}>
+    <Modal isOpen={target !== null} onClose={onClose} title={note ? t("笔记属性") : t("分组属性")}>
       <div className="rounded-xl border border-line-soft px-3.5 py-1">
         {note && (
           <>
             <Row
-              label="标题"
+              label={t("标题")}
               content={
                 editing?.field === "noteTitle" ? (
                   <RowInput
@@ -317,29 +321,29 @@ export const PropertiesModal: React.FC<{
                     onCancel={() => setEditing(null)}
                   />
                 ) : (
-                  note.title || "无标题"
+                  note.title || t("无标题")
                 )
               }
               action={
                 <RowButton
                   icon={editing?.field === "noteTitle" ? "sidebar-check" : "sidebar-edit"}
-                  title={editing?.field === "noteTitle" ? "保存标题" : "编辑标题"}
+                  title={editing?.field === "noteTitle" ? t("保存标题") : t("编辑标题")}
                   active={editing?.field === "noteTitle"}
                   onClick={() => (editing?.field === "noteTitle" ? commitEdit() : startEdit("noteTitle", note.title))}
                 />
               }
             />
             <Row
-              label="所属分组"
+              label={t("所属分组")}
               content={categoryName}
-              action={<RowButton icon="sidebar-edit" title="移动到其他分组" onClick={openGroupMenu} />}
+              action={<RowButton icon="sidebar-edit" title={t("移动到其他分组")} onClick={openGroupMenu} />}
             />
             <div className="py-2 border-b border-line-soft min-h-[38px]">
               <div className="flex items-start gap-3">
-                <span className="w-[68px] flex-shrink-0 text-xs text-faint mt-1">标签</span>
+                <span className="w-[92px] flex-shrink-0 text-xs text-faint mt-1">{t("标签")}</span>
                 <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
                   {tags.length === 0 && !addingTag && (
-                    <span className="text-[13px] text-muted leading-5">暂无标签</span>
+                    <span className="text-[13px] text-muted leading-5">{t("暂无标签")}</span>
                   )}
                   {tags.map((tag) =>
                     tagEdit?.kind === "rename" && tagEdit.id === tag.id ? (
@@ -369,7 +373,7 @@ export const PropertiesModal: React.FC<{
                     <input
                       autoFocus
                       value={tagDraft}
-                      placeholder="标签名，可一次输入多个"
+                      placeholder={t("标签名，可一次输入多个")}
                       onChange={(e) => setTagDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") commitTagDraft();
@@ -385,12 +389,12 @@ export const PropertiesModal: React.FC<{
                     canEditTags && (
                       <button
                         type="button"
-                        title="添加标签"
+                        title={t("添加标签")}
                         onClick={() => setAddingTag(true)}
                         className="inline-flex items-center gap-0.5 px-1.5 h-[24px] rounded-md text-[12px] text-faint-soft hover:text-primary-500 hover:bg-primary-50 transition-colors"
                       >
                         <Icon name="sidebar-plus" className="w-3 h-3" />
-                        <span>标签</span>
+                        <span>{t("标签")}</span>
                       </button>
                     )
                   )}
@@ -398,12 +402,12 @@ export const PropertiesModal: React.FC<{
               </div>
             </div>
             <Row
-              label="收藏状态"
-              content={<span className={note.is_pinned ? "text-primary-500" : "text-muted"}>{note.is_pinned ? "已收藏" : "未收藏"}</span>}
+              label={t("收藏状态")}
+              content={<span className={note.is_pinned ? "text-primary-500" : "text-muted"}>{note.is_pinned ? t("已收藏") : t("未收藏")}</span>}
               action={
                 <RowButton
                   icon={note.is_pinned ? "sidebar-star-filled" : "sidebar-star"}
-                  title={note.is_pinned ? "取消收藏" : "收藏"}
+                  title={note.is_pinned ? t("取消收藏") : t("收藏")}
                   active={note.is_pinned}
                   onClick={() => void onTogglePin(note)}
                 />
@@ -412,16 +416,16 @@ export const PropertiesModal: React.FC<{
             {/* 关闭 AI 能力时整行不显示：那时 AI 不存在，权限设置没有意义 */}
             {enableAI && (
               <Row
-                label="AI 访问"
+                label={t("AI 访问")}
                 content={
                   limitedByGroup ? (
                     <span className="text-warning">
-                      实际生效：{AI_ACCESS_LABELS[effectiveNoteLevel]}（受所属分组限制）
+                      {t("实际生效：{level}（受所属分组限制）", { level: t(AI_ACCESS_LABELS[effectiveNoteLevel]) })}
                     </span>
                   ) : effectiveNoteLevel === 0 ? (
-                    <span className="text-danger">AI 完全看不到这篇笔记</span>
+                    <span className="text-danger">{t("AI 完全看不到这篇笔记")}</span>
                   ) : (
-                    <span className="text-body">{AI_ACCESS_LABELS[effectiveNoteLevel]}访问</span>
+                    <span className="text-body">{t("{level}访问", { level: t(AI_ACCESS_LABELS[effectiveNoteLevel]) })}</span>
                   )
                 }
                 action={
@@ -433,16 +437,16 @@ export const PropertiesModal: React.FC<{
                 }
               />
             )}
-            <Row label="字数" content={`${wordCount.toLocaleString()} 字`} />
-            <Row label="创建时间" content={formatDateTime(note.created_at)} />
-            <Row label="更新时间" content={formatDateTime(note.updated_at)} />
-            <Row label="编号" content={note.id} />
+            <Row label={t("字数")} content={t(wordCount === 1 ? "1 字" : "{count} 字", { count: wordCount.toLocaleString(locale) })} />
+            <Row label={t("创建时间")} content={formatDateTime(note.created_at, locale)} />
+            <Row label={t("更新时间")} content={formatDateTime(note.updated_at, locale)} />
+            <Row label={t("编号")} content={note.id} />
           </>
         )}
         {category && (
           <>
             <Row
-              label="名称"
+              label={t("名称")}
               content={
                 editing?.field === "categoryName" ? (
                   <RowInput
@@ -452,28 +456,28 @@ export const PropertiesModal: React.FC<{
                     onCancel={() => setEditing(null)}
                   />
                 ) : (
-                  category.name || "未命名分组"
+                  category.name || t("未命名分组")
                 )
               }
               action={
                 <RowButton
                   icon={editing?.field === "categoryName" ? "sidebar-check" : "sidebar-edit"}
-                  title={editing?.field === "categoryName" ? "保存名称" : "编辑名称"}
+                  title={editing?.field === "categoryName" ? t("保存名称") : t("编辑名称")}
                   active={editing?.field === "categoryName"}
                   onClick={() => (editing?.field === "categoryName" ? commitEdit() : startEdit("categoryName", category.name))}
                 />
               }
             />
-            <Row label="笔记数量" content={`${category.note_count.toLocaleString()} 篇`} />
+            <Row label={t("笔记数量")} content={t(category.note_count === 1 ? "1 篇" : "{count} 篇", { count: category.note_count.toLocaleString(locale) })} />
             {enableAI && (
               <Row
-                label="AI 访问"
+                label={t("AI 访问")}
                 content={
                   category.ai_access === 0 ? (
-                    <span className="text-danger">组内笔记全部对 AI 不可见</span>
+                    <span className="text-danger">{t("组内笔记全部对 AI 不可见")}</span>
                   ) : (
                     <span className="text-body">
-                      组内笔记上限：{AI_ACCESS_LABELS[category.ai_access]}
+                      {t("组内笔记上限：{level}", { level: t(AI_ACCESS_LABELS[category.ai_access]) })}
                     </span>
                   )
                 }
@@ -486,15 +490,15 @@ export const PropertiesModal: React.FC<{
                 }
               />
             )}
-            <Row label="创建时间" content={formatDateTime(category.created_at)} />
-            <Row label="编号" content={category.id} />
+            <Row label={t("创建时间")} content={formatDateTime(category.created_at, locale)} />
+            <Row label={t("编号")} content={category.id} />
           </>
         )}
         {virtualGroup && (
           <>
-            <Row label="名称" content={virtualGroup.name} />
-            <Row label="笔记数量" content={`${virtualGroup.noteCount.toLocaleString()} 篇`} />
-            <Row label="编号" content="此分组为默认分组" />
+            <Row label={t("名称")} content={t(virtualGroup.name)} />
+            <Row label={t("笔记数量")} content={t(virtualGroup.noteCount === 1 ? "1 篇" : "{count} 篇", { count: virtualGroup.noteCount.toLocaleString(locale) })} />
+            <Row label={t("编号")} content={t("此分组为默认分组")} />
           </>
         )}
       </div>
@@ -503,13 +507,13 @@ export const PropertiesModal: React.FC<{
       {note && (
         <div className="mt-3 rounded-xl border border-line-soft px-3.5 py-2">
           <div className="flex items-center justify-between gap-2 py-1">
-            <span className="text-xs font-medium text-body">历史版本</span>
+            <span className="text-xs font-medium text-body">{t("历史版本")}</span>
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-faint">{history.length ? `${history.length} 个` : "暂无"}</span>
+              <span className="text-[11px] text-faint">{history.length ? t(history.length === 1 ? "1 个版本" : "{count} 个版本", { count: history.length }) : t("暂无")}</span>
               {onCreateHistoryVersion && (
                 <button
                   type="button"
-                  title="把当前内容存为一个手动版本，不会被自动清理"
+                  title={t("把当前内容存为一个手动版本，不会被自动清理")}
                   onClick={() => {
                     setConfirmRollbackId(null);
                     setConfirmDeleteId(null);
@@ -518,7 +522,7 @@ export const PropertiesModal: React.FC<{
                   }}
                   className="px-2 py-0.5 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt transition-colors"
                 >
-                  存版本
+                  {t("存版本")}
                 </button>
               )}
               {history.length > 0 && onClearHistory && (
@@ -532,14 +536,14 @@ export const PropertiesModal: React.FC<{
                       }}
                       className="px-2 py-0.5 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
                     >
-                      确认清空
+                      {t("确认清空")}
                     </button>
                     <button
                       type="button"
                       onClick={() => setConfirmClear(false)}
                       className="px-2 py-0.5 text-[11px] rounded-md text-faint hover:bg-surface-alt transition-colors"
                     >
-                      取消
+                      {t("取消")}
                     </button>
                   </div>
                 ) : (
@@ -552,7 +556,7 @@ export const PropertiesModal: React.FC<{
                     }}
                     className="px-2 py-0.5 text-[11px] rounded-md text-faint hover:bg-danger-soft hover:text-danger transition-colors"
                   >
-                    清空
+                    {t("清空")}
                   </button>
                 )
               )}
@@ -560,7 +564,7 @@ export const PropertiesModal: React.FC<{
           </div>
           {history.length === 0 ? (
             <p className="pb-2 text-[11px] text-faint leading-relaxed">
-              编辑并保存后，系统会按设定的间隔自动记录旧版本；最早的一版会一直保留。点「存版本」可随时手动留存，固定或手动的版本不会被自动清理。
+              {t("编辑并保存后，系统会按设定的间隔自动记录旧版本；最早的一版会一直保留。点「存版本」可随时手动留存，固定或手动的版本不会被自动清理。")}
             </p>
           ) : (
             <div className="max-h-[200px] overflow-y-auto -mx-1">
@@ -570,19 +574,19 @@ export const PropertiesModal: React.FC<{
                   className="flex items-center gap-2 px-1 py-1.5 rounded-md hover:bg-surface-alt transition-colors"
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="text-[12px] text-body truncate">{entry.title || "无标题"}</div>
+                    <div className="text-[12px] text-body truncate">{entry.title || t("无标题")}</div>
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
                       <span>
-                        {formatDateTime(entry.saved_at)} · {entry.content.length.toLocaleString()} 字
+                        {formatDateTime(entry.saved_at, locale)} · {t(entry.content.length === 1 ? "1 字" : "{count} 字", { count: entry.content.length.toLocaleString(locale) })}
                       </span>
                       {HISTORY_KIND_LABELS[entry.kind] && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] leading-none bg-surface-alt text-faint">
-                          {HISTORY_KIND_LABELS[entry.kind]}
+                          {t(HISTORY_KIND_LABELS[entry.kind])}
                         </span>
                       )}
                       {entry.pinned && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] leading-none bg-primary-50 text-primary-500">
-                          固定
+                          {t("固定")}
                         </span>
                       )}
                     </div>
@@ -595,17 +599,17 @@ export const PropertiesModal: React.FC<{
                           setConfirmRollbackId(null);
                           void onRollbackHistory?.(entry);
                         }}
-                        title="恢复此版本，并删除它及之后的所有历史版本"
+                        title={t("恢复此版本，并删除它及之后的所有历史版本")}
                         className="px-2 py-1 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
                       >
-                        确认回滚
+                        {t("确认回滚")}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmRollbackId(null)}
                         className="px-2 py-1 text-[11px] rounded-md text-faint hover:bg-surface-alt transition-colors"
                       >
-                        取消
+                        {t("取消")}
                       </button>
                     </div>
                   ) : confirmDeleteId === entry.id ? (
@@ -618,14 +622,14 @@ export const PropertiesModal: React.FC<{
                         }}
                         className="px-2 py-1 text-[11px] rounded-md text-danger bg-danger-soft hover:opacity-80 transition-opacity"
                       >
-                        确认删除
+                        {t("确认删除")}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteId(null)}
                         className="px-2 py-1 text-[11px] rounded-md text-faint hover:bg-surface-alt transition-colors"
                       >
-                        取消
+                        {t("取消")}
                       </button>
                     </div>
                   ) : (
@@ -633,7 +637,7 @@ export const PropertiesModal: React.FC<{
                       {onToggleHistoryPinned && (
                         <RowButton
                           icon={entry.pinned ? "sidebar-star-filled" : "sidebar-star"}
-                          title={historyPinTitle(entry)}
+                          title={t(historyPinTitle(entry))}
                           active={entry.pinned}
                           onClick={() => {
                             setConfirmRollbackId(null);
@@ -649,7 +653,7 @@ export const PropertiesModal: React.FC<{
                           onClick={() => onPreviewHistory(entry)}
                           className="px-2 py-1 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt transition-colors"
                         >
-                          预览
+                          {t("预览")}
                         </button>
                       )}
                       <button
@@ -662,7 +666,7 @@ export const PropertiesModal: React.FC<{
                         }}
                         className="px-2 py-1 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt disabled:opacity-40 transition-colors"
                       >
-                        回滚
+                        {t("回滚")}
                       </button>
                       {onDeleteHistory && (
                         <button
@@ -674,7 +678,7 @@ export const PropertiesModal: React.FC<{
                           }}
                           className="px-2 py-1 text-[11px] rounded-md text-faint hover:bg-danger-soft hover:text-danger transition-colors"
                         >
-                          删除
+                          {t("删除")}
                         </button>
                       )}
                     </div>
@@ -699,7 +703,7 @@ export const PropertiesModal: React.FC<{
               }}
             >
               <Icon name="sidebar-list" className="w-3 h-3 flex-shrink-0" />
-              <span>未分类</span>
+              <span>{t("未分类")}</span>
             </button>
             {categories.map((c) => (
               <button

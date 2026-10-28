@@ -11,14 +11,12 @@
  * - 圆角只用 rounded-*（映射到 --radius-*），不写死像素。
  * - 列表摘要由 note.content 现算（剥掉 Markdown 标记），不额外引字段，因此不动数据结构。
  */
+import { useI18n } from "@/i18n";
 import type { Note } from "@/interface/note";
 import type { WelcomeDashboardProps } from "@/interface/welcome";
 import type { RecentFile } from "@/lib/recentFiles";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
-
-/** 一周七天，日期行拼「周X」用 */
-const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"] as const;
 
 /** 行首块级标记：标题 / 引用 / 列表 / 任务项 / 有序项 */
 const BLOCK_MARK = /^(?:#{1,6}\s+|>\s+|[-*+]\s+|\[[ xX]\]\s+|\d+\.\s+)/;
@@ -35,7 +33,7 @@ const greetingFor = (hour: number): string => {
 };
 
 /** 相对时间：1 分钟内「刚刚」，7 天内按分 / 时 / 天，再久只给 MM-DD（不带年份） */
-const formatRelative = (iso: string): string => {
+const formatRelative = (iso: string, locale: string, t: ReturnType<typeof useI18n>["t"]): string => {
   // new Date 遇到非法字符串不抛错，只会得到 Invalid Date，必须显式判断
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -44,22 +42,21 @@ const formatRelative = (iso: string): string => {
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
 
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟前`;
-  if (hours < 24) return `${hours} 小时前`;
-  if (days < 7) return `${days} 天前`;
-
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${month}-${day}`;
+  if (minutes < 1) return t("刚刚");
+  const relative = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
+  if (minutes < 60) return relative.format(-minutes, "minute");
+  if (hours < 24) return relative.format(-hours, "hour");
+  if (days < 7) return relative.format(-days, "day");
+  return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
 };
 
-/** 悬停用的完整时间：YYYY-MM-DD HH:mm */
-const formatAbsolute = (iso: string): string => {
+/** 悬停用的完整本地化日期与时间 */
+const formatAbsolute = (iso: string, locale: string): string => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toLocaleString(locale, {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
 };
 
 /**
@@ -188,7 +185,9 @@ const ActionTile: React.FC<{
 );
 
 /** 最近更新的一行：标题 + 摘要 + 时间 */
-const RecentRow: React.FC<{ note: Note; onSelect: (note: Note) => void }> = ({ note, onSelect }) => (
+const RecentRow: React.FC<{ note: Note; onSelect: (note: Note) => void }> = ({ note, onSelect }) => {
+  const { locale, t } = useI18n();
+  return (
   <button
     type="button"
     onClick={() => onSelect(note)}
@@ -200,22 +199,23 @@ const RecentRow: React.FC<{ note: Note; onSelect: (note: Note) => void }> = ({ n
     <span className="min-w-0 flex-1">
       <span className="flex items-center gap-1.5">
         <span className="truncate text-[13px] font-medium text-body transition-colors duration-200 group-hover:text-ink">
-          {note.title || "无标题"}
+          {note.title || t("无标题")}
         </span>
         {note.is_pinned ? <Icon name="sidebar-star-filled" className="h-3 w-3 flex-none text-warning" /> : null}
       </span>
       <span className="mt-0.5 block truncate text-[11px] text-faint">
-        {toSnippet(note.content, note.title) || "暂无内容"}
+        {toSnippet(note.content, note.title) || t("暂无内容")}
       </span>
     </span>
     <span
       className="flex-none text-[11px] tabular-nums text-faint-soft"
-      title={formatAbsolute(note.updated_at)}
+      title={formatAbsolute(note.updated_at, locale)}
     >
-      {formatRelative(note.updated_at)}
+      {formatRelative(note.updated_at, locale, t)}
     </span>
   </button>
 );
+};
 
 /**
  * 最近打开文件的一行：文件名 + 相对时间 + 完整路径（title 兜底）。
@@ -227,7 +227,9 @@ const RecentFileRow: React.FC<{
   file: RecentFile;
   onOpen: (path: string) => void;
   onRemove: (path: string) => void;
-}> = ({ file, onOpen, onRemove }) => (
+}> = ({ file, onOpen, onRemove }) => {
+  const { locale, t } = useI18n();
+  return (
   <div className="group flex w-full items-center gap-3 pl-4 pr-2 py-2.5 transition-colors duration-200 first:rounded-t-xl last:rounded-b-xl hover:bg-app">
     <span className="flex h-7 w-7 flex-none items-center justify-center rounded-md bg-surface-alt text-faint transition-colors duration-200 group-hover:bg-primary-50 group-hover:text-primary-600">
       <Icon name="ai-file-text" className="h-3.5 w-3.5" />
@@ -243,19 +245,20 @@ const RecentFileRow: React.FC<{
       </span>
       <span className="mt-0.5 block truncate text-[11px] text-faint">{file.path}</span>
     </button>
-    <span className="flex-none text-[11px] tabular-nums text-faint-soft" title={formatAbsolute(file.openedAt)}>
-      {formatRelative(file.openedAt)}
+    <span className="flex-none text-[11px] tabular-nums text-faint-soft" title={formatAbsolute(file.openedAt, locale)}>
+      {formatRelative(file.openedAt, locale, t)}
     </span>
     <button
       type="button"
       onClick={() => onRemove(file.path)}
-      title="从列表中移除"
+      title={t("从列表中移除")}
       className="flex-none w-6 h-6 flex items-center justify-center rounded-md text-faint-soft opacity-0 group-hover:opacity-100 transition-opacity hover:text-danger hover:bg-danger-soft"
     >
       <Icon name="modal-close" className="h-3 w-3" />
     </button>
   </div>
 );
+};
 
 export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   totalNotes,
@@ -272,8 +275,9 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   onToggleAiPanel,
   isAiPanelOpen = false,
 }) => {
+  const { locale, t } = useI18n();
   const now = new Date();
-  const dateLine = `${now.getMonth() + 1}月${now.getDate()}日 · 周${WEEKDAYS[now.getDay()]}`;
+  const dateLine = now.toLocaleDateString(locale, { month: "long", day: "numeric", weekday: "short" });
   const hasNotes = totalNotes > 0;
   const recent = recentNotes.slice(0, 5);
   /** 最多展示 6 条：再多会挤掉「最近更新」，而它是更常用的入口 */
@@ -284,8 +288,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
       key="new"
       primary
       icon={<Icon name="welcome-plus" className="h-4 w-4" />}
-      title="新建笔记"
-      desc="从空白页开始写"
+      title={t("新建笔记")}
+      desc={t("从空白页开始写")}
       onClick={onCreateNote}
     />,
   ];
@@ -295,8 +299,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
         key="ai"
         active={isAiPanelOpen}
         icon={<AiSparkleIcon className="h-4 w-4" />}
-        title="AI 助手"
-        desc={isAiPanelOpen ? "面板已展开，点击收起" : "让 AI 帮你写和整理"}
+        title={t("AI 助手")}
+        desc={isAiPanelOpen ? t("面板已展开，点击收起") : t("让 AI 帮你写和整理")}
         onClick={onToggleAiPanel}
       />,
     );
@@ -306,8 +310,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
       <ActionTile
         key="file"
         icon={<Icon name="ai-file-text" className="h-4 w-4" />}
-        title="打开文本文件"
-        desc="编辑电脑上的文件，实时保存"
+        title={t("打开文本文件")}
+        desc={t("编辑电脑上的文件，实时保存")}
         onClick={onOpenTextFile}
       />,
     );
@@ -316,8 +320,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
     <ActionTile
       key="trash"
       icon={<Icon name="app-trash" className="h-4 w-4" />}
-      title="回收站"
-      desc={trashCount > 0 ? `${trashCount} 篇待处理` : "找回已删除的笔记"}
+      title={t("回收站")}
+      desc={trashCount > 0 ? t(trashCount === 1 ? "1 篇待处理" : "{count} 篇待处理", { count: trashCount }) : t("找回已删除的笔记")}
       onClick={onOpenTrash}
     />,
   );
@@ -333,11 +337,11 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
           </span>
           <div className="min-w-0 pt-0.5">
             <h1 className="text-[22px] font-semibold leading-tight tracking-tight text-ink">
-              {greetingFor(now.getHours())}
+              {t(greetingFor(now.getHours()))}
             </h1>
             <p className="mt-1 truncate text-[13px] text-muted">
               {dateLine}
-              {hasNotes ? ` · 已记录 ${totalNotes} 篇笔记` : " · 开始记录你的第一个想法"}
+              {hasNotes ? t(totalNotes === 1 ? " · 已记录 1 篇笔记" : " · 已记录 {count} 篇笔记", { count: totalNotes }) : t(" · 开始记录你的第一个想法")}
             </p>
           </div>
         </header>
@@ -346,14 +350,14 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
         {hasNotes && (
           <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.05s" }}>
             <div className="grid grid-cols-3 gap-2.5">
-              <StatTile icon="sidebar-note" label="笔记" value={totalNotes} />
-              <StatTile icon="sidebar-folder" label="分组" value={categoryCount} />
+              <StatTile icon="sidebar-note" label={t("笔记")} value={totalNotes} />
+              <StatTile icon="sidebar-folder" label={t("分组")} value={categoryCount} />
               <StatTile
                 icon="app-trash"
-                label="回收站"
+                label={t("回收站")}
                 value={trashCount}
                 onClick={onOpenTrash}
-                title="打开回收站"
+                title={t("打开回收站")}
               />
             </div>
           </section>
@@ -361,14 +365,14 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
 
         {/* 快捷入口 */}
         <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.1s" }}>
-          <SectionTitle title="快捷开始" />
+          <SectionTitle title={t("快捷开始")} />
           <div className="mt-3 grid grid-cols-2 gap-2.5">{actions}</div>
         </section>
 
         {/* 最近更新 */}
         {recent.length > 0 && (
           <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.15s" }}>
-            <SectionTitle title="最近更新" meta={`${recent.length} 篇`} />
+            <SectionTitle title={t("最近更新")} meta={t(recent.length === 1 ? "1 篇" : "{count} 篇", { count: recent.length })} />
             <div className="mt-3 divide-y divide-line overflow-hidden rounded-xl border border-line-soft bg-surface">
               {recent.map((note) => (
                 <RecentRow key={note.id} note={note} onSelect={onSelectNote} />
@@ -380,7 +384,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
         {/* 最近打开的电脑文件：开了又关就得重新找，这里一次性列出来，点一下即加载 */}
         {recentFileList.length > 0 && (
           <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.18s" }}>
-            <SectionTitle title="最近打开的文件" meta={`${recentFileList.length} 个`} />
+            <SectionTitle title={t("最近打开的文件")} meta={t(recentFileList.length === 1 ? "1 个文件" : "{count} 个文件", { count: recentFileList.length })} />
             <div className="mt-3 divide-y divide-line overflow-hidden rounded-xl border border-line-soft bg-surface">
               {recentFileList.map((file) => (
                 <RecentFileRow
@@ -401,9 +405,9 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
               <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-50 text-primary-500">
                 <Icon name="welcome-file-empty" className="h-7 w-7" />
               </span>
-              <p className="mt-4 text-[15px] font-semibold text-ink">还没有笔记</p>
+              <p className="mt-4 text-[15px] font-semibold text-ink">{t("还没有笔记")}</p>
               <p className="mt-1.5 text-[12px] leading-relaxed text-faint">
-                写下第一篇，或者把电脑上的文本文件拖进来
+                {t("写下第一篇，或者把电脑上的文本文件拖进来")}
               </p>
               <button
                 type="button"
@@ -411,14 +415,14 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
                 className="btn-primary mt-5 flex items-center gap-1.5 px-4 py-2 text-[13px]"
               >
                 <Icon name="welcome-plus" className="h-4 w-4" />
-                创建第一篇笔记
+                {t("创建第一篇笔记")}
               </button>
             </div>
           </section>
         )}
 
         <p className="mt-9 text-center text-[11px] text-faint-soft">
-          把 .md / .txt 文件拖到左侧分组即可导入
+          {t("把 .md / .txt 文件拖到左侧分组即可导入")}
         </p>
       </div>
     </div>

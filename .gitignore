@@ -49,6 +49,12 @@ Thumbs.db
 .eslintcache
 
 # ========================================
+# Update signing keys (never commit the private key)
+# ========================================
+.tauri/
+*.key
+
+# ========================================
 # Tauri / Rust
 # ========================================
 src-tauri/target/

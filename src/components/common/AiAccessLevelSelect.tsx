@@ -5,6 +5,7 @@
  * 用分段按钮而不是下拉：「禁止」与「只读」差一个词但后果完全不同，
  * 平铺三个选项能让用户一眼看到当前档位，也少一次点击。
  */
+import { useI18n } from "@/i18n";
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 
@@ -32,12 +33,14 @@ export const AiAccessLevelSelect: React.FC<{
   disabledHint?: string;
   /** 紧凑模式：设置页的笔记行用它 */
   size?: "sm" | "xs";
-}> = ({ value, onChange, disabled = false, disabledHint, size = "sm" }) => (
+}> = ({ value, onChange, disabled = false, disabledHint, size = "sm" }) => {
+  const { t } = useI18n();
+  return (
   <div
     className={`inline-flex items-center rounded-lg border border-line bg-surface overflow-hidden flex-shrink-0 ${
       disabled ? "opacity-50" : ""
     }`}
-    title={disabled ? disabledHint : undefined}
+    title={disabled && disabledHint ? t(disabledHint) : undefined}
   >
     {LEVELS.map((level, index) => {
       const active = value === level;
@@ -47,7 +50,7 @@ export const AiAccessLevelSelect: React.FC<{
           type="button"
           disabled={disabled}
           aria-pressed={active}
-          title={HINTS[level]}
+          title={t(HINTS[level])}
           onClick={() => !disabled && onChange(level)}
           className={`${size === "xs" ? "px-2 py-[3px] text-[10.5px]" : "px-2.5 py-1 text-[11.5px]"} font-medium transition-colors ${
             index > 0 ? "border-l border-line" : ""
@@ -59,9 +62,10 @@ export const AiAccessLevelSelect: React.FC<{
                 : "text-faint hover:bg-app hover:text-body"
           }`}
         >
-          {AI_ACCESS_LABELS[level]}
+          {t(AI_ACCESS_LABELS[level])}
         </button>
       );
     })}
   </div>
 );
+};

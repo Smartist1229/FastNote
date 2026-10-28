@@ -1,5 +1,38 @@
 import { Component, ErrorInfo } from "react";
 import type { ErrorBoundaryProps, ErrorBoundaryState } from "@/interface/ui";
+import { useI18n } from "@/i18n";
+
+/** The class boundary cannot subscribe with hooks; its fallback can. */
+const ErrorFallback = ({ error, onDismiss }: { error: Error; onDismiss: () => void }) => {
+  const { t } = useI18n();
+  return (
+    <div className="h-screen w-full flex items-center justify-center bg-app p-6">
+      <div className="max-w-lg w-full bg-surface rounded-2xl border border-line shadow-sm p-6">
+        <h1 className="text-base font-semibold text-ink mb-2">{t("界面遇到了一个错误")}</h1>
+        <p className="text-sm text-muted leading-relaxed mb-4">
+          {t("数据都还在，没有丢失。可以先尝试重载；如果反复出现，把下面的信息反馈一下。")}
+        </p>
+        <pre className="mb-4 max-h-40 overflow-auto rounded-xl bg-app border border-line-soft px-3 py-2 text-[11px] leading-relaxed text-danger whitespace-pre-wrap break-all">
+          {String(error.stack || error.message || error)}
+        </pre>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onDismiss}
+            className="px-3 py-1.5 text-xs font-medium text-muted bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors"
+          >
+            {t("收起")}
+          </button>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-3 py-1.5 text-xs font-medium text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
+          >
+            {t("重新加载")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /**
  * 顶层错误边界：包住整棵界面树。
@@ -24,32 +57,6 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render() {
     const { error } = this.state;
     if (!error) return this.props.children;
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-app p-6">
-        <div className="max-w-lg w-full bg-surface rounded-2xl border border-line shadow-sm p-6">
-          <h1 className="text-base font-semibold text-ink mb-2">界面遇到了一个错误</h1>
-          <p className="text-sm text-muted leading-relaxed mb-4">
-            数据都还在，没有丢失。可以先尝试重载；如果反复出现，把下面的信息反馈一下。
-          </p>
-          <pre className="mb-4 max-h-40 overflow-auto rounded-xl bg-app border border-line-soft px-3 py-2 text-[11px] leading-relaxed text-danger whitespace-pre-wrap break-all">
-            {String(error?.stack || error?.message || error)}
-          </pre>
-          <div className="flex gap-2 justify-end">
-            <button
-              onClick={() => this.setState({ error: null })}
-              className="px-3 py-1.5 text-xs font-medium text-muted bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors"
-            >
-              收起
-            </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-3 py-1.5 text-xs font-medium text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
-            >
-              重新加载
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+    return <ErrorFallback error={error} onDismiss={() => this.setState({ error: null })} />;
   }
 }

@@ -1185,10 +1185,10 @@ body.is-dragging-panel * {
 .sort-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 5px;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   border-radius: calc(var(--radius-md) * 0.875);
-  font-size: 11px;
   color: var(--color-text-muted);
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;

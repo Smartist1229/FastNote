@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 /**
  * 设置 → 主题。
  *
@@ -67,6 +68,7 @@ const ColorField: React.FC<{
   value: string;
   onChange: (hex: string) => void;
 }> = ({ tokenKey, value, onChange }) => {
+  const { t } = useI18n();
   const meta = COLOR_FIELD_META[tokenKey];
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -81,13 +83,13 @@ const ColorField: React.FC<{
       <ColorPicker
         value={value}
         onChange={onChange}
-        label={`${meta.label}取色`}
+        label={t("{label}取色", { label: t(meta.label) })}
         className="w-7 h-7 flex-shrink-0 rounded-lg border border-line-strong/60 shadow-inner"
       />
       <div className="min-w-0 flex-1">
-        <p className="text-[11.5px] font-medium text-body leading-tight">{meta.label}</p>
-        <p className="text-[10.5px] text-faint leading-tight mt-0.5 truncate" title={meta.hint}>
-          {meta.hint}
+        <p className="text-[11.5px] font-medium text-body leading-tight">{t(meta.label)}</p>
+        <p className="text-[10.5px] text-faint leading-tight mt-0.5 truncate" title={t(meta.hint)}>
+          {t(meta.hint)}
         </p>
       </div>
       <input
@@ -101,7 +103,7 @@ const ColorField: React.FC<{
         }}
         spellCheck={false}
         className="w-[84px] flex-shrink-0 px-1.5 py-1 text-[10.5px] font-mono text-center input-modern uppercase"
-        aria-label={`${meta.label}色值`}
+        aria-label={t("{label}色值", { label: t(meta.label) })}
       />
     </div>
   );
@@ -114,33 +116,34 @@ const ColorField: React.FC<{
  * 这样即使某个变量还没写进 <html>，预览也能反映"即将变成什么样"。
  */
 const ThemePreview: React.FC<{ tokens: ThemeTokens }> = ({ tokens }) => {
-  const t = tokens;
+  const { t } = useI18n();
+  const colors = tokens;
   const c = hexToCss;
-  const r = Math.min(t.radius, 14);
+  const r = Math.min(colors.radius, 14);
 
   return (
     <div
       className="rounded-xl border overflow-hidden select-none"
-      style={{ background: c(t.appBg), borderColor: c(t.border), borderRadius: t.radius + 4 }}
+      style={{ background: c(colors.appBg), borderColor: c(colors.border), borderRadius: colors.radius + 4 }}
     >
-      <div className="flex h-[132px]">
+      <div className="flex min-h-[132px]">
         {/* 侧边栏 */}
-        <div className="w-[74px] flex-shrink-0 p-1.5 flex flex-col gap-1" style={{ background: c(t.surfaceAlt) }}>
+        <div className="w-[74px] flex-shrink-0 p-1.5 flex flex-col gap-1" style={{ background: c(colors.surfaceAlt) }}>
           <div className="flex items-center gap-1 px-1 pb-1">
-            <span className="w-2.5 h-2.5 rounded" style={{ background: c(t.accent) }} />
-            <span className="text-[8px] font-semibold" style={{ color: c(t.textInk) }}>FastNote</span>
+            <span className="w-2.5 h-2.5 rounded" style={{ background: c(colors.accent) }} />
+            <span className="text-[8px] font-semibold" style={{ color: c(colors.textInk) }}>FastNote</span>
           </div>
           {["笔记", "收藏", "回收站"].map((label, i) => (
             <div
               key={label}
               className="px-1.5 py-[3px] text-[8px]"
               style={{
-                background: i === 0 ? c(t.accent) : "transparent",
-                color: i === 0 ? c(t.onAccent) : c(t.textMuted),
+                background: i === 0 ? c(colors.accent) : "transparent",
+                color: i === 0 ? c(colors.onAccent) : c(colors.textMuted),
                 borderRadius: Math.max(2, r - 4),
               }}
             >
-              {label}
+              {t(label)}
             </div>
           ))}
         </div>
@@ -148,61 +151,43 @@ const ThemePreview: React.FC<{ tokens: ThemeTokens }> = ({ tokens }) => {
         {/* 正文 */}
         <div className="flex-1 min-w-0 p-2.5 flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[9.5px] font-semibold truncate" style={{ color: c(t.textInk) }}>
-              今天的想法
-            </span>
+            <span className="text-[9.5px] font-semibold truncate" style={{ color: c(colors.textInk) }}>{t("今天的想法")}</span>
             <span
               className="text-[7.5px] px-1 py-[1px] rounded"
-              style={{ background: c(t.surfaceAlt), color: c(t.textFaint) }}
-            >
-              2 分钟前
-            </span>
+              style={{ background: c(colors.surfaceAlt), color: c(colors.textFaint) }}
+            >{t("2 分钟前")}</span>
           </div>
-          <p className="text-[8px] leading-[1.7]" style={{ color: c(t.textBody) }}>
-            主题改完立刻生效，不用来回关窗口看效果。
-          </p>
-          <p className="text-[7.5px]" style={{ color: c(t.textFaint) }}>
-            这行是弱化文字，用来放时间与附件信息。
-          </p>
+          <p className="text-[8px] leading-[1.7]" style={{ color: c(colors.textBody) }}>{t("主题改完立刻生效，不用来回关窗口看效果。")}</p>
+          <p className="text-[7.5px]" style={{ color: c(colors.textFaint) }}>{t("这行是弱化文字，用来放时间与附件信息。")}</p>
 
           <div
             className="mt-auto rounded-lg border p-1.5 flex items-center gap-1"
-            style={{ background: c(t.surface), borderColor: c(t.border), borderRadius: r }}
+            style={{ background: c(colors.surface), borderColor: c(colors.border), borderRadius: r }}
           >
-            <span className="text-[8px] flex-1" style={{ color: c(t.textMuted) }}>写点什么…</span>
+            <span className="text-[8px] flex-1" style={{ color: c(colors.textMuted) }}>{t("写点什么…")}</span>
             <span
               className="text-[7.5px] px-1.5 py-[2px] font-medium"
-              style={{ background: c(t.accent), color: c(t.onAccent), borderRadius: Math.max(2, r - 4) }}
-            >
-              保存
-            </span>
+              style={{ background: c(colors.accent), color: c(colors.onAccent), borderRadius: Math.max(2, r - 4) }}
+            >{t("保存")}</span>
           </div>
 
           <div className="flex items-center gap-1">
             <span
               className="text-[7px] px-1 py-[1px] rounded"
-              style={{ background: c(t.danger), color: "#ffffff" }}
-            >
-              删除
-            </span>
+              style={{ background: c(colors.danger), color: "#ffffff" }}
+            >{t("删除")}</span>
             <span
               className="text-[7px] px-1 py-[1px] rounded"
-              style={{ background: c(t.success), color: "#ffffff" }}
-            >
-              已保存
-            </span>
+              style={{ background: c(colors.success), color: "#ffffff" }}
+            >{t("已保存")}</span>
             <span
               className="text-[7px] px-1 py-[1px] rounded"
-              style={{ background: c(t.warning), color: "#ffffff" }}
-            >
-              受限
-            </span>
+              style={{ background: c(colors.warning), color: "#ffffff" }}
+            >{t("受限")}</span>
             <span
               className="ml-auto text-[7px] px-1 py-[1px] rounded"
-              style={{ background: c(t.accent), color: c(t.onAccent), opacity: 0.22 }}
-            >
-              选中
-            </span>
+              style={{ background: c(colors.accent), color: c(colors.onAccent), opacity: 0.22 }}
+            >{t("选中")}</span>
           </div>
         </div>
       </div>
@@ -216,6 +201,7 @@ const ThemePanelBase: React.FC<{
   theme: ThemeSettings;
   onChange: (next: ThemeSettings) => void;
 }> = ({ theme, onChange }) => {
+  const { t } = useI18n();
   const { showToast } = useToast();
   const resolved = resolveMode(theme.mode);
   /** 当前模式下的令牌：自定义面板与预览都用它 */
@@ -226,9 +212,9 @@ const ThemePanelBase: React.FC<{
   const [savedName, setSavedName] = useState("");
 
   const modeOptions: { value: ThemeMode; label: string; icon: React.ReactNode; hint: string }[] = [
-    { value: "light", label: "浅色", icon: <SunIcon />, hint: "始终使用亮色令牌" },
-    { value: "dark", label: "深色", icon: <MoonIcon />, hint: "始终使用暗色令牌" },
-    { value: "system", label: "跟随系统", icon: <SystemIcon />, hint: "随操作系统的深浅色自动切换" },
+    { value: "light", label: t("浅色"), icon: <SunIcon />, hint: t("始终使用亮色令牌") },
+    { value: "dark", label: t("深色"), icon: <MoonIcon />, hint: t("始终使用暗色令牌") },
+    { value: "system", label: t("跟随系统"), icon: <SystemIcon />, hint: t("随操作系统的深浅色自动切换") },
   ];
 
   /**
@@ -252,7 +238,7 @@ const ThemePanelBase: React.FC<{
 
   /** 把当前配色存成一条命名主题（同名覆盖，最多 MAX_SAVED_THEMES 条） */
   const saveCurrent = () => {
-    const name = savedName.trim() || `我的主题 ${theme.saved.length + 1}`;
+    const name = savedName.trim() || t("我的主题 {value1}", { value1: theme.saved.length + 1 });
     const pair = getTokenPair(theme);
     const entry: SavedTheme = {
       id: `t${Date.now().toString(36)}`,
@@ -262,10 +248,10 @@ const ThemePanelBase: React.FC<{
       light: pair.light,
       dark: pair.dark,
     };
-    const saved = [entry, ...theme.saved.filter((t) => t.name !== entry.name)].slice(0, MAX_SAVED_THEMES);
+    const saved = [entry, ...theme.saved.filter((colors) => colors.name !== entry.name)].slice(0, MAX_SAVED_THEMES);
     onChange({ ...theme, saved });
     setSavedName("");
-    showToast(`已保存主题「${entry.name}」`, "success");
+    showToast(t("已保存主题「{name}」", { name: entry.name }), "success");
   };
 
   /** 应用一条已保存主题：亮暗两套一起恢复，模式也恢复成保存时的选择 */
@@ -276,20 +262,18 @@ const ThemePanelBase: React.FC<{
       presetId: CUSTOM_PRESET_ID,
       custom: { light: entry.light, dark: entry.dark },
     });
-    showToast(`已应用主题「${entry.name}」`, "success");
+    showToast(t("已应用主题「{name}」", { name: entry.name }), "success");
   };
 
   const removeSaved = (id: string) => {
-    onChange({ ...theme, saved: theme.saved.filter((t) => t.id !== id) });
+    onChange({ ...theme, saved: theme.saved.filter((colors) => colors.id !== id) });
   };
 
   return (
     <div className="space-y-5">
       {/* ---- 外观模式 ---- */}
       <div>
-        <p className="text-[11px] text-faint mb-2">
-          选择软件的明暗外观。三种选择不会改动你已经调好的配色，只切换使用哪一套令牌。
-        </p>
+        <p className="text-[11px] text-faint mb-2">{t("选择软件的明暗外观。三种选择不会改动你已经调好的配色，只切换使用哪一套令牌。")}</p>
         <div className="grid grid-cols-3 gap-2">
           {modeOptions.map((o) => {
             const active = theme.mode === o.value;
@@ -313,23 +297,19 @@ const ThemePanelBase: React.FC<{
           })}
         </div>
         {theme.mode === "system" && (
-          <p className="mt-1.5 text-[10.5px] text-faint">
-            当前系统偏好：{resolved === "dark" ? "深色" : "浅色"}（改系统设置会立即跟随）
-          </p>
+          <p className="mt-1.5 text-[10.5px] text-faint">{t("当前系统偏好：{value1}（改系统设置会立即跟随）", { value1: resolved === "dark" ? t("深色") : t("浅色") })}</p>
         )}
       </div>
 
       {/* ---- 预设主题 ---- */}
       <div>
         <div className="flex items-baseline justify-between mb-2">
-          <p className="text-xs font-semibold text-ink">预设主题</p>
-          <p className="text-[10.5px] text-faint">
-            当前：{isCustom ? "自定义" : preset.name}
-          </p>
+          <p className="text-xs font-semibold text-ink">{t("预设主题")}</p>
+          <p className="text-[10.5px] text-faint">{t("当前：{value1}", { value1: isCustom ? t("自定义") : t(preset.name) })}</p>
         </div>
         <div className="grid grid-cols-4 gap-2">
           {THEME_PRESETS.map((p) => {
-            const t = p[resolved];
+            const colors = p[resolved];
             const active = theme.presetId === p.id;
             return (
               <button
@@ -337,32 +317,32 @@ const ThemePanelBase: React.FC<{
                 type="button"
                 onClick={() => onChange({ ...theme, presetId: p.id })}
                 aria-pressed={active}
-                title={p.desc}
+                title={t(p.desc)}
                 className={`group rounded-xl border p-2 text-left transition-colors ${
                   active
                     ? "border-primary-500 ring-1 ring-primary-500/20"
                     : "border-line hover:border-line-strong"
                 }`}
-                style={{ background: hexToCss(t.surface) }}
+                style={{ background: hexToCss(colors.surface) }}
               >
                 {/* 色点：底色 / 次级填充 / 主题色 / 标题字 */}
                 <div
                   className="h-7 rounded-lg mb-1.5 flex items-center gap-1 px-1.5"
-                  style={{ background: hexToCss(t.appBg), border: `1px solid ${hexToCss(t.border)}` }}
+                  style={{ background: hexToCss(colors.appBg), border: `1px solid ${hexToCss(colors.border)}` }}
                 >
-                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(t.accent) }} />
-                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(t.surfaceAlt) }} />
-                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(t.textInk) }} />
-                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(t.textFaint) }} />
+                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(colors.accent) }} />
+                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(colors.surfaceAlt) }} />
+                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(colors.textInk) }} />
+                  <span className="w-2 h-2 rounded-full" style={{ background: hexToCss(colors.textFaint) }} />
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="text-[11px] font-medium" style={{ color: hexToCss(t.textInk) }}>
-                    {p.name}
+                  <span className="text-[11px] font-medium" style={{ color: hexToCss(colors.textInk) }}>
+                    {t(p.name)}
                   </span>
                   {active && <Icon name="editor-check" className="w-2.5 h-2.5 text-primary-500" />}
                 </div>
-                <p className="text-[9.5px] leading-tight mt-0.5 line-clamp-2" style={{ color: hexToCss(t.textMuted) }}>
-                  {p.desc}
+                <p className="text-[9.5px] leading-tight mt-0.5 line-clamp-2" style={{ color: hexToCss(colors.textMuted) }}>
+                  {t(p.desc)}
                 </p>
               </button>
             );
@@ -373,10 +353,8 @@ const ThemePanelBase: React.FC<{
       {/* ---- 实时预览 ---- */}
       <div>
         <div className="flex items-baseline justify-between mb-2">
-          <p className="text-xs font-semibold text-ink">实时预览</p>
-          <p className="text-[10.5px] text-faint">
-            {resolved === "dark" ? "暗色令牌" : "亮色令牌"} · 改动即时生效
-          </p>
+          <p className="text-xs font-semibold text-ink">{t("实时预览")}</p>
+          <p className="text-[10.5px] text-faint">{t("{value1} · 改动即时生效", { value1: resolved === "dark" ? t("暗色令牌") : t("亮色令牌") })}</p>
         </div>
         <ThemePreview tokens={tokens} />
       </div>
@@ -384,7 +362,7 @@ const ThemePanelBase: React.FC<{
       {/* ---- 自定义颜色 ---- */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <p className="text-xs font-semibold text-ink">自定义颜色</p>
+          <p className="text-xs font-semibold text-ink">{t("自定义颜色")}</p>
           {isCustom && (
             <button
               type="button"
@@ -396,21 +374,16 @@ const ThemePanelBase: React.FC<{
                 })
               }
               className="text-[10.5px] text-faint hover:text-danger transition-colors"
-            >
-              恢复默认配色
-            </button>
+            >{t("恢复默认配色")}</button>
           )}
         </div>
-        <p className="text-[11px] text-faint leading-relaxed mb-2">
-          正在编辑<strong className="text-muted">{resolved === "dark" ? "深色" : "亮色"}</strong>令牌；
-          改任意一项会切换为「自定义」，另一模式的配色保持不变，切过去可以单独再调。
-        </p>
+        <p className="text-[11px] text-faint leading-relaxed mb-2">{t("正在编辑{mode}令牌；改任意一项会切换为「自定义」，另一模式的配色保持不变，切过去可以单独再调。", { mode: resolved === "dark" ? t("深色") : t("亮色") })}</p>
 
         <div className="space-y-3">
           {COLOR_GROUPS.map((group) => (
             <div key={group.title} className="rounded-xl border border-line bg-surface px-3 py-2">
               <p className="text-[10px] font-semibold text-faint uppercase tracking-wider pt-0.5 pb-1">
-                {group.title}
+                {t(group.title)}
               </p>
               <div className="divide-y divide-line-soft">
                 {group.keys.map((key) => (
@@ -429,8 +402,8 @@ const ThemePanelBase: React.FC<{
           <div className="rounded-xl border border-line bg-surface px-3 py-2.5">
             <div className="flex items-center gap-2.5">
               <div className="min-w-0 flex-1">
-                <p className="text-[11.5px] font-medium text-body">圆角</p>
-                <p className="text-[10.5px] text-faint mt-0.5">按钮、卡片、输入框的统一圆角基准</p>
+                <p className="text-[11.5px] font-medium text-body">{t("圆角")}</p>
+                <p className="text-[10.5px] text-faint mt-0.5">{t("按钮、卡片、输入框的统一圆角基准")}</p>
               </div>
               <input
                 type="range"
@@ -440,7 +413,7 @@ const ThemePanelBase: React.FC<{
                 value={tokens.radius}
                 onChange={(e) => patchToken("radius", Number(e.target.value))}
                 className="w-28 accent-[var(--color-accent)]"
-                aria-label="圆角基准"
+                aria-label={t("圆角基准")}
               />
               <span className="w-9 text-right text-[11px] font-mono text-muted">{tokens.radius}px</span>
             </div>
@@ -454,7 +427,7 @@ const ThemePanelBase: React.FC<{
                     type="button"
                     onClick={() => patchToken("radius", p.value)}
                     aria-pressed={active}
-                    title={`圆角 ${p.value}px`}
+                    title={t("圆角 {value}px", { value: p.value })}
                     className="flex-1 flex flex-col items-center gap-1 outline-none"
                   >
                     <span
@@ -472,7 +445,7 @@ const ThemePanelBase: React.FC<{
                         active ? "text-primary-600 font-medium" : "text-faint"
                       }`}
                     >
-                      {p.label}
+                      {t(p.label)}
                     </span>
                   </button>
                 );
@@ -484,10 +457,8 @@ const ThemePanelBase: React.FC<{
 
       {/* ---- 我的主题 ---- */}
       <div>
-        <p className="text-xs font-semibold text-ink mb-1">我的主题</p>
-        <p className="text-[11px] text-faint leading-relaxed mb-2">
-          把当前配色（含亮暗两套）存下来，之后一键切换。最多保存 {MAX_SAVED_THEMES} 套。
-        </p>
+        <p className="text-xs font-semibold text-ink mb-1">{t("我的主题")}</p>
+        <p className="text-[11px] text-faint leading-relaxed mb-2">{t("把当前配色（含亮暗两套）存下来，之后一键切换。最多保存 {MAX_SAVED_THEMES} 套。", { MAX_SAVED_THEMES: MAX_SAVED_THEMES })}</p>
         <div className="flex items-center gap-1.5">
           <input
             value={savedName}
@@ -496,7 +467,7 @@ const ThemePanelBase: React.FC<{
               if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter") saveCurrent();
             }}
-            placeholder="给这套主题起个名字（可留空）"
+            placeholder={t("给这套主题起个名字（可留空）")}
             maxLength={24}
             className="flex-1 min-w-0 px-2.5 py-1.5 text-[11.5px] input-modern"
           />
@@ -504,22 +475,20 @@ const ThemePanelBase: React.FC<{
             type="button"
             onClick={saveCurrent}
             className="px-3 py-1.5 text-[11.5px] font-medium text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
-          >
-            保存主题
-          </button>
+          >{t("保存主题")}</button>
         </div>
 
         {theme.saved.length > 0 ? (
           <div className="mt-2 space-y-1.5">
             {theme.saved.map((entry) => {
-              const t = resolved === "dark" ? entry.dark : entry.light;
+              const colors = resolved === "dark" ? entry.dark : entry.light;
               return (
                 <div
                   key={entry.id}
                   className="flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5"
                 >
                   <div className="flex items-center gap-1 flex-shrink-0">
-                    {[t.appBg, t.surface, t.accent, t.textInk].map((color, i) => (
+                    {[colors.appBg, colors.surface, colors.accent, colors.textInk].map((color, i) => (
                       <span
                         key={i}
                         className="w-2.5 h-2.5 rounded-full border border-line-strong/40"
@@ -531,20 +500,18 @@ const ThemePanelBase: React.FC<{
                     {entry.name}
                   </span>
                   <span className="flex-shrink-0 text-[10px] text-faint">
-                    {entry.mode === "system" ? "跟随系统" : entry.mode === "dark" ? "深色" : "浅色"}
+                    {entry.mode === "system" ? t("跟随系统") : entry.mode === "dark" ? t("深色") : t("浅色")}
                   </span>
                   <button
                     type="button"
                     onClick={() => applySaved(entry)}
                     className="flex-shrink-0 px-2 py-0.5 text-[10.5px] font-medium text-primary-600 rounded-md hover:bg-primary-50 transition-colors"
-                  >
-                    应用
-                  </button>
+                  >{t("应用")}</button>
                   <button
                     type="button"
                     onClick={() => removeSaved(entry.id)}
                     className="flex-shrink-0 p-0.5 text-faint hover:text-danger transition-colors"
-                    title="删除这套主题"
+                    title={t("删除这套主题")}
                   >
                     <Icon name="ai-trash" className="w-3 h-3" />
                   </button>
@@ -553,9 +520,7 @@ const ThemePanelBase: React.FC<{
             })}
           </div>
         ) : (
-          <p className="mt-2 rounded-lg border border-dashed border-line px-3 py-2.5 text-[11px] text-faint">
-            还没有保存过主题。调好颜色后点「保存主题」即可留住这套配色。
-          </p>
+          <p className="mt-2 rounded-lg border border-dashed border-line px-3 py-2.5 text-[11px] text-faint">{t("还没有保存过主题。调好颜色后点「保存主题」即可留住这套配色。")}</p>
         )}
       </div>
     </div>

@@ -40,8 +40,11 @@ export const APP_UI_FONT_STACK =
 export const APP_MONO_FONT_STACK =
   '"JetBrains Mono", "Cascadia Code", "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, "MiSans VF", monospace';
 
+export const DEFAULT_EDITOR_LOCALE = "en-US" as const;
+
 /* ---------- General ---------- */
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
+  language: "system",
   /** 启动时清空回收站（只在软件初始化时执行，永久删除、不可恢复） */
   cleanTrashOnStartup: false,
   /** 是否显示托盘图标 */

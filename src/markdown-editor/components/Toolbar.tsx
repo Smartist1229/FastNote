@@ -620,10 +620,10 @@ const ToolbarImpl = ({
       return (
         <ToolButton
           key={item}
-          title={title}
+          title={fullscreen ? labels.fullscreenExit : title}
           active={fullscreen}
           showLabel={toolbar.labels}
-          label={title}
+          label={fullscreen ? labels.fullscreenExit : title}
           tooltip={toolbar.tooltip}
           onClick={onToggleFullscreen}
         >
@@ -737,7 +737,7 @@ const ToolbarImpl = ({
         toolbar.scrollable ? " is-scrollable" : ""
       }${tailItems.length > 0 ? " has-tail" : ""}`}
       role="toolbar"
-      aria-label="Markdown 工具栏"
+      aria-label={labels.toolbar}
     >
       <div className="mde-toolbar-inner">
         {headItems.map(renderEntry)}

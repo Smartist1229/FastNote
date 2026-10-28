@@ -11,6 +11,7 @@
  *   无参数命令选中即执行；二级命令选中后列出固定选项；自定义参数命令只填 token，补完参数再 Enter，
  *   这样命令文本始终可改。
  */
+import { useI18n } from "@/i18n";
 import {
   useCallback,
   useEffect,
@@ -125,16 +126,17 @@ const parseCommandToken = (query: string, commands: PaletteCommand[]): ParsedCom
 };
 
 /** 「3 分钟前」这种粗粒度相对时间：跳转列表只需要"新旧感"，不需要精确到秒 */
-const relativeTime = (iso: string): string => {
+const relativeTime = (iso: string, locale: string, t: ReturnType<typeof useI18n>["t"]): string => {
   const time = new Date(iso).getTime();
   if (!Number.isFinite(time)) return "";
   const diff = Date.now() - time;
   const minute = 60_000;
-  if (diff < minute) return "刚刚";
-  if (diff < 60 * minute) return `${Math.floor(diff / minute)} 分钟前`;
-  if (diff < 24 * 60 * minute) return `${Math.floor(diff / (60 * minute))} 小时前`;
-  if (diff < 30 * 24 * 60 * minute) return `${Math.floor(diff / (24 * 60 * minute))} 天前`;
-  return new Date(iso).toLocaleDateString("zh-CN");
+  if (diff < minute) return t("刚刚");
+  const relative = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
+  if (diff < 60 * minute) return relative.format(-Math.floor(diff / minute), "minute");
+  if (diff < 24 * 60 * minute) return relative.format(-Math.floor(diff / (60 * minute)), "hour");
+  if (diff < 30 * 24 * 60 * minute) return relative.format(-Math.floor(diff / (24 * 60 * minute)), "day");
+  return new Date(iso).toLocaleDateString(locale);
 };
 
 /** 命中区间高亮 */
@@ -161,12 +163,33 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   notes,
   categories,
   tags,
-  commands,
+  commands: sourceCommands,
   currentNoteId,
   onClose,
   onOpenNote,
   onLoadTagNotes,
 }) => {
+  const { locale, t } = useI18n();
+  // Only command metadata is localized; tokens, arguments, and user note/tag data stay intact.
+  const commands = useMemo<PaletteCommand[]>(() => sourceCommands.map((command) => ({
+    ...command,
+    title: t(command.title),
+    hint: command.hint ? t(command.hint) : undefined,
+    group: t(command.group),
+    disabledReason: command.disabledReason ? t(command.disabledReason) : undefined,
+    keywords: `${command.keywords ?? ""} ${command.title} ${command.hint ?? ""}`,
+    arg: command.arg ? {
+      ...command.arg,
+      placeholder: t(command.arg.placeholder),
+      hint: command.arg.hint ? t(command.arg.hint) : undefined,
+    } : undefined,
+    subcommands: command.subcommands?.map((subcommand) => ({
+      ...subcommand,
+      title: t(subcommand.title),
+      hint: subcommand.hint ? t(subcommand.hint) : undefined,
+      keywords: `${subcommand.keywords ?? ""} ${subcommand.title}`,
+    })),
+  })), [sourceCommands, t]);
   const [mode, setMode] = useState<PaletteMode>(initialMode);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -206,8 +229,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const jump = useNoteJump(notes, isTagMode ? "" : q, jumpActive);
 
   const categoryName = useCallback(
-    (id: number | null) => categories.find((c) => c.id === id)?.name ?? "未分类",
-    [categories],
+    (id: number | null) => categories.find((c) => c.id === id)?.name ?? t("未分类"),
+    [categories, t],
   );
 
   /* ---------- 结果模型 ---------- */
@@ -224,8 +247,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (mode === "jump") {
       if (tagFilter) {
         // 标签结果里只在**标题**上筛：正文可能是百万字，逐键扫全文会把跳转面板拖垮
-        const filtered = q ? tagNotes.filter((n) => fuzzyMatch(n.title || "无标题", q)) : tagNotes;
-        group("g-tag", `标签「${tagFilter.name}」· ${tagNotes.length} 篇`);
+        const filtered = q ? tagNotes.filter((n) => fuzzyMatch(n.title || t("无标题"), q)) : tagNotes;
+        group("g-tag", t(tagNotes.length === 1 ? "标签「{name}」· 1 篇" : "标签「{name}」· {count} 篇", { name: tagFilter.name, count: tagNotes.length }));
         for (const note of filtered) {
           push({ kind: "note", id: `n${note.id}`, note, isCurrent: note.id === currentNoteId }, `n${note.id}`);
         }
@@ -241,16 +264,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             tagQuery ? b.hit.score - a.hit.score || b.tag.note_count - a.tag.note_count : b.tag.note_count - a.tag.note_count,
           )
           .slice(0, 20);
-        if (matched.length) group("g-tags", tagQuery ? "标签" : "全部标签");
+        if (matched.length) group("g-tags", tagQuery ? t("标签") : t("全部标签"));
         for (const { tag } of matched) push({ kind: "tag", id: `t${tag.id}`, tag }, `t${tag.id}`);
       } else if (!q) {
         const recent = recentNotes(notes, 8);
-        if (recent.length) group("g-recent", "最近修改");
+        if (recent.length) group("g-recent", t("最近修改"));
         for (const note of recent) {
           push({ kind: "note", id: `n${note.id}`, note, isCurrent: note.id === currentNoteId }, `n${note.id}`);
         }
       } else {
-        if (jump.hits.length) group("g-notes", "笔记");
+        if (jump.hits.length) group("g-notes", t("笔记"));
         for (const hit of jump.hits) {
           push({ kind: "note", id: `n${hit.note.id}`, note: hit.note, hit, isCurrent: hit.note.id === currentNoteId }, `n${hit.note.id}`);
         }
@@ -316,7 +339,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       return next !== undefined && next.kind !== "group";
     });
     return { rows: visible, selectable: keys };
-  }, [mode, q, tokenQuery, tagFilter, tagNotes, isTagMode, tagQuery, tags, notes, jump.hits, commands, currentNoteId]);
+  }, [mode, q, tokenQuery, tagFilter, tagNotes, isTagMode, tagQuery, tags, notes, jump.hits, commands, currentNoteId, t]);
 
   /** 结果变少（异步扫描、标签加载完）时把选中项拉回范围内，否则 Enter 会落到空处 */
   useEffect(() => {
@@ -449,16 +472,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     mode === "jump"
       ? tagFilter
         ? tagLoading
-          ? "正在读取标签下的笔记…"
-          : "这个标签下没有笔记"
+          ? t("正在读取标签下的笔记…")
+          : t("这个标签下没有笔记")
         : isTagMode
           ? tagQuery
-            ? `没有匹配「${tagQuery}」的标签`
-            : "还没有标签：在笔记属性里加一个试试"
-          : `没有找到匹配「${q}」的笔记`
+            ? t("没有匹配「{query}」的标签", { query: tagQuery })
+            : t("还没有标签：在笔记属性里加一个试试")
+          : t("没有找到匹配「{query}」的笔记", { query: q })
       : tokenQuery?.command.subcommands?.length
-        ? `没有匹配「${tokenQuery.arg}」的分区`
-        : `没有匹配「${q}」的命令`;
+        ? t("没有匹配「{query}」的分区", { query: tokenQuery.arg })
+        : t("没有匹配「{query}」的命令", { query: q });
 
   return (
     <div
@@ -472,7 +495,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         style={{ maxHeight: "70vh" }}
         onKeyDown={onKeyDown}
         role="dialog"
-        aria-label={mode === "jump" ? "快速跳转" : "命令面板"}
+        aria-label={mode === "jump" ? t("快速跳转") : t("命令面板")}
       >
         {/* 输入区：整行是一个搜索框，焦点态由外层描边表达；
             input 自己必须显式清掉全局 focus-visible 光晕，否则边框里会再套一圈蓝框 */}
@@ -489,9 +512,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               placeholder={
                 mode === "jump"
                   ? tagFilter
-                    ? `在「${tagFilter.name}」里筛选…`
-                    : "搜索笔记标题与正文，输入 # 查标签…"
-                  : "输入命令，如 settings theme 或 create_note 周报…"
+                    ? t("在「{name}」里筛选…", { name: tagFilter.name })
+                    : t("搜索笔记标题与正文，输入 # 查标签…")
+                  : t("输入命令，如 settings theme 或 create_note 周报…")
               }
               className="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-body placeholder:text-faint-soft focus:outline-none focus-visible:shadow-none"
               spellCheck={false}
@@ -501,12 +524,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 className="p-1 rounded-md text-faint-soft hover:text-body hover:bg-surface-alt transition-colors flex-shrink-0"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => setQuery("")}
-                title="清空"
+                title={t("清空")}
               >
                 <Icon name="ai-close" className="w-3 h-3" />
               </button>
             )}
-            <span className="text-[10px] text-faint-soft flex-shrink-0 tabular-nums">{jumpCount} 项</span>
+            <span className="text-[10px] text-faint-soft flex-shrink-0 tabular-nums">{t(jumpCount === 1 ? "1 项" : "{count} 项", { count: jumpCount })}</span>
           </div>
 
           {/* 标准指令的参数提示：自定义参数说明还缺什么，二级命令说明参数是固定选项 */}
@@ -515,17 +538,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               <span className="font-mono text-faint">{tokenQuery.command.token}</span>
               {tokenQuery.command.subcommands?.length ? (
                 <>
-                  <span className="font-mono text-primary-500">分区名</span>
-                  <span>· 如 general / theme · 回车打开高亮项</span>
+                  <span className="font-mono text-primary-500">{t("分区名")}</span>
+                  <span>{t("· 如 general / theme · 回车打开高亮项")}</span>
                 </>
               ) : (
                 <>
                   <span className="font-mono text-primary-500">{tokenQuery.command.arg!.placeholder}</span>
                   {tokenQuery.command.arg!.hint && <span>· {tokenQuery.command.arg!.hint}</span>}
                   {tokenQuery.command.arg!.required && !tokenQuery.arg && (
-                    <span className="text-warning">· 必填</span>
+                    <span className="text-warning">{t("· 必填")}</span>
                   )}
-                  {!tokenQuery.command.arg!.required && !tokenQuery.arg && <span>· 可省略</span>}
+                  {!tokenQuery.command.arg!.required && !tokenQuery.arg && <span>{t("· 可省略")}</span>}
                 </>
               )}
             </div>
@@ -536,8 +559,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-app/60 border border-line-soft">
               {(
                 [
-                  { key: "jump" as const, label: "跳转", hint: "Ctrl+P" },
-                  { key: "command" as const, label: "命令", hint: "Ctrl+Shift+P" },
+                  { key: "jump" as const, label: t("跳转"), hint: "Ctrl+P" },
+                  { key: "command" as const, label: t("命令"), hint: "Ctrl+Shift+P" },
                 ]
               ).map((tab) => (
                 <button
@@ -555,14 +578,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       ? "bg-surface text-primary-600 shadow-[0_1px_2px_rgb(0_0_0/0.06)]"
                       : "text-faint hover:text-body"
                   }`}
-                  title={`${tab.label}（${tab.hint}）`}
+                  title={`${tab.label} (${tab.hint})`}
                 >
                   {tab.label}
                 </button>
               ))}
             </div>
             <span className="ml-auto text-[10px] text-faint-soft pr-1">
-              {mode === "command" ? "共 " + commands.length + " 条命令" : "按 Tab 切换"}
+              {mode === "command" ? t(commands.length === 1 ? "共 1 条命令" : "共 {count} 条命令", { count: commands.length }) : t("按 Tab 切换")}
             </span>
           </div>
         </div>
@@ -576,7 +599,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         >
           {selectable.length === 0 ? (
             <div className="py-10 text-center text-xs text-faint">
-              {mode === "jump" && jump.scanning ? "正在搜索正文…" : emptyHint}
+              {mode === "jump" && jump.scanning ? t("正在搜索正文…") : emptyHint}
             </div>
           ) : (
             rows.map((row) => {
@@ -608,11 +631,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         <p className={`truncate text-xs font-medium ${isActive ? "text-ink" : "text-body"}`}>
-                          <Highlighted text={row.note.title || "无标题"} ranges={row.hit?.titleRanges} />
+                          <Highlighted text={row.note.title || t("无标题")} ranges={row.hit?.titleRanges} />
                         </p>
                         {row.isCurrent && (
                           <span className="flex-shrink-0 px-1 rounded text-[9px] text-primary-500 bg-primary-50 border border-primary-500/20">
-                            当前
+                            {t("当前")}
                           </span>
                         )}
                         {row.note.is_pinned && <Icon name="sidebar-star-filled" className="w-2.5 h-2.5 text-warning" />}
@@ -623,7 +646,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         </p>
                       ) : (
                         <p className="mt-0.5 text-[11px] text-faint-soft truncate">
-                          {categoryName(row.note.category_id)} · {relativeTime(row.note.updated_at)}
+                          {categoryName(row.note.category_id)} · {relativeTime(row.note.updated_at, locale, t)}
                         </p>
                       )}
                     </div>
@@ -641,7 +664,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     <p className="min-w-0 flex-1 truncate text-xs font-medium text-body">
                       <Highlighted text={`#${row.tag.name}`} />
                     </p>
-                    <span className="text-[10px] text-faint-soft flex-shrink-0">{row.tag.note_count} 篇</span>
+                    <span className="text-[10px] text-faint-soft flex-shrink-0">{t(row.tag.note_count === 1 ? "1 篇" : "{count} 篇", { count: row.tag.note_count })}</span>
                   </div>
                 );
               }
@@ -708,25 +731,25 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           <span className="flex items-center gap-1">
             <kbd className="px-1 rounded border border-line bg-app leading-4">↑</kbd>
             <kbd className="px-1 rounded border border-line bg-app leading-4">↓</kbd>
-            选择
+            {t("选择")}
           </span>
           <span className="flex items-center gap-1">
             <kbd className="px-1 rounded border border-line bg-app leading-4">Enter</kbd>
-            执行
+            {t("执行")}
           </span>
           <span className="flex items-center gap-1">
             <kbd className="px-1 rounded border border-line bg-app leading-4">Tab</kbd>
-            切换跳转 / 命令
+            {t("切换跳转 / 命令")}
           </span>
           <span className="flex items-center gap-1">
             <kbd className="px-1 rounded border border-line bg-app leading-4">Esc</kbd>
-            {tagFilter ? "返回列表" : "关闭"}
+            {tagFilter ? t("返回列表") : t("关闭")}
           </span>
           {mode === "jump" && !tagFilter && !isTagMode && (
-            <span className="ml-auto">提示：输入 # 可按标签筛选</span>
+            <span className="ml-auto">{t("提示：输入 # 可按标签筛选")}</span>
           )}
           {mode === "command" && (
-            <span className="ml-auto">提示：无参数命令选中即执行，带参数的可继续输入</span>
+            <span className="ml-auto">{t("提示：无参数命令选中即执行，带参数的可继续输入")}</span>
           )}
         </div>
       </div>

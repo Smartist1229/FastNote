@@ -5,6 +5,7 @@
  * 不需要碰组件内部的选择器。代码高亮 token 也走变量，换配色只需换一组值。
  */
 import { DARK_COLORS, LIGHT_COLORS, resolveCodeTheme, type CodeThemeDefinition } from "./defaults";
+import { LABELS } from "./locales";
 import { SYNTAX_TOKENS, syntaxHighlightName } from "./editor/syntax";
 import type { MarkdownEditorConfig, MarkdownThemeColors } from "./types";
 
@@ -39,7 +40,7 @@ export interface ThemeResult {
  * 头部和边框再各掺一点强调色，与行高亮（codeHighlight）形成同一套色系。
  */
 const buildFollowCodeTheme = (colors: MarkdownThemeColors): CodeThemeDefinition => ({
-  label: "主题",
+  label: LABELS["en-US"]["codeTheme.follow"],
   bg: colors.toolbarBg,
   headerBg: `color-mix(in srgb, ${colors.accent} 10%, ${colors.toolbarBg})`,
   text: colors.textBody,

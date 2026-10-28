@@ -1,3 +1,4 @@
+import { t, useI18n, getLocale } from "@/i18n";
 /**
  * 统一设置窗口。
  *
@@ -56,6 +57,7 @@ import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { exportBackup, exportSqliteBackup, importBackup, importSqliteBackup } from "@/api/backup";
 import { flushThemeSettings } from "@/stores/themeStore";
+import { checkForUpdates, installUpdate, useUpdater } from "@/stores/updaterStore";
 import { normalizeHexList } from "@/lib/theme";
 
 /* ---------- 分区定义 ---------- */
@@ -102,28 +104,32 @@ const CUSTOM_KEYS: SettingsSection[] = ["theme", "semantic", "toolbox", "shortcu
 /* ---------- 基础控件 ---------- */
 
 /** 作用范围徽标：live 改完即生效，startup 需下次启动才生效 */
-const ScopeBadge: React.FC<{ scope: Scope }> = ({ scope }) => (
+const ScopeBadge: React.FC<{ scope: Scope }> = ({ scope }) => {
+  const { t } = useI18n();
+  return (
   <span
     className={`px-1.5 py-[1px] rounded text-[10px] font-medium border flex-shrink-0 ${
       scope === "live"
         ? "bg-success-soft text-success border-success-line/60"
         : "bg-warning-soft text-warning border-warning-line/60"
     }`}
-    title={scope === "live" ? "修改后立即生效" : "在软件下次启动时生效"}
+    title={scope === "live" ? t("修改后立即生效") : t("在软件下次启动时生效")}
   >
-    {scope === "live" ? "实时生效" : "重启生效"}
+    {scope === "live" ? t("实时生效") : t("重启生效")}
   </span>
 );
+};
 
 /** 危险徽标：与「重启生效」并列，提示这一项改动有风险，默认态不要动 */
-const DangerBadge: React.FC = () => (
+const DangerBadge: React.FC = () => {
+  const { t } = useI18n();
+  return (
   <span
     className="px-1.5 py-[1px] rounded text-[10px] font-medium border flex-shrink-0 bg-danger-soft text-danger border-danger-line/60"
-    title="该项改动可能导致数据异常，非必要请勿修改"
-  >
-    不建议修改
-  </span>
+    title={t("该项改动可能导致数据异常，非必要请勿修改")}
+  >{t("不建议修改")}</span>
 );
+};
 
 const Switch: React.FC<{ value: boolean; onChange: (v: boolean) => void }> = ({
   value,
@@ -153,6 +159,7 @@ const NumberInput: React.FC<{
   unit?: string;
   onChange: (v: number) => void;
 }> = ({ value, min, max, step, unit, onChange }) => {
+  const { t } = useI18n();
   const [text, setText] = useState(String(value));
 
   // 外部值变化（恢复默认、滚轮缩放）时同步到输入框；本地输入期间 value 不变，不会被回写覆盖
@@ -188,7 +195,7 @@ const NumberInput: React.FC<{
         }}
         className="w-20 px-2 py-1 text-xs text-right input-modern bg-app/60 focus:bg-surface transition-colors"
       />
-      {unit ? <span className="text-[11px] text-faint w-8">{unit}</span> : null}
+      {unit ? <span className="text-[11px] text-faint whitespace-nowrap">{t(unit)}</span> : null}
     </div>
   );
 };
@@ -283,8 +290,10 @@ const SegmentedInput: React.FC<{
   value: string;
   options: EnumOption[];
   onChange: (v: string) => void;
-}> = ({ value, options, onChange }) => (
-  <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-surface-alt border border-line/70">
+}> = ({ value, options, onChange }) => {
+  const { t } = useI18n();
+  return (
+  <div className="inline-flex flex-shrink-0 flex-wrap items-center gap-0.5 p-0.5 rounded-lg bg-surface-alt border border-line/70">
     {options.map((o) => {
       const active = o.value === value;
       return (
@@ -292,16 +301,17 @@ const SegmentedInput: React.FC<{
           key={o.value}
           type="button"
           onClick={() => !active && onChange(o.value)}
-          className={`px-2.5 py-1 text-[11px] rounded-md transition-colors whitespace-nowrap ${
+          className={`px-2 py-1 text-[11px] rounded-md transition-colors whitespace-nowrap ${
             active ? "bg-surface text-primary-600 font-medium shadow-sm" : "text-muted"
           } ${active ? "" : "hover:text-body"}`}
         >
-          {o.label}
+          {o.value === "zh-CN" || o.value === "en-US" ? o.label : t(o.label)}
         </button>
       );
     })}
   </div>
 );
+};
 
 /**
  * 下拉选择：选项多时分段按钮一行放不下，收进一个框里。
@@ -313,8 +323,10 @@ const SegmentedInput: React.FC<{
 const SelectInput: React.FC<{
   value: string;
   options: EnumOption[];
+  label: string;
   onChange: (v: string) => void;
-}> = ({ value, options, onChange }) => {
+}> = ({ value, options, label, onChange }) => {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -365,11 +377,30 @@ const SelectInput: React.FC<{
     };
   }, [open]);
 
+  // Native selection provides full keyboard and screen-reader support for language switching.
+  if (options.some((option) => option.value === "zh-CN")) {
+    return (
+      <select
+        value={value}
+        aria-label={label}
+        onChange={(event) => onChange(event.target.value)}
+        className="max-w-full min-w-[150px] rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-body focus-visible:outline-primary-500"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value} lang={option.value === "system" ? undefined : option.value}>
+            {option.value === "system" ? t(option.label) : option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
+        aria-label={label}
         onClick={() => (open ? setOpen(false) : openMenu())}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -378,7 +409,7 @@ const SelectInput: React.FC<{
         }`}
       >
         <OptionSwatch swatch={current?.swatch} />
-        {current?.label ?? value}
+        {current ? t(current.label) : value}
         <Icon
           name="sidebar-chevron-down"
           className={`w-3 h-3 text-faint transition-transform duration-150 ${open ? "rotate-180" : ""}`}
@@ -410,7 +441,7 @@ const SelectInput: React.FC<{
                   }`}
                 >
                   <OptionSwatch swatch={o.swatch} />
-                  <span className="flex-1 truncate">{o.label}</span>
+                  <span className="flex-1 truncate">{o.value === "zh-CN" || o.value === "en-US" ? o.label : t(o.label)}</span>
                   {active && <Icon name="sidebar-check" className="w-3 h-3 flex-none text-primary-500" />}
                 </button>
               );
@@ -430,17 +461,18 @@ const SelectInput: React.FC<{
  * 交给 memo 拦掉无谓的行级重渲染。
  */
 const RowView = memo(function RowView({ row }: { row: SettingRow }) {
+  const { t } = useI18n();
   return (
-    <div className="flex items-start justify-between gap-6 py-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-body">{row.title}</span>
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 py-3">
+      <div className="min-w-0 flex-1 basis-[220px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-body">{t(row.title)}</span>
           <ScopeBadge scope={row.scope} />
           {row.danger && <DangerBadge />}
         </div>
-        <p className="text-[11px] text-faint leading-relaxed mt-1">{row.desc}</p>
+        <p className="text-[11px] text-faint leading-relaxed mt-1">{t(row.desc)}</p>
       </div>
-      <div className="flex-shrink-0 pt-0.5">
+      <div className="max-w-full pt-0.5">
         {row.kind === "toggle" && <Switch value={row.value} onChange={row.onChange} />}
         {row.kind === "number" && (
           <NumberInput
@@ -448,7 +480,7 @@ const RowView = memo(function RowView({ row }: { row: SettingRow }) {
             min={row.min}
             max={row.max}
             step={row.step ?? 1}
-            unit={row.unit}
+            unit={row.unit ? t(row.unit) : undefined}
             onChange={row.onChange}
           />
         )}
@@ -456,13 +488,13 @@ const RowView = memo(function RowView({ row }: { row: SettingRow }) {
           <SegmentedInput value={row.value} options={row.options} onChange={row.onChange} />
         )}
         {row.kind === "select" && (
-          <SelectInput value={row.value} options={row.options} onChange={row.onChange} />
+          <SelectInput label={t(row.title)} value={row.value} options={row.options} onChange={row.onChange} />
         )}
         {row.kind === "color" && (
           <ColorPicker
             value={row.value}
             onChange={row.onChange}
-            label={row.title}
+            label={t(row.title)}
             showValue
             className="min-w-[104px]"
           />
@@ -517,10 +549,10 @@ const fileStamp = () => {
 
 /** ISO 时间去秒，展示成 2026-10-06 19:30；缺值或非法日期显示「未知」 */
 const prettyTime = (iso: string | null) => {
-  if (!iso) return "未知";
+  if (!iso) return t("未知");
   const d = new Date(iso);
   // new Date 对非法字符串不抛错，只会得到 Invalid Date，必须显式判断
-  if (Number.isNaN(d.getTime())) return "未知";
+  if (Number.isNaN(d.getTime())) return t("未知");
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
@@ -569,9 +601,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   theme,
   onThemeChange,
 }) => {
+  const { t } = useI18n();
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
   const guard = useActionGuard();
+  const updater = useUpdater();
 
   /** 搜索关键词：非空时只渲染命中的分区与行 */
   const [query, setQuery] = useState("");
@@ -728,6 +762,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
 
     return [
+      {
+        section: "general",
+        kind: "select",
+        scope: "live",
+        title: "语言",
+        desc: "统一应用到软件和编辑器；跟随系统时自动使用系统语言。",
+        keywords: "语言 language locale 简体中文 English system",
+        value: appSettings.general.language ?? "system",
+        options: [
+          { value: "system", label: "跟随系统" },
+          { value: "zh-CN", label: "简体中文" },
+          { value: "en-US", label: "English" },
+        ],
+        onChange: (v) => setApp("general", "language", v),
+      },
       {
         section: "general",
         kind: "toggle",
@@ -1050,8 +1099,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               scope: "live" as const,
               title: "新建笔记默认权限",
               desc:
-                "之后新建的笔记以此档位开局：软件里新建、另存为笔记、导入文件，以及 AI 创建笔记都算。" +
-                "已有笔记不受影响，建好后仍可在「笔记属性」里单独改。",
+                "之后新建的笔记以此档位开局：软件里新建、另存为笔记、导入文件，以及 AI 创建笔记都算。已有笔记不受影响，建好后仍可在「笔记属性」里单独改。",
               keywords: "默认 新建 笔记 权限 档位 note default",
               value: String(aiSettings.defaultNoteAiAccess),
               options: ACCESS_LEVEL_OPTIONS,
@@ -1063,8 +1111,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               scope: "live" as const,
               title: "新建分组默认权限",
               desc:
-                "之后新建的分组（含 AI 创建的分组）以此档位开局。分组档位是组内笔记的上限，" +
-                "设成「只读」时组内笔记再怎么写也超不过它。",
+                "之后新建的分组（含 AI 创建的分组）以此档位开局。分组档位是组内笔记的上限，设成「只读」时组内笔记再怎么写也超不过它。",
               keywords: "默认 新建 分组 权限 档位 category default",
               value: String(aiSettings.defaultCategoryAiAccess),
               options: ACCESS_LEVEL_OPTIONS,
@@ -1073,7 +1120,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ]
         : []),
     ];
-  }, [appSettings, aiSettings, setApp, setAi]);
+  }, [appSettings, aiSettings, setApp, setAi, t]);
 
   /**
    * 未分类笔记：没有分组可继承，只能逐篇设。
@@ -1143,15 +1190,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         if (!appSettings.general.enableAI && AI_SECTION_KEYS.includes(s.key)) {
           return false;
         }
-        if (!q) return true;
+        if (!q || `${s.label} ${t(s.label)}`.toLowerCase().includes(q)) return true;
         if (CUSTOM_KEYS.includes(s.key)) {
-          return `${s.label} ${customSearch[s.key] ?? ""}`.toLowerCase().includes(q);
+          return `${s.label} ${t(s.label)} ${customSearch[s.key] ?? ""}`.toLowerCase().includes(q);
         }
         return rows.some(
-          (r) => r.section === s.key && `${r.title} ${r.desc} ${r.keywords ?? ""}`.toLowerCase().includes(q),
+          (r) => r.section === s.key && `${r.title} ${t(r.title)} ${r.desc} ${t(r.desc)} ${r.group ? t(r.group) : ""} ${r.keywords ?? ""} ${"options" in r ? r.options.map((o) => t(o.label)).join(" ") : ""}`.toLowerCase().includes(q),
         );
       }),
-    [q, rows, customSearch, appSettings.general.enableAI],
+    [q, rows, customSearch, appSettings.general.enableAI, t],
   );
 
   /** 某分区下命中搜索的行；没有关键词时返回该分区全部行 */
@@ -1160,9 +1207,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       rows.filter(
         (r) =>
           r.section === section &&
-          (!q || `${r.title} ${r.desc} ${r.keywords ?? ""}`.toLowerCase().includes(q)),
+          (!q || SECTIONS.some((s) => s.key === section && `${s.label} ${t(s.label)}`.toLowerCase().includes(q)) || `${r.title} ${t(r.title)} ${r.desc} ${t(r.desc)} ${r.group ? t(r.group) : ""} ${r.keywords ?? ""} ${"options" in r ? r.options.map((o) => t(o.label)).join(" ") : ""}`.toLowerCase().includes(q)),
       ),
-    [rows, q],
+    [rows, q, t],
   );
 
   /** 分区的二级分组（按行顺序去重）；空数组表示这个分区在目录里是叶子节点 */
@@ -1317,8 +1364,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         defaultPath: `fastnote-backup-${fileStamp()}.${isSqlite ? "db" : "json"}`,
         filters: [
           isSqlite
-            ? { name: "SQLite 数据库备份", extensions: ["db", "sqlite"] }
-            : { name: "FastNote 备份", extensions: ["json"] },
+            ? { name: t("SQLite 数据库备份"), extensions: ["db", "sqlite"] }
+            : { name: t("FastNote 备份"), extensions: ["json"] },
         ],
       });
       if (!path) return;
@@ -1330,13 +1377,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         : await exportBackup(path, backupIncludeApiKey, backupIncludeWebdav);
       setLastExport({ summary, path });
       const extras = [
-        backupIncludeApiKey ? (isSqlite ? "本机加密 Key" : "API Key") : "",
-        backupIncludeWebdav ? "WebDAV 配置" : "",
+        backupIncludeApiKey ? (isSqlite ? t("本机加密 Key") : "API Key") : "",
+        backupIncludeWebdav ? t("WebDAV 配置") : "",
       ].filter(Boolean);
-      const keyNote = extras.length ? `（含${extras.join("、")}）` : "";
-      showToast(`已导出 ${summary.notes} 篇笔记${keyNote}`, "success");
+      const keyNote = extras.length ? t("（含{value1}）", { value1: extras.join(getLocale() === "zh-CN" ? "、" : ", ") }) : "";
+      showToast(t("已导出 {notes} 篇笔记{keyNote}", { notes: summary.notes, keyNote: keyNote }), "success");
     } catch (e) {
-      showToast(`导出失败：${errorText(e)}`, "error");
+      showToast(t("导出失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
       setBackupBusy(null);
     }
@@ -1351,17 +1398,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: "FastNote 备份", extensions: ["json", "db", "sqlite"] }],
+        filters: [{ name: t("FastNote 备份"), extensions: ["json", "db", "sqlite"] }],
       });
       if (!selected || typeof selected !== "string") return;
 
       const lower = selected.toLowerCase();
       const isSqlite = lower.endsWith(".db") || lower.endsWith(".sqlite");
-      const formatLabel = isSqlite ? "SQLite 数据库" : "JSON";
+      const formatLabel = isSqlite ? t("SQLite 数据库") : "JSON";
       const ok = await confirm({
-        title: "从备份恢复",
-        message: `恢复会用${formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：${baseName(selected)}`,
-        confirmText: "覆盖并恢复",
+        title: t("从备份恢复"),
+        message: t("恢复会用{formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：{value2}", { formatLabel: formatLabel, value2: baseName(selected) }),
+        confirmText: t("覆盖并恢复"),
         danger: true,
       });
       if (!ok) return;
@@ -1372,11 +1419,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const summary = isSqlite
         ? await importSqliteBackup(selected)
         : await importBackup(selected);
-      showToast(`恢复完成：${summary.notes} 篇笔记，界面即将刷新`, "success");
+      showToast(t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes }), "success");
       setTimeout(() => window.location.reload(), 800);
     } catch (e) {
       setBackupBusy(null);
-      showToast(`恢复失败：${errorText(e)}`, "error");
+      showToast(t("恢复失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -1406,7 +1453,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <div className="flex items-center gap-2">
               <Icon name="ai-settings-bold" className="w-4 h-4 text-primary-500" />
-              <h3 className="text-base font-semibold text-ink">设置</h3>
+              <h3 className="text-base font-semibold text-ink">{t("设置")}</h3>
             </div>
             <div className="flex items-center gap-3">
               <span
@@ -1416,9 +1463,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 }`}
               >
                 <Icon name="editor-check" className="w-3 h-3 text-success" />
-                更改已自动保存
-              </span>
-              <button onClick={onClose} className="toolbar-btn hover:!bg-surface-alt" title="关闭设置">
+                {t("更改已自动保存")}</span>
+              <button onClick={onClose} className="toolbar-btn hover:!bg-surface-alt" title={t("关闭设置")}>
                 <Icon name="modal-close" className="w-4 h-4" />
               </button>
             </div>
@@ -1437,7 +1483,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     type="text"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索设置..."
+                    placeholder={t("搜索设置...")}
                     className="w-full pl-8 pr-2 py-1.5 text-xs input-modern"
                   />
                 </div>
@@ -1449,7 +1495,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   return (
                     <div key={group} className="mb-1">
                       <div className="px-2.5 pt-2.5 pb-1 text-[10px] font-semibold text-faint-soft uppercase tracking-wider">
-                        {group}
+                        {t(group)}
                       </div>
                       {items.map((s) => {
                         const isActive = active === s.key;
@@ -1470,7 +1516,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 name={s.icon}
                                 className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "opacity-100" : "opacity-70"}`}
                               />
-                              <span className="truncate">{s.label}</span>
+                              <span className="min-w-0 text-left break-words">{t(s.label)}</span>
                               {hits > 0 && !isActive && (
                                 <span className="ml-auto flex-shrink-0 text-[10px] text-faint-soft">{hits}</span>
                               )}
@@ -1488,13 +1534,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       key={name}
                                       data-nav-key={`${s.key}:${name}`}
                                       onClick={() => scrollToGroup(s.key, name)}
-                                      className={`w-full text-left px-2 py-[5px] rounded-md text-[11px] truncate ${
+                                      className={`w-full text-left px-2 py-[5px] rounded-md text-[11px] break-words ${
                                         on
                                           ? "bg-primary-50 text-primary-600 font-medium"
                                           : "text-faint hover:bg-surface-alt/70 hover:text-body"
                                       }`}
                                     >
-                                      {name}
+                                      {t(name)}
                                     </button>
                                   );
                                 })}
@@ -1507,7 +1553,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   );
                 })}
                 {visibleSections.length === 0 && (
-                  <p className="px-3 py-6 text-center text-[11px] text-faint">没有匹配的设置项</p>
+                  <p className="px-3 py-6 text-center text-[11px] text-faint">{t("没有匹配的设置项")}</p>
                 )}
               </nav>
             </div>
@@ -1521,8 +1567,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {shownSections.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center gap-2 text-faint">
                   <Icon name="sidebar-search" className="w-8 h-8 text-faint-soft" />
-                  <p className="text-sm">没有找到相关设置</p>
-                  <p className="text-[11px] text-faint-soft">换个关键词试试</p>
+                  <p className="text-sm">{t("没有找到相关设置")}</p>
+                  <p className="text-[11px] text-faint-soft">{t("换个关键词试试")}</p>
                 </div>
               ) : (
                 shownSections.map((s) => {
@@ -1533,7 +1579,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <span className="w-6 h-6 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
                           <Icon name={s.icon} className="w-3.5 h-3.5 text-primary-500" />
                         </span>
-                        <h4 className="text-sm font-semibold text-body">{s.label}</h4>
+                        <h4 className="text-sm font-semibold text-body">{t(s.label)}</h4>
                       </div>
 
                       {/* 数据驱动的行：统一交给 RowView 按 kind 渲染；带 group 的分区按组分段 */}
@@ -1549,7 +1595,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             >
                               {chunk.group && (
                                 <p className="pt-3 pb-1 text-[11px] font-semibold text-muted">
-                                  {chunk.group}
+                                  {t(chunk.group)}
                                 </p>
                               )}
                               {chunk.items.map((row) => (
@@ -1603,10 +1649,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {/* AI 记忆 / 前置提示词：启用项由 buildMemoryBlock 拼进每次请求的系统提示词 */}
                       {s.key === "memory" && (
                         <div className="space-y-3">
-                          <p className="text-[11px] text-faint leading-relaxed">
-                            启用中的每一条都会加在<strong className="text-muted">每次请求</strong>的系统提示词末尾，
-                            既可作默认要求（如「回答先给结论」），也可当作长期记忆。
-                          </p>
+                          <p className="text-[11px] text-faint leading-relaxed">{t("启用中的每一条都会加在每次请求的系统提示词末尾，既可作默认要求（如「回答先给结论」），也可当作长期记忆。")}</p>
 
                           <div className="space-y-2">
                             {/* 中文输入法组字期间的回车是选词，isComposing / keyCode 229 时不能当提交 */}
@@ -1621,27 +1664,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 }
                               }}
                               rows={2}
-                              placeholder="输入一条要求或记忆，回车添加（Shift+回车换行）"
+                              placeholder={t("输入一条要求或记忆，回车添加（Shift+回车换行）")}
                               className="w-full resize-none px-3 py-2 text-xs input-modern bg-app/50 focus:bg-surface transition-colors"
                             />
                             <div className="flex items-center justify-between">
-                              <span className="text-[11px] text-faint">回车即可添加</span>
+                              <span className="text-[11px] text-faint">{t("回车即可添加")}</span>
                               <button
                                 onClick={addPrompt}
                                 disabled={!memoryDraft.trim()}
                                 className="px-3 py-1.5 text-xs font-medium text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                              >
-                                添加
-                              </button>
+                              >{t("添加")}</button>
                             </div>
                           </div>
 
                           {/* 条目多了就内部滚动，避免把整页设置撑得特别长 */}
                           <div className="space-y-2 max-h-[260px] overflow-y-auto chat-scrollbar pr-1 -mr-1">
                             {aiPrompts.length === 0 && (
-                              <div className="py-6 text-center text-xs text-faint border border-dashed border-line rounded-xl">
-                                还没有内容。添加一条试试，例如「回答尽量简短，先给结论」。
-                              </div>
+                              <div className="py-6 text-center text-xs text-faint border border-dashed border-line rounded-xl">{t("还没有内容。添加一条试试，例如「回答尽量简短，先给结论」。")}</div>
                             )}
                             {aiPrompts.map((entry) => (
                               <div
@@ -1671,22 +1710,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       <button
                                         onClick={() => setEditingPromptId(null)}
                                         className="px-2.5 py-1 text-[11px] text-muted bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors"
-                                      >
-                                        取消
-                                      </button>
+                                      >{t("取消")}</button>
                                       <button
                                         onClick={savePromptEdit}
                                         className="px-2.5 py-1 text-[11px] text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
-                                      >
-                                        保存
-                                      </button>
+                                      >{t("保存")}</button>
                                     </div>
                                   </div>
                                 ) : (
                                   <div className="flex items-start gap-2">
                                     <button
                                       onClick={() => togglePrompt(entry.id)}
-                                      title={entry.enabled ? "已启用，点击停用" : "已停用，点击启用"}
+                                      title={entry.enabled ? t("已启用，点击停用") : t("已停用，点击启用")}
                                       aria-pressed={entry.enabled}
                                       className={`mt-0.5 w-4 h-4 flex-shrink-0 rounded border flex items-center justify-center transition-colors ${
                                         entry.enabled
@@ -1710,15 +1745,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                           setEditingPromptText(entry.text);
                                         }}
                                         className="px-1.5 py-1 text-[11px] text-faint hover:text-primary-500 rounded-md hover:bg-primary-50 transition-colors"
-                                      >
-                                        编辑
-                                      </button>
+                                      >{t("编辑")}</button>
                                       <button
                                         onClick={() => removePrompt(entry.id)}
                                         className="px-1.5 py-1 text-[11px] text-faint hover:text-danger rounded-md hover:bg-danger-soft transition-colors"
-                                      >
-                                        删除
-                                      </button>
+                                      >{t("删除")}</button>
                                     </div>
                                   </div>
                                 )}
@@ -1726,29 +1757,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             ))}
                           </div>
 
-                          <p className="text-[11px] text-faint">
-                            共 {aiPrompts.length} 条，其中{" "}
-                            <strong className="text-body">{enabledPromptCount}</strong> 条已启用
-                          </p>
+                          <p className="text-[11px] text-faint">{t("共 {count} 条，其中 {enabled} 条已启用", { count: aiPrompts.length, enabled: enabledPromptCount })}</p>
                         </div>
                       )}
 
                       {/* AI 访问权限：总开关在数据行里，这里是分组 + 组内笔记的档位 */}
                       {s.key === "access" && (
                         <div className="space-y-3">
-                          <p className="text-[11px] text-faint leading-relaxed">
-                            三档权限：<strong className="text-muted">禁止</strong>（AI 完全看不到）、
-                            <strong className="text-muted">只读</strong>（能读能总结，不能改）、
-                            <strong className="text-muted">完全</strong>（读写都可以）。
-                            分组定的是组内上限，展开分组可以给单篇笔记单独设；两层取更严格的那一档。
-                          </p>
+                          <p className="text-[11px] text-faint leading-relaxed">{t("三档权限：禁止（AI 完全看不到）、只读（能读能总结，不能改）、完全（读写都可以）。分组定的是组内上限，展开分组可以给单篇笔记单独设；两层取更严格的那一档。")}</p>
 
                           {!aiSettings.aiAccessEnabled && (
                             <div className="flex items-start gap-2 rounded-xl border border-warning-line bg-warning-soft/70 px-3 py-2.5">
                               <Icon name="ai-warning" className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-warning" />
-                              <p className="text-[11px] leading-relaxed text-warning-deep">
-                                总开关已关闭，下面的设置暂时不起作用；AI 无法读取任何笔记。
-                              </p>
+                              <p className="text-[11px] leading-relaxed text-warning-deep">{t("总开关已关闭，下面的设置暂时不起作用；AI 无法读取任何笔记。")}</p>
                             </div>
                           )}
 
@@ -1768,7 +1789,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                           ? "text-faint-soft cursor-default"
                                           : "text-faint hover:bg-surface-alt hover:text-body"
                                       }`}
-                                      title={rows.length === 0 ? "该分组还没有笔记" : expanded ? "收起笔记" : "展开设置单篇笔记"}
+                                      title={rows.length === 0 ? t("该分组还没有笔记") : expanded ? t("收起笔记") : t("展开设置单篇笔记")}
                                       aria-expanded={expanded}
                                     >
                                       <Icon
@@ -1780,10 +1801,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       <p className="text-xs font-medium text-body truncate" title={c.name}>
                                         {c.name}
                                       </p>
-                                      <p className="text-[10.5px] text-faint">
-                                        {c.note_count} 篇
-                                        {capped > 0 ? ` · ${capped} 篇被分组限制在更低档` : ""}
-                                      </p>
+                                      <p className="text-[10.5px] text-faint">{t("{note_count} 篇{value2}", { note_count: c.note_count, value2: capped > 0 ? t(" · {capped} 篇被分组限制在更低档", { capped: capped }) : "" })}</p>
                                     </div>
                                     <AiAccessLevelSelect
                                       value={c.ai_access}
@@ -1799,12 +1817,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                         return (
                                           <div key={n.id} className="flex items-center gap-2 py-1">
                                             <span className="min-w-0 flex-1 truncate text-[11.5px] text-body" title={n.title}>
-                                              {n.title || "无标题"}
+                                              {n.title || t("无标题")}
                                             </span>
                                             {effective !== n.ai_access && (
-                                              <span className="flex-shrink-0 text-[10px] text-warning">
-                                                实际{AI_ACCESS_LABELS[effective]}
-                                              </span>
+                                              <span className="flex-shrink-0 text-[10px] text-warning">{t("实际{value1}", { value1: t(AI_ACCESS_LABELS[effective]) })}</span>
                                             )}
                                             <AiAccessLevelSelect
                                               value={n.ai_access}
@@ -1830,7 +1846,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     onClick={() => toggleCategory(UNCATEGORIZED_KEY)}
                                     className="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center text-faint hover:bg-surface-alt hover:text-body transition-colors"
                                     aria-expanded={expandedCategories.has(UNCATEGORIZED_KEY)}
-                                    title="展开设置单篇笔记"
+                                    title={t("展开设置单篇笔记")}
                                   >
                                     <Icon
                                       name="sidebar-chevron-down"
@@ -1840,8 +1856,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     />
                                   </button>
                                   <div className="min-w-0 flex-1">
-                                    <p className="text-xs font-medium text-body">未分类</p>
-                                    <p className="text-[10.5px] text-faint">{uncategorized.length} 篇 · 逐篇设置</p>
+                                    <p className="text-xs font-medium text-body">{t("未分类")}</p>
+                                    <p className="text-[10.5px] text-faint">{t("{length} 篇 · 逐篇设置", { length: uncategorized.length })}</p>
                                   </div>
                                 </div>
                                 {expandedCategories.has(UNCATEGORIZED_KEY) && (
@@ -1849,7 +1865,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     {uncategorized.map((n) => (
                                       <div key={n.id} className="flex items-center gap-2 py-1">
                                         <span className="min-w-0 flex-1 truncate text-[11.5px] text-body" title={n.title}>
-                                          {n.title || "无标题"}
+                                          {n.title || t("无标题")}
                                         </span>
                                         <AiAccessLevelSelect
                                           value={n.ai_access}
@@ -1866,9 +1882,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </div>
 
                           {categories.length === 0 && uncategorized.length === 0 && (
-                            <p className="rounded-xl border border-line px-3.5 py-3 text-[11px] text-faint">
-                              还没有任何笔记或分组。
-                            </p>
+                            <p className="rounded-xl border border-line px-3.5 py-3 text-[11px] text-faint">{t("还没有任何笔记或分组。")}</p>
                           )}
                         </div>
                       )}
@@ -1878,62 +1892,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <div className="space-y-2.5 pt-1">
                           <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-body">恢复编辑器默认设置</p>
-                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
-                                字号、行高、间距、工具栏与颜色预设等编辑器选项回到默认值，不影响主题与 AI 设置。
-                              </p>
+                              <p className="text-xs font-medium text-body">{t("恢复编辑器默认设置")}</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{t("字号、行高、间距、工具栏与颜色预设等编辑器选项回到默认值，不影响主题与 AI 设置。")}</p>
                             </div>
                             <button
                               onClick={onResetEditorSettings}
                               className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
-                            >
-                              恢复
-                            </button>
+                            >{t("恢复")}</button>
                           </div>
 
                           <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-body">恢复主题默认设置</p>
-                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
-                                明暗模式、预设配色、自定义取色与「我的主题」回到默认，不影响其他软件设置。
-                              </p>
+                              <p className="text-xs font-medium text-body">{t("恢复主题默认设置")}</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{t("明暗模式、预设配色、自定义取色与「我的主题」回到默认，不影响其他软件设置。")}</p>
                             </div>
                             <button
                               onClick={onResetThemeSettings}
                               className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
-                            >
-                              恢复
-                            </button>
+                            >{t("恢复")}</button>
                           </div>
 
                           <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-body">恢复软件默认设置</p>
-                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
-                                通用、编辑器、笔记列表、界面布局与主题回到默认值，不影响 AI 设置。
-                              </p>
+                              <p className="text-xs font-medium text-body">{t("恢复软件默认设置")}</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{t("通用、编辑器、笔记列表、界面布局与主题回到默认值，不影响 AI 设置。")}</p>
                             </div>
                             <button
                               onClick={onResetAppSettings}
                               className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
-                            >
-                              恢复
-                            </button>
+                            >{t("恢复")}</button>
                           </div>
 
                           <div className="flex items-center justify-between gap-6 rounded-xl border border-line px-3.5 py-3">
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-body">恢复 AI 默认设置</p>
-                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">
-                                对话行为、上下文等 AI 参数回到默认值，不影响服务商与记忆条目。
-                              </p>
+                              <p className="text-xs font-medium text-body">{t("恢复 AI 默认设置")}</p>
+                              <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{t("对话行为、上下文等 AI 参数回到默认值，不影响服务商与记忆条目。")}</p>
                             </div>
                             <button
                               onClick={() => onAiSettingsChange({ ...DEFAULT_AI_SETTINGS })}
                               className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt rounded-lg hover:bg-surface-strong transition-colors flex-shrink-0"
-                            >
-                              恢复
-                            </button>
+                            >{t("恢复")}</button>
                           </div>
                         </div>
                       )}
@@ -1941,22 +1939,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {/* 备份与恢复：JSON / SQLite 两种整库备份，恢复时覆盖当前数据 */}
                       {s.key === "backup" && (
                         <div className="space-y-3">
-                          <p className="text-[11px] text-faint leading-relaxed">
-                            备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置
-                            （含编辑器与主题），支持 JSON 与 SQLite 两种格式。API Key 与 WebDAV
-                            默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里：
-                            恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV，
-                            把 JSON 备份自动同步到云端并按需恢复。
-                          </p>
+                          <p className="text-[11px] text-faint leading-relaxed">{t("备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON 与 SQLite 两种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。")}</p>
 
                           {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照 */}
-                          <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
-                            <div className="min-w-0">
-                              <span className="text-xs font-medium text-body">备份格式</span>
+                          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
+                            <div className="min-w-0 flex-1 basis-[220px]">
+                              <span className="text-xs font-medium text-body">{t("备份格式")}</span>
                               <p className="text-[11px] text-faint leading-relaxed mt-1">
                                 {backupFormat === "sqlite"
-                                  ? "SQLite 是整库快照（.db），恢复更快，适合本机定期备份。"
-                                  : "JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。"}
+                                  ? t("SQLite 是整库快照（.db），恢复更快，适合本机定期备份。")
+                                  : t("JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。")}
                               </p>
                             </div>
                             <SegmentedInput
@@ -1972,15 +1964,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {/* API Key 默认不备份，避免密钥被误带到网盘 */}
                           <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
                             <div className="min-w-0">
-                              <span className="text-xs font-medium text-body">备份 API Key</span>
-                              <p className="text-[11px] text-faint leading-relaxed mt-1">
-                                勾选后导出的备份文件会保留 API Key：JSON 里是
-                                <b className="text-muted">明文</b>
-                                （请妥善保管），SQLite 里保持本机加密（换机可能解不开）；不勾选则只保留服务商配置、不含 Key。
-                                手动「备份到云端」同样遵循此开关，自动备份则始终不含 Key。
-                              </p>
+                              <span className="text-xs font-medium text-body">{t("备份 API Key")}</span>
+                              <p className="text-[11px] text-faint leading-relaxed mt-1">{t("勾选后导出的备份文件会保留 API Key：JSON 里是明文（请妥善保管），SQLite 里保持本机加密（换机可能解不开）；不勾选则只保留服务商配置、不含 Key。手动「备份到云端」同样遵循此开关，自动备份则始终不含 Key。")}</p>
                             </div>
-                            <div className="flex-shrink-0 pt-0.5">
+                            <div className="max-w-full pt-0.5">
                               <Switch value={backupIncludeApiKey} onChange={setBackupIncludeApiKey} />
                             </div>
                           </div>
@@ -1988,15 +1975,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {/* WebDAV 配置默认同样不进备份：里面含云端账号与密码 */}
                           <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
                             <div className="min-w-0">
-                              <span className="text-xs font-medium text-body">备份 WebDAV 配置</span>
-                              <p className="text-[11px] text-faint leading-relaxed mt-1">
-                                勾选后备份会带上 WebDAV 服务器、账号、文件夹与自动备份设置：JSON 里密码为
-                                <b className="text-muted">明文</b>
-                                （请妥善保管），SQLite 保持本机加密（换机可能解不开）；不勾选则完全不含
-                                WebDAV 配置。手动「备份到云端」同样遵循此开关，自动备份始终不含。
-                              </p>
+                              <span className="text-xs font-medium text-body">{t("备份 WebDAV 配置")}</span>
+                              <p className="text-[11px] text-faint leading-relaxed mt-1">{t("勾选后备份会带上 WebDAV 服务器、账号、文件夹与自动备份设置：JSON 里密码为明文（请妥善保管），SQLite 保持本机加密（换机可能解不开）；不勾选则完全不含 WebDAV 配置。手动「备份到云端」同样遵循此开关，自动备份始终不含。")}</p>
                             </div>
-                            <div className="flex-shrink-0 pt-0.5">
+                            <div className="max-w-full pt-0.5">
                               <Switch value={backupIncludeWebdav} onChange={setBackupIncludeWebdav} />
                             </div>
                           </div>
@@ -2006,17 +1988,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <Icon name="app-backup" className="w-4 h-4 text-primary-500" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-body">导出备份</p>
+                              <p className="text-sm font-medium text-body">{t("导出备份")}</p>
                               <p className="text-[11px] text-faint mt-0.5">
                                 {backupFormat === "sqlite"
-                                  ? "保存为一个 SQLite 数据库文件（.db），可放到 U 盘或备份目录。"
-                                  : "保存为一个 JSON 文件，可放到网盘或 U 盘带走。"}
+                                  ? t("保存为一个 SQLite 数据库文件（.db），可放到 U 盘或备份目录。")
+                                  : t("保存为一个 JSON 文件，可放到网盘或 U 盘带走。")}
                               </p>
                               {lastExport && (
-                                <p className="text-[11px] text-success mt-1 truncate" title={lastExport.path}>
-                                  已导出：{baseName(lastExport.path)} · {lastExport.summary.notes} 篇笔记 ·{" "}
-                                  {lastExport.summary.messages} 条对话消息
-                                </p>
+                                <p className="text-[11px] text-success mt-1 truncate" title={lastExport.path}>{t("已导出：{value1} · {notes} 篇笔记 · {messages} 条对话消息", { value1: baseName(lastExport.path), notes: lastExport.summary.notes, messages: lastExport.summary.messages })}</p>
                               )}
                             </div>
                             <button
@@ -2024,7 +2003,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               disabled={backupBusy !== null}
                               className="btn-primary px-3 py-1.5 text-xs flex-shrink-0 disabled:opacity-50"
                             >
-                              {backupBusy === "export" ? "导出中..." : "导出"}
+                              {backupBusy === "export" ? t("导出中...") : t("导出")}
                             </button>
                           </div>
 
@@ -2033,24 +2012,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <Icon name="app-restore" className="w-4 h-4 text-warning" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-body">从备份恢复</p>
-                              <p className="text-[11px] text-faint mt-0.5">
-                                支持 .json 与 .db 备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。
-                              </p>
+                              <p className="text-sm font-medium text-body">{t("从备份恢复")}</p>
+                              <p className="text-[11px] text-faint mt-0.5">{t("支持 .json 与 .db 备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。")}</p>
                             </div>
                             <button
                               onClick={() => void guard(handleImport)}
                               disabled={backupBusy !== null}
                               className="px-3 py-1.5 text-xs font-medium text-warning-deep bg-warning-soft rounded-xl hover:bg-warning-line transition-colors flex-shrink-0 disabled:opacity-50"
                             >
-                              {backupBusy === "import" ? "恢复中..." : "选择文件"}
+                              {backupBusy === "import" ? t("恢复中...") : t("选择文件")}
                             </button>
                           </div>
 
                           {lastExport?.summary.exported_at && (
-                            <p className="text-[11px] text-faint">
-                              本次导出时间：{prettyTime(lastExport.summary.exported_at)}
-                            </p>
+                            <p className="text-[11px] text-faint">{t("本次导出时间：{value1}", { value1: prettyTime(lastExport.summary.exported_at) })}</p>
                           )}
 
                           <WebdavPanel
@@ -2068,30 +2043,105 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <div className="flex items-center gap-3">
                             <img
                               src="/icons/app-logo.png"
-                              alt={`${appName} 图标`}
+                              alt={t("{appName} 图标", { appName: appName })}
                               draggable={false}
                               className="rounded-lg object-contain flex-shrink-0 select-none"
                               style={{ width: 30, height: 30 }}
                             />
                             <div className="min-w-0">
                               <p className="text-sm font-semibold text-ink">{appName}</p>
-                              <p className="text-[11px] text-faint mt-0.5">作者：{APP_AUTHOR}</p>
+                              <p className="text-[11px] text-faint mt-0.5">{t("作者：{APP_AUTHOR}", { APP_AUTHOR: APP_AUTHOR })}</p>
                             </div>
                           </div>
-                          <div className="mt-3 pt-3 border-t border-line-soft flex items-center justify-between text-[12px]">
-                            <span className="text-faint">版本</span>
-                            <span className="text-body font-medium">{appVersion || "—"}</span>
+                          <div className="mt-3 pt-3 border-t border-line-soft">
+                            <div className="flex items-center justify-between gap-3 text-[12px]">
+                              <span className="text-faint">{t("版本")}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-body font-medium">{appVersion || "—"}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => void checkForUpdates()}
+                                  disabled={updater.phase === "checking" || updater.phase === "downloading"}
+                                  className="px-2 py-0.5 rounded-md text-[11px] font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {updater.phase === "checking" ? t("检查中...") : t("检查更新")}
+                                </button>
+                              </div>
+                            </div>
+
+                            {updater.phase === "current" && (
+                              <p className="mt-2 text-[11px] text-success-strong">{t("已是最新版本")}</p>
+                            )}
+
+                            {updater.phase === "error" && (
+                              <p className="mt-2 text-[11px] text-danger-strong break-words">
+                                {t("检查更新失败：{value1}", { value1: updater.error || t("未知") })}
+                              </p>
+                            )}
+
+                            {(updater.phase === "available" || updater.phase === "downloading") && (
+                              <div className="mt-2 rounded-lg bg-app border border-line-soft p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-[12px] font-medium text-body">
+                                      {t("发现新版本 {value1}", { value1: updater.version || "" })}
+                                    </p>
+                                    <p className="mt-0.5 text-[11px] text-faint">
+                                      {t("下载完成后会自动安装并重启。")}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => void installUpdate()}
+                                    disabled={updater.phase === "downloading"}
+                                    className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium text-on-accent bg-primary-500 hover:bg-primary-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {updater.phase === "downloading" ? t("正在更新...") : t("下载并安装")}
+                                  </button>
+                                </div>
+
+                                {updater.phase === "downloading" && (
+                                  <div className="mt-2.5">
+                                    <div className="h-1.5 rounded-full bg-surface-alt overflow-hidden">
+                                      <div
+                                        className="h-full rounded-full bg-primary-500 transition-all duration-200"
+                                        style={{ width: `${Math.max(updater.progress ?? 10, 4)}%` }}
+                                      />
+                                    </div>
+                                    <p className="mt-1.5 text-[11px] text-faint">
+                                      {updater.progress == null
+                                        ? t("正在下载更新...")
+                                        : t("正在下载更新... {value1}%", { value1: updater.progress })}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {updater.error && (
+                                  <p className="mt-2 text-[11px] text-danger-strong break-words">
+                                    {t("更新失败：{value1}", { value1: updater.error })}
+                                  </p>
+                                )}
+
+                                {updater.phase === "available" && updater.notes && (
+                                  <div className="mt-2.5 pt-2.5 border-t border-line-soft max-h-[120px] overflow-y-auto chat-scrollbar pr-1">
+                                    <p className="text-[11px] text-muted whitespace-pre-wrap break-words selectable">
+                                      {updater.notes}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           {/* 图标来源 */}
                           <div className="mt-3 pt-3 border-t border-line-soft">
-                            <p className="text-[11px] font-medium text-muted">部分图标来源</p>
+                            <p className="text-[11px] font-medium text-muted">{t("部分图标来源")}</p>
                             <button
                               onClick={() => openUrl(ICON_SOURCE.url)}
                               className="mt-1.5 text-left group"
                             >
                               <span className="block text-[11px] text-body group-hover:text-primary-600 transition-colors">
-                                {ICON_SOURCE.name}
+                                {t(ICON_SOURCE.name)}
                               </span>
                               <span className="block text-[11px] text-faint">
                                 {ICON_SOURCE.url}
@@ -2101,7 +2151,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                           {/* 开源项目：条目较多，用固定高度滚动区承载 */}
                           <div className="mt-3 pt-3 border-t border-line-soft">
-                            <p className="text-[11px] font-medium text-muted">开源项目</p>
+                            <p className="text-[11px] font-medium text-muted">{t("开源项目")}</p>
                             <div className="mt-1.5 max-h-[150px] overflow-y-auto chat-scrollbar pr-1 space-y-0.5">
                               {OPEN_SOURCE_PROJECTS.map((p) => (
                                 <button

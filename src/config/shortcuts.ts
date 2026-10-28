@@ -8,8 +8,9 @@
  * `available` 用来表达"某一项设置关掉后这条键位不存在"：面板据此把行置灰并给出原因，
  * 而不是让用户对着一条按不出反应的说明发愁。
  */
+import type { AppLocale } from "@/i18n/locale";
 import type { AppSettings } from "@/interface/settings";
-import { FORMAT_ACTIONS, SHORTCUTS_BY_ACTION } from "@/markdown-editor/shortcuts";
+import { resolveFormatActions, SHORTCUTS_BY_ACTION } from "@/markdown-editor/shortcuts";
 
 export interface ShortcutEntry {
   /** 归一化键位：`mod+shift+p`；`/` 分隔表示多个等价键；`mod+滚轮` 这类非按键也照此写 */
@@ -36,13 +37,15 @@ const editorShortcutsOn = (settings: AppSettings) => settings.editor.shortcuts;
 const EDITOR_OFF = "编辑器快捷键已关闭";
 
 /** 格式类键位：顺序与文案来自编辑器包，键位反查 `SHORTCUTS_BY_ACTION` */
-const formatEntries: ShortcutEntry[] = FORMAT_ACTIONS.flatMap(({ action, label }) => {
-  const keys = SHORTCUTS_BY_ACTION[action];
-  if (!keys || !keys.length) return [];
-  return [{ keys: keys.join(" / "), label, available: editorShortcutsOn, offHint: EDITOR_OFF }];
-});
+const buildFormatEntries = (locale: AppLocale): ShortcutEntry[] =>
+  resolveFormatActions(locale).flatMap(({ action, label }) => {
+    const keys = SHORTCUTS_BY_ACTION[action];
+    if (!keys || !keys.length) return [];
+    return [{ keys: keys.join(" / "), label, available: editorShortcutsOn, offHint: EDITOR_OFF }];
+  });
 
-export const SHORTCUT_GROUPS: ShortcutGroup[] = [
+/** 键位清单跟随软件语言：格式类文案由编辑器语言包解析，其余文案在面板里翻译 */
+export const buildShortcutGroups = (locale: AppLocale): ShortcutGroup[] => [
   {
     id: "app",
     title: "应用",
@@ -58,7 +61,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     id: "editor-format",
     title: "编辑器 · 格式",
     desc: "焦点在正文里时生效",
-    entries: formatEntries,
+    entries: buildFormatEntries(locale),
   },
   {
     id: "editor-edit",

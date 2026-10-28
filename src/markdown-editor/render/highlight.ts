@@ -123,7 +123,7 @@ export const renderMath = async (
     return {
       html: katex.renderToString(code, {
         displayMode,
-        throwOnError: false,
+        throwOnError: true,
         output: "html",
         strict: false,
         trust: false,
@@ -164,6 +164,7 @@ export const renderMermaid = async (
     if (mermaidTheme !== theme) {
       mermaid.initialize({
         startOnLoad: false,
+        suppressErrorRendering: true,
         theme: theme as never,
         securityLevel: "loose",
         fontFamily: "inherit",

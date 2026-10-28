@@ -8,6 +8,7 @@
 import { createContext, useContext } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { MarkdownEditorConfig, OutlineItem } from "../types";
+import { LABELS } from "../locales";
 
 export interface PreviewContextValue {
   config: MarkdownEditorConfig;
@@ -37,7 +38,7 @@ export const OutlineCtx = createContext<OutlineItem[]>([]);
 
 export const usePreview = (): PreviewContextValue => {
   const value = useContext(PreviewCtx);
-  if (!value) throw new Error("Markdown 预览组件必须在 PreviewCtx 内使用");
+  if (!value) throw new Error(LABELS["en-US"].previewContextMissing);
   return value;
 };
 

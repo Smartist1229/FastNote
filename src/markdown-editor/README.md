@@ -98,8 +98,8 @@ export const Demo = () => {
 
 | 字段 | 类型 | 默认 | 说明 |
 | -- | -- | -- | -- |
-| `locale` | `"zh-CN" \| "en-US"` | `"zh-CN"` | 内置文案语言 |
-| `labels` | `Record<string, string>` | `{}` | 覆盖任意文案（键见 3.10） |
+| `locale` | `"zh-CN" \| "en-US"` | `"en-US"` | 内置文案语言；支持运行时切换 |
+| `labels` | `Record<string, string>` | `{}` | 覆盖任意文案（键见 3.10），优先于内置语言词典 |
 | `mode` | `object` | 见 3.2 | 模式 |
 | `editor` | `object` | 见 3.3 | 输入区 |
 | `preview` | `object` | 见 3.4 | 预览区 |

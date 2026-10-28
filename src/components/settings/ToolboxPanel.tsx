@@ -1,3 +1,4 @@
+import { t, useI18n } from "@/i18n";
 /**
  * 设置 · 工具箱：通用下载工具（粘贴链接下载文件）。
  *
@@ -32,14 +33,14 @@ const TABS = [
 const guessFilename = (raw: string): string => {
   try {
     const last = new URL(raw).pathname.split("/").filter(Boolean).pop();
-    if (!last) return "文件";
+    if (!last) return t("文件");
     try {
       return decodeURIComponent(last);
     } catch {
       return last;
     }
   } catch {
-    return "文件";
+    return t("文件");
   }
 };
 
@@ -51,6 +52,7 @@ const ThreadInput: React.FC<{ value: number; onChange: (value: number) => void }
   value,
   onChange,
 }) => {
+  const { t } = useI18n();
   const [text, setText] = useState(String(value));
 
   useEffect(() => {
@@ -83,7 +85,7 @@ const ThreadInput: React.FC<{ value: number; onChange: (value: number) => void }
         }}
         className="w-16 px-2 py-1 text-right text-xs input-modern bg-app/60 transition-colors focus:bg-surface"
       />
-      <span className="w-6 text-[11px] text-faint">线程</span>
+      <span className="whitespace-nowrap text-[11px] text-faint">{t("线程")}</span>
     </div>
   );
 };
@@ -95,6 +97,7 @@ interface ToolboxPanelProps {
 }
 
 export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsChange }) => {
+  const { t } = useI18n();
   const { showToast } = useToast();
   const guard = useActionGuard();
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("download");
@@ -146,11 +149,11 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
         setDownloading(false);
         if (next.stage === "done") {
           setLastFile({ name: next.filename, path: next.path });
-          showToast(`「${next.filename}」已保存到 ${next.path}`, "success");
+          showToast(t("「{filename}」已保存到 {path}", { filename: next.filename, path: next.path }), "success");
         } else if (next.stage === "cancelled") {
-          showToast("已取消下载", "info");
+          showToast(t("已取消下载"), "info");
         } else {
-          showToast(`下载失败：${next.error ?? "未知错误"}`, "error");
+          showToast(t("下载失败：{value1}", { value1: next.error ?? t("未知错误") }), "error");
         }
       });
 
@@ -166,16 +169,16 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       aliveRef.current = false;
       unlisteners.forEach((off) => off());
     };
-  }, [showToast]);
+  }, [showToast, t]);
 
   const handleDownload = async () => {
     const target = url.trim();
     if (!target) {
-      showToast("请先粘贴下载链接", "info");
+      showToast(t("请先粘贴下载链接"), "info");
       return;
     }
     if (!/^https?:\/\//i.test(target)) {
-      showToast("只支持 http / https 链接", "info");
+      showToast(t("只支持 http / https 链接"), "info");
       return;
     }
 
@@ -200,7 +203,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
     } catch (e) {
       setDownloading(false);
       setProgress(null);
-      showToast(`开始下载失败：${errorText(e)}`, "error");
+      showToast(t("开始下载失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -210,7 +213,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       // 任务可能刚好自己结束；没有任务时不用提示，避免和完成 toast 打架
       if (!stopped) return;
     } catch (e) {
-      showToast(`取消失败：${errorText(e)}`, "error");
+      showToast(t("取消失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -219,7 +222,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
     try {
       await openAppFolder(downloadDir);
     } catch (e) {
-      showToast(`打开下载目录失败：${errorText(e)}`, "error");
+      showToast(t("打开下载目录失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -229,9 +232,9 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       : null;
   const modeLabel =
     progress && progress.segments > 1
-      ? `${progress.segments} 段并发`
+      ? t("{segments} 段并发", { segments: progress.segments })
       : progress?.segments === 1
-        ? "单线程"
+        ? t("单线程")
         : "";
   const detail = progress
     ? progress.total > 0
@@ -239,8 +242,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
           speed > 0 ? ` · ${formatSpeed(speed)}` : ""
         }${modeLabel ? ` · ${modeLabel}` : ""}`
       : modeLabel
-        ? `${modeLabel} · 准备下载…`
-        : "准备下载…"
+        ? t("{modeLabel} · 准备下载…", { modeLabel: modeLabel })
+        : t("准备下载…")
     : "";
   // 文件大于 1 MiB 却只有单段，说明服务器没理会 Range，不是线程数没生效
   const singleThreadFallback =
@@ -264,7 +267,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
                 : "text-muted hover:text-body"
             }`}
           >
-            {item.label}
+            {t(item.label)}
           </button>
         ))}
       </div>
@@ -278,10 +281,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-body">下载线程</p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-              同时发起的连接数，默认 32，最高 128。语义模型下载也使用这个值；线程过多可能被服务器限速。
-            </p>
+            <p className="text-xs font-medium text-body">{t("下载线程")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("同时发起的连接数，默认 32，最高 128。语义模型下载也使用这个值；线程过多可能被服务器限速。")}</p>
           </div>
           <ThreadInput value={threads} onChange={onThreadsChange} />
         </div>
@@ -293,10 +294,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
         }
       >
         <div className="px-3.5 py-2.5">
-          <p className="text-xs font-medium text-body">下载文件</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-            粘贴 http / https 链接即可下载，可自定义保存文件名；留空时按链接自动获取。重名时自动加序号，不会覆盖已有文件。
-          </p>
+          <p className="text-xs font-medium text-body">{t("下载文件")}</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("粘贴 http / https 链接即可下载，可自定义保存文件名；留空时按链接自动获取。重名时自动加序号，不会覆盖已有文件。")}</p>
         </div>
 
         <div className="space-y-2.5 border-t border-line-soft px-3.5 py-3">
@@ -319,7 +318,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
               className="flex flex-shrink-0 items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="editor-export" className="w-3.5 h-3.5" />
-              {downloading ? "下载中…" : "下载"}
+              {downloading ? t("下载中…") : t("下载")}
             </button>
             {downloading && (
               <button
@@ -328,8 +327,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
                 className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-xs text-body transition-colors hover:bg-surface-alt"
               >
                 <Icon name="ai-stop" className="w-3.5 h-3.5" />
-                取消
-              </button>
+                {t("取消")}</button>
             )}
           </div>
 
@@ -340,7 +338,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
             onKeyDown={(e) => {
               if (e.key === "Enter" && !downloading) void guard(handleDownload);
             }}
-            placeholder="自定义文件名（留空则按链接自动识别）"
+            placeholder={t("自定义文件名（留空则按链接自动识别）")}
             spellCheck={false}
             className="w-full px-2 py-1.5 text-xs input-modern"
           />
@@ -349,13 +347,11 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
             <div className="rounded-lg border border-line bg-app px-2.5 py-2">
               <ProgressBar
                 value={percent}
-                label={progress.filename || "正在下载"}
+                label={progress.filename || t("正在下载")}
                 detail={detail}
               />
               {singleThreadFallback && (
-                <p className="mt-1 text-[10px] leading-relaxed text-faint-soft">
-                  服务器不支持分段下载，已自动改用单线程（线程数设置在下次支持分段的链接上生效）。
-                </p>
+                <p className="mt-1 text-[10px] leading-relaxed text-faint-soft">{t("服务器不支持分段下载，已自动改用单线程（线程数设置在下次支持分段的链接上生效）。")}</p>
               )}
             </div>
           )}
@@ -379,33 +375,29 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
                     try {
                       await revealItemInDir(lastFile.path);
                     } catch (e) {
-                      showToast(`打开文件位置失败：${errorText(e)}`, "error");
+                      showToast(t("打开文件位置失败：{value1}", { value1: errorText(e) }), "error");
                     }
                   })
                 }
                 className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-faint hover:bg-surface-alt hover:text-body"
-                title="在文件管理器中显示"
+                title={t("在文件管理器中显示")}
               >
                 <Icon name="sidebar-folder-thin" className="w-3 h-3" />
-                打开
-              </button>
+                {t("打开")}</button>
             </div>
           )}
 
           <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
-            <p className="selectable min-w-0 flex-1 break-all text-[10px] leading-relaxed text-faint-soft">
-              保存位置：{downloadDir || "软件安装目录/download"}
-            </p>
+            <p className="selectable min-w-0 flex-1 break-all text-[10px] leading-relaxed text-faint-soft">{t("保存位置：{value1}", { value1: downloadDir || t("软件安装目录/download") })}</p>
             <button
               type="button"
               onClick={() => void guard(openDir)}
               disabled={!downloadDir}
               className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-faint transition-colors hover:bg-surface-alt hover:text-body disabled:cursor-not-allowed disabled:opacity-40"
-              title="在文件管理器中打开下载目录"
+              title={t("在文件管理器中打开下载目录")}
             >
               <Icon name="sidebar-folder-thin" className="w-3 h-3" />
-              打开目录
-            </button>
+              {t("打开目录")}</button>
           </div>
         </div>
       </div>

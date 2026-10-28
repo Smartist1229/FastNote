@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 /**
  * 设置里的自绘取色器（SV 面板 + 色相滑杆 + 十六进制输入）。
  *
@@ -71,6 +72,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
   className = "",
   showValue = false,
 }) => {
+  const { t } = useI18n();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const svRef = useRef<HTMLDivElement | null>(null);
@@ -274,7 +276,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
               style={{ background: "linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)" }}
               role="slider"
               tabIndex={0}
-              aria-label={`${label}色相`}
+              aria-label={t("{label}色相", { label: label })}
               aria-valuenow={Math.round(hsv.h)}
               aria-valuemin={0}
               aria-valuemax={360}
@@ -306,7 +308,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
                 type="text"
                 value={draft ?? hex}
                 spellCheck={false}
-                aria-label={`${label}色值`}
+                aria-label={t("{label}色值", { label: label })}
                 onFocus={(event) => {
                   setDraft(hex);
                   event.currentTarget.select();
