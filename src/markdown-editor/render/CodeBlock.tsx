@@ -20,6 +20,115 @@ interface CodeBlockProps {
   labels: Record<string, string>;
 }
 
+interface PlainCodeBlockProps extends CodeBlockProps {
+  /** 实际用于高亮与展示的语言：用户在预览里临时切换后与 node.lang 不同 */
+  lang: string;
+  onLangChange: (lang: string) => void;
+}
+
+/**
+ * 预览里的语言切换项。只影响这一块的渲染，不改写文档里的围栏标记——
+ * 用户点错了刷新即恢复，也不会因为一次误触改写源文件。
+ */
+const LANG_OPTIONS: { value: string; label: string }[] = [
+  { value: "plaintext", label: "Plain text" },
+  { value: "javascript", label: "JavaScript" },
+  { value: "typescript", label: "TypeScript" },
+  { value: "tsx", label: "TSX" },
+  { value: "jsx", label: "JSX" },
+  { value: "json", label: "JSON" },
+  { value: "html", label: "HTML" },
+  { value: "css", label: "CSS" },
+  { value: "python", label: "Python" },
+  { value: "java", label: "Java" },
+  { value: "rust", label: "Rust" },
+  { value: "go", label: "Go" },
+  { value: "c", label: "C" },
+  { value: "cpp", label: "C++" },
+  { value: "csharp", label: "C#" },
+  { value: "php", label: "PHP" },
+  { value: "ruby", label: "Ruby" },
+  { value: "kotlin", label: "Kotlin" },
+  { value: "swift", label: "Swift" },
+  { value: "sql", label: "SQL" },
+  { value: "bash", label: "Bash" },
+  { value: "powershell", label: "PowerShell" },
+  { value: "yaml", label: "YAML" },
+  { value: "toml", label: "TOML" },
+  { value: "ini", label: "INI" },
+  { value: "markdown", label: "Markdown" },
+  { value: "xml", label: "XML" },
+  { value: "diff", label: "Diff" },
+  { value: "dockerfile", label: "Dockerfile" },
+  { value: "mermaid", label: "Mermaid" },
+];
+
+/** 视口内定位：贴在语言按钮下方，越界时上翻 / 夹进左右边界 */
+const LangMenu: React.FC<{
+  anchor: DOMRect;
+  current: string;
+  labels: Record<string, string>;
+  onSelect: (lang: string) => void;
+  onClose: () => void;
+}> = ({ anchor, current, labels, onSelect, onClose }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // 编辑器自己也有 Esc 处理（关搜索 / 退出预览）：先吃掉，避免连带触发
+      event.stopPropagation();
+      onClose();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("resize", onClose);
+    window.addEventListener("scroll", onClose, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("resize", onClose);
+      window.removeEventListener("scroll", onClose, true);
+    };
+  }, [onClose]);
+
+  const width = 164;
+  const maxHeight = 264;
+  const left = Math.min(
+    Math.max(8, anchor.left),
+    Math.max(8, window.innerWidth - width - 8),
+  );
+  const below = anchor.bottom + 4;
+  const top =
+    below + maxHeight > window.innerHeight ? Math.max(8, anchor.top - maxHeight - 4) : below;
+
+  return (
+    <div
+      ref={ref}
+      className="mde-code-lang-menu"
+      role="menu"
+      style={{ left, top, width, maxHeight }}
+    >
+      {LANG_OPTIONS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="menuitemradio"
+          aria-checked={option.value === current}
+          className={option.value === current ? "is-active" : undefined}
+          onClick={() => onSelect(option.value)}
+        >
+          <span>{option.value === "plaintext" ? labels.codeLangPlain : option.label}</span>
+          {option.value === current && <MdeIcon name="check" size={12} />}
+        </button>
+      ))}
+    </div>
+  );
+};
+
 /**
  * 高亮任务串行化。
  *
@@ -57,19 +166,21 @@ const enqueueHighlight = (job: () => void) => {
 };
 
 /** 内核：语法高亮 + 行号 + 复制 + 折叠 */
-const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
+const PlainCodeBlock: React.FC<PlainCodeBlockProps> = ({ node, config, labels, lang, onLangChange }) => {
   /*
    * 首帧一律先放转义后的纯文本：高亮是异步的，代码原文绝不能直接进 innerHTML
    * （`<img onerror=…>` 这类片段会在高亮结果回来之前先执行一遍）。
    */
   const plain = useMemo(() => splitHighlightedLines(escapeHtml(node.code)), [node.code]);
-  const codeKey = `${node.lang}\u0000${node.code}`;
+  const codeKey = `${lang}\u0000${node.code}`;
   const [colored, setColored] = useState<{ key: string; lines: string[] } | null>(null);
   const lines = colored && colored.key === codeKey ? colored.lines : plain;
   const [copyStatus, setCopyStatus] = useState<"copySuccess" | "copyFailed" | null>(null);
   const [wrap, setWrap] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const timer = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const langRef = useRef<HTMLButtonElement | null>(null);
 
   const lineCount = node.code ? node.code.split("\n").length : 0;
   const meta = parseCodeMeta(node.meta);
@@ -95,7 +206,7 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
     let alive = true;
     const run = () => {
       if (!alive) return;
-      highlightCode(node.code, node.lang, true).then((html) => {
+      highlightCode(node.code, lang, true).then((html) => {
         if (alive) setColored({ key: codeKey, lines: splitHighlightedLines(html) });
       });
     };
@@ -119,7 +230,7 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
       alive = false;
       observer.disconnect();
     };
-  }, [codeKey, node.code, node.lang, config.preview.highlight]);
+  }, [codeKey, node.code, lang, config.preview.highlight]);
 
   useEffect(
     () => () => {
@@ -140,8 +251,25 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
     }
   }, [node.code]);
 
+  const closeMenu = useCallback(() => setMenuAnchor(null), []);
+
+  /** 每次打开都重新量一次位置：代码块可能刚滚动过，旧矩形已经失效 */
+  const toggleMenu = () => {
+    if (menuAnchor) {
+      setMenuAnchor(null);
+      return;
+    }
+    const rect = langRef.current?.getBoundingClientRect();
+    if (rect) setMenuAnchor(rect);
+  };
+
+  const selectLang = (next: string) => {
+    setMenuAnchor(null);
+    if (next !== lang) onLangChange(next);
+  };
+
   return (
-    <div className={`mde-code${wrap ? " is-wrapped" : ""}`} data-lang={node.lang} ref={rootRef}>
+    <div className={`mde-code${wrap ? " is-wrapped" : ""}`} data-lang={lang} ref={rootRef}>
       <div className="mde-code-head">
         {/* 折叠开关放在语言名前面：它对应的就是「这段代码」，读起来是「收起 · python」，比藏在右侧工具里直观 */}
         {canCollapse && (
@@ -156,9 +284,28 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
             <MdeIcon name="chevron" size={13} />
           </button>
         )}
-        <span className="mde-code-lang">
-          {config.preview.showCodeLanguage ? node.lang || labels.code : ""}
-        </span>
+        {config.preview.showCodeLanguage ? (
+          /*
+           * 语言名兼作切换入口：只改预览的高亮语言，不回写围栏标记。
+           * 单独放一个按钮在工具区反而会让「当前语言」和「换语言」分成两处。
+           */
+          <button
+            type="button"
+            ref={langRef}
+            className={`mde-code-lang${menuAnchor ? " is-open" : ""}`}
+            onClick={toggleMenu}
+            title={labels.codeLangMenu}
+            aria-label={labels.codeLangMenu}
+            aria-haspopup="menu"
+            aria-expanded={menuAnchor !== null}
+          >
+            <span>{lang || labels.code}</span>
+            <MdeIcon name="chevron" size={11} />
+          </button>
+        ) : (
+          // 关掉语言标签时留一个占位，右对齐的工具区才不会塌到左边
+          <span className="mde-code-lang" />
+        )}
         <span className="mde-code-tools">
           {copyStatus && <span role="status">{labels[copyStatus]}</span>}
           {config.preview.codeActions.wrap && (
@@ -204,12 +351,21 @@ const PlainCodeBlock: React.FC<CodeBlockProps> = ({ node, config, labels }) => {
           ))}
         </div>
       </div>
+      {menuAnchor && (
+        <LangMenu
+          anchor={menuAnchor}
+          current={lang}
+          labels={labels}
+          onSelect={selectLang}
+          onClose={closeMenu}
+        />
+      )}
     </div>
   );
 };
 
 /** Mermaid 图：渲染失败自动回退为代码块 */
-const MermaidBlock: React.FC<CodeBlockProps> = (props) => {
+const MermaidBlock: React.FC<PlainCodeBlockProps> = (props) => {
   const { node, config } = props;
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -243,6 +399,13 @@ const MermaidBlock: React.FC<CodeBlockProps> = (props) => {
 
 export const CodeBlock: React.FC<CodeBlockProps> = (props) => {
   const { node, config } = props;
-  if (node.lang === "mermaid" && config.preview.mermaid) return <MermaidBlock {...props} />;
-  return <PlainCodeBlock {...props} />;
+  /*
+   * 语言覆盖放在最外层：切到 / 切离 mermaid 要走不同的渲染分支，
+   * 状态若留在 PlainCodeBlock 里，外层就看不到新语言。
+   */
+  const [overrideLang, setOverrideLang] = useState<string | null>(null);
+  const lang = overrideLang ?? node.lang;
+  const inner = { ...props, lang, onLangChange: setOverrideLang };
+  if (lang === "mermaid" && config.preview.mermaid) return <MermaidBlock {...inner} />;
+  return <PlainCodeBlock {...inner} />;
 };

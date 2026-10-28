@@ -89,3 +89,26 @@ export const restoreLocalBackup = async (name: string): Promise<BackupSummary> =
 export const getBackupDir = async (): Promise<string> => {
   return await invoke<string>('webdav_backup_dir');
 };
+
+/** 本地数据概况：恢复前判断是否存在比备份更新的本地改动 */
+export interface LocalDataState {
+  notes: number;
+  latest_updated_at: string | null;
+}
+
+export const getLocalState = async (): Promise<LocalDataState> => {
+  return await invoke<LocalDataState>('webdav_local_state');
+};
+
+/** 覆盖前给当前数据留一份安全快照（webdav_snapshot_local），返回文件名 */
+export const snapshotLocal = async (): Promise<string> => {
+  return await invoke<string>('webdav_snapshot_local');
+};
+
+/** 把选中备份另存为本地副本（webdav_save_copy），不改变当前数据 */
+export const saveBackupCopy = async (
+  source: 'remote' | 'local',
+  name: string,
+): Promise<string> => {
+  return await invoke<string>('webdav_save_copy', { source, name });
+};

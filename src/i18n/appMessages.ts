@@ -1,4 +1,8 @@
 export const appMessages: Record<string, string> = {
+  "AI 工具条": "AI actions",
+  "润色": "Polish",
+  "翻译": "Translate",
+  "总结": "Summarize",
   "恢复软件默认设置": "Reset app settings",
   "将把通用（含托盘图标、关闭窗口行为、开机自启动）、编辑器、笔记列表、界面布局、主题等软件设置恢复为默认值（AI 设置不受影响）。": "Reset general settings (including the tray icon, window closing behavior, and startup), editor, note list, layout, and theme to their defaults. AI settings will not be affected.",
   "恢复默认": "Restore defaults",

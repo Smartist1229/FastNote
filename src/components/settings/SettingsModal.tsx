@@ -361,7 +361,9 @@ const SelectInput: React.FC<{
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -377,23 +379,30 @@ const SelectInput: React.FC<{
     };
   }, [open]);
 
-  // Native selection provides full keyboard and screen-reader support for language switching.
-  if (options.some((option) => option.value === "zh-CN")) {
-    return (
-      <select
-        value={value}
-        aria-label={label}
-        onChange={(event) => onChange(event.target.value)}
-        className="max-w-full min-w-[150px] rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs text-body focus-visible:outline-primary-500"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value} lang={option.value === "system" ? undefined : option.value}>
-            {option.value === "system" ? t(option.label) : option.label}
-          </option>
-        ))}
-      </select>
+  // 打开后把焦点交给当前选项：菜单是自绘的，不接管焦点的话键盘用户只能 Tab 逐个走，
+  // 也让「方向键选、回车确认」这套原生下拉的习惯能延续下来。
+  useEffect(() => {
+    if (!open) return;
+    const menu = menuRef.current;
+    const target =
+      menu?.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]') ??
+      menu?.querySelector<HTMLButtonElement>('[role="option"]');
+    target?.focus();
+  }, [open, pos]);
+
+  const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [],
     );
-  }
+    if (buttons.length === 0) return;
+    event.preventDefault();
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Home") buttons[0].focus();
+    else if (event.key === "End") buttons[buttons.length - 1].focus();
+    else if (index < 0) buttons[event.key === "ArrowDown" ? 0 : buttons.length - 1].focus();
+    else buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length].focus();
+  };
 
   return (
     <>
@@ -421,6 +430,7 @@ const SelectInput: React.FC<{
           <div
             ref={menuRef}
             role="listbox"
+            onKeyDown={onMenuKeyDown}
             className="fixed z-[80] p-1 rounded-lg bg-surface border border-line shadow-elevated animate-scaleIn"
             style={{ top: pos.top, left: pos.left, minWidth: pos.minWidth, maxHeight: 264, overflowY: "auto" }}
           >
@@ -435,6 +445,7 @@ const SelectInput: React.FC<{
                   onClick={() => {
                     onChange(o.value);
                     setOpen(false);
+                    triggerRef.current?.focus();
                   }}
                   className={`w-full flex items-center gap-2.5 px-2 py-1.5 text-[11px] text-left rounded-md transition-colors ${
                     active ? "bg-primary-50 text-primary-600 font-medium" : "text-body hover:bg-surface-alt"

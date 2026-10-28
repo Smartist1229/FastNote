@@ -62,6 +62,7 @@ import { ToastProvider, useToast } from "@/components/common/Toast";
 
 import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
 import { AIChatPanel } from "@/components/ai/AIChatPanel";
+import { SelectionAiToolbar } from "@/components/editor/SelectionAiToolbar";
 
 import { SettingsModal, SETTINGS_SECTIONS } from "@/components/settings/SettingsModal";
 import { ExportCategoryModal } from "@/components/data/ExportCategoryModal";
@@ -201,6 +202,17 @@ function AppContent() {
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<number>>(new Set());
   /** AI 面板是否展开：仅启动时从 layout 恢复，切换本身不写设置 */
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  /**
+   * 选区 AI 工具条注入的提示词。只追加到面板草稿里，不自动发送——
+   * 因此这里存的是「待粘贴的文本」而不是「待发送的消息」。
+   */
+  const [pendingPrompt, setPendingPrompt] = useState<{ id: number; text: string } | null>(null);
+  const promptSeqRef = useRef(0);
+  const handleSelectionPrompt = useCallback((text: string) => {
+    promptSeqRef.current += 1;
+    setPendingPrompt({ id: promptSeqRef.current, text });
+    setAiPanelOpen(true);
+  }, []);
   /**
    * 编辑器光标偏移：AI「插入」以此为插入点，避免总是追加到文末。
    * 用 ref 而不是 state —— 它只在「AI 插入」时读一次，若放进 state，
@@ -1953,6 +1965,10 @@ function AppContent() {
                     onRegisterActions={registerEditorActions}
                     enableAI={appSettings.general.enableAI}
                   />
+                  {/* 选中文本浮出的 AI 工具条：纯浮层，不改编辑器内部结构 */}
+                  {appSettings.general.enableAI && (
+                    <SelectionAiToolbar onPrompt={handleSelectionPrompt} />
+                  )}
                 </div>
               ) : (
                 <WelcomeDashboard
@@ -2005,6 +2021,7 @@ function AppContent() {
             }}
             enableAI={appSettings.general.enableAI}
             isExternalFile={!!externalFile && !overlayActive}
+            pendingPrompt={pendingPrompt}
           />
         </div>
       </div>

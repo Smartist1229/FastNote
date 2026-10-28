@@ -626,6 +626,108 @@ pub fn webdav_backup_dir(app: AppHandle) -> Result<String, String> {
     Ok(backup_dir(&app)?.to_string_lossy().to_string())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataState {
+    pub notes: u64,
+    pub latest_updated_at: Option<String>,
+}
+
+/// 本地数据概况：恢复前判断是否存在比备份更新的本地改动。
+#[tauri::command]
+pub fn webdav_local_state(app: AppHandle) -> Result<LocalDataState, String> {
+    let state = app.state::<AppState>();
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    let (notes, latest): (u64, Option<String>) = conn
+        .query_row(
+            "SELECT COUNT(*), MAX(updated_at) FROM notes WHERE is_deleted = 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("读取本地数据状态失败：{e}"))?;
+    Ok(LocalDataState {
+        notes,
+        latest_updated_at: latest,
+    })
+}
+
+/// 覆盖前给当前数据留一份安全快照，返回文件名。
+#[tauri::command]
+pub fn webdav_snapshot_local(app: AppHandle) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    begin(&state.webdav)?;
+    let outcome = new_local_backup(&app, "fastnote-safety-");
+    end(&state.webdav);
+    let (path, _) = outcome?;
+    Ok(path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fastnote-safety.json")
+        .to_string())
+}
+
+/// 把选中的备份另存为本地副本，不改变当前数据；source 为 remote / local。
+#[tauri::command]
+pub async fn webdav_save_copy(
+    app: AppHandle,
+    source: String,
+    name: String,
+) -> Result<String, String> {
+    validate_name(&name)?;
+    let dir = backup_dir(&app)?;
+    let extension = Path::new(&name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("json")
+        .to_ascii_lowercase();
+    let target_name = format!(
+        "fastnote-copy-{}.{}",
+        Local::now().format("%Y%m%d-%H%M%S"),
+        extension
+    );
+    let target = dir.join(&target_name);
+
+    if source == "remote" {
+        let state = app.state::<AppState>();
+        begin(&state.webdav)?;
+        let outcome = async {
+            let cfg = load_config(&app)?;
+            let client = http_client()?;
+            let url = file_url(&cfg, &name)?;
+            let response = request(&client, Method::GET, url, &cfg)
+                .send()
+                .await
+                .map_err(|e| format!("下载云端备份失败：{e}"))?;
+            if !response.status().is_success() {
+                return Err(status_error("下载云端备份", response.status()));
+            }
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| format!("下载云端备份失败：{e}"))?;
+            tokio::fs::write(&target, &bytes)
+                .await
+                .map_err(|e| format!("写入副本失败：{e}"))
+        }
+        .await;
+        end(&state.webdav);
+        outcome?;
+    } else {
+        let from = dir.join(&name);
+        if !from.is_file() {
+            return Err("备份文件不存在".to_string());
+        }
+        tokio::fs::copy(&from, &target)
+            .await
+            .map_err(|e| format!("复制备份失败：{e}"))?;
+    }
+
+    Ok(target_name)
+}
+
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.contains('/')

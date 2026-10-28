@@ -1832,6 +1832,79 @@
   opacity: 0.62;
 }
 
+/* 语言名同时也是切换入口：去掉按钮默认外观，保住原来那段文字的排版 */
+button.mde-code-lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: -5px;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mde-code-text);
+  font: inherit;
+  font-family: var(--mde-mono-family);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+button.mde-code-lang:hover,
+button.mde-code-lang.is-open {
+  background: var(--mde-code-tool-hover);
+  opacity: 1;
+}
+
+/* 展开时箭头朝上，给「菜单已打开」一个不占额外空间的提示 */
+button.mde-code-lang svg {
+  transition: transform 120ms ease;
+}
+
+button.mde-code-lang.is-open svg {
+  transform: rotate(180deg);
+}
+
+/* 语言菜单：fixed 定位，落在代码块内部也能盖过滚动容器（定位见 LangMenu） */
+.mde-code-lang-menu {
+  position: fixed;
+  z-index: 500;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--mde-code-border, #e5e9f0);
+  border-radius: 8px;
+  background: var(--mde-code-header-bg, #21252b);
+  color: var(--mde-code-text, #abb2bf);
+  box-shadow: 0 12px 28px -10px rgba(15, 23, 42, 0.5);
+  font-family: var(--mde-mono-family);
+  font-size: 11px;
+}
+
+.mde-code-lang-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mde-code-lang-menu button:hover {
+  background: var(--mde-code-tool-hover, rgba(15, 23, 42, 0.28));
+}
+
+.mde-code-lang-menu button.is-active {
+  color: var(--mde-accent, #818cf8);
+}
+
 .mde-code-tools {
   display: flex;
   align-items: center;

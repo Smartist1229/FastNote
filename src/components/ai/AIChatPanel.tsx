@@ -1621,7 +1621,7 @@ const formatMessageTime = (at: number | undefined, t: typeof translate): string 
  * 副作用：写 chat_sessions / chat_messages，并派发 fastnote-data-changed、
  * fastnote-select-note 通知外部刷新列表与切换笔记。
  */
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, editorSettings, onClose, enableAI, isExternalFile }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, editorSettings, onClose, enableAI, isExternalFile, pendingPrompt }) => {
   const { t } = useI18n();
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
@@ -2633,6 +2633,20 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   useEffect(() => {
     if (isOpen) inputRef.current?.focus();
   }, [isOpen, activeSessionId]);
+
+  /**
+   * 选区工具条注入的提示词：追加到草稿末尾。
+   * 不覆盖已经写了一半的话，也不自动发送——模型调用要花钱，最终按回车仍由用户决定。
+   */
+  const injectedPromptRef = useRef(0);
+  useEffect(() => {
+    if (!isOpen || !pendingPrompt || pendingPrompt.id === injectedPromptRef.current) return;
+    injectedPromptRef.current = pendingPrompt.id;
+    setInput((prev) =>
+      prev.trim() ? `${prev.replace(/\s+$/, "")}\n\n${pendingPrompt.text}` : pendingPrompt.text,
+    );
+    inputRef.current?.focus();
+  }, [isOpen, pendingPrompt]);
 
   /** 发送入口：加同步锁并递增 runId，落用户消息后交给 agentLoop；解锁前须确认自己仍是最新一轮 */
   const handleSend = async () => {

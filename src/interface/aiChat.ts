@@ -9,6 +9,15 @@ import type { Category } from "./note";
 import type { EditorSettings } from "./settings";
 
 /**
+ * 一次性注入输入框的提示词（来自编辑器选区工具条）。
+ * id 用来保证同一条注入只被消费一次；text 只追加到草稿末尾，不自动发送。
+ */
+export interface AiPromptInjection {
+  id: number;
+  text: string;
+}
+
+/**
  * 对话面板 Props。会话列表、消息与流式状态都由面板内部持有，
  * 外部只需提供当前笔记上下文、设置与若干回调。
  */
@@ -46,6 +55,8 @@ export interface AIChatPanelProps {
   enableAI?: boolean;
   /** 是否为外部文件模式（正在编辑电脑文件）：启用 AI 时显示提示 */
   isExternalFile?: boolean;
+  /** 编辑器选区工具条要注入的提示词；不传表示没有 */
+  pendingPrompt?: AiPromptInjection | null;
 }
 
 /**

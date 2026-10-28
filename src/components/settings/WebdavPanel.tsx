@@ -19,6 +19,8 @@ import { DEFAULT_WEBDAV_SETTINGS } from "@/config/appDefaults";
 import { Icon } from "@/components/common/Icon";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
+import { SyncConflictDialog } from "@/components/settings/SyncConflictDialog";
+import type { SyncConflictInfo } from "@/components/settings/SyncConflictDialog";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { flushThemeSettings } from "@/stores/themeStore";
 import { formatBytes } from "@/lib/format";
@@ -35,6 +37,26 @@ const prettyTime = (iso: string | null) => {
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit",
   }).format(d);
+};
+
+/** 备份创建时间：优先用文件名里的时间戳（本机时钟），失败再回落到服务器 / 文件修改时间 */
+const backupTimestamp = (entry: BackupFileEntry | undefined): number | null => {
+  if (!entry) return null;
+  const match = /fastnote-.*?(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(entry.name);
+  if (match) {
+    const [, year, month, day, hour, minute, second] = match;
+    const date = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+    );
+    if (!Number.isNaN(date.getTime())) return date.getTime();
+  }
+  const parsed = entry.modified ? Date.parse(entry.modified) : NaN;
+  return Number.isNaN(parsed) ? null : parsed;
 };
 
 /** 数值输入：输入过程中不夹取，失焦 / 回车时收敛到 [min, max] */
@@ -161,6 +183,7 @@ type Busy =
   | "restoreRemote"
   | "localList"
   | "restoreLocal"
+  | "syncCheck"
   | null;
 
 export const WebdavPanel: React.FC<WebdavPanelProps> = ({
@@ -183,6 +206,9 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
   const [remoteFiles, setRemoteFiles] = useState<BackupFileEntry[] | null>(null);
   const [localFiles, setLocalFiles] = useState<BackupFileEntry[] | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
+  /** 非空时弹出冲突选择框：本地数据比所选备份新，不直接覆盖 */
+  const [conflict, setConflict] = useState<SyncConflictInfo | null>(null);
+  const [conflictBusy, setConflictBusy] = useState<"keepCloud" | "saveCopy" | null>(null);
   const aliveRef = useRef(true);
 
   // 外部恢复设置（如导入备份）后同步草稿
@@ -331,18 +357,21 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
   };
 
   /** 恢复前先冲掉主题防抖写入，否则旧主题会在恢复后回写覆盖备份里的主题 */
-  const restore = async (
+  const performRestore = async (
     source: "remote" | "local",
     name: string,
+    skipConfirm: boolean,
   ) => {
-    const formatLabel = source === "remote" ? t("云端备份") : t("本地备份");
-    const ok = await confirm({
-      title: t("从备份恢复"),
-      message: t("恢复会用{formatLabel}「{name}」覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。", { formatLabel: formatLabel, name: name }),
-      confirmText: t("覆盖并恢复"),
-      danger: true,
-    });
-    if (!ok) return;
+    if (!skipConfirm) {
+      const formatLabel = source === "remote" ? t("云端备份") : t("本地备份");
+      const ok = await confirm({
+        title: t("从备份恢复"),
+        message: t("恢复会用{formatLabel}「{name}」覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。", { formatLabel: formatLabel, name: name }),
+        confirmText: t("覆盖并恢复"),
+        danger: true,
+      });
+      if (!ok) return;
+    }
 
     setBusy(source === "remote" ? "restoreRemote" : "restoreLocal");
     try {
@@ -356,6 +385,78 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
     } catch (e) {
       setBusy(null);
       showToast(t("恢复失败：{value1}", { value1: errorText(e) }), "error");
+    }
+  };
+
+  /**
+   * 恢复入口：先比较「本地最新改动时间」与「备份创建时间」。
+   * 本地更新说明这份备份落后于本机数据，直接覆盖会丢改动，因此改为弹冲突选择框。
+   * 拿不到本地状态（命令失败 / 无笔记）时不拦截，退回原来的覆盖确认。
+   */
+  const restore = async (source: "remote" | "local", name: string) => {
+    setBusy("syncCheck");
+    let found: SyncConflictInfo | null = null;
+    try {
+      const entry = (source === "remote" ? remoteFiles : localFiles)?.find(
+        (file) => file.name === name,
+      );
+      const backupTime = backupTimestamp(entry);
+      const local = await webdavApi.getLocalState();
+      const localTime = local.latest_updated_at ? Date.parse(local.latest_updated_at) : NaN;
+      if (backupTime != null && Number.isFinite(localTime) && localTime > backupTime) {
+        found = {
+          source,
+          backupName: name,
+          backupTime: new Date(backupTime).toISOString(),
+          localTime: new Date(localTime).toISOString(),
+          localNotes: local.notes,
+        };
+      }
+    } catch {
+      // 状态读不到就按老流程走，不能因为检查失败挡住恢复
+    } finally {
+      setBusy(null);
+    }
+    if (found) {
+      setConflict(found);
+      return;
+    }
+    await performRestore(source, name, false);
+  };
+
+  /** 保留本地：什么都不做，只关掉对话框 */
+  const handleKeepLocal = () => setConflict(null);
+
+  /** 保留云端：覆盖前先留一份本地安全快照，快照失败就放弃恢复 */
+  const handleKeepCloud = async () => {
+    if (!conflict) return;
+    const target = conflict;
+    setConflictBusy("keepCloud");
+    try {
+      await webdavApi.snapshotLocal();
+    } catch (e) {
+      setConflictBusy(null);
+      showToast(t("安全快照创建失败，已取消恢复：{value1}", { value1: errorText(e) }), "error");
+      return;
+    }
+    setConflictBusy(null);
+    setConflict(null);
+    await performRestore(target.source, target.backupName, true);
+  };
+
+  /** 另存为副本：当前数据不动，把选中的备份复制到本地备份目录 */
+  const handleSaveCopy = async () => {
+    if (!conflict) return;
+    setConflictBusy("saveCopy");
+    try {
+      const copyName = await webdavApi.saveBackupCopy(conflict.source, conflict.backupName);
+      setConflict(null);
+      showToast(t("已另存为副本：{value1}", { value1: copyName }), "success");
+      await refreshLocal();
+    } catch (e) {
+      showToast(t("另存为副本失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setConflictBusy(null);
     }
   };
 
@@ -657,6 +758,17 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
           <p className="border-t border-line-soft px-3.5 py-3 text-[11px] text-faint">{t("备份目录里还没有备份文件；开启自动备份或手动导出后会出现在这里。")}</p>
         )}
       </div>
+
+      <SyncConflictDialog
+        info={conflict}
+        busy={conflictBusy}
+        onKeepLocal={handleKeepLocal}
+        onKeepCloud={() => void handleKeepCloud()}
+        onSaveCopy={() => void handleSaveCopy()}
+        onClose={() => {
+          if (conflictBusy === null) setConflict(null);
+        }}
+      />
 
       {confirmDialog}
     </div>
