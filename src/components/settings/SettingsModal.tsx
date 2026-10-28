@@ -2083,6 +2083,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <div className="mt-2 flex items-center justify-between gap-3">
                                 <p className="min-w-0 truncate text-[11px] text-primary-600">
                                   {t("发现新版本 {value1}", { value1: updater.version || "" })}
+                                  {updater.activeLine && (
+                                    <span className="text-faint">
+                                      {" "}
+                                      · {updater.activeLine === "cnb" ? t("CNB（国内）") : "GitHub"}
+                                    </span>
+                                  )}
                                   {updater.skippedVersion === updater.version && (
                                     <span className="text-faint"> · {t("已跳过")}</span>
                                   )}

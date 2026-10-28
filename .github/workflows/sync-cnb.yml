@@ -1,0 +1,43 @@
+# 把 GitHub 仓库镜像到 CNB（源码备份，国内可浏览）。
+# 更新包不走这里：Releases 资源由 release.yml 通过 CNB API 上传。
+#
+# 需要仓库 Secret：CNB_TOKEN（CNB 访问令牌，需 repo-code 写权限）
+name: Sync source to CNB
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-cnb
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Mirror to CNB
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 同步所有分支和标签需要完整历史与引用
+          fetch-depth: 0
+
+      - name: Push branches and tags to CNB
+        uses: docker://tencentcom/git-sync
+        env:
+          PLUGIN_TARGET_URL: "https://cnb.cool/Yiygc/FastNote.git"
+          PLUGIN_AUTH_TYPE: "https"
+          PLUGIN_USERNAME: "cnb"
+          PLUGIN_PASSWORD: ${{ secrets.CNB_TOKEN }}
+          PLUGIN_PUSH_TAGS: "true"
+          # 镜像场景下历史改写（rebase/amend）也能覆盖；CNB 侧不要直接改代码
+          PLUGIN_FORCE: "true"

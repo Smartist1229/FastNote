@@ -16,6 +16,7 @@ mod fingerprint;
 mod i18n;
 mod opener;
 mod semantic;
+mod updater;
 mod webdav;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -5837,6 +5838,8 @@ pub fn run() {
             download::toolbox_download_dir,
             fingerprint::fingerprint_info,
             opener::open_app_folder,
+            updater::probe_update_lines,
+            updater::install_update,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件

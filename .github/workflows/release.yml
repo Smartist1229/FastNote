@@ -7,6 +7,7 @@
 # 首次使用前需要在仓库 Secrets 里配置：
 #   TAURI_SIGNING_PRIVATE_KEY          私钥内容（tauri signer generate 生成）
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD 私钥密码；无密码时留空/不配置
+#   CNB_TOKEN                          CNB 访问令牌（repo-code:rw + repo-release:rw）
 #
 # 也可以在 Actions 页面手动运行，指定一个已经存在的 tag。
 name: Release
@@ -124,3 +125,16 @@ jobs:
           args: --bundles nsis
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
+
+      # 把安装包与 CNB 版 latest.json 传到 CNB，作为国内更新线路。
+      # 固定清单地址：https://cnb.cool/Yiygc/FastNote/-/releases/download/latest/latest.json
+      - name: Publish updater manifest to CNB
+        if: ${{ !inputs.draft }}
+        shell: pwsh
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: Yiygc/FastNote
+          CNB_BRANCH: master
+          BUNDLE_DIR: src-tauri/target/release/bundle/nsis
+          NOTES_FILE: release-notes.md
+        run: node scripts/publish-cnb.mjs
