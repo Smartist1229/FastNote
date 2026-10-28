@@ -1,6 +1,6 @@
 # 发布 + 自动更新流程：
 #   1. 更新 package.json 与 src-tauri/tauri.conf.json 的版本号
-#   2. 提交后打 tag（例如 v2.6.7）并推送：git push origin v2.6.7
+#   2. 提交后打 tag（例如 v2.6.8）并推送：git push <远程名> v2.6.8
 #   3. Actions 会校验版本、生成更新日志、构建 NSIS 安装包，
 #      同时产出最新版清单 latest.json（供应用内 updater 检查）
 #
@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag（例如 v2.6.7）"
+        description: "要发布的 tag（例如 v2.6.8）"
         required: true
       draft:
         description: "创建草稿 Release，不立即公开"
@@ -122,5 +122,5 @@ jobs:
           releaseDraft: ${{ inputs.draft || false }}
           prerelease: false
           args: --bundles nsis
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
