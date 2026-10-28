@@ -12,16 +12,8 @@ import type { PropertiesTarget } from "@/interface/ui";
 import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
-
-/** 按软件语言展示日期时间，异常时原样返回 */
-const formatDateTime = (value: string | null, locale: string) => {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString(locale, {
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  });
-};
+import { HistoryDiffModal } from "@/components/common/HistoryDiffModal";
+import { formatDateTime } from "@/lib/format";
 
 /** 属性行：左侧字段名，中间内容，右侧操作按钮 */
 const Row: React.FC<{ label: string; content: React.ReactNode; action?: React.ReactNode }> = ({ label, content, action }) => (
@@ -225,6 +217,7 @@ export const PropertiesModal: React.FC<{
     setConfirmRollbackId(null);
     setConfirmDeleteId(null);
     setConfirmClear(false);
+    setDiffEntry(null);
   }, [targetKey]);
 
   /**
@@ -265,6 +258,8 @@ export const PropertiesModal: React.FC<{
   /** 二次确认中的删除 / 清空：删了就找不回来，同样先亮「确认」 */
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  /** 正在对比的历史版本：弹层展示「该版本 → 当前内容」的逐行差异 */
+  const [diffEntry, setDiffEntry] = useState<NoteHistoryEntry | null>(null);
 
   /** 新建草稿提交：支持逗号 / 顿号 / 分号 / 空格分隔一次加多个，已存在的词跳过 */
   const commitTagDraft = () => {
@@ -647,6 +642,18 @@ export const PropertiesModal: React.FC<{
                           }}
                         />
                       )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmRollbackId(null);
+                          setConfirmDeleteId(null);
+                          setConfirmClear(false);
+                          setDiffEntry(entry);
+                        }}
+                        className="px-2 py-1 text-[11px] rounded-md border border-line text-body hover:bg-surface-alt transition-colors"
+                      >
+                        {t("对比")}
+                      </button>
                       {onPreviewHistory && (
                         <button
                           type="button"
@@ -722,6 +729,14 @@ export const PropertiesModal: React.FC<{
           </div>
         </>
       )}
+
+      {/* 版本对比：叠在属性窗之上，关掉后回到历史列表 */}
+      <HistoryDiffModal
+        isOpen={diffEntry != null}
+        onClose={() => setDiffEntry(null)}
+        entry={diffEntry}
+        currentContent={note?.content ?? ""}
+      />
     </Modal>
   );
 };

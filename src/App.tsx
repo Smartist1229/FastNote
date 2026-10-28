@@ -69,10 +69,14 @@ import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { useRecentFiles } from "@/lib/recentFiles";
 import { useSearchHistory } from "@/lib/searchHistory";
+import { consumeReleaseNotice } from "@/lib/releaseNotes";
+import type { ReleaseNotice } from "@/lib/releaseNotes";
+import { UpdateDialog } from "@/components/common/UpdateDialog";
 import { Icon } from "@/components/common/Icon";
 import { setLanguage, t as translateNow, useI18n } from "@/i18n";
 import { scheduleStartupCheck } from "@/stores/updaterStore";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 
 /** 编辑器依赖 CodeMirror，体积较大：懒加载让首屏先出侧栏与欢迎页，Suspense 负责占位 */
 const NoteEditor = lazy(() =>
@@ -326,6 +330,25 @@ function AppContent() {
       );
     });
   }, [appSettingsLoaded, showToast]);
+  /**
+   * 更新完成提示：安装前缓存的说明与当前版本对得上才弹，版本没变化不打扰。
+   * 放在软件设置读回之后，避开启动时的读库与首屏渲染。
+   */
+  const [releaseNotice, setReleaseNotice] = useState<ReleaseNotice | null>(null);
+  useEffect(() => {
+    if (!appSettingsLoaded || !isTauri()) return;
+    let cancelled = false;
+    getVersion()
+      .then((version) => {
+        if (cancelled) return;
+        const notice = consumeReleaseNotice(version);
+        if (notice) setReleaseNotice(notice);
+      })
+      .catch((error) => console.error("读取版本号失败：", error));
+    return () => {
+      cancelled = true;
+    };
+  }, [appSettingsLoaded]);
   /** 最新选中项 / 笔记列表的镜像：供零依赖回调与事件处理器读取，避免闭包过期 */
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
@@ -2186,6 +2209,9 @@ function AppContent() {
           {t("松开即可打开文件 · 拖到某个分组上可导入该分组")}
         </div>
       )}
+
+      {/* 更新弹窗：手动检查到新版本时展示说明与操作，更新完成后展示本次更新内容 */}
+      <UpdateDialog notice={releaseNotice} onCloseNotice={() => setReleaseNotice(null)} />
 
       {/* 通用确认弹窗：替换原生 confirm()，样式跟随主题 */}
       {confirmDialog}

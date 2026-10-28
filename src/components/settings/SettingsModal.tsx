@@ -57,7 +57,7 @@ import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { exportBackup, exportSqliteBackup, importBackup, importSqliteBackup } from "@/api/backup";
 import { flushThemeSettings } from "@/stores/themeStore";
-import { checkForUpdates, installUpdate, useUpdater } from "@/stores/updaterStore";
+import { checkForUpdates, openUpdateDialog, useUpdater } from "@/stores/updaterStore";
 import { normalizeHexList } from "@/lib/theme";
 
 /* ---------- 分区定义 ---------- */
@@ -2079,56 +2079,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               </p>
                             )}
 
-                            {(updater.phase === "available" || updater.phase === "downloading") && (
-                              <div className="mt-2 rounded-lg bg-app border border-line-soft p-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="text-[12px] font-medium text-body">
-                                      {t("发现新版本 {value1}", { value1: updater.version || "" })}
-                                    </p>
-                                    <p className="mt-0.5 text-[11px] text-faint">
-                                      {t("下载完成后会自动安装并重启。")}
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => void installUpdate()}
-                                    disabled={updater.phase === "downloading"}
-                                    className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium text-on-accent bg-primary-500 hover:bg-primary-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    {updater.phase === "downloading" ? t("正在更新...") : t("下载并安装")}
-                                  </button>
-                                </div>
+                            {updater.phase === "available" && (
+                              <div className="mt-2 flex items-center justify-between gap-3">
+                                <p className="min-w-0 truncate text-[11px] text-primary-600">
+                                  {t("发现新版本 {value1}", { value1: updater.version || "" })}
+                                  {updater.skippedVersion === updater.version && (
+                                    <span className="text-faint"> · {t("已跳过")}</span>
+                                  )}
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={openUpdateDialog}
+                                  className="flex-shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors"
+                                >
+                                  {t("查看更新说明")}
+                                </button>
+                              </div>
+                            )}
 
-                                {updater.phase === "downloading" && (
-                                  <div className="mt-2.5">
-                                    <div className="h-1.5 rounded-full bg-surface-alt overflow-hidden">
-                                      <div
-                                        className="h-full rounded-full bg-primary-500 transition-all duration-200"
-                                        style={{ width: `${Math.max(updater.progress ?? 10, 4)}%` }}
-                                      />
-                                    </div>
-                                    <p className="mt-1.5 text-[11px] text-faint">
-                                      {updater.progress == null
-                                        ? t("正在下载更新...")
-                                        : t("正在下载更新... {value1}%", { value1: updater.progress })}
-                                    </p>
-                                  </div>
-                                )}
-
-                                {updater.error && (
-                                  <p className="mt-2 text-[11px] text-danger-strong break-words">
-                                    {t("更新失败：{value1}", { value1: updater.error })}
-                                  </p>
-                                )}
-
-                                {updater.phase === "available" && updater.notes && (
-                                  <div className="mt-2.5 pt-2.5 border-t border-line-soft max-h-[120px] overflow-y-auto chat-scrollbar pr-1">
-                                    <p className="text-[11px] text-muted whitespace-pre-wrap break-words selectable">
-                                      {updater.notes}
-                                    </p>
-                                  </div>
-                                )}
+                            {updater.phase === "downloading" && (
+                              <div className="mt-2 flex items-center justify-between gap-3">
+                                <p className="min-w-0 truncate text-[11px] text-primary-600">
+                                  {updater.progress == null
+                                    ? t("正在下载更新...")
+                                    : t("正在下载更新... {value1}%", { value1: updater.progress })}
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={openUpdateDialog}
+                                  className="flex-shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors"
+                                >
+                                  {t("查看进度")}
+                                </button>
                               </div>
                             )}
                           </div>

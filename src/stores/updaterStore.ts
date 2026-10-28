@@ -2,7 +2,8 @@
  * 应用内自动更新的状态层。
  *
  * 数据来源是 Tauri updater 插件：启动后静默检查一次，用户也可以在「关于」里手动检查。
- * 这里只保存一次检查对应的 Update 资源与展示状态，不做持久化——更新与否由远端 latest.json 决定。
+ * 更新与否由远端 latest.json 决定；本地只持久化两件事——用户跳过的版本，
+ * 以及安装前缓存的更新说明（见 lib/releaseNotes.ts）。
  *
  * 交互约定：
  *   - 启动检查失败保持安静，不把离线等临时问题写进「关于」页；
@@ -14,6 +15,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import type { DownloadEvent, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { clearPendingRelease, recordPendingRelease } from "@/lib/releaseNotes";
 
 export type UpdaterPhase =
   | "idle"
@@ -33,6 +35,10 @@ export interface UpdaterSnapshot {
   progress: number | null;
   /** 手动检查失败时的错误信息 */
   error: string | null;
+  /** 用户主动跳过的版本：启动时的静默检查不再提示，手动检查仍然展示 */
+  skippedVersion: string | null;
+  /** 「发现新版本」弹窗是否打开：手动检查到新版本时自动打开，关闭后可从「关于」再唤出 */
+  dialogOpen: boolean;
 }
 
 export interface UpdateInfo {
@@ -40,12 +46,24 @@ export interface UpdateInfo {
   notes: string | null;
 }
 
+const SKIPPED_KEY = "fastnote.updater.skippedVersion";
+
+const readSkippedVersion = (): string | null => {
+  try {
+    return localStorage.getItem(SKIPPED_KEY);
+  } catch {
+    return null;
+  }
+};
+
 const INITIAL: UpdaterSnapshot = {
   phase: "idle",
   version: null,
   notes: null,
   progress: null,
   error: null,
+  skippedVersion: readSkippedVersion(),
+  dialogOpen: false,
 };
 
 let snapshot: UpdaterSnapshot = INITIAL;
@@ -92,7 +110,8 @@ export const checkForUpdates = async (silent = false): Promise<UpdateInfo | null
 
   checkTask = (async () => {
     releasePending();
-    publish({ ...INITIAL, phase: "checking" });
+    // 跳过状态不属于「这一次检查」，重置展示状态时要保留
+    publish({ ...INITIAL, phase: "checking", skippedVersion: readSkippedVersion() });
     try {
       // 超时兜底：网络异常时不让「检查中」永远转下去
       const update = await check({ timeout: 15000 });
@@ -100,9 +119,16 @@ export const checkForUpdates = async (silent = false): Promise<UpdateInfo | null
         publish({ phase: "current" });
         return null;
       }
+      // 用户跳过的版本：启动时的静默检查不再提示，手动检查仍然照常返回
+      if (silent && update.version === readSkippedVersion()) {
+        await update.close().catch(() => {});
+        publish({ phase: "idle" });
+        return null;
+      }
       pendingUpdate = update;
       const info: UpdateInfo = { version: update.version, notes: update.body ?? null };
-      publish({ phase: "available", version: info.version, notes: info.notes });
+      // 手动检查直接弹窗展示更新说明；启动时的静默检查只发一条提示，不打断用户
+      publish({ phase: "available", version: info.version, notes: info.notes, dialogOpen: !silent });
       return info;
     } catch (error) {
       if (silent) {
@@ -125,6 +151,9 @@ export const installUpdate = async (): Promise<void> => {
   if (!update || snapshot.phase !== "available") return;
 
   publish({ phase: "downloading", progress: 0, error: null });
+  // Windows 的安装器会在下载完成后直接结束进程，后面的代码不保证执行：
+  // 更新说明必须在下载前落盘，下次启动才对得上版本
+  recordPendingRelease(update.version, snapshot.notes);
   let downloaded = 0;
   let total: number | null = null;
 
@@ -149,10 +178,35 @@ export const installUpdate = async (): Promise<void> => {
     // Windows 结束当前进程由安装器负责；macOS / Linux 需要手动重启
     await relaunch();
   } catch (error) {
+    // 安装没成功：清掉缓存的说明，避免下次启动误报「已更新」
+    clearPendingRelease();
     // 安装失败时保留更新资源：回到「可更新」状态，用户可以重试或重新检查
     publish({ phase: "available", error: describeError(error), progress: null });
   }
 };
+
+/** 跳过某个版本：启动静默检查不再提示它，直到用户取消跳过或换到更高版本 */
+export const skipVersion = (version: string) => {
+  try {
+    localStorage.setItem(SKIPPED_KEY, version);
+  } catch {
+    return;
+  }
+  publish({ skippedVersion: version, dialogOpen: false });
+};
+
+export const clearSkippedVersion = () => {
+  try {
+    localStorage.removeItem(SKIPPED_KEY);
+  } catch {
+    return;
+  }
+  publish({ skippedVersion: null });
+};
+
+/** 打开「发现新版本」弹窗：手动检查后自动打开，关闭后也可从「关于」再唤出 */
+export const openUpdateDialog = () => publish({ dialogOpen: true });
+export const closeUpdateDialog = () => publish({ dialogOpen: false });
 
 /**
  * 启动后静默检查一次（延迟执行，避开启动时的读库与首屏渲染）。

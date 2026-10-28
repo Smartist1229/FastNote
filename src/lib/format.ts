@@ -1,7 +1,7 @@
 /**
- * 展示层的数值格式化：体积与网速。
+ * 展示层的格式化：体积、网速与日期时间。
  *
- * 统一按 1024 进制；调用方负责决定保留几位小数。
+ * 体积与网速统一按 1024 进制；调用方负责决定保留几位小数。
  */
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"];
@@ -21,3 +21,17 @@ export const formatBytes = (bytes: number, fractionDigits = 1): string => {
 /** 每秒字节数 → `1.2 MB/s` */
 export const formatSpeed = (bytesPerSecond: number): string =>
   `${formatBytes(bytesPerSecond)}/s`;
+
+/** ISO 时间 → 当前语言的日期时间；空值显示破折号，无法解析时原样返回 */
+export const formatDateTime = (value: string | null, locale: string): string => {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
