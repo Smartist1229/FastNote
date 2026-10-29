@@ -25,6 +25,10 @@ export type UpdaterPhase =
   | "current"
   | "available"
   | "downloading"
+  /** 安装包已下载并验签，等待用户确认安装 */
+  | "ready"
+  /** 正在启动安装程序；Windows 上随后由安装器结束进程 */
+  | "installing"
   | "error";
 
 export type UpdateLineId = "cnb" | "github";
@@ -51,6 +55,14 @@ export interface UpdaterSnapshot {
   notes: string | null;
   /** 下载进度百分比；未知总大小或不在下载中时为 null */
   progress: number | null;
+  /** 实时下载速度（字节/秒，指数平滑后）；不在下载中或还没测出时为 null */
+  speed: number | null;
+  /** 已下载字节数；不在下载中时为 null */
+  downloaded: number | null;
+  /** 安装包总字节数；不在下载中或服务端未提供时为 null */
+  total: number | null;
+  /** 本次下载是否因失败自动换过线路 */
+  lineFallback: UpdateLineFallback | null;
   /** 手动检查失败时的错误信息 */
   error: string | null;
   /** 用户主动跳过的版本：启动时的静默检查不再提示，手动检查仍然展示 */
@@ -70,6 +82,12 @@ export interface UpdateInfo {
   notes: string | null;
 }
 
+/** 下载线路失败后自动换到另一条线的一次记录，用于在弹窗里说明原因 */
+export interface UpdateLineFallback {
+  from: UpdateLineId;
+  to: UpdateLineId;
+}
+
 interface UpdateDownloadProgress {
   downloaded: number;
   total: number | null;
@@ -77,6 +95,10 @@ interface UpdateDownloadProgress {
 
 const SKIPPED_KEY = "fastnote.updater.skippedVersion";
 const LINE_KEY = "fastnote.updater.line";
+
+/** 速度采样窗口与界面推送间隔：分片事件每秒几十条，逐条重渲染会拖慢界面 */
+const SPEED_SAMPLE_MS = 500;
+const PUBLISH_INTERVAL_MS = 400;
 
 const readSkippedVersion = (): string | null => {
   try {
@@ -108,6 +130,10 @@ const INITIAL: UpdaterSnapshot = {
   version: null,
   notes: null,
   progress: null,
+  speed: null,
+  downloaded: null,
+  total: null,
+  lineFallback: null,
   error: null,
   skippedVersion: readSkippedVersion(),
   dialogOpen: false,
@@ -155,6 +181,8 @@ const describeInstallError = (error: unknown): string => {
       return t("检查更新失败：{value1}", { value1: detail });
     case "download_failed":
       return t("下载或安装失败：{value1}", { value1: detail });
+    case "not_downloaded":
+      return t("没有可安装的更新包，请重新下载。");
     default:
       return raw;
   }
@@ -282,46 +310,150 @@ export const selectUpdateLine = (choice: UpdateLineChoice) => {
     activeLine: active?.id ?? null,
     version: active?.version ?? snapshot.version,
     notes: active?.notes ?? snapshot.notes,
+    lineFallback: null,
   });
 };
 
-/** 从当前线路下载并安装；Windows 上安装器会接管重启 */
-export const installUpdate = async (): Promise<void> => {
-  const line = snapshot.activeLine;
-  const version = snapshot.version;
-  if (!line || !version || snapshot.phase !== "available") return;
+/** 从指定线路下载并安装，进度经 Channel 推给状态层 */
+const downloadFrom = async (line: UpdateLineId, version: string): Promise<void> => {
+  const channel = new Channel<UpdateDownloadProgress>();
+  let total: number | null = null;
+  // 速度按「两个采样点之间的字节差」估算：分片事件间隔只有几毫秒，
+  // 单次直接算全是抖动，所以攒够 500ms 再算一次，并做指数平滑
+  let sampleAt = performance.now();
+  let sampleBytes = 0;
+  let speed: number | null = null;
+  let publishedAt = -PUBLISH_INTERVAL_MS;
+  channel.onmessage = (event) => {
+    if (event.total && event.total > 0) total = event.total;
 
-  publish({ phase: "downloading", progress: 0, error: null });
-  // Windows 的安装器会在下载完成后直接结束进程，后面的代码不保证执行：
+    const now = performance.now();
+    const elapsed = now - sampleAt;
+    if (elapsed >= SPEED_SAMPLE_MS) {
+      const instant = Math.max(0, ((event.downloaded - sampleBytes) / elapsed) * 1000);
+      speed = speed === null ? instant : speed * 0.65 + instant * 0.35;
+      sampleAt = now;
+      sampleBytes = event.downloaded;
+    }
+
+    // 进度与速度一起节流推送，避免每个分片都触发一次 React 重渲染
+    if (now - publishedAt < PUBLISH_INTERVAL_MS) return;
+    publishedAt = now;
+    const progress = total ? Math.min(100, Math.round((event.downloaded / total) * 100)) : null;
+    publish({
+      progress,
+      speed: speed === null ? null : Math.round(speed),
+      downloaded: event.downloaded,
+      total,
+    });
+  };
+
+  await invoke("download_update", {
+    line,
+    expectedVersion: version,
+    onEvent: channel,
+  });
+};
+
+/** 应用已下载的更新：Windows 上安装器启动后由它结束本进程，其他平台安装完再重启 */
+export const applyUpdate = async (): Promise<void> => {
+  const version = snapshot.version;
+  if (!version || snapshot.phase !== "ready") return;
+
+  publish({ phase: "installing", error: null });
+  try {
+    await invoke("install_downloaded_update", { expectedVersion: version });
+  } catch (error) {
+    // 安装包已丢失或版本对不上：回到「已下载」状态，用户可以重试或重新下载
+    publish({ phase: "ready", error: describeInstallError(error) });
+    return;
+  }
+  try {
+    await relaunch();
+  } catch {
+    // 已经装好、只是自动重启失败：保留缓存的说明，用户手动重启即可
+  }
+};
+
+/**
+ * 下载当前线路的安装包（失败时自动换到另一条能提供同一版本的线路重试一次）。
+ *
+ * 下载与安装是分开的：完成后停在「已下载」，不再自动关闭软件。
+ * 下载完成时如果弹窗还开着就直接安装；弹窗已被关闭则重新打开弹窗询问，
+ * 之后从弹窗或侧栏图标都能直接安装，不需要重新下载。
+ *
+ * 只回退到版本相同的线路：版本不同会装出与弹窗里更新说明对不上的包。
+ * 换线只影响这次会话的目标与展示，不写入用户保存的线路偏好。
+ */
+export const downloadUpdate = async (): Promise<void> => {
+  const first = snapshot.activeLine;
+  const version = snapshot.version;
+  if (!first || !version || snapshot.phase !== "available") return;
+
+  const candidates: UpdateLineId[] = [
+    first,
+    ...snapshot.lines
+      .filter((line) => line.id !== first && hasUpdate(line) && line.version === version)
+      .map((line) => line.id),
+  ];
+
+  publish({
+    phase: "downloading",
+    progress: 0,
+    speed: null,
+    downloaded: null,
+    total: null,
+    error: null,
+    lineFallback: null,
+  });
+  // 安装完成后会结束进程，后面的代码不保证执行：
   // 更新说明必须在下载前落盘，下次启动才对得上版本
   recordPendingRelease(version, snapshot.notes);
 
-  const channel = new Channel<UpdateDownloadProgress>();
-  let total: number | null = null;
-  channel.onmessage = (event) => {
-    if (event.total && event.total > 0) total = event.total;
-    if (!total) {
-      if (snapshot.progress !== null) publish({ progress: null });
-      return;
+  let downloaded = false;
+  let lastError: unknown = null;
+  for (const [index, line] of candidates.entries()) {
+    if (index > 0) {
+      publish({
+        activeLine: line,
+        lineChoice: line,
+        progress: 0,
+        speed: null,
+        downloaded: null,
+        total: null,
+        lineFallback: { from: first, to: line },
+      });
     }
-    const percent = Math.min(100, Math.round((event.downloaded / total) * 100));
-    // 只按整数百分比推送，避免每个分片都触发一次 React 重渲染
-    if (percent !== snapshot.progress) publish({ progress: percent });
-  };
+    try {
+      await downloadFrom(line, version);
+      downloaded = true;
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
 
-  try {
-    await invoke("install_update", {
-      line,
-      expectedVersion: version,
-      onEvent: channel,
-    });
-    // Windows 结束当前进程由安装器负责；macOS / Linux 需要手动重启
-    await relaunch();
-  } catch (error) {
-    // 安装没成功：清掉缓存的说明，避免下次启动误报「已更新」
+  if (!downloaded) {
+    // 下载没成功：清掉缓存的说明，避免下次启动误报「已更新」
     clearPendingRelease();
-    // 安装失败时保留线路与更新资源：回到「可更新」状态，用户可以重试或换线
-    publish({ phase: "available", error: describeInstallError(error), progress: null });
+    // 保留线路与更新资源：回到「可更新」状态，用户可以重试或换线
+    publish({
+      phase: "available",
+      error: describeInstallError(lastError),
+      progress: null,
+      speed: null,
+      downloaded: null,
+      total: null,
+    });
+    return;
+  }
+
+  publish({ phase: "ready", progress: 100, speed: null, error: null });
+  if (snapshot.dialogOpen) {
+    void applyUpdate();
+  } else {
+    // 弹窗已经关掉：重新打开它询问是否立即安装
+    publish({ dialogOpen: true });
   }
 };
 

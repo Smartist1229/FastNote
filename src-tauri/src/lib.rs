@@ -111,6 +111,7 @@ struct AppState {
     semantic: semantic::SemanticState,
     download: download::DownloadState,
     webdav: webdav::WebdavState,
+    updater: updater::UpdateState,
 }
 
 /// 判断某张表是否存在（用于读取可选的数据表）
@@ -5842,7 +5843,8 @@ pub fn run() {
             fingerprint::fingerprint_info,
             opener::open_app_folder,
             updater::probe_update_lines,
-            updater::install_update,
+            updater::download_update,
+            updater::install_downloaded_update,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件
@@ -5861,6 +5863,7 @@ pub fn run() {
                 semantic: semantic::SemanticState::default(),
                 download: download::DownloadState::default(),
                 webdav: webdav::WebdavState::default(),
+                updater: updater::UpdateState::default(),
             };
 
             app.manage(state);

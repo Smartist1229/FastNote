@@ -114,7 +114,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const { phase: updatePhase, version: updateVersion, skippedVersion } = useUpdater();
   const updateReady =
     !!updateVersion &&
-    (updatePhase === "downloading" || (updatePhase === "available" && updateVersion !== skippedVersion));
+    (updatePhase === "downloading" ||
+      updatePhase === "ready" ||
+      updatePhase === "installing" ||
+      (updatePhase === "available" && updateVersion !== skippedVersion));
+  const updateInstalled = updatePhase === "ready" || updatePhase === "installing";
   /** 排序下拉浮层：位置在点击时按按钮 rect 算出，用 fixed 定位避免被列表滚动容器裁掉 */
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const [sortMenu, setSortMenu] = useState<{ open: boolean; top: number; left: number; width: number }>({ open: false, top: 0, left: 0, width: 0 });
@@ -1050,8 +1054,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={openUpdateDialog}
                 className="p-1 rounded-md text-primary-500 hover:text-primary-600 hover:bg-primary-50 transition-colors active:scale-90"
-                title={t("发现新版本 {value1}，点击查看更新说明", { value1: updateVersion })}
-                aria-label={t("发现新版本 {value1}，点击查看更新说明", { value1: updateVersion })}
+                title={
+                  updateInstalled
+                    ? t("更新已下载，点击安装")
+                    : t("发现新版本 {value1}，点击查看更新说明", { value1: updateVersion })
+                }
+                aria-label={
+                  updateInstalled
+                    ? t("更新已下载，点击安装")
+                    : t("发现新版本 {value1}，点击查看更新说明", { value1: updateVersion })
+                }
               >
                 <Icon name="sidebar-update" className="w-3.5 h-3.5" />
               </button>

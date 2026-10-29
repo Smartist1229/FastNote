@@ -1,7 +1,7 @@
 {
   "name": "fastnote",
   "private": true,
-  "version": "2.6.12",
+  "version": "2.6.13",
   "type": "module",
   "scripts": {
     "vite:dev": "vite",

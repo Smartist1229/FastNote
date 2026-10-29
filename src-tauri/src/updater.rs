@@ -4,12 +4,13 @@
 //! 这里直接用 Rust 侧的 updater API 按线路构造 Updater，检查时并发探测两条线，
 //! 安装时只用用户选中的那条。签名校验仍由 updater 插件完成。
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Url};
-use tauri_plugin_updater::UpdaterExt;
+use tauri::{AppHandle, Manager, Url};
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// 两条线路的更新清单。CNB 清单放在固定的 latest 发布里，
 /// 里面的安装包地址指向对应的版本化发布。
@@ -39,6 +40,21 @@ pub struct UpdateLineProbe {
 pub struct UpdateDownloadProgress {
     pub downloaded: u64,
     pub total: Option<u64>,
+}
+
+/// 已下载并验签、等待安装的安装包。
+///
+/// 下载与安装拆成两步：下载完成后先留在内存里，由用户决定何时安装。
+/// 只缓存当前会话，软件退出后需要重新下载（版本对不上时也会丢弃）。
+struct PendingUpdate {
+    version: String,
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+pub struct UpdateState {
+    pending: Mutex<Option<PendingUpdate>>,
 }
 
 /// 错误用 `code|detail` 形式传回前端翻译，Rust 侧不绑定界面语言。
@@ -104,10 +120,10 @@ pub async fn probe_update_lines(app: AppHandle) -> Vec<UpdateLineProbe> {
     vec![cnb, github]
 }
 
-/// 从指定线路下载并安装。Windows 上安装器启动后进程会退出；
-/// macOS / Linux 由这里负责重启。
+/// 从指定线路下载安装包并验签，成功后暂存在内存里等待安装。
+/// 下载进度通过 Channel 推送；失败不会替换上一次已下载的包。
 #[tauri::command]
-pub async fn install_update(
+pub async fn download_update(
     app: AppHandle,
     line: String,
     expected_version: String,
@@ -130,14 +146,14 @@ pub async fn install_update(
     else {
         return Err("no_update".to_string());
     };
-    // 检查到安装之间线路上的版本可能已经变了，避免装上和弹窗里不一样的版本
+    // 检查到下载之间线路上的版本可能已经变了，避免下到和弹窗里不一样的版本
     if update.version != expected_version {
         return Err(format!("version_changed|{}", update.version));
     }
 
     let mut downloaded = 0u64;
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk_len, total| {
                 downloaded += chunk_len as u64;
                 let _ = on_event.send(UpdateDownloadProgress { downloaded, total });
@@ -147,8 +163,45 @@ pub async fn install_update(
         .await
         .map_err(|e| format!("download_failed|{e}"))?;
 
-    #[cfg(not(windows))]
-    app.restart();
+    let state = app.state::<crate::AppState>();
+    let mut pending = state
+        .updater
+        .pending
+        .lock()
+        .map_err(|_| "download_failed|更新状态锁被占用".to_string())?;
+    *pending = Some(PendingUpdate {
+        version: expected_version,
+        update,
+        bytes,
+    });
+    Ok(())
+}
 
+/// 安装上一次下载好的安装包：安装器会重新验签再启动。
+/// Windows 上安装器启动后会结束本进程；macOS / Linux 由前端负责重启。
+#[tauri::command]
+pub async fn install_downloaded_update(
+    app: AppHandle,
+    expected_version: String,
+) -> Result<(), String> {
+    let pending = {
+        let state = app.state::<crate::AppState>();
+        let mut guard = state
+            .updater
+            .pending
+            .lock()
+            .map_err(|_| "download_failed|更新状态锁被占用".to_string())?;
+        guard.take()
+    };
+    let Some(pending) = pending else {
+        return Err("not_downloaded".to_string());
+    };
+    if pending.version != expected_version {
+        return Err(format!("version_changed|{}", pending.version));
+    }
+    pending
+        .update
+        .install(&pending.bytes)
+        .map_err(|e| format!("download_failed|{e}"))?;
     Ok(())
 }

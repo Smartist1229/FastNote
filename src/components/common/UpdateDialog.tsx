@@ -15,11 +15,13 @@ import { MarkdownEditor } from "@/markdown-editor";
 import { buildAiRenderConfig } from "@/config/markdownEditor";
 import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/themeRuntime";
+import { formatBytes, formatSpeed } from "@/lib/format";
 import type { ReleaseNotice } from "@/lib/releaseNotes";
 import {
+  applyUpdate,
   clearSkippedVersion,
   closeUpdateDialog,
-  installUpdate,
+  downloadUpdate,
   selectUpdateLine,
   skipVersion,
   useUpdater,
@@ -115,6 +117,9 @@ export const UpdateDialog: React.FC<{
 
   const done = notice != null;
   const downloading = !done && updater.phase === "downloading";
+  /** 安装包已下载并验签，等待用户确认安装 */
+  const ready = !done && updater.phase === "ready";
+  const installing = !done && updater.phase === "installing";
   const version = done ? notice.version : updater.version ?? "";
   const notes = done ? notice.notes : updater.notes;
   const skipped = !done && updater.version != null && updater.skippedVersion === updater.version;
@@ -148,12 +153,38 @@ export const UpdateDialog: React.FC<{
           })
         : t("正在下载更新... {value1}%", { value1: updater.progress });
 
+  const sizeText =
+    (downloading || ready) && updater.downloaded != null && updater.total != null
+      ? `${formatBytes(updater.downloaded)} / ${formatBytes(updater.total)}`
+      : null;
+  const speedText = downloading && updater.speed != null ? formatSpeed(updater.speed) : null;
+  // 剩余时间只用平滑后的速度估算；速度未知或为 0 时不猜
+  const etaText = (() => {
+    if (!downloading || updater.speed == null || updater.speed <= 0) return null;
+    if (updater.downloaded == null || updater.total == null) return null;
+    const remaining = updater.total - updater.downloaded;
+    if (remaining <= 0) return null;
+    const seconds = Math.max(1, Math.round(remaining / updater.speed));
+    return seconds < 60
+      ? t("约 {value1} 秒", { value1: seconds })
+      : t("约 {value1} 分钟", { value1: Math.round(seconds / 60) });
+  })();
+  const dynamicText = [speedText, etaText].filter(Boolean).join(" · ");
+
   const close = () => {
     closeUpdateDialog();
     onCloseNotice();
   };
 
-  const title = done ? t("更新完成") : downloading ? t("正在更新") : t("发现新版本 {value1}", { value1: version });
+  const title = done
+    ? t("更新完成")
+    : installing
+      ? t("正在安装")
+      : ready
+        ? t("更新已下载")
+        : downloading
+          ? t("正在更新")
+          : t("发现新版本 {value1}", { value1: version });
 
   return (
     <Modal isOpen={done || updater.dialogOpen} onClose={close} title={title} size="lg">
@@ -169,7 +200,13 @@ export const UpdateDialog: React.FC<{
           </>
         ) : (
           <p className="text-[11px] text-faint">
-            {downloading ? t("关闭窗口不会中断更新，完成后会自动安装并重启。") : t("下载完成后会自动安装并重启。")}
+            {installing
+              ? t("正在启动安装程序，软件即将关闭。")
+              : ready
+                ? t("安装包已下载完成并通过校验，现在可以关闭软件并安装。")
+                : downloading
+                  ? t("关闭弹窗不会中断下载。")
+                  : t("下载完成后可立即安装并重启。")}
           </p>
         )}
 
@@ -211,19 +248,34 @@ export const UpdateDialog: React.FC<{
           </div>
         )}
 
-        {downloading && (
+        {(downloading || ready) && (
           <div className="mt-3">
             <div className="h-1.5 rounded-full bg-surface-alt overflow-hidden">
               <div
                 className="h-full rounded-full bg-primary-500 transition-all duration-200"
-                style={{ width: `${Math.max(updater.progress ?? 10, 4)}%` }}
+                style={{ width: ready ? "100%" : `${Math.max(updater.progress ?? 10, 4)}%` }}
               />
             </div>
-            <p className="mt-1.5 text-[11px] text-faint">{progressText}</p>
+            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-faint">
+              <span className="min-w-0 truncate">
+                {ready ? t("已下载完成") : progressText}
+                {sizeText && <span className="text-faint-soft"> · {sizeText}</span>}
+              </span>
+              {dynamicText && <span className="flex-none tabular-nums">{dynamicText}</span>}
+            </div>
           </div>
         )}
 
-        {!done && updater.phase === "available" && updater.error && (
+        {!done && updater.lineFallback && (
+          <p className="mt-1.5 text-[11px] text-faint">
+            {t("从 {value1} 下载失败，已自动改用 {value2} 重试", {
+              value1: lineLabel(updater.lineFallback.from),
+              value2: lineLabel(updater.lineFallback.to),
+            })}
+          </p>
+        )}
+
+        {!done && (updater.phase === "available" || ready) && updater.error && (
           <p className="mt-2 text-[11px] text-danger-strong break-words">
             {t("更新失败：{value1}", { value1: updater.error })}
           </p>
@@ -239,7 +291,7 @@ export const UpdateDialog: React.FC<{
               {t("知道了")}
             </button>
           </div>
-        ) : downloading ? (
+        ) : installing ? null : downloading ? (
           <div className="mt-4 flex justify-end">
             <button
               type="button"
@@ -247,6 +299,23 @@ export const UpdateDialog: React.FC<{
               className="px-3 py-1.5 text-xs rounded-lg border border-line text-body hover:bg-surface-alt transition-colors"
             >
               {t("关闭")}
+            </button>
+          </div>
+        ) : ready ? (
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={close}
+              className="px-3 py-1.5 text-xs rounded-lg border border-line text-body hover:bg-surface-alt transition-colors"
+            >
+              {t("稍后再说")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void applyUpdate()}
+              className="btn-primary px-3 py-1.5 text-xs"
+            >
+              {t("关闭软件并更新")}
             </button>
           </div>
         ) : (
@@ -281,7 +350,7 @@ export const UpdateDialog: React.FC<{
               </button>
               <button
                 type="button"
-                onClick={() => void installUpdate()}
+                onClick={() => void downloadUpdate()}
                 className="btn-primary px-3 py-1.5 text-xs"
               >
                 {activeLabel

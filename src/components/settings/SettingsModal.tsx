@@ -36,6 +36,7 @@ import { EDITOR_SETTING_SPECS } from "@/config/editorSettingSpecs";
 import {
   APP_AUTHOR,
   APP_NAME_FALLBACK,
+  APP_RELEASES_URL,
   ICON_SOURCE,
   OPEN_SOURCE_PROJECTS,
   shortUrl,
@@ -59,6 +60,7 @@ import { exportBackup, exportSqliteBackup, importBackup, importSqliteBackup } fr
 import { flushThemeSettings } from "@/stores/themeStore";
 import { checkForUpdates, openUpdateDialog, useUpdater } from "@/stores/updaterStore";
 import { normalizeHexList } from "@/lib/theme";
+import { formatSpeed } from "@/lib/format";
 
 /* ---------- 分区定义 ---------- */
 
@@ -2072,12 +2074,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => void checkForUpdates()}
-                                  disabled={updater.phase === "checking" || updater.phase === "downloading"}
+                                  disabled={
+                                    updater.phase === "checking" ||
+                                    updater.phase === "downloading" ||
+                                    updater.phase === "ready" ||
+                                    updater.phase === "installing"
+                                  }
                                   className="px-2 py-0.5 rounded-md text-[11px] font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   {updater.phase === "checking" ? t("检查中...") : t("检查更新")}
                                 </button>
                               </div>
+                            </div>
+
+                            {/* 更新地址：想自己去发布页看版本/下载安装包时用 */}
+                            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                              <span className="text-faint">{t("更新地址")}</span>
+                              <button
+                                type="button"
+                                onClick={() => void openUrl(APP_RELEASES_URL).catch(() => undefined)}
+                                title={APP_RELEASES_URL}
+                                className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+                              >
+                                {t("打开更新地址")}
+                              </button>
                             </div>
 
                             {updater.phase === "current" && (
@@ -2120,6 +2140,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   {updater.progress == null
                                     ? t("正在下载更新...")
                                     : t("正在下载更新... {value1}%", { value1: updater.progress })}
+                                  {updater.speed != null && (
+                                    <span className="text-faint"> · {formatSpeed(updater.speed)}</span>
+                                  )}
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={openUpdateDialog}
+                                  className="flex-shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 transition-colors"
+                                >
+                                  {t("查看进度")}
+                                </button>
+                              </div>
+                            )}
+
+                            {/* 下载完成：安装包已缓存，可随时从弹窗里安装 */}
+                            {(updater.phase === "ready" || updater.phase === "installing") && (
+                              <div className="mt-2 flex items-center justify-between gap-3">
+                                <p className="min-w-0 truncate text-[11px] text-primary-600">
+                                  {updater.phase === "installing"
+                                    ? t("正在安装更新...")
+                                    : t("更新已下载，等待安装")}
                                 </p>
                                 <button
                                   type="button"

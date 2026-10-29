@@ -10,6 +10,9 @@ export const APP_NAME_FALLBACK = "FastNote";
 /** 作者（固定值） */
 export const APP_AUTHOR = "Smartist";
 
+/** 发布页：关于页的「打开更新地址」入口 */
+export const APP_RELEASES_URL = "https://github.com/Smartist1229/FastNote/releases";
+
 /** 图标来源：界面里的图标取自阿里巴巴矢量图标库 */
 export const ICON_SOURCE = {
   name: "iconfont-阿里巴巴矢量图标库",
