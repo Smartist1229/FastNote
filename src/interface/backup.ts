@@ -16,6 +16,8 @@ export interface BackupSummary {
   messages: number;
   /** app_settings 的键数 */
   settings: number;
+  /** 因加密而跳过的笔记数；备份里不含这些内容 */
+  skipped_encrypted: number;
   /** 备份文件的导出时间（ISO 字符串）；导入旧文件缺失时为 null */
   exported_at: string | null;
 }

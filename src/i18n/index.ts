@@ -4,6 +4,7 @@ import { appMessages } from "./appMessages";
 import { coreMessages } from "./coreMessages";
 import { settingsMessages } from "./settingsMessages";
 import { aiMessages } from "./aiMessages";
+import { encryptionMessages } from "./encryptionMessages";
 import { interpolate, isAppLanguage, resolveAppLocale } from "./locale";
 import type { AppLanguage, AppLocale, TranslationParams } from "./locale";
 
@@ -14,6 +15,7 @@ const messages: Record<string, string> = {
   ...settingsMessages,
   ...aiMessages,
   ...appMessages,
+  ...encryptionMessages,
 };
 const CACHE_KEY = "fastnote.language";
 

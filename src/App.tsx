@@ -53,6 +53,20 @@ import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
 import * as settingsApi from "@/api/settings";
 import * as semanticApi from "@/api/semantic";
+import * as encryptionApi from "@/api/encryption";
+import type {
+  EncryptionInfo,
+  EncryptionScope,
+  EncryptionStatus,
+  UnlockScope,
+} from "@/interface/encryption";
+import {
+  EncryptDialog,
+  describeEncryptionError,
+  RootChangeDialog,
+  RootSetupDialog,
+  UnlockDialog,
+} from "@/components/common/EncryptionDialogs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
 import { CommandPalette } from "@/components/common/CommandPalette";
@@ -71,12 +85,13 @@ import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { useRecentFiles } from "@/lib/recentFiles";
 import { useSearchHistory } from "@/lib/searchHistory";
+import { useIdleLock } from "@/hooks/useIdleLock";
 import { consumeReleaseNotice } from "@/lib/releaseNotes";
 import type { ReleaseNotice } from "@/lib/releaseNotes";
 import { UpdateDialog } from "@/components/common/UpdateDialog";
 import { Icon } from "@/components/common/Icon";
 import { setLanguage, t as translateNow, useI18n } from "@/i18n";
-import { scheduleStartupCheck } from "@/stores/updaterStore";
+import { schedulePeriodicCheck, scheduleStartupCheck } from "@/stores/updaterStore";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 
@@ -136,20 +151,23 @@ function AppContent() {
   const categoriesRef = useRef<Category[]>([]);
   /** 临时预览的伪笔记：负 id 哨兵，NoteEditor 据 isTemporary 拦截所有落库操作 */
   const tempPreviewNote: Note | null = tempNote
-    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2 }
+    ? { id: tempNote.id, title: tempNote.title, content: tempNote.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2, enc_mode: 0, is_locked: false, enc_hint: null }
     : null;
   /** 电脑文件对应的伪笔记：标题=文件名、内容=文件内容，同样不落库 */
   const externalFileNote: Note | null = externalFile
-    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2 }
+    ? { id: externalFile.id, title: externalFile.name, content: externalFile.content, category_id: null, created_at: "", updated_at: "", is_deleted: false, deleted_at: null, is_pinned: false, ai_access: 2, enc_mode: 0, is_locked: false, enc_hint: null }
     : null;
   /** 历史版本预览的伪笔记：固定负 id 哨兵，内容全部来自历史表，编辑只读 */
   const historyPreviewNote: Note | null = historyPreview
-    ? { id: -2000001, title: historyPreview.title, content: historyPreview.content, category_id: historyPreview.category_id, created_at: "", updated_at: historyPreview.saved_at, is_deleted: false, deleted_at: null, is_pinned: historyPreview.is_pinned, ai_access: 2 }
+    ? { id: -2000001, title: historyPreview.title, content: historyPreview.content, category_id: historyPreview.category_id, created_at: "", updated_at: historyPreview.saved_at, is_deleted: false, deleted_at: null, is_pinned: historyPreview.is_pinned, ai_access: 2, enc_mode: 0, is_locked: false, enc_hint: null }
     : null;
   /** 编辑器当前展示的内容：最上层是历史版本预览 / AI 预览，其次是电脑文件，最后是真实笔记 */
   const editorNote = historyPreviewNote ?? tempPreviewNote ?? externalFileNote ?? selectedNote;
   /** 是否有叠放层（历史预览 / AI 预览 / 电脑文件）盖在真实笔记之上：此时 AI 面板不引用底层笔记 */
   const overlayActive = historyPreview != null || tempNote != null || externalFile != null;
+  /** AI 面板是否应丢掉笔记上下文：叠放层激活，或当前笔记是加密内容（加密内容不参与 AI） */
+  const aiNoteContextBlocked =
+    overlayActive || (selectedNote != null && selectedNote.enc_mode !== 0);
   /**
    * AI 回复「在编辑器中打开」：把预览叠到最上层。
    * 底下的电脑文件 / 笔记保留不动，关闭预览后自然回到上一层。
@@ -227,6 +245,25 @@ function AppContent() {
   /** 统一设置窗口：null 表示关闭，否则为打开时的分区 */
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+
+  /* ---------------- 加密 ----------------
+   * 状态只有两个来源：启动时的 encryption_status（决定是否强制设置根密码），
+   * 以及每次加密/解密/锁定后的刷新。密钥本身只存在于 Rust 内存，前端拿不到也存不了。
+   */
+  const [encryptionStatus, setEncryptionStatus] = useState<EncryptionStatus | null>(null);
+  /** 首次启动未设置根密码时强制弹出的设置窗（不可关闭） */
+  const [showRootSetup, setShowRootSetup] = useState(false);
+  /** 关于页作者名 5 连击打开的根密码修改窗 */
+  const [showRootChange, setShowRootChange] = useState(false);
+  /** 加密弹窗的目标；null 表示关闭 */
+  const [encryptTarget, setEncryptTarget] = useState<{ scope: EncryptionScope; id: number } | null>(null);
+  /** 解锁 / 永久解密弹窗的目标；info 提供密码提示与根密码可用性 */
+  const [unlockTarget, setUnlockTarget] = useState<{
+    scope: EncryptionScope;
+    id: number;
+    permanent: boolean;
+    info: EncryptionInfo;
+  } | null>(null);
 
   /* ---------------- 命令面板 / 快速跳转 ----------------
    * Ctrl+P 跳转笔记、Ctrl+Shift+P 命令面板（Ctrl+K 留给编辑器的「插入链接」）。
@@ -339,6 +376,15 @@ function AppContent() {
     scheduleStartupCheck();
   }, [appSettingsLoaded]);
   /**
+   * 运行期间的定时检查：按设置里的间隔静默探测，设置改动立即重建计时器。
+   * 0 = 关闭；卸载或间隔变化时先清掉旧计时器，避免两个间隔同时跑。
+   */
+  useEffect(() => {
+    if (!appSettingsLoaded) return;
+    schedulePeriodicCheck(appSettings.general.updateCheckIntervalMinutes);
+    return () => schedulePeriodicCheck(0);
+  }, [appSettingsLoaded, appSettings.general.updateCheckIntervalMinutes]);
+  /**
    * 更新完成提示：安装前缓存的说明与当前版本对得上才弹，版本没变化不打扰。
    * 放在软件设置读回之后，避开启动时的读库与首屏渲染。
    */
@@ -360,6 +406,8 @@ function AppContent() {
   /** 最新选中项 / 笔记列表的镜像：供零依赖回调与事件处理器读取，避免闭包过期 */
   const selectedNoteRef = useRef<Note | null>(selectedNote);
   const notesRef = useRef<Note[]>(notes);
+  /** 点开分组加密笔记时先解锁分组：记住笔记 id，解锁成功后直接把它打开 */
+  const pendingUnlockNoteRef = useRef<number | null>(null);
   /** 侧边栏高亮计时器：40ms 后点亮、2.6s 后熄灭；重复打开前先清掉旧计时器 */
   const focusTimerRef = useRef<number | null>(null);
 
@@ -616,6 +664,93 @@ function AppContent() {
   );
 
   /**
+   * 刷新加密状态：根密码是否设置、本次运行是否缓存过 KEK。
+   * 未设置根密码时立刻弹出设置窗——这是启动后的第一件事，不等到用户去加密才补。
+   */
+  const refreshEncryptionStatus = useCallback(async () => {
+    if (!isTauri()) return;
+    try {
+      const status = await encryptionApi.getEncryptionStatus();
+      setEncryptionStatus(status);
+      if (!status.root_set) setShowRootSetup(true);
+    } catch (e) {
+      console.error("读取加密状态失败：", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshEncryptionStatus();
+  }, [refreshEncryptionStatus]);
+
+  /**
+   * 请求解锁（或永久解密）某个加密项：先取 encryption_info，拿到密码提示、
+   * 已错次数与根密码可用性再开弹窗；已经解锁的条目直接跳过。
+   */
+  const requestUnlock = useCallback(async (
+    scope: EncryptionScope,
+    id: number,
+    permanent = false,
+  ) => {
+    try {
+      const info = await encryptionApi.getEncryptionInfo(scope, id);
+      if (!info.encrypted) return;
+      if (!info.is_locked && !permanent) return;
+      setUnlockTarget({ scope, id, permanent, info });
+    } catch (e) {
+      // 后端拒绝时是 JSON 字符串，不能直接展示给用户
+      showToast(describeEncryptionError(e, t).message, "error");
+    }
+  }, [showToast, t]);
+
+  /**
+   * 尝试锁回「仅本次解锁」的加密项。
+   * 后端 force=false 只清 once 作用域的密钥，session 解锁不受影响；
+   * 锁成功后把本地列表同步成锁定态，避免界面还留着刚解出来的明文。
+   */
+  const lockOnceUnlocked = useCallback(async (
+    scope: EncryptionScope,
+    id: number,
+    clearSelected = false,
+  ) => {
+    try {
+      if (scope === "note") {
+        await encryptionApi.lockNote(id, false);
+        const info = await encryptionApi.getEncryptionInfo("note", id);
+        if (info.encrypted && info.is_locked) {
+          setNotes((prev) =>
+            prev.map((n) =>
+              n.id === id ? { ...n, is_locked: true, content: "" } : n,
+            ),
+          );
+          if (clearSelected && selectedNoteRef.current?.id === id) {
+            selectedNoteRef.current = null;
+            setSelectedNote(null);
+          }
+        }
+      } else {
+        await encryptionApi.lockCategory(id, false);
+        const info = await encryptionApi.getEncryptionInfo("category", id);
+        if (info.encrypted && info.is_locked) {
+          setCategories((prev) =>
+            prev.map((c) => (c.id === id ? { ...c, is_locked: true } : c)),
+          );
+          setNotes((prev) =>
+            prev.map((n) =>
+              n.category_id === id ? { ...n, is_locked: true, content: "" } : n,
+            ),
+          );
+          if (clearSelected && selectedNoteRef.current?.category_id === id) {
+            selectedNoteRef.current = null;
+            setSelectedNote(null);
+          }
+        }
+      }
+    } catch {
+      // 锁定失败只影响下一次打开时是否要再输密码，不打断当前交互
+    }
+  }, []);
+
+  /**
    * 打开真实笔记：撤掉上层叠放（先触发外部文件写回），切到它所属分组并展开抽屉，
    * 再用一次短延时把 focusNoteId 送进侧边栏做高亮。
    *
@@ -623,6 +758,22 @@ function AppContent() {
    * 遮罩哪怕只存在一两帧，整块编辑面板也会闪一下。
    */
   const openNote = useCallback((note: Note) => {
+    // 锁着的加密内容没有正文可展示：先请用户解锁，解锁成功后再由 handleUnlockSubmit 打开
+    if (note.enc_mode !== 0 && note.is_locked) {
+      const groupScope = note.enc_mode === 2 && note.category_id !== null;
+      pendingUnlockNoteRef.current = groupScope ? note.id : null;
+      void requestUnlock(groupScope ? "category" : "note", groupScope ? note.category_id as number : note.id);
+      return;
+    }
+    // 离开上一条「仅本次解锁」的条目即锁；分组加密按分组记密钥，只有切到别的分组才尝试锁回
+    const previous = selectedNoteRef.current;
+    if (previous && previous.id !== note.id) {
+      if (previous.enc_mode === 1) {
+        void lockOnceUnlocked("note", previous.id);
+      } else if (previous.enc_mode === 2 && previous.category_id !== null && previous.category_id !== note.category_id) {
+        void lockOnceUnlocked("category", previous.category_id);
+      }
+    }
     // 打开真实笔记：撤掉上层叠着的电脑文件 / AI 预览（先触发一次文件写回）
     if (externalFileRef.current) {
       flushExternalRef.current?.();
@@ -648,7 +799,7 @@ function AppContent() {
     // 会话基线：打开时先记一条，长时间编辑也不会丢掉“这次打开时的样子”。
     // 与最新历史相同时后端直接跳过，所以反复点同一条笔记不会堆积版本。
     void notesApi.snapshotNoteSession(note.id).catch(() => {});
-  }, []);
+  }, [requestUnlock, lockOnceUnlocked]);
 
   /** 展开/收起 AI 对话面板（只改当前界面，不写设置） */
   const toggleAiPanel = useCallback(() => setAiPanelOpen((open) => !open), []);
@@ -660,8 +811,25 @@ function AppContent() {
     }
   }, [appSettings.general.enableAI, aiPanelOpen]);
 
-  /** 展开/收起分组抽屉（点击同一分组可收起） */
+  /** 展开/收起分组抽屉（点击同一分组可收起）；锁着的加密分组先走解锁 */
   const toggleDrawer = useCallback((key: number | 'all' | 'uncategorized') => {
+    if (typeof key === 'number') {
+      const category = categoriesRef.current.find((c) => c.id === key);
+      // 锁定的加密分组要解锁才能「展开」；已经展开的允许直接收起，不必再输一次密码
+      if (category?.is_encrypted && category.is_locked && expandedDrawer !== key) {
+        void requestUnlock('category', key);
+        return;
+      }
+      // 收起加密分组：顺手把「仅本次解锁」的组密钥锁回去
+      if (category?.is_encrypted && expandedDrawer === key) {
+        void lockOnceUnlocked('category', key, true);
+      }
+    }
+    // 切到另一个分组时，把上一个分组的「仅本次解锁」锁回去
+    if (expandedDrawer !== key && typeof expandedDrawer === 'number') {
+      const previous = categoriesRef.current.find((c) => c.id === expandedDrawer);
+      if (previous?.is_encrypted) void lockOnceUnlocked('category', expandedDrawer, true);
+    }
     setExpandedDrawer((current) => {
       const next = current === key ? null : key;
       // 'all' 是聚合视图，新建笔记时按"未分类"处理
@@ -669,7 +837,7 @@ function AppContent() {
       else if (next === 'uncategorized' || next === 'all') setSelectedCategoryId(null);
       return next;
     });
-  }, []);
+  }, [requestUnlock, lockOnceUnlocked, expandedDrawer]);
 
   // 生产环境屏蔽原生右键菜单；开发环境保留，方便审查元素
   useEffect(() => {
@@ -720,6 +888,55 @@ function AppContent() {
 
   // 首次挂载与排序变化时加载；其余刷新由上面的广播触发
   useEffect(() => { loadData(); }, [loadData]);
+
+  /**
+   * 启动加密自检：只跑一次（loadData 变化不应重跑）。
+   * 后端会修好「正文是密文但加密标志丢了」这类可推断的错乱，并上报其余异常；
+   * 修过就重新拉一次列表，让侧边栏立刻显示成锁定态。
+   */
+  const selfCheckDoneRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri() || selfCheckDoneRef.current) return;
+    selfCheckDoneRef.current = true;
+    void encryptionApi
+      .runEncryptionSelfCheck()
+      .then((report) => {
+        if (report.repaired.length > 0) {
+          showToast(
+            t("已修复 {count} 篇笔记的加密状态", { count: report.repaired.length }),
+            "success",
+          );
+          void loadData();
+        }
+        const missing = report.missing_keys.length + report.missing_category_keys.length;
+        if (missing > 0) {
+          showToast(t("有 {count} 个加密项缺少密钥，暂时无法解密", { count: missing }), "error");
+        }
+        const abnormal = report.orphan_keys.length + report.content_mismatch.length;
+        if (abnormal > 0) {
+          showToast(t("有 {count} 个加密项状态异常，建议检查后用备份恢复", { count: abnormal }), "info");
+        }
+        if (report.repaired.length || missing || abnormal) {
+          console.warn("加密自检：", report);
+        }
+      })
+      .catch((error) => console.error("启动加密自检失败：", error));
+  }, [loadData, showToast, t]);
+
+  // 页面隐藏（最小化/关窗）前立即压缩一次：加解密留下的旧明文页不必等到空闲的 15 秒兜底
+  useEffect(() => {
+    if (!isTauri()) return;
+    const flush = () => void encryptionApi.flushCryptoScrub();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
   useEffect(() => {
     selectedNoteRef.current = selectedNote;
   }, [selectedNote]);
@@ -748,6 +965,14 @@ function AppContent() {
   /** 新建笔记并选中；省略 categoryId 用当前分组，title 省略时叫「无标题」 */
   const handleCreateNote = async (categoryId?: number | null, title?: string) => {
     const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
+    // 锁着的加密分组不能写入：先解锁，解锁后用户再点一次新建
+    if (targetCategory !== null) {
+      const category = categoriesRef.current.find((c) => c.id === targetCategory);
+      if (category?.is_encrypted && category.is_locked) {
+        void requestUnlock('category', targetCategory);
+        return;
+      }
+    }
     // 新建笔记：撤掉上层叠着的电脑文件 / AI 预览
     if (externalFileRef.current) {
       flushExternalRef.current?.();
@@ -861,6 +1086,11 @@ function AppContent() {
   /** 拖文件到分组：确认后把文件内容导入为该分组下的一条笔记 */
   const handleDropFileToCategory = useCallback(async (path: string, categoryId: number) => {
     const category = categoriesRef.current.find((c) => c.id === categoryId);
+    // 锁着的加密分组无法写入：导入得到的是明文，也必须先解锁
+    if (category?.is_encrypted && category.is_locked) {
+      void requestUnlock('category', categoryId);
+      return;
+    }
     const ok = await confirm({
       title: translateNow("导入文件到分组"),
       message: translateNow("是否将文件内容导入分组「{name}」？", { name: category?.name ?? "" }),
@@ -877,7 +1107,7 @@ function AppContent() {
     } catch (e) {
       showToast(typeof e === "string" ? e : translateNow("导入失败"), "error");
     }
-  }, [confirm, defaultNoteAiAccess, showToast]);
+  }, [confirm, defaultNoteAiAccess, showToast, requestUnlock]);
 
   /** 欢迎页「打开文本文件」：系统文件选择框 → 按外部文件模式打开 */
   const handleOpenTextFileDialog = useCallback(async () => {
@@ -946,6 +1176,9 @@ function AppContent() {
    * 成功后同步 notes 与 selectedNote 的 updated_at，只更新仍处于选中态的那条。
    */
   const handleSaveNote = async (id: number, title: string, content: string, categoryId: number | null) => {
+    // 锁着的加密笔记没有可用密钥：后端会拒绝，这里直接跳过避免把明文停留在队列里
+    const target = notesRef.current.find((n) => n.id === id);
+    if (target && target.enc_mode !== 0 && target.is_locked) return;
     saveQueueRef.current = saveQueueRef.current.then(async () => {
       try {
         await notesApi.updateNote(id, title, content, categoryId);
@@ -972,6 +1205,10 @@ function AppContent() {
 
   /** 侧边栏右键「保存笔记」：打开中的笔记交给编辑器（内容最新），其余按 id 读正文后导出 */
   const handleExportNoteFromMenu = async (note: Note) => {
+    if (note.enc_mode !== 0) {
+      showToast(t("加密笔记不支持导出，请先永久解密"), "error");
+      return;
+    }
     if (selectedNote?.id === note.id && exportNoteRef.current) {
       exportNoteRef.current();
       return;
@@ -1032,6 +1269,11 @@ function AppContent() {
   /** 删除当前笔记：软删除进回收站，刷新列表后清空选中 */
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
+    // 加密笔记不能进回收站；临时解锁也不放行，必须先永久解密（后端同样会拒绝）
+    if (selectedNote.enc_mode !== 0) {
+      showToast(t("加密笔记需先永久解密才能删除"), "info");
+      return;
+    }
     const noteId = selectedNote.id;
     const confirmed = await confirm({
       title: t("删除笔记"),
@@ -1065,6 +1307,15 @@ function AppContent() {
     }
   };
 
+  /** 回收站里的加密笔记：先永久解密才能删除；enc_mode=2 的组密文只能在分组上解密 */
+  const handleDecryptTrashNote = (note: Note) => {
+    if (note.enc_mode !== 1) {
+      showToast(t("此笔记随所属分组加密，请在分组上操作"), "info");
+      return;
+    }
+    void requestUnlock("note", note.id, true);
+  };
+
   const handleRestoreNote = async (id: number) => {
     try {
       await notesApi.restoreNote(id);
@@ -1073,23 +1324,45 @@ function AppContent() {
       await loadData();
       showToast(t("笔记已还原"), "success");
     } catch (error) {
-      showToast(t("还原失败"), "error");
+      // 目标分组已加密时后端会拒绝（明文笔记不能落进加密分组）
+      let message = t("还原失败");
+      if (typeof error === "string") {
+        try {
+          const parsed = JSON.parse(error) as { code?: string };
+          if (parsed?.code === "category_encrypted") {
+            message = t("该分组已加密，请先解密分组再还原");
+          }
+        } catch {
+          // 普通字符串错误：保留通用提示
+        }
+      }
+      showToast(message, "error");
     }
   };
 
   const handleDeletePermanent = async (id: number) => {
+    if (trashNotes.find((n) => n.id === id)?.enc_mode !== 0) {
+      showToast(t("加密笔记需先永久解密才能删除"), "info");
+      return;
+    }
     try {
       await notesApi.deleteNotePermanently(id);
       setTrashNotes((prev) => prev.filter((n) => n.id !== id));
       setSelectedTrashIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       showToast(t("笔记已永久删除"), "success");
-    } catch (error) {
+    } catch {
       showToast(t("删除失败"), "error");
     }
   };
 
   const handleEmptyTrash = async () => {
     if (trashNotes.length === 0) return;
+    // 加密笔记不参与清空：它们留在回收站里，等用户先永久解密
+    const removableIds = trashNotes.filter((n) => n.enc_mode === 0).map((n) => n.id);
+    if (removableIds.length === 0) {
+      showToast(t("加密笔记需先永久解密才能删除"), "info");
+      return;
+    }
     const confirmed = await confirm({
       title: t("清空回收站"),
       message: t("确定要清空回收站吗？此操作不可恢复。"),
@@ -1098,12 +1371,19 @@ function AppContent() {
     });
     if (!confirmed) return;
     try {
-      await notesApi.deleteMultipleNotesPermanently(trashNotes.map((n) => n.id));
-      setTrashNotes([]);
+      const skipped = await notesApi.deleteMultipleNotesPermanently(removableIds);
+      // 加密笔记不会提交给后端，所以后端 skipped 常为 0；剩余条数要靠本地列表算
+      const remaining = trashNotes.length - removableIds.length + skipped;
       setSelectedTrashIds(new Set());
+      setTrashNotes(await notesApi.getTrashNotes());
       await loadData();
-      showToast(t("回收站已清空"), "success");
-    } catch (error) {
+      showToast(
+        remaining > 0
+          ? t("已跳过 {count} 篇加密笔记，请先永久解密", { count: remaining })
+          : t("回收站已清空"),
+        "success",
+      );
+    } catch {
       showToast(t("清空回收站失败"), "error");
     }
   };
@@ -1115,6 +1395,15 @@ function AppContent() {
 
   const handleDeleteSelected = async () => {
     if (selectedTrashIds.size === 0) return;
+    const ids = Array.from(selectedTrashIds);
+    const removableIds = trashNotes
+      .filter((n) => ids.includes(n.id) && n.enc_mode === 0)
+      .map((n) => n.id);
+    const encryptedCount = ids.length - removableIds.length;
+    if (removableIds.length === 0) {
+      showToast(t("加密笔记需先永久解密才能删除"), "info");
+      return;
+    }
     const confirmed = await confirm({
       title: t("永久删除"),
       message: t("确定要永久删除选中的笔记吗？此操作不可恢复。"),
@@ -1122,14 +1411,19 @@ function AppContent() {
       danger: true,
     });
     if (!confirmed) return;
-    const ids = Array.from(selectedTrashIds);
     try {
-      await notesApi.deleteMultipleNotesPermanently(ids);
-      setTrashNotes((prev) => prev.filter((n) => !ids.includes(n.id)));
+      const skipped = await notesApi.deleteMultipleNotesPermanently(removableIds);
       setSelectedTrashIds(new Set());
+      setTrashNotes(await notesApi.getTrashNotes());
       await loadData();
-      showToast(t("已永久删除"), "success");
-    } catch (error) {
+      const total = skipped + encryptedCount;
+      showToast(
+        total > 0
+          ? t("已跳过 {count} 篇加密笔记，请先永久解密", { count: total })
+          : t("已永久删除"),
+        "success",
+      );
+    } catch {
       showToast(t("删除失败"), "error");
     }
   };
@@ -1274,6 +1568,258 @@ function AppContent() {
       showToast(t("重命名失败，请重试"), "error");
     }
   };
+
+  /* ---------- 加密操作 ----------
+   * 所有密钥运算都在 Rust 侧完成，这里只负责：收集密码 → 调命令 → 刷新状态。
+   * 失败时的后端错误码由弹窗自己翻译，这里只处理成功后的界面同步。
+   */
+
+  const handleRootSetup = async (password: string) => {
+    const result = await encryptionApi.setRootPassword(password);
+    setShowRootSetup(false);
+    await refreshEncryptionStatus();
+    showToast(t("根密码设置成功"), "success");
+    if (result.orphans > 0) {
+      showToast(
+        t("有 {count} 个加密项无法绑定根密码（早期数据），只能用各自的条目密码解密", {
+          count: result.orphans,
+        }),
+        "info",
+      );
+    }
+  };
+
+  const handleRootChange = async (oldPassword: string, newPassword: string) => {
+    const result = await encryptionApi.changeRootPassword(oldPassword, newPassword);
+    showToast(t("根密码已修改"), "success");
+    if (result.rewrapped > 0) {
+      showToast(
+        t("有 {count} 个加密项已重新绑定到新根密码", { count: result.rewrapped }),
+        "info",
+      );
+    }
+    if (result.skipped > 0) {
+      showToast(
+        t("有 {count} 个加密项无法重新绑定（早期数据），仍可用条目密码解密", {
+          count: result.skipped,
+        }),
+        "info",
+      );
+    }
+  };
+
+  /** 右键「加密」：打开弹窗；本次运行没验证过根密码时弹窗内会多要一次根密码 */
+  const handleEncryptNote = (note: Note) => setEncryptTarget({ scope: "note", id: note.id });
+  const handleEncryptCategory = (category: Category) =>
+    setEncryptTarget({ scope: "category", id: category.id });
+
+  /** 加密提交：加密成功后立即回到锁定态，笔记需要重新输密码才能打开 */
+  const handleEncryptSubmit = async (
+    password: string,
+    hint: string | null,
+    rootPassword: string | null,
+  ) => {
+    if (!encryptTarget) return;
+    const target = encryptTarget;
+    if (target.scope === "note") {
+      const updated = await encryptionApi.encryptNote(target.id, password, hint, rootPassword);
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      // 后端不再缓存密钥，当前正打开的就是明文副本，必须关掉
+      if (selectedNoteRef.current?.id === updated.id) {
+        selectedNoteRef.current = null;
+        setSelectedNote(null);
+      }
+      showToast(t("笔记已加密并锁定，打开时需要输入密码"), "success");
+    } else {
+      await encryptionApi.encryptCategory(target.id, password, hint, rootPassword);
+      // 组内笔记在库里已变密文：关闭正打开的组内笔记，避免编辑器还显示明文
+      if (selectedNoteRef.current?.category_id === target.id) {
+        // ref 同步清空：loadData 读的是 ref，晚一步会把它重新选回来
+        selectedNoteRef.current = null;
+        setSelectedNote(null);
+      }
+      // 加密后分组进入锁定态：展开着只剩标题和小锁，没有任何可读内容，
+      // 收起后列表长度与「点开要解锁」的预期一致；下次展开会先弹解锁框
+      setExpandedDrawer((prev) => (prev === target.id ? null : prev));
+      await loadData();
+      showToast(t("分组已加密，组内笔记全部锁定"), "success");
+    }
+    await refreshEncryptionStatus();
+  };
+
+  /** 临时解锁 / 永久解密的提交 */
+  const handleUnlockSubmit = async (
+    password: string,
+    useRoot: boolean,
+    scope: UnlockScope,
+  ) => {
+    if (!unlockTarget) return;
+    const target = unlockTarget;
+    if (target.permanent) {
+      if (target.scope === "note") {
+        const updated = await encryptionApi.decryptNote(target.id, password, useRoot);
+        setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+        if (selectedNoteRef.current?.id === updated.id) setSelectedNote(updated);
+        // 属性窗自己持有一份笔记副本：不同步就会继续显示「锁定」入口
+        setPropertiesTarget((prev) =>
+          prev && prev.kind === "note" && prev.note.id === updated.id
+            ? { kind: "note", note: updated }
+            : prev,
+        );
+        // 回收站里的笔记也能永久解密：解密后原地变成普通笔记，删除入口随之恢复
+        if (showTrashModal) {
+          try {
+            setTrashNotes(await notesApi.getTrashNotes());
+          } catch {
+            // 回收站刷新失败不影响解密结果
+          }
+        }
+      } else {
+        await encryptionApi.decryptCategory(target.id, password, useRoot);
+        await loadData();
+        // 分组属性窗持有的是旧快照，留着会继续显示锁定 / 解密入口
+        setPropertiesTarget((prev) =>
+          prev && prev.kind === "category" && prev.category.id === target.id ? null : prev,
+        );
+      }
+      showToast(t(target.scope === "note" ? "笔记已解密" : "分组已解密"), "success");
+    } else if (target.scope === "note") {
+      pendingUnlockNoteRef.current = null;
+      const updated = await encryptionApi.unlockNote(target.id, password, useRoot, scope);
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      // 解锁是从「点开笔记」触发的：解锁成功后顺势打开它
+      openNote(updated);
+      showToast(t("解锁成功"), "success");
+    } else {
+      await encryptionApi.unlockCategory(target.id, password, useRoot, scope);
+      await loadData();
+      setSelectedCategoryId(target.id);
+      setExpandedDrawer(target.id);
+      // 是点组内某篇笔记触发的解锁：把这篇也直接打开
+      const pendingId = pendingUnlockNoteRef.current;
+      pendingUnlockNoteRef.current = null;
+      if (pendingId !== null) {
+        try {
+          openNote(await notesApi.getNote(pendingId));
+        } catch {
+          // 笔记可能已被删除，分组已展开即可
+        }
+      }
+      showToast(t("解锁成功"), "success");
+    }
+    await refreshEncryptionStatus();
+  };
+
+  /** 手动锁定单篇加密笔记（分组加密的笔记要锁分组） */
+  const handleLockNote = async (note: Note) => {
+    try {
+      await encryptionApi.lockNote(note.id, true);
+      // 锁定前先问后端：已经永久解密的笔记不能再被本地标成锁定态，
+      // 否则界面显示「锁定」但库里是明文，点开既没有正文也没有密码框
+      const info = await encryptionApi.getEncryptionInfo("note", note.id);
+      if (!info.encrypted) {
+        await loadData();
+        return;
+      }
+      if (selectedNoteRef.current?.id === note.id) {
+        selectedNoteRef.current = null;
+        setSelectedNote(null);
+      }
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === note.id ? { ...n, is_locked: true, content: "" } : n,
+        ),
+      );
+      showToast(t("笔记已锁定"), "success");
+    } catch {
+      showToast(t("操作失败，请重试"), "error");
+    }
+  };
+
+  const handleLockCategory = async (category: Category) => {
+    try {
+      await encryptionApi.lockCategory(category.id, true);
+      if (selectedNoteRef.current?.category_id === category.id) {
+        // ref 同步清空：后面的 loadData 会按 ref 决定是否重新选中
+        selectedNoteRef.current = null;
+        setSelectedNote(null);
+      }
+      // 锁定的分组展开着只剩标题和小锁，收起更符合「已锁定」的状态；
+      // 下次展开会先弹解锁框
+      setExpandedDrawer((prev) => (prev === category.id ? null : prev));
+      await loadData();
+      showToast(t("分组已锁定"), "success");
+    } catch {
+      showToast(t("操作失败，请重试"), "error");
+    }
+  };
+
+  /** 还有没有「能省下来的密钥」：解锁中的条目、或本次运行缓存过的根 KEK */
+  const hasUnlockedEncryption = useMemo(
+    () =>
+      Boolean(encryptionStatus?.root_cached) ||
+      notes.some((n) => n.enc_mode !== 0 && !n.is_locked) ||
+      categories.some((c) => c.is_encrypted && !c.is_locked),
+    [encryptionStatus, notes, categories],
+  );
+
+  /**
+   * 一键锁定全部加密内容：连同根 KEK 一起清掉（后端会先把内存里的密钥字节覆写掉）。
+   * 手动触发与空闲自动锁定共用；本地列表同步回锁定态，正打开的加密笔记一并关掉。
+   */
+  const lockEverything = useCallback(
+    async (reason: "manual" | "idle" = "manual") => {
+      if (!isTauri()) return;
+      if (!hasUnlockedEncryption) {
+        if (reason === "manual") showToast(t("当前没有解锁中的加密内容"), "info");
+        return;
+      }
+      try {
+        await encryptionApi.lockAll();
+      } catch {
+        showToast(t("操作失败，请重试"), "error");
+        return;
+      }
+      setNotes((prev) =>
+        prev.map((n) => (n.enc_mode !== 0 ? { ...n, is_locked: true, content: "" } : n)),
+      );
+      setCategories((prev) =>
+        prev.map((c) => (c.is_encrypted ? { ...c, is_locked: true } : c)),
+      );
+      const current = selectedNoteRef.current;
+      if (current && current.enc_mode !== 0) {
+        selectedNoteRef.current = null;
+        setSelectedNote(null);
+      }
+      pendingUnlockNoteRef.current = null;
+      // 展开着的加密分组现在都锁上了：收起，别留一列只有标题和小锁的条目
+      setExpandedDrawer((prev) =>
+        typeof prev === "number" && categories.some((c) => c.id === prev && c.is_encrypted)
+          ? null
+          : prev,
+      );
+      // 后端已清空根 KEK：本地状态跟着改，下次加密会重新要根密码
+      setEncryptionStatus((prev) => (prev ? { ...prev, root_cached: false } : prev));
+      void encryptionApi.flushCryptoScrub();
+      showToast(
+        reason === "idle"
+          ? t("已空闲 {minutes} 分钟，加密内容已自动锁定", {
+              minutes: appSettings.general.autoLockMinutes,
+            })
+          : t("已锁定全部加密内容"),
+        "success",
+      );
+    },
+    [hasUnlockedEncryption, categories, appSettings.general.autoLockMinutes, showToast, t],
+  );
+
+  // 空闲自动锁定（设置为 0 时 hook 内部不挂计时器）；
+  // 密码弹窗打开期间顺延，避免用户正输密码时密钥被清掉
+  useIdleLock({
+    minutes: appSettings.general.autoLockMinutes,
+    onIdle: () => void lockEverything("idle"),
+    shouldSkip: () => Boolean(showRootSetup || unlockTarget || encryptTarget),
+  });
 
   /**
    * 把某个历史版本写回笔记，并同步列表与编辑器里的同一篇。
@@ -1480,16 +2026,18 @@ function AppContent() {
 
   /**
    * 当前笔记的生效档位 = min(笔记, 所属分组)；没有打开笔记时按"完全"处理（不限制面板本身）。
-   * AI 面板据此决定要不要附正文、以及输入区显示「未授权 / 只读」。
+   * 加密内容不参与 AI：不论档位如何都按 0 处理。
    */
   const currentNoteAiLevel: AiAccessLevel = !selectedNote
     ? 2
-    : ((Math.min(
-        selectedNote.ai_access,
-        selectedNote.category_id !== null
-          ? categories.find((c) => c.id === selectedNote.category_id)?.ai_access ?? 2
-          : 2,
-      ) as AiAccessLevel) ?? 2);
+    : selectedNote.enc_mode !== 0
+      ? 0
+      : ((Math.min(
+          selectedNote.ai_access,
+          selectedNote.category_id !== null
+            ? categories.find((c) => c.id === selectedNote.category_id)?.ai_access ?? 2
+            : 2,
+        ) as AiAccessLevel) ?? 2);
 
   /**
    * 欢迎页「最近更新」列表：只在 notes 变化时排一次。
@@ -1545,8 +2093,11 @@ function AppContent() {
           icon: "editor-export",
           keys: "mod+s",
           keywords: "export 导出 保存 另存为 save file",
-          disabled: !editorNote,
-          disabledReason: t("先打开一篇笔记"),
+          disabled: !editorNote || editorNote.enc_mode !== 0,
+          disabledReason:
+            editorNote && editorNote.enc_mode !== 0
+              ? t("加密笔记不支持导出，请先永久解密")
+              : t("先打开一篇笔记"),
           run: () => exportNoteRef.current?.(),
         },
         {
@@ -1769,6 +2320,20 @@ function AppContent() {
           run: () => handleThemeChange({ ...theme, mode: option.mode }),
         })),
 
+        /* ---------- 加密 ---------- */
+        {
+          id: "vault.lockAll",
+          token: "lock_all",
+          title: t("锁定全部加密内容"),
+          hint: t("清空本次运行缓存的密钥，再打开加密笔记要重新输密码"),
+          group: t("加密"),
+          icon: "security-sealed",
+          keywords: "lock 锁定 加密 全部 密钥 seal vault",
+          disabled: !hasUnlockedEncryption,
+          disabledReason: t("当前没有解锁中的加密内容"),
+          run: () => void lockEverything("manual"),
+        },
+
         /* ---------- 设置 ---------- */
         {
           id: "settings.open",
@@ -1855,6 +2420,10 @@ function AppContent() {
             onCreateNote={handleCreateNote}
             onMoveToCategory={handleMoveNoteToCategory}
             onDeleteNote={async (note) => {
+              if (note.enc_mode !== 0) {
+                showToast(t("加密笔记需先永久解密才能删除"), "info");
+                return;
+              }
               const confirmed = await confirm({
                 title: t("删除笔记"),
                 message: t("确定要将这条笔记移入回收站吗？"),
@@ -1884,6 +2453,12 @@ function AppContent() {
             view={sidebarView}
             onViewChange={setSidebarView}
             onTogglePin={handleTogglePin}
+            onEncryptNote={handleEncryptNote}
+            onLockNote={handleLockNote}
+            onDecryptNote={(note) => void requestUnlock("note", note.id, true)}
+            onEncryptCategory={handleEncryptCategory}
+            onLockCategory={handleLockCategory}
+            onDecryptCategory={(category) => void requestUnlock("category", category.id, true)}
           />
         </div>
 
@@ -1961,8 +2536,8 @@ function AppContent() {
                     onRegisterActions={registerEditorActions}
                     enableAI={appSettings.general.enableAI}
                   />
-                  {/* 选中文本浮出的 AI 工具条：纯浮层，不改编辑器内部结构 */}
-                  {appSettings.general.enableAI && (
+                  {/* 选中文本浮出的 AI 工具条：纯浮层，不改编辑器内部结构；加密笔记不参与 AI */}
+                  {appSettings.general.enableAI && selectedNote?.enc_mode === 0 && (
                     <SelectionAiToolbar
                       onAddToChat={handleSelectionAddRef}
                       noteId={selectedNote?.id ?? null}
@@ -1997,9 +2572,9 @@ function AppContent() {
             onClose={() => {
               setAiPanelOpen(false);
             }}
-            noteTitle={overlayActive ? "" : selectedNote?.title || ""}
-            noteContent={overlayActive ? "" : selectedNote?.content || ""}
-            currentNoteId={overlayActive ? null : selectedNote?.id ?? null}
+            noteTitle={aiNoteContextBlocked ? "" : selectedNote?.title || ""}
+            noteContent={aiNoteContextBlocked ? "" : selectedNote?.content || ""}
+            currentNoteId={aiNoteContextBlocked ? null : selectedNote?.id ?? null}
             categories={categories}
             currentNoteAiLevel={currentNoteAiLevel}
             aiPrompts={aiPrompts}
@@ -2117,19 +2692,39 @@ function AppContent() {
                     type="checkbox"
                     checked={selectedTrashIds.has(note.id)}
                     onChange={() => toggleTrashSelect(note.id)}
-                    className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
+                    disabled={note.enc_mode !== 0}
+                    title={note.enc_mode !== 0 ? t("加密笔记需先永久解密才能删除") : undefined}
+                    className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20 disabled:opacity-40"
                   />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-body truncate">{note.title || t("无标题")}</p>
+                    <p className="text-sm font-medium text-body truncate">
+                      {note.is_locked && (
+                        <Icon
+                          name="security-sealed"
+                          className="mr-1 inline h-3 w-3 -translate-y-px text-faint"
+                        />
+                      )}
+                      {note.title || t("无标题")}
+                    </p>
                     <p className="text-[11px] text-faint mt-0.5">{t("删除于 {date}", { date: formatTrashDate(note.deleted_at) })}</p>
                   </div>
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                     <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-success-soft hover:!text-success" title={t("还原")}>
                       <Icon name="app-restore" className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-danger-soft hover:!text-danger" title={t("永久删除")}>
-                      <Icon name="app-trash" className="w-3.5 h-3.5" />
-                    </button>
+                    {note.enc_mode === 0 ? (
+                      <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-danger-soft hover:!text-danger" title={t("永久删除")}>
+                        <Icon name="app-trash" className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleDecryptTrashNote(note)}
+                        className="toolbar-btn hover:!bg-primary-50 hover:!text-primary-600"
+                        title={note.enc_mode === 1 ? t("永久解密") : t("此笔记随所属分组加密，请在分组上操作")}
+                      >
+                        <Icon name="security-unlock" className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))
@@ -2169,6 +2764,13 @@ function AppContent() {
         onSetNoteAiAccess={handleSetNoteAiAccess}
         theme={theme}
         onThemeChange={handleThemeChange}
+        onRequestRootPasswordChange={() => {
+          if (!encryptionStatus?.root_set) {
+            showToast(t("尚未设置根密码"), "info");
+            return;
+          }
+          setShowRootChange(true);
+        }}
       />
 
       {/* 命令面板 / 快速跳转：Ctrl+P 跳转、Ctrl+Shift+P 命令 */}
@@ -2218,6 +2820,14 @@ function AppContent() {
         onClearHistory={handleClearNoteHistory}
         onCreateHistoryVersion={handleCreateNoteHistoryVersion}
         onToggleHistoryPinned={handleToggleNoteHistoryPinned}
+        onEncryptNote={handleEncryptNote}
+        onUnlockNote={(note) => void requestUnlock("note", note.id)}
+        onLockNote={handleLockNote}
+        onDecryptNote={(note) => void requestUnlock("note", note.id, true)}
+        onEncryptCategory={handleEncryptCategory}
+        onUnlockCategory={(category) => void requestUnlock("category", category.id)}
+        onLockCategory={handleLockCategory}
+        onDecryptCategory={(category) => void requestUnlock("category", category.id, true)}
       />
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}
@@ -2229,6 +2839,46 @@ function AppContent() {
 
       {/* 更新弹窗：手动检查到新版本时展示说明与操作，更新完成后展示本次更新内容 */}
       <UpdateDialog notice={releaseNotice} onCloseNotice={() => setReleaseNotice(null)} />
+
+      {/* 根密码设置：首次启动未设置时强制弹出，onClose 是空操作 */}
+      <RootSetupDialog isOpen={showRootSetup} onSubmit={handleRootSetup} />
+
+      {/* 根密码修改：关于页作者名 5 连击进入 */}
+      <RootChangeDialog
+        isOpen={showRootChange}
+        onClose={() => setShowRootChange(false)}
+        onSubmit={handleRootChange}
+      />
+
+      {/* 加密笔记 / 分组：未缓存根 KEK 时弹窗内多要一次根密码 */}
+      <EncryptDialog
+        isOpen={encryptTarget !== null}
+        mode={encryptTarget?.scope ?? "note"}
+        requiresRoot={!encryptionStatus?.root_cached}
+        noteCount={
+          encryptTarget?.scope === "category"
+            ? notes.filter((n) => n.category_id === encryptTarget.id && !n.is_deleted).length
+            : undefined
+        }
+        onClose={() => setEncryptTarget(null)}
+        onSubmit={handleEncryptSubmit}
+      />
+
+      {/* 解锁 / 永久解密：提示、已错次数与根密码可用性都来自 encryption_info */}
+      <UnlockDialog
+        isOpen={unlockTarget !== null}
+        mode={unlockTarget?.scope ?? "note"}
+        permanent={unlockTarget?.permanent ?? false}
+        hint={unlockTarget?.info.hint ?? null}
+        attempts={unlockTarget?.info.attempts ?? 0}
+        rootAllowed={unlockTarget?.info.root_allowed ?? false}
+        rootWrapped={unlockTarget?.info.root_wrapped ?? false}
+        onClose={() => {
+          pendingUnlockNoteRef.current = null;
+          setUnlockTarget(null);
+        }}
+        onSubmit={handleUnlockSubmit}
+      />
 
       {/* 通用确认弹窗：替换原生 confirm()，样式跟随主题 */}
       {confirmDialog}

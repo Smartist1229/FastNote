@@ -6,6 +6,7 @@
 import type { Category, Note } from "@/interface/note";
 import type { ContextMenuItem } from "@/interface/ui";
 import { Icon } from "@/components/common/Icon";
+import { translate } from "@/i18n";
 
 /** 能弹出「分组菜单」的目标类型：真实分组、两个默认分组、搜索视图的四个虚拟分组 */
 export type GroupMenuKind = "category" | "all" | "uncategorized" | "search-all" | "search-title" | "search-content" | "search-semantic";
@@ -33,6 +34,13 @@ export interface GroupMenuHandlers {
   onDelete: () => void;
   /** 查看分组属性 */
   onShowProperties: () => void;
+  /** 真实分组是否整体加密；缺省视为未加密 */
+  encrypted?: boolean;
+  /** 加密分组当前是否锁着（锁着时不能新建笔记、不能导出） */
+  locked?: boolean;
+  onEncrypt?: () => void;
+  onLock?: () => void;
+  onDecrypt?: () => void;
 }
 
 /** 笔记菜单需要的回调：由调用方按当前笔记拼好 */
@@ -43,6 +51,12 @@ export interface NoteMenuHandlers {
   onTogglePin: () => void;
   onDeleteNote: () => void;
   onShowProperties: () => void;
+  onEncrypt?: () => void;
+  onLock?: () => void;
+  onDecrypt?: () => void;
+  /** 分组加密的笔记：解锁/锁定/永久解密都作用在所属分组上 */
+  onLockGroup?: () => void;
+  onDecryptGroup?: () => void;
 }
 
 /**
@@ -59,49 +73,78 @@ export const buildGroupMenu = (
 ): ContextMenuItem[] => {
   const isCategory = kind === "category";
   const isSearchGroup = isSearchGroupKind(kind);
+  const encrypted = isCategory && handlers.encrypted === true;
+  const locked = encrypted && handlers.locked === true;
   const items: ContextMenuItem[] = [
     {
-      label: isExpanded ? "折叠分组" : "展开分组",
+      label: isExpanded ? translate("折叠分组") : translate("展开分组"),
       icon: <Icon name="sidebar-chevron-right" className="w-4 h-4" />,
       onClick: handlers.onToggleDrawer,
     },
   ];
-  if (!isSearchGroup) {
+  // 加密锁定的分组不能往里建笔记：密钥不在内存，后端会直接拒绝
+  if (!isSearchGroup && !locked) {
     items.push({
-      label: "在此分组新建笔记",
+      label: translate("在此分组新建笔记"),
       icon: <Icon name="sidebar-plus" className="w-4 h-4" />,
       onClick: handlers.onCreateNote,
     });
   }
-  items.push({
-    label: "导出分组",
-    icon: <Icon name="editor-export" className="w-4 h-4" />,
-    onClick: handlers.onExport,
-  });
+  // 导出会把正文解密成文件，加密分组一律不导出
+  if (!encrypted) {
+    items.push({
+      label: translate("导出分组"),
+      icon: <Icon name="editor-export" className="w-4 h-4" />,
+      onClick: handlers.onExport,
+    });
+  }
   if (isCategory) {
     items.push(divider(), {
-      label: "重命名",
+      label: translate("重命名"),
       icon: <Icon name="sidebar-edit" className="w-4 h-4" />,
       onClick: handlers.onRename,
     });
   }
+  if (isCategory) {
+    if (!encrypted) {
+      items.push({
+        label: translate("加密分组…"),
+        icon: <Icon name="security-lock" className="w-4 h-4" />,
+        onClick: () => handlers.onEncrypt?.(),
+      });
+    } else {
+      // 临时解锁走「点击展开」的弹窗，菜单里不再放解锁项；已解锁时给回锁定入口
+      if (!locked) {
+        items.push({
+          label: translate("立即锁定分组"),
+          icon: <Icon name="security-lock" className="w-4 h-4" />,
+          onClick: () => handlers.onLock?.(),
+        });
+      }
+      items.push({
+        label: translate("解密分组…"),
+        icon: <Icon name="security-unlock" className="w-4 h-4" />,
+        onClick: () => handlers.onDecrypt?.(),
+      });
+    }
+  }
   if (!isSearchGroup) {
     items.push({
-      label: "新建分组",
+      label: translate("新建分组"),
       icon: <Icon name="sidebar-folder-plus" className="w-4 h-4" />,
       onClick: handlers.onCreateCategory,
     });
   }
-  if (isCategory) {
+  if (isCategory && !encrypted) {
     items.push(divider(), {
-      label: "删除分组",
+      label: translate("删除分组"),
       icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
       onClick: handlers.onDelete,
       danger: true,
     });
   }
   items.push(divider(), {
-    label: "分组属性",
+    label: translate("分组属性"),
     icon: <Icon name="toast-info" className="w-4 h-4" />,
     onClick: handlers.onShowProperties,
   });
@@ -117,52 +160,117 @@ export const buildNoteMenu = (
   note: Note,
   categories: Category[],
   handlers: NoteMenuHandlers
-): ContextMenuItem[] => [
-  {
-    label: "打开笔记",
-    icon: <Icon name="sidebar-eye" className="w-4 h-4" />,
-    onClick: handlers.onOpenNote,
-  },
-  {
-    label: "保存笔记",
-    icon: <Icon name="editor-export" className="w-4 h-4" />,
-    onClick: handlers.onSaveNote,
-  },
-  {
-    label: "移动分组",
-    icon: <Icon name="sidebar-folder" className="w-4 h-4" />,
-    onClick: () => { },
-    submenu: [
-      {
-        label: "未分类",
-        icon: <Icon name="sidebar-list" className="w-4 h-4" />,
-        onClick: () => handlers.onMoveToCategory(null),
-        disabled: note.category_id === null,
-      },
-      ...categories.map((cat) => ({
-        label: cat.name,
-        icon: <Icon name="sidebar-folder" className="w-4 h-4" />,
-        onClick: () => handlers.onMoveToCategory(cat.id),
-        disabled: note.category_id === cat.id,
-      })),
-    ],
-  },
-  divider(),
-  {
-    label: note.is_pinned ? "取消收藏" : "收藏笔记",
-    icon: <Icon name={note.is_pinned ? "sidebar-star-filled" : "sidebar-star"} className="w-4 h-4" />,
-    onClick: handlers.onTogglePin,
-  },
-  {
-    label: "删除笔记",
-    icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
-    onClick: handlers.onDeleteNote,
-    danger: true,
-  },
-  divider(),
-  {
-    label: "笔记属性",
-    icon: <Icon name="toast-info" className="w-4 h-4" />,
-    onClick: handlers.onShowProperties,
-  },
-];
+): ContextMenuItem[] => {
+  const encrypted = note.enc_mode !== 0;
+  // 加密笔记不能换分组（密文是用原分组密钥 / 自己的 DEK 封的），加密分组也不能被移入
+  const moveTargets = categories.filter((cat) => !cat.is_encrypted);
+  const items: ContextMenuItem[] = [
+    {
+      label: translate("打开笔记"),
+      icon: <Icon name="sidebar-eye" className="w-4 h-4" />,
+      onClick: handlers.onOpenNote,
+    },
+  ];
+  if (!encrypted) {
+    items.push({
+      label: translate("保存笔记"),
+      icon: <Icon name="editor-export" className="w-4 h-4" />,
+      onClick: handlers.onSaveNote,
+    }, {
+      label: translate("移动分组"),
+      icon: <Icon name="sidebar-folder" className="w-4 h-4" />,
+      onClick: () => { },
+      submenu: [
+        {
+          label: translate("未分类"),
+          icon: <Icon name="sidebar-list" className="w-4 h-4" />,
+          onClick: () => handlers.onMoveToCategory(null),
+          disabled: note.category_id === null,
+        },
+        ...moveTargets.map((cat) => ({
+          label: cat.name,
+          icon: <Icon name="sidebar-folder" className="w-4 h-4" />,
+          onClick: () => handlers.onMoveToCategory(cat.id),
+          disabled: note.category_id === cat.id,
+        })),
+      ],
+    }, {
+      label: translate("加密笔记…"),
+      icon: <Icon name="security-lock" className="w-4 h-4" />,
+      onClick: () => handlers.onEncrypt?.(),
+    });
+  } else if (note.enc_mode === 1) {
+    // 临时解锁走「点击笔记」的弹窗，菜单里不再放解锁项；已解锁时给回锁定入口
+    if (!note.is_locked) {
+      items.push({
+        label: translate("立即锁定笔记"),
+        icon: <Icon name="security-lock" className="w-4 h-4" />,
+        onClick: () => handlers.onLock?.(),
+      });
+    }
+    items.push({
+      label: translate("解密笔记…"),
+      icon: <Icon name="security-unlock" className="w-4 h-4" />,
+      onClick: () => handlers.onDecrypt?.(),
+    });
+  } else {
+    // 分组加密的笔记本身没有独立密钥：锁定与解密都作用在所属分组上
+    const group = note.category_id === null
+      ? undefined
+      : categories.find((cat) => cat.id === note.category_id);
+    if (group) {
+      if (!note.is_locked) {
+        items.push({
+          label: translate("立即锁定分组"),
+          icon: <Icon name="security-lock" className="w-4 h-4" />,
+          onClick: () => handlers.onLockGroup?.(),
+        });
+      }
+      items.push({
+        label: translate("解密分组…"),
+        icon: <Icon name="security-unlock" className="w-4 h-4" />,
+        onClick: () => handlers.onDecryptGroup?.(),
+      });
+    } else {
+      items.push({
+        label: translate("此笔记随所属分组加密，请在分组上操作"),
+        icon: <Icon name="security-lock" className="w-4 h-4" />,
+        onClick: () => { },
+        disabled: true,
+      });
+    }
+  }
+  items.push(
+    divider(),
+    {
+      label: note.is_pinned ? translate("取消收藏") : translate("收藏笔记"),
+      icon: <Icon name={note.is_pinned ? "sidebar-star-filled" : "sidebar-star"} className="w-4 h-4" />,
+      onClick: handlers.onTogglePin,
+    },
+  );
+  // 加密笔记不能删除（临时解锁也不允许）：只放一条说明，删除必须先永久解密
+  if (encrypted) {
+    items.push({
+      label: translate("加密笔记需先永久解密才能删除"),
+      icon: <Icon name="security-lock" className="w-4 h-4" />,
+      onClick: () => { },
+      disabled: true,
+    });
+  } else {
+    items.push({
+      label: translate("删除笔记"),
+      icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
+      onClick: handlers.onDeleteNote,
+      danger: true,
+    });
+  }
+  items.push(
+    divider(),
+    {
+      label: translate("笔记属性"),
+      icon: <Icon name="toast-info" className="w-4 h-4" />,
+      onClick: handlers.onShowProperties,
+    },
+  );
+  return items;
+};

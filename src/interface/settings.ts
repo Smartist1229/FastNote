@@ -66,6 +66,17 @@ export interface GeneralSettings {
    * 避免打字停顿把保留窗口刷满、挤掉最初的版本。
    */
   noteHistoryIntervalMinutes: number;
+  /**
+   * 运行期间自动检查更新的间隔（分钟，0 = 关闭，默认 10）。
+   * 只影响软件运行中的定时检查；启动时的静默检查不受它控制。
+   */
+  updateCheckIntervalMinutes: number;
+  /**
+   * 空闲自动锁定（分钟，0 = 关闭，默认 10）。
+   * 键盘、鼠标、滚轮都算活动；超过这个时间没有任何操作，就丢掉内存里的解密密钥，
+   * 已解锁的加密笔记/分组立即回到锁定态。
+   */
+  autoLockMinutes: number;
 }
 
 /** 笔记编辑器可选的默认视图（render 是给 AI 回复用的纯渲染模式，不作为笔记的默认视图） */

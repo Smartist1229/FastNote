@@ -495,5 +495,36 @@ export const scheduleStartupCheck = () => {
   }, 5000);
 };
 
+/** 运行期间的定时检查计时器；null = 未启动或已关闭 */
+let periodicTimer: number | null = null;
+
+/**
+ * 按设置里的间隔在运行期间定时检查更新（0 = 关闭）。
+ *
+ * 结果只走静默检查：发现新版本只点亮侧栏更新图标，不弹窗。
+ * 检查会重置整个更新状态，所以手动检查进行中、下载 / 已下载待安装 / 安装中、
+ * 或更新弹窗正开着时都跳过这一轮，避免抹掉进度或已缓存的安装包。
+ * 重复调用会先清掉旧计时器，设置改动立即按新间隔重新计时。
+ */
+export const schedulePeriodicCheck = (minutes: number) => {
+  if (periodicTimer !== null) {
+    window.clearInterval(periodicTimer);
+    periodicTimer = null;
+  }
+  // 与启动检查一致：开发期版本号低于线上发布版时，不打扰调试
+  if (minutes <= 0 || import.meta.env.DEV) return;
+  periodicTimer = window.setInterval(() => {
+    const busy =
+      checkTask !== null ||
+      snapshot.dialogOpen ||
+      snapshot.phase === "checking" ||
+      snapshot.phase === "downloading" ||
+      snapshot.phase === "ready" ||
+      snapshot.phase === "installing";
+    if (busy) return;
+    void checkForUpdates(true);
+  }, minutes * 60_000);
+};
+
 export const useUpdater = (): UpdaterSnapshot =>
   useSyncExternalStore(subscribe, getSnapshot);

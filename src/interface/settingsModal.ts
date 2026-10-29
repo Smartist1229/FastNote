@@ -155,4 +155,9 @@ export interface SettingsModalProps {
   theme: ThemeSettings;
   /** 主题整对象回写：改动立即生效并落库（设置项都是实时的） */
   onThemeChange: (next: ThemeSettings) => void;
+  /**
+   * 隐藏入口：关于页「作者」连续点击 5 次（2 秒内）触发，用于修改根密码。
+   * 不传则入口不生效。
+   */
+  onRequestRootPasswordChange?: () => void;
 }

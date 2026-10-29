@@ -6,12 +6,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
+use zeroize::{Zeroize, Zeroizing};
 
+mod crypto;
 mod download;
+mod encryption;
 mod fingerprint;
 mod i18n;
 mod opener;
@@ -33,6 +37,12 @@ pub struct Note {
     /// AI 访问档位（0=禁止 / 1=只读 / 2=完全）。
     /// 笔记与所属分组各存一档，生效值取更严格的那个（见前端 lib/aiAccess.ts）。
     pub ai_access: i64,
+    /// 0 = 未加密；1 = 单篇密码；2 = 随所属分组加密。
+    pub enc_mode: i64,
+    /// 锁定态：内容已清空，前端显示占位标题。
+    pub is_locked: bool,
+    /// 用户设置的密码提示（明文），锁定时可用于提示。
+    pub enc_hint: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -43,6 +53,9 @@ pub struct Category {
     pub note_count: i32,
     /// AI 访问档位（0=禁止 / 1=只读 / 2=完全），作为组内笔记的上限
     pub ai_access: i64,
+    pub is_encrypted: bool,
+    pub is_locked: bool,
+    pub enc_hint: Option<String>,
 }
 
 /// 标签。
@@ -112,6 +125,7 @@ struct AppState {
     download: download::DownloadState,
     webdav: webdav::WebdavState,
     updater: updater::UpdateState,
+    encryption: encryption::EncryptionState,
 }
 
 /// 判断某张表是否存在（用于读取可选的数据表）
@@ -455,6 +469,36 @@ fn init_database(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    // ---- 笔记 / 分组加密 ----
+    // 密文与密钥元数据分开存：enc_mode 决定读路径，enc_tags 是标签快照密文，
+    // encrypted_keys 里只有盐与被密码包裹的 DEK，没有明文密码。
+    if !has_column(conn, "notes", "enc_mode") {
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN enc_mode INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !has_column(conn, "notes", "enc_tags") {
+        conn.execute("ALTER TABLE notes ADD COLUMN enc_tags TEXT", [])?;
+    }
+    if !has_column(conn, "categories", "is_encrypted") {
+        conn.execute(
+            "ALTER TABLE categories ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS encrypted_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL CHECK(scope IN ('note','category')),
+            ref_id INTEGER NOT NULL,
+            meta_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(scope, ref_id)
+        )",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -624,6 +668,9 @@ fn create_category(
         created_at: now,
         note_count: 0,
         ai_access,
+        is_encrypted: false,
+        is_locked: false,
+        enc_hint: None,
     })
 }
 
@@ -638,7 +685,8 @@ fn get_app_settings(
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT key, value FROM app_settings")
+        // 根密码的盐/校验块属于加密内部元数据，不暴露给前端业务层。
+        .prepare("SELECT key, value FROM app_settings WHERE key NOT LIKE 'app.security.%'")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -692,6 +740,9 @@ pub struct BackupSummary {
     pub sessions: usize,
     pub messages: usize,
     pub settings: usize,
+    /// 因加密而跳过的笔记数（含分组整体加密的笔记）；备份里不会有它们
+    #[serde(default)]
+    pub skipped_encrypted: usize,
     /// 备份文件的导出时间（恢复时从文件里带回，便于界面展示）
     pub exported_at: Option<String>,
 }
@@ -844,7 +895,8 @@ fn export_backup(
 
     let categories = query_rows(
         &conn,
-        "SELECT id, name, created_at, ai_access FROM categories ORDER BY id",
+        "SELECT id, name, created_at, ai_access FROM categories
+         WHERE COALESCE(is_encrypted, 0) = 0 ORDER BY id",
         |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
@@ -859,7 +911,7 @@ fn export_backup(
         &conn,
         "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
                 is_pinned, ai_access
-         FROM notes ORDER BY id",
+         FROM notes WHERE COALESCE(enc_mode, 0) = 0 ORDER BY id",
         |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
@@ -966,10 +1018,11 @@ fn export_backup(
         "SELECT key, value, updated_at FROM app_settings
          WHERE key NOT IN ('webdav.lastAutoBackupAt', 'webdav.lastAutoAttemptAt',
                            'webdav.lastAutoError', 'webdav.lastAutoFile')
+           AND key NOT LIKE 'app.security.%'
          ORDER BY key"
     } else {
         "SELECT key, value, updated_at FROM app_settings
-         WHERE key NOT LIKE 'webdav.%'
+         WHERE key NOT LIKE 'webdav.%' AND key NOT LIKE 'app.security.%'
          ORDER BY key"
     };
     let mut settings = query_rows(&conn, settings_sql, |row| {
@@ -1013,7 +1066,9 @@ fn export_backup(
 
     let note_tags = query_rows(
         &conn,
-        "SELECT note_id, tag_id, source, created_at FROM note_tags ORDER BY note_id, tag_id",
+        "SELECT note_id, tag_id, source, created_at FROM note_tags
+         WHERE note_id IN (SELECT id FROM notes WHERE COALESCE(enc_mode, 0) = 0)
+         ORDER BY note_id, tag_id",
         |row| {
             Ok(json!({
                 "note_id": row.get::<_, i64>(0)?,
@@ -1027,7 +1082,9 @@ fn export_backup(
     let notes_history = query_rows(
         &conn,
         "SELECT id, note_id, title, content, category_id, is_pinned, kind, pinned, saved_at
-         FROM notes_history ORDER BY id",
+         FROM notes_history
+         WHERE note_id IN (SELECT id FROM notes WHERE COALESCE(enc_mode, 0) = 0)
+         ORDER BY id",
         |row| {
             Ok(json!({
                 "id": row.get::<_, i64>(0)?,
@@ -1044,6 +1101,13 @@ fn export_backup(
     )?;
 
     let exported_at = Local::now().to_rfc3339();
+    let skipped_encrypted = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE COALESCE(enc_mode, 0) <> 0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
     let summary = BackupSummary {
         notes: notes.len(),
         categories: categories.len(),
@@ -1051,6 +1115,7 @@ fn export_backup(
         sessions: sessions.len(),
         messages: messages.len(),
         settings: settings.len(),
+        skipped_encrypted,
         exported_at: Some(exported_at.clone()),
     };
 
@@ -1104,6 +1169,33 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         .conn
         .lock()
         .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+
+    // 覆盖式恢复会整体替换数据库：本地已有的加密项会连同密钥一起丢失，必须先拦住。
+    let local_encrypted: i64 = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM notes WHERE COALESCE(enc_mode, 0) <> 0)
+                  + (SELECT COUNT(*) FROM categories WHERE COALESCE(is_encrypted, 0) <> 0)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if local_encrypted > 0 {
+        return Err(json!({ "code": "local_has_encrypted" }).to_string());
+    }
+    let backup_encrypted = notes.iter().any(|n| {
+        n.get("enc_mode")
+            .and_then(|v| v.as_i64())
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }) || categories.iter().any(|c| {
+        c.get("is_encrypted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }) || !json_arr(data, "encrypted_keys").is_empty();
+    if backup_encrypted {
+        return Err(json!({ "code": "backup_contains_encrypted" }).to_string());
+    }
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     // 先记下本机现有的 Key 密文，恢复时按「名称+类型+地址」原样接回去：
@@ -1150,6 +1242,7 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         "DELETE FROM note_chunks",
         "DELETE FROM note_index_state",
         "DELETE FROM semantic_meta",
+        "DELETE FROM encrypted_keys",
     ] {
         tx.execute(sql, []).map_err(|e| e.to_string())?;
     }
@@ -1287,6 +1380,11 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
 
     for s in settings {
         let key = json_str(s, "key");
+        // 根密码盐/校验块属于本机加密元数据：导出时已剔除，恢复时也绝不接受外来值，
+        // 否则会用一份未知密码的 verifier 覆盖本机根密码，导致根密码再也无法使用。
+        if key.starts_with("app.security.") {
+            continue;
+        }
         let mut value = json_str(s, "value");
         // 勾选了「备份 WebDAV」的备份带的是明文密码，入库前重新加密；已是密文则原样保留
         if key == "webdav.password" && !value.is_empty() && !is_encrypted(&value) {
@@ -1345,6 +1443,7 @@ fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, 
         sessions: sessions.len(),
         messages: messages.len(),
         settings: settings.len(),
+        skipped_encrypted: 0,
         exported_at: doc
             .get("exported_at")
             .and_then(|v| v.as_str())
@@ -1374,6 +1473,113 @@ fn count_rows(conn: &Connection, table: &str) -> usize {
     .unwrap_or(0) as usize
 }
 
+/// 把临时文件挪到用户选的目标路径。Windows 的 rename 不会覆盖已有文件，先删旧目标。
+fn replace_backup_file(tmp: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        std::fs::remove_file(target).map_err(|e| format!("覆盖已有备份文件失败：{e}"))?;
+    }
+    std::fs::rename(tmp, target).map_err(|e| format!("保存备份文件失败：{e}"))
+}
+
+/// 生成 SQLite 快照到 `tmp`（目标必须不存在）。
+/// `include_encrypted` 为 true 时原样保留加密笔记/分组、`encrypted_keys` 与 `app.security.*`：
+/// 只在「加密容器备份」里用（外层还有一层口令加密），普通快照一律把加密内容剔除。
+fn build_sqlite_snapshot(
+    conn: &Connection,
+    tmp: &Path,
+    app: &AppHandle,
+    exported_at: &str,
+    include_api_keys: bool,
+    include_webdav: bool,
+    include_encrypted: bool,
+) -> Result<(), String> {
+    conn.execute("VACUUM INTO ?1", params![tmp.to_string_lossy().to_string()])
+        .map_err(|e| format!("生成数据库快照失败：{e}"))?;
+
+    let snap = Connection::open(tmp).map_err(|e| format!("打开数据库快照失败：{e}"))?;
+    // 快照必须是单文件：切回 DELETE 日志模式，不把 -wal / -shm 留给用户
+    let _ = snap.execute_batch("PRAGMA journal_mode=DELETE;");
+    snap.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {SQLITE_BACKUP_META} (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );"
+    ))
+    .map_err(|e| format!("写入备份标记失败：{e}"))?;
+
+    {
+        let mut stmt = snap
+            .prepare(&format!(
+                "INSERT OR REPLACE INTO {SQLITE_BACKUP_META} (key, value) VALUES (?1, ?2)"
+            ))
+            .map_err(|e| e.to_string())?;
+        let meta = [
+            ("format", SQLITE_BACKUP_FORMAT.to_string()),
+            ("version", SQLITE_BACKUP_VERSION.to_string()),
+            ("exported_at", exported_at.to_string()),
+            ("app_version", app.package_info().version.to_string()),
+            (
+                "api_keys",
+                if include_api_keys {
+                    "encrypted"
+                } else {
+                    "none"
+                }
+                .to_string(),
+            ),
+            (
+                "encrypted_content",
+                if include_encrypted { "included" } else { "none" }.to_string(),
+            ),
+        ];
+        for (key, value) in meta {
+            stmt.execute(params![key, value])
+                .map_err(|e| format!("写入备份标记失败：{e}"))?;
+        }
+    }
+
+    if !include_api_keys {
+        snap.execute("UPDATE ai_providers SET api_key = ''", [])
+            .map_err(|e| format!("清除快照中的 API Key 失败：{e}"))?;
+    }
+    // 自动备份运行状态永远不随快照走；未勾选 WebDAV 时整组配置一起清掉，
+    // 勾选后保留服务器/账号/密码密文，恢复后仍可在同机继续使用。
+    for key in WEBDAV_AUTO_STATE_KEYS {
+        snap.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
+            .map_err(|e| format!("清除快照中的本机设置失败：{e}"))?;
+    }
+    if !include_webdav {
+        snap.execute("DELETE FROM app_settings WHERE key LIKE 'webdav.%'", [])
+            .map_err(|e| format!("清除快照中的 WebDAV 设置失败：{e}"))?;
+    }
+    // 语义索引与元数据是纯本机派生物（体积大、换机/换模型无意义）：快照里也不带，
+    // 恢复后由后台按当前模型重建。
+    for table in ["note_chunks", "note_index_state", "semantic_meta"] {
+        snap.execute(&format!("DELETE FROM {table}"), [])
+            .map_err(|e| format!("清除快照中的语义数据失败：{e}"))?;
+    }
+    if !include_encrypted {
+        // 加密内容与根密码元数据不进普通备份：备份文件不假设用户还记得密码。
+        // 顺序：先删笔记行，再按"已不存在的 note_id"清历史与标签关联。
+        snap.execute("DELETE FROM notes WHERE COALESCE(enc_mode, 0) <> 0", [])
+            .map_err(|e| format!("清除快照中的加密笔记失败：{e}"))?;
+        for sql in [
+            "DELETE FROM notes_history WHERE note_id NOT IN (SELECT id FROM notes)",
+            "DELETE FROM note_tags WHERE note_id NOT IN (SELECT id FROM notes)",
+            "DELETE FROM categories WHERE COALESCE(is_encrypted, 0) <> 0",
+            "DELETE FROM encrypted_keys",
+            "DELETE FROM app_settings WHERE key LIKE 'app.security.%'",
+        ] {
+            snap.execute(sql, [])
+                .map_err(|e| format!("清除快照中的加密数据失败：{e}"))?;
+        }
+    }
+    // 删行只让页面变成空闲页，VACUUM 才能真正把密文/元数据从文件里抹掉
+    snap.execute("VACUUM", [])
+        .map_err(|e| format!("整理数据库快照失败：{e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn export_sqlite_backup(
     state: State<AppState>,
@@ -1388,13 +1594,25 @@ fn export_sqlite_backup(
         .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
 
     let exported_at = Local::now().to_rfc3339();
+    let count = |sql: &str| -> usize {
+        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+            .unwrap_or(0) as usize
+    };
+    // 摘要按"实际进快照的行数"算：加密项会在下面从副本里删掉
     let summary = BackupSummary {
-        notes: count_rows(&conn, "notes"),
-        categories: count_rows(&conn, "categories"),
+        notes: count("SELECT COUNT(*) FROM notes WHERE COALESCE(enc_mode, 0) = 0"),
+        categories: count(
+            "SELECT COUNT(*) FROM categories WHERE COALESCE(is_encrypted, 0) = 0",
+        ),
         providers: count_rows(&conn, "ai_providers"),
         sessions: count_rows(&conn, "ai_chat_sessions"),
         messages: count_rows(&conn, "ai_chat_messages"),
-        settings: count_rows(&conn, "app_settings"),
+        settings: count(
+            "SELECT COUNT(*) FROM app_settings WHERE key NOT LIKE 'app.security.%'",
+        ),
+        skipped_encrypted: count(
+            "SELECT COUNT(*) FROM notes WHERE COALESCE(enc_mode, 0) <> 0",
+        ),
         exported_at: Some(exported_at.clone()),
     };
 
@@ -1405,81 +1623,16 @@ fn export_sqlite_backup(
     let tmp = parent.join(format!(".fastnote-sqlite-{}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
 
-    let result = (|| -> Result<(), String> {
-        conn.execute("VACUUM INTO ?1", params![tmp.to_string_lossy().to_string()])
-            .map_err(|e| format!("生成数据库快照失败：{e}"))?;
-
-        {
-            let snap = Connection::open(&tmp).map_err(|e| format!("打开数据库快照失败：{e}"))?;
-            // 快照必须是单文件：切回 DELETE 日志模式，不把 -wal / -shm 留给用户
-            let _ = snap.execute_batch("PRAGMA journal_mode=DELETE;");
-            snap.execute_batch(&format!(
-                "CREATE TABLE IF NOT EXISTS {SQLITE_BACKUP_META} (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );"
-            ))
-            .map_err(|e| format!("写入备份标记失败：{e}"))?;
-
-            {
-                let mut stmt = snap
-                    .prepare(&format!(
-                        "INSERT OR REPLACE INTO {SQLITE_BACKUP_META} (key, value) VALUES (?1, ?2)"
-                    ))
-                    .map_err(|e| e.to_string())?;
-                let meta = [
-                    ("format", SQLITE_BACKUP_FORMAT.to_string()),
-                    ("version", SQLITE_BACKUP_VERSION.to_string()),
-                    ("exported_at", exported_at.clone()),
-                    ("app_version", app.package_info().version.to_string()),
-                    (
-                        "api_keys",
-                        if include_api_keys {
-                            "encrypted"
-                        } else {
-                            "none"
-                        }
-                        .to_string(),
-                    ),
-                ];
-                for (key, value) in meta {
-                    stmt.execute(params![key, value])
-                        .map_err(|e| format!("写入备份标记失败：{e}"))?;
-                }
-            }
-
-            if !include_api_keys {
-                snap.execute("UPDATE ai_providers SET api_key = ''", [])
-                    .map_err(|e| format!("清除快照中的 API Key 失败：{e}"))?;
-            }
-            // 自动备份运行状态永远不随快照走；未勾选 WebDAV 时整组配置一起清掉，
-            // 勾选后保留服务器/账号/密码密文，恢复后仍可在同机继续使用。
-            for key in WEBDAV_AUTO_STATE_KEYS {
-                snap.execute(
-                    "DELETE FROM app_settings WHERE key = ?1",
-                    params![key],
-                )
-                .map_err(|e| format!("清除快照中的本机设置失败：{e}"))?;
-            }
-            if !include_webdav {
-                snap.execute("DELETE FROM app_settings WHERE key LIKE 'webdav.%'", [])
-                    .map_err(|e| format!("清除快照中的 WebDAV 设置失败：{e}"))?;
-            }
-            // 语义索引与元数据是纯本机派生物（体积大、换机/换模型无意义）：快照里也不带，
-            // 恢复后由后台按当前模型重建。
-            for table in ["note_chunks", "note_index_state", "semantic_meta"] {
-                snap.execute(&format!("DELETE FROM {table}"), [])
-                    .map_err(|e| format!("清除快照中的语义数据失败：{e}"))?;
-            }
-        }
-
-        // Windows 的 rename 不会覆盖已有文件，先删除旧目标
-        if target.exists() {
-            std::fs::remove_file(&target).map_err(|e| format!("覆盖已有备份文件失败：{e}"))?;
-        }
-        std::fs::rename(&tmp, &target).map_err(|e| format!("保存备份文件失败：{e}"))?;
-        Ok(())
-    })();
+    let result = build_sqlite_snapshot(
+        &conn,
+        &tmp,
+        &app,
+        &exported_at,
+        include_api_keys,
+        include_webdav,
+        false,
+    )
+    .and_then(|()| replace_backup_file(&tmp, &target));
 
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -1500,6 +1653,8 @@ struct SqliteBackupData {
     tags: Vec<SqliteTagRow>,
     note_tags: Vec<SqliteNoteTagRow>,
     notes_history: Vec<SqliteNoteHistoryRow>,
+    /// 只有加密容器备份里才有；普通快照导不出这行数据
+    encrypted_keys: Vec<SqliteEncryptedKeyRow>,
     exported_at: Option<String>,
 }
 
@@ -1508,6 +1663,7 @@ struct SqliteCategoryRow {
     name: String,
     created_at: String,
     ai_access: i64,
+    is_encrypted: i64,
 }
 
 struct SqliteNoteRow {
@@ -1521,6 +1677,15 @@ struct SqliteNoteRow {
     deleted_at: Option<String>,
     is_pinned: i64,
     ai_access: i64,
+    enc_mode: i64,
+    enc_tags: Option<String>,
+}
+
+struct SqliteEncryptedKeyRow {
+    scope: String,
+    ref_id: i64,
+    meta_json: String,
+    created_at: String,
 }
 
 struct SqliteProviderRow {
@@ -1688,8 +1853,9 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
 
     {
         let sql = format!(
-            "SELECT id, name, created_at, {} FROM categories ORDER BY id",
-            ai_access("categories")
+            "SELECT id, name, created_at, {}, {} FROM categories ORDER BY id",
+            ai_access("categories"),
+            col("categories", "is_encrypted", "0")
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1699,6 +1865,7 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
                     name: row.get(1)?,
                     created_at: row.get(2)?,
                     ai_access: row.get::<_, i64>(3)?.clamp(0, 2),
+                    is_encrypted: row.get::<_, i64>(4)?.min(1),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1709,12 +1876,15 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
 
     {
         let sql = format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, {}, {}, {}, {}
+            "SELECT id, title, content, category_id, created_at, updated_at, {}, {}, {}, {},
+                    {}, {}
              FROM notes ORDER BY id",
             col("notes", "is_deleted", "0"),
             col("notes", "deleted_at", "NULL"),
             col("notes", "is_pinned", "0"),
-            ai_access("notes")
+            ai_access("notes"),
+            col("notes", "enc_mode", "0"),
+            col("notes", "enc_tags", "NULL")
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1730,6 +1900,8 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
                     deleted_at: row.get(7)?,
                     is_pinned: row.get(8)?,
                     ai_access: row.get::<_, i64>(9)?.clamp(0, 2),
+                    enc_mode: row.get::<_, i64>(10)?.clamp(0, 2),
+                    enc_tags: row.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1924,19 +2096,56 @@ fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, String> {
         }
     }
 
+    // 加密容器备份才有的密钥包裹元数据；普通快照里这张表是空的
+    if has_table(conn, "encrypted_keys")
+        && ["scope", "ref_id", "meta_json", "created_at"]
+            .iter()
+            .all(|column| has_column(conn, "encrypted_keys", column))
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT scope, ref_id, meta_json, created_at
+                 FROM encrypted_keys ORDER BY scope, ref_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SqliteEncryptedKeyRow {
+                    scope: row.get(0)?,
+                    ref_id: row.get(1)?,
+                    meta_json: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.encrypted_keys.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
     Ok(out)
 }
 
 #[tauri::command]
 fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSummary, String> {
-    let source = std::path::PathBuf::from(&path);
+    restore_sqlite_snapshot(&state, &std::path::PathBuf::from(&path), false)
+}
+
+/// 用 SQLite 快照覆盖当前库。
+/// `allow_encrypted` 只给加密容器恢复用：跳过「本地/备份含加密内容」两道拦截，
+/// 并把 `enc_mode` / `enc_tags` / `encrypted_keys` / 根密码元数据一并写回。
+fn restore_sqlite_snapshot(
+    state: &State<AppState>,
+    source: &Path,
+    allow_encrypted: bool,
+) -> Result<BackupSummary, String> {
     if !source.is_file() {
         return Err("备份文件不存在".to_string());
     }
     let source_canonical =
-        std::fs::canonicalize(&source).map_err(|e| format!("读取备份文件失败：{e}"))?;
+        std::fs::canonicalize(source).map_err(|e| format!("读取备份文件失败：{e}"))?;
 
-    let bak = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let bak = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("无法打开 SQLite 备份文件：{e}"))?;
     // 先做完整性检查，再读表结构；坏文件不进入覆盖流程
     let quick_check: String = bak
@@ -1946,6 +2155,29 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         return Err("SQLite 备份文件已损坏，无法恢复".to_string());
     }
     let data = read_sqlite_backup(&bak)?;
+    // 旧快照可能没有这两列，缺列即视为没有加密内容；密钥表有行同样说明是加密备份
+    let backup_encrypted = {
+        let count_where = |table: &str, column: &str| -> i64 {
+            if !has_column(&bak, table, column) {
+                return 0;
+            }
+            bak.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE COALESCE({column}, 0) <> 0"),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+        };
+        let has_keys = has_table(&bak, "encrypted_keys")
+            && bak
+                .query_row("SELECT COUNT(*) FROM encrypted_keys", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap_or(0)
+                > 0;
+        count_where("notes", "enc_mode") + count_where("categories", "is_encrypted") > 0
+            || has_keys
+    };
     drop(bak);
 
     let mut conn = state
@@ -1959,6 +2191,25 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         .unwrap_or(false)
     {
         return Err("不能用当前正在使用的数据库文件恢复".to_string());
+    }
+
+    // 覆盖式恢复会整体替换数据库：本地已有的加密项会连同密钥一起丢失，必须先拦住
+    let local_encrypted: i64 = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM notes WHERE COALESCE(enc_mode, 0) <> 0)
+                  + (SELECT COUNT(*) FROM categories WHERE COALESCE(is_encrypted, 0) <> 0)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    // 加密容器恢复会连密钥元数据一起换掉，两道拦截只在普通快照上生效
+    if !allow_encrypted {
+        if local_encrypted > 0 {
+            return Err(json!({ "code": "local_has_encrypted" }).to_string());
+        }
+        if backup_encrypted {
+            return Err(json!({ "code": "backup_contains_encrypted" }).to_string());
+        }
     }
 
     // 先记下本机现有的 Key 密文，供备份里没有可用 Key 时按「名称+类型+地址」接回
@@ -2031,18 +2282,21 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         "DELETE FROM note_chunks",
         "DELETE FROM note_index_state",
         "DELETE FROM semantic_meta",
+        "DELETE FROM encrypted_keys",
     ] {
         tx.execute(sql, []).map_err(|e| e.to_string())?;
     }
 
     for c in &data.categories {
         tx.execute(
-            "INSERT INTO categories (id, name, created_at, ai_access) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO categories (id, name, created_at, ai_access, is_encrypted)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 c.id,
                 c.name,
                 non_empty_or_now(c.created_at.clone()),
-                c.ai_access
+                c.ai_access,
+                if c.is_encrypted != 0 { 1 } else { 0 }
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2051,8 +2305,8 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
     for n in &data.notes {
         tx.execute(
             "INSERT INTO notes (id, title, content, category_id, created_at, updated_at, is_deleted,
-                                deleted_at, is_pinned, ai_access)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                deleted_at, is_pinned, ai_access, enc_mode, enc_tags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 n.id,
                 n.title,
@@ -2063,7 +2317,9 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
                 if n.is_deleted != 0 { 1 } else { 0 },
                 n.deleted_at,
                 if n.is_pinned != 0 { 1 } else { 0 },
-                n.ai_access
+                n.ai_access,
+                n.enc_mode,
+                n.enc_tags
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2147,6 +2403,11 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
     }
 
     for s in &data.settings {
+        // 普通快照不导入外来的根密码元数据，避免覆盖本机 verifier；
+        // 加密容器恢复是整库替换，根密码元数据必须一起回来，否则加密内容再也解不开
+        if !allow_encrypted && s.key.starts_with("app.security.") {
+            continue;
+        }
         tx.execute(
             "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
             params![s.key, s.value, non_empty_or_now(s.updated_at.clone())],
@@ -2183,8 +2444,26 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         .map_err(|e| e.to_string())?;
     }
 
+    for k in &data.encrypted_keys {
+        tx.execute(
+            "INSERT OR REPLACE INTO encrypted_keys (scope, ref_id, meta_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                k.scope,
+                k.ref_id,
+                k.meta_json,
+                non_empty_or_now(k.created_at.clone())
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     tx.commit().map_err(|e| e.to_string())?;
     drop(conn);
+    // 库里的密钥元数据整个换了一批，内存里缓存的旧 DEK/KEK 全部作废
+    if allow_encrypted {
+        state.encryption.clear_all();
+    }
     semantic::invalidate(&state.semantic);
 
     Ok(BackupSummary {
@@ -2194,8 +2473,181 @@ fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSu
         sessions: data.sessions.len(),
         messages: data.messages.len(),
         settings: data.settings.len(),
+        skipped_encrypted: 0,
         exported_at: data.exported_at,
     })
+}
+
+/* ---------------- 加密容器备份 ----------------
+ * 整库 SQLite 快照（含加密笔记、encrypted_keys、根密码元数据）用**独立的备份口令**
+ * 再包一层 Argon2id + AES-256-GCM，容器文件本身就是密文：
+ *   FNBK1\n<json 头>\n<nonce‖密文‖tag>
+ * 头部（含 KDF 参数与盐）同时作为 AAD，改一个字节都解不开。
+ * 恢复时先解容器，再走 allow_encrypted 的整库替换；条目内容仍需各自的密码/根密码解锁。
+ */
+
+const ENCRYPTED_BACKUP_MAGIC: &[u8] = b"FNBK1\n";
+const ENCRYPTED_BACKUP_FORMAT: &str = "fastnote-encrypted-backup";
+const ENCRYPTED_BACKUP_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct EncryptedBackupHeader {
+    format: String,
+    version: u32,
+    kdf: String,
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    salt: String,
+    created_at: String,
+}
+
+fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
+    let len = passphrase.chars().count();
+    if len < 8 {
+        return Err(json!({ "code": "backup_passphrase_too_short" }).to_string());
+    }
+    if len > 128 {
+        return Err(json!({ "code": "backup_passphrase_too_long" }).to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn export_encrypted_backup(
+    state: State<AppState>,
+    path: String,
+    passphrase: String,
+    app: AppHandle,
+) -> Result<BackupSummary, String> {
+    validate_backup_passphrase(&passphrase)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+
+    let exported_at = Local::now().to_rfc3339();
+    let count = |sql: &str| -> usize {
+        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+            .unwrap_or(0) as usize
+    };
+    // 加密备份是整库快照：加密笔记也算在摘要里
+    let summary = BackupSummary {
+        notes: count("SELECT COUNT(*) FROM notes"),
+        categories: count("SELECT COUNT(*) FROM categories"),
+        providers: count_rows(&conn, "ai_providers"),
+        sessions: count_rows(&conn, "ai_chat_sessions"),
+        messages: count_rows(&conn, "ai_chat_messages"),
+        settings: count("SELECT COUNT(*) FROM app_settings"),
+        skipped_encrypted: 0,
+        exported_at: Some(exported_at.clone()),
+    };
+
+    let target = std::path::PathBuf::from(&path);
+    let parent = target.parent().ok_or("备份路径不可用".to_string())?;
+    let tmp_db = parent.join(format!(".fastnote-encdb-{}.tmp", std::process::id()));
+    let tmp_out = parent.join(format!(".fastnote-encout-{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp_db);
+    let _ = std::fs::remove_file(&tmp_out);
+
+    let result = (|| -> Result<(), String> {
+        // 容器里保留 API Key / WebDAV 密文：文件本身已有口令保护，不额外裁剪
+        build_sqlite_snapshot(&conn, &tmp_db, &app, &exported_at, true, true, true)?;
+        let mut plain = std::fs::read(&tmp_db).map_err(|e| format!("读取数据库快照失败：{e}"))?;
+        let _ = std::fs::remove_file(&tmp_db);
+
+        let salt = crypto::random_salt();
+        let header = EncryptedBackupHeader {
+            format: ENCRYPTED_BACKUP_FORMAT.to_string(),
+            version: ENCRYPTED_BACKUP_VERSION,
+            kdf: crypto::KDF_ARGON2ID.to_string(),
+            m_cost: crypto::ARGON2_M_COST,
+            t_cost: crypto::ARGON2_T_COST,
+            p_cost: crypto::ARGON2_P_COST,
+            salt: crypto::hex_encode(&salt),
+            created_at: exported_at.clone(),
+        };
+        let header_line = serde_json::to_string(&header).map_err(|e| e.to_string())?;
+        let key = Zeroizing::new(crypto::derive_argon2id(
+            &passphrase,
+            &salt,
+            crypto::ARGON2_M_COST,
+            crypto::ARGON2_T_COST,
+            crypto::ARGON2_P_COST,
+        )?);
+        // 头部当 AAD：盐或 KDF 参数被改过就解不开，避免降参数重算
+        let sealed = crypto::seal_bytes(&key, header_line.as_bytes(), &plain)?;
+        plain.zeroize();
+
+        let mut out = Vec::with_capacity(ENCRYPTED_BACKUP_MAGIC.len() + header_line.len() + 1 + sealed.len());
+        out.extend_from_slice(ENCRYPTED_BACKUP_MAGIC);
+        out.extend_from_slice(header_line.as_bytes());
+        out.push(b'\n');
+        out.extend_from_slice(&sealed);
+        std::fs::write(&tmp_out, &out).map_err(|e| format!("保存加密备份失败：{e}"))?;
+        replace_backup_file(&tmp_out, &target)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_db);
+        let _ = std::fs::remove_file(&tmp_out);
+    }
+    result?;
+    Ok(summary)
+}
+
+#[tauri::command]
+fn import_encrypted_backup(
+    state: State<AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<BackupSummary, String> {
+    let source = std::path::PathBuf::from(&path);
+    if !source.is_file() {
+        return Err("备份文件不存在".to_string());
+    }
+    let raw = std::fs::read(&source).map_err(|e| format!("读取备份文件失败：{e}"))?;
+    let rest = raw
+        .strip_prefix(ENCRYPTED_BACKUP_MAGIC)
+        .ok_or_else(|| json!({ "code": "not_encrypted_backup" }).to_string())?;
+    let split = rest
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or_else(|| "备份文件头已损坏".to_string())?;
+    let header_bytes = &rest[..split];
+    let body = &rest[split + 1..];
+    let header: EncryptedBackupHeader =
+        serde_json::from_slice(header_bytes).map_err(|_| "备份文件头已损坏".to_string())?;
+    if header.format != ENCRYPTED_BACKUP_FORMAT {
+        return Err(json!({ "code": "not_encrypted_backup" }).to_string());
+    }
+    if header.version > ENCRYPTED_BACKUP_VERSION {
+        return Err("备份由更新版本的 FastNote 创建，请先升级软件再恢复".to_string());
+    }
+    if header.kdf != crypto::KDF_ARGON2ID {
+        return Err("不支持的备份加密算法".to_string());
+    }
+    let salt = crypto::hex_decode(&header.salt)?;
+    let key = Zeroizing::new(crypto::derive_argon2id(
+        &passphrase,
+        &salt,
+        header.m_cost,
+        header.t_cost,
+        header.p_cost,
+    )?);
+    // 口令错和文件被截断在这里是同一种失败：AES-GCM 校验不过
+    let mut plain = crypto::open_bytes(&key, header_bytes, body)
+        .map_err(|_| json!({ "code": "bad_backup_passphrase" }).to_string())?;
+
+    let tmp = std::env::temp_dir().join(format!("fastnote-restore-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let write = std::fs::write(&tmp, &plain);
+    plain.zeroize();
+    write.map_err(|e| format!("写入临时文件失败：{e}"))?;
+
+    let result = restore_sqlite_snapshot(&state, &tmp, true);
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 /* ---------------- 分组导出（ZIP / 电子书） ----------------
@@ -2309,7 +2761,7 @@ fn load_category_notes(conn: &Connection, category_id: i64) -> Result<Vec<Note>,
             "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
                     is_pinned, ai_access
              FROM notes
-             WHERE is_deleted = 0 AND category_id = ?1
+             WHERE is_deleted = 0 AND category_id = ?1 AND COALESCE(enc_mode, 0) = 0
              ORDER BY created_at ASC, id ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -2333,7 +2785,7 @@ fn load_notes_by_ids(conn: &Connection, note_ids: &[i64]) -> Result<Vec<Note>, S
             "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
                     is_pinned, ai_access
              FROM notes
-             WHERE is_deleted = 0 AND id = ?1",
+             WHERE is_deleted = 0 AND id = ?1 AND COALESCE(enc_mode, 0) = 0",
         )
         .map_err(|e| e.to_string())?;
     let mut notes = Vec::with_capacity(note_ids.len());
@@ -2379,6 +2831,9 @@ fn export_category_zip(
         .conn
         .lock()
         .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    if encryption::category_is_encrypted(&conn, category_id)? {
+        return Err(json!({ "code": "category_encrypted" }).to_string());
+    }
     let notes = load_category_notes(&conn, category_id)?;
     if notes.is_empty() {
         return Err("这个分组下还没有笔记，没什么可导出的".to_string());
@@ -2436,6 +2891,9 @@ fn export_category_ebook(
         .conn
         .lock()
         .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
+    if encryption::category_is_encrypted(&conn, category_id)? {
+        return Err(json!({ "code": "category_encrypted" }).to_string());
+    }
     let title = load_category_name(&conn, category_id)?;
     let notes = load_category_notes(&conn, category_id)?;
     if notes.is_empty() {
@@ -2694,10 +3152,11 @@ fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT c.id, c.name, c.created_at, COUNT(n.id) as note_count, c.ai_access
+            "SELECT c.id, c.name, c.created_at, COUNT(n.id) as note_count, c.ai_access,
+                    COALESCE(c.is_encrypted, 0)
          FROM categories c
          LEFT JOIN notes n ON c.id = n.category_id AND n.is_deleted = 0
-         GROUP BY c.id, c.name, c.created_at, c.ai_access
+         GROUP BY c.id, c.name, c.created_at, c.ai_access, c.is_encrypted
          ORDER BY c.created_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -2710,6 +3169,9 @@ fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
                 created_at: row.get(2)?,
                 note_count: row.get(3)?,
                 ai_access: row.get::<_, i64>(4)?.clamp(0, 2),
+                is_encrypted: row.get::<_, i64>(5)? != 0,
+                is_locked: false,
+                enc_hint: None,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2718,6 +3180,7 @@ fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
     for category in categories {
         result.push(category.map_err(|e| e.to_string())?);
     }
+    encryption::apply_category_lock_state(&conn, &state.encryption, &mut result);
 
     Ok(result)
 }
@@ -2739,11 +3202,24 @@ fn update_category(id: i64, name: String, state: State<AppState>) -> Result<(), 
 fn delete_category(id: i64, delete_notes: bool, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
 
+    // 加密分组删掉后组密钥里的 DEK 就再也对不上了；要求先永久解密（前端也隐藏删除项）
+    if encryption::category_is_encrypted(&conn, id)? {
+        return Err(json!({ "code": "category_encrypted" }).to_string());
+    }
+
     if delete_notes {
         let now = Local::now().to_rfc3339();
+        // 加密笔记受「必须先永久解密才能删除」约束，连带删除分组也不能绕过：
+        // 只把普通笔记移入回收站，单独加密的笔记改为移出分组，保留在原地与密钥。
         conn.execute(
-            "UPDATE notes SET is_deleted = 1, deleted_at = ?1, category_id = NULL WHERE category_id = ?2",
+            "UPDATE notes SET is_deleted = 1, deleted_at = ?1, category_id = NULL
+             WHERE category_id = ?2 AND COALESCE(enc_mode, 0) = 0",
             params![now, id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE notes SET category_id = NULL
+             WHERE category_id = ?1 AND COALESCE(enc_mode, 0) <> 0",
+            params![id],
         ).map_err(|e| e.to_string())?;
     } else {
         conn.execute(
@@ -2770,18 +3246,44 @@ fn create_note(
     ai_access: Option<i64>,
     state: State<AppState>,
 ) -> Result<Note, String> {
-    let conn = state.conn.lock().unwrap();
+    let mut conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();
     // 新笔记的 AI 档位由调用方给（设置里的「新建笔记默认权限」），缺省按"完全"，
     // 与老版本行为一致；写库时显式带上，返回值也用同一个值，避免库里是 A 返回是 B
     let ai_access = ai_access.unwrap_or(2).clamp(0, 2);
+    let group_encrypted = match category_id {
+        Some(category) => encryption::category_is_encrypted(&conn, category)?,
+        None => false,
+    };
+    let enc_mode = if group_encrypted { 2 } else { 0 };
 
-    conn.execute(
-        "INSERT INTO notes (title, content, category_id, created_at, updated_at, is_pinned, ai_access) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-        params![title, content, category_id, now, now, ai_access],
-    ).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO notes (title, content, category_id, created_at, updated_at, is_pinned, ai_access, enc_mode)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
+        params![title, content, category_id, now, now, ai_access, enc_mode],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = tx.last_insert_rowid();
 
-    let id = conn.last_insert_rowid();
+    if group_encrypted {
+        // 新笔记正文可能是空的，但仍要立刻加密；密钥不在内存时整条插入回滚。
+        let (stored_title, cipher_content) = encryption::seal_note_fields(
+            &tx,
+            &state.encryption,
+            id,
+            enc_mode,
+            category_id,
+            &title,
+            &content,
+        )?;
+        tx.execute(
+            "UPDATE notes SET title = ?1, content = ?2 WHERE id = ?3",
+            params![stored_title, cipher_content, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(Note {
         id,
@@ -2794,6 +3296,9 @@ fn create_note(
         deleted_at: None,
         is_pinned: false,
         ai_access,
+        enc_mode,
+        is_locked: false,
+        enc_hint: None,
     })
 }
 
@@ -2806,6 +3311,11 @@ fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
     // ai_access 一律按列名读取：所有 note 查询都必须带上这一列，漏了会直接报错，
     // 而不是悄悄把受保护的笔记当成"对 AI 开放"
     let ai_access: i64 = row.get::<_, i64>("ai_access")?.clamp(0, 2);
+    // 老查询/老备份没有 enc_mode 列时按未加密处理，行为与升级前一致。
+    let enc_mode: i64 = match row.as_ref().column_index("enc_mode") {
+        Ok(_) => row.get("enc_mode")?,
+        Err(_) => 0,
+    };
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -2817,6 +3327,9 @@ fn map_row_to_note(row: &rusqlite::Row) -> Result<Note, rusqlite::Error> {
         deleted_at: row.get(7)?,
         is_pinned: is_pinned != 0,
         ai_access,
+        enc_mode,
+        is_locked: false,
+        enc_hint: None,
     })
 }
 
@@ -2845,7 +3358,7 @@ fn get_notes(
 
     let sql = if let Some(_cat_id) = category_id {
         format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access, COALESCE(enc_mode, 0) AS enc_mode
              FROM notes
              WHERE is_deleted = 0 AND category_id = ?1
              {}",
@@ -2853,7 +3366,7 @@ fn get_notes(
         )
     } else {
         format!(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access, COALESCE(enc_mode, 0) AS enc_mode
              FROM notes
              WHERE is_deleted = 0
              {}",
@@ -2875,6 +3388,7 @@ fn get_notes(
     for note in notes_iter {
         result.push(note.map_err(|e| e.to_string())?);
     }
+    encryption::apply_lock_state(&conn, &state.encryption, &mut result);
 
     Ok(result)
 }
@@ -2886,13 +3400,20 @@ fn get_note(id: i64, state: State<AppState>) -> Result<Note, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access, COALESCE(enc_mode, 0) AS enc_mode
              FROM notes WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
 
-    stmt.query_row(params![id], map_row_to_note)
-        .map_err(|e| e.to_string())
+    let mut note = stmt
+        .query_row(params![id], map_row_to_note)
+        .map_err(|e| e.to_string())?;
+    encryption::apply_lock_state(
+        &conn,
+        &state.encryption,
+        std::slice::from_mut(&mut note),
+    );
+    Ok(note)
 }
 
 const NOTE_HISTORY_LIMIT_KEY: &str = "app.config.general.noteHistoryLimit";
@@ -3515,6 +4036,13 @@ struct NoteHistoryEntry {
 #[tauri::command]
 fn get_note_history(note_id: i64, state: State<AppState>) -> Result<Vec<NoteHistoryEntry>, String> {
     let conn = state.conn.lock().unwrap();
+    let (enc_mode, category_id): (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT COALESCE(enc_mode, 0), category_id FROM notes WHERE id = ?1",
+            params![note_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT id, note_id, title, content, category_id, is_pinned, kind, pinned, saved_at
@@ -3538,7 +4066,21 @@ fn get_note_history(note_id: i64, state: State<AppState>) -> Result<Vec<NoteHist
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+        let mut entry = row.map_err(|e| e.to_string())?;
+        if enc_mode != 0 {
+            // 历史行与 notes 行共用 DEK + AAD，锁定时这里直接报 locked，前端提示先解锁
+            let (title, content) = encryption::decrypt_history_fields(
+                &state.encryption,
+                note_id,
+                enc_mode,
+                category_id,
+                &entry.title,
+                &entry.content,
+            )?;
+            entry.title = title;
+            entry.content = content;
+        }
+        out.push(entry);
     }
     Ok(out)
 }
@@ -3685,16 +4227,55 @@ fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, 
         )
         .map_err(|_| "历史版本不存在或已被清理".to_string())?;
 
-    let (cur_title, cur_content, cur_category, cur_is_pinned): (String, String, Option<i64>, i64) = tx
+    let (cur_title, cur_content, cur_category, cur_is_pinned, cur_enc_mode): (
+        String,
+        String,
+        Option<i64>,
+        i64,
+        i64,
+    ) = tx
         .query_row(
-            "SELECT title, content, category_id, is_pinned FROM notes WHERE id = ?1",
+            "SELECT title, content, category_id, is_pinned, COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
             params![note_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
 
-    let changed = cur_title != title
-        || cur_content != content
+    // 加密笔记：库里两边都是密文，且随机 nonce 让「密文相等」不代表「明文相等」，
+    // 必须先用 DEK 解开再比；锁定时 open_* 会返回 locked。
+    let (cmp_cur_title, cmp_cur_content, cmp_hist_title, cmp_hist_content) = if cur_enc_mode != 0 {
+        if cur_category != category_id {
+            return Err(json!({ "code": "note_encrypted", "reason": "move" }).to_string());
+        }
+        let (cur_t, cur_c) = encryption::open_note_fields(
+            &tx,
+            &state.encryption,
+            note_id,
+            cur_enc_mode,
+            cur_category,
+            &cur_title,
+            &cur_content,
+        )?;
+        let (hist_t, hist_c) = encryption::decrypt_history_fields(
+            &state.encryption,
+            note_id,
+            cur_enc_mode,
+            category_id,
+            &title,
+            &content,
+        )?;
+        (cur_t, cur_c, hist_t, hist_c)
+    } else {
+        (
+            cur_title.clone(),
+            cur_content.clone(),
+            title.clone(),
+            content.clone(),
+        )
+    };
+
+    let changed = cmp_cur_title != cmp_hist_title
+        || cmp_cur_content != cmp_hist_content
         || cur_category != category_id
         || cur_is_pinned != is_pinned;
 
@@ -3702,9 +4283,17 @@ fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, 
     truncate_note_history(&tx, note_id, entry_id)?;
 
     if changed {
+        // 回滚会删掉目标版本之后的全部历史：先给「回滚前」的当前内容留一条快照，
+        // 否则误点回滚就再也回不来了。加密笔记这里复制的是密文正文，与其他历史行同源。
+        // 必须在 truncate 之后插入，否则新快照会被一起删掉。
+        snapshot_note(&tx, note_id, &now, HISTORY_KIND_PRE_ROLLBACK)?;
+        // 标题一律写明文（旧历史行的标题密文已在上面的比较里解出）；
+        // 加密笔记的正文直接写历史行里的密文：同一 DEK、同一 AAD，写回去就能照常解开
+        let write_title = cmp_hist_title;
+        let write_content = if cur_enc_mode != 0 { content } else { cmp_hist_content };
         tx.execute(
             "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = ?4, updated_at = ?5 WHERE id = ?6",
-            params![title, content, category_id, is_pinned, now, note_id],
+            params![write_title, write_content, category_id, is_pinned, now, note_id],
         )
         .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![note_id])
@@ -3716,15 +4305,16 @@ fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, 
         .map_err(|e| e.to_string())?;
     }
 
-    let note = tx
+    let mut note = tx
         .query_row(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access
+            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, is_pinned, ai_access, COALESCE(enc_mode, 0) AS enc_mode
              FROM notes WHERE id = ?1",
             params![note_id],
             map_row_to_note,
         )
         .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
+    encryption::apply_lock_state(&conn, &state.encryption, std::slice::from_mut(&mut note));
     drop(conn);
 
     semantic::invalidate(&state.semantic);
@@ -3748,22 +4338,61 @@ fn update_note(
     let now = Local::now().to_rfc3339();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    let (old_title, old_content, old_category): (String, String, Option<i64>) = tx
+    let (old_title, old_content, old_category, old_enc_mode): (
+        String,
+        String,
+        Option<i64>,
+        i64,
+    ) = tx
         .query_row(
-            "SELECT title, content, category_id FROM notes WHERE id = ?1",
+            "SELECT title, content, category_id, COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
             params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
 
+    // 加密笔记：不允许借保存顺手换分组（密文是用原分组密钥加密的，换组会变孤儿）。
+    if old_enc_mode != 0 && old_category != category_id {
+        return Err(json!({ "code": "note_encrypted", "reason": "move" }).to_string());
+    }
+    if old_enc_mode == 0 {
+        if let Some(target) = category_id {
+            if old_category != category_id && encryption::category_is_encrypted(&tx, target)? {
+                return Err(json!({ "code": "category_encrypted" }).to_string());
+            }
+        }
+    } else if crypto::is_encrypted(&content) {
+        // 加密笔记保存的应当是明文；拿到密文说明状态错乱，再封一层就永远解不开了
+        return Err(json!({ "code": "already_sealed" }).to_string());
+    }
+
+    // 比较"内容是否变化"必须用明文：加密笔记库里存的是密文。
+    let (plain_old_title, plain_old_content) = encryption::open_note_fields(
+        &tx,
+        &state.encryption,
+        id,
+        old_enc_mode,
+        old_category,
+        &old_title,
+        &old_content,
+    )?;
+
     // 只改了置顶不算内容变化，不必占一条历史
-    let changed = old_title != title || old_content != content || old_category != category_id;
+    let changed =
+        plain_old_title != title || plain_old_content != content || old_category != category_id;
+    // 加密笔记的历史行是「整行复制密文」，用密文比较才和它一致：
+    // 明文相同但 nonce 不同，拿明文比会每次保存都判定为「不一样」。
+    let (snap_title, snap_content) = if old_enc_mode == 0 {
+        (&plain_old_title, &plain_old_content)
+    } else {
+        (&old_title, &old_content)
+    };
     if changed
         && should_snapshot_history(
             &tx,
             id,
-            &old_title,
-            &old_content,
+            snap_title,
+            snap_content,
             old_category,
             &now,
             interval_secs,
@@ -3772,9 +4401,19 @@ fn update_note(
         snapshot_note(&tx, id, &now, HISTORY_KIND_AUTO)?;
     }
 
+    let (stored_title, stored_content) = encryption::seal_note_fields(
+        &tx,
+        &state.encryption,
+        id,
+        old_enc_mode,
+        old_category,
+        &title,
+        &content,
+    )?;
+
     tx.execute(
         "UPDATE notes SET title = ?1, content = ?2, category_id = ?3, is_pinned = COALESCE(?4, is_pinned), updated_at = ?5 WHERE id = ?6",
-        params![title, content, category_id, is_pinned, now, id],
+        params![stored_title, stored_content, category_id, is_pinned, now, id],
     ).map_err(|e| e.to_string())?;
 
     // 旧块立刻作废：否则 worker 重建前的这几秒里，语义搜索会拿旧正文当片段返回。
@@ -3955,7 +4594,19 @@ fn list_tags(state: State<AppState>) -> Result<Vec<Tag>, String> {
 #[tauri::command]
 fn list_note_tags(note_id: i64, state: State<AppState>) -> Result<Vec<Tag>, String> {
     let conn = state.conn.lock().unwrap();
+    if encryption::note_enc_mode(&conn, note_id)? != 0 {
+        // 锁定态返回空（快照本身也是密文）；解锁后是只读的虚拟标签
+        return encryption::encrypted_note_tags(&conn, &state.encryption, note_id);
+    }
     tags_of_note(&conn, note_id)
+}
+
+/// 加密笔记的标签是随正文一起封存的快照，不能单独增删。
+fn reject_encrypted_tags(conn: &Connection, note_id: i64) -> Result<(), String> {
+    if encryption::note_enc_mode(conn, note_id)? != 0 {
+        return Err(json!({ "code": "tags_encrypted" }).to_string());
+    }
+    Ok(())
 }
 
 /**
@@ -3973,6 +4624,7 @@ fn add_note_tags(
 ) -> Result<Vec<Tag>, String> {
     let src = normalize_source(source);
     let conn = state.conn.lock().unwrap();
+    reject_encrypted_tags(&conn, note_id)?;
     for raw in names {
         let name = raw.trim().to_string();
         if name.is_empty() {
@@ -4005,6 +4657,7 @@ fn remove_note_tags(
     state: State<AppState>,
 ) -> Result<Vec<Tag>, String> {
     let conn = state.conn.lock().unwrap();
+    reject_encrypted_tags(&conn, note_id)?;
     let filter_src = source.clone().map(|s| normalize_source(Some(s)));
     for raw in names {
         let name = raw.trim().to_string();
@@ -4048,6 +4701,7 @@ fn set_note_tags(
 ) -> Result<Vec<Tag>, String> {
     let src = normalize_source(source);
     let conn = state.conn.lock().unwrap();
+    reject_encrypted_tags(&conn, note_id)?;
     // 先清掉这个来源在这篇笔记上的旧关联
     conn.execute(
         "DELETE FROM note_tags WHERE note_id = ?1 AND source = ?2",
@@ -4185,6 +4839,7 @@ fn list_notes_by_tag(name: String, state: State<AppState>) -> Result<Vec<Note>, 
                JOIN note_tags nt ON nt.note_id = n.id
                JOIN tags t ON t.id = nt.tag_id
              WHERE t.name = ?1 COLLATE NOCASE AND n.is_deleted = 0
+               AND COALESCE(n.enc_mode, 0) = 0
              ORDER BY n.updated_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -4201,6 +4856,9 @@ fn list_notes_by_tag(name: String, state: State<AppState>) -> Result<Vec<Note>, 
                 deleted_at: row.get(7)?,
                 is_pinned: row.get::<_, i64>(8)? != 0,
                 ai_access: row.get::<_, i64>(9)?.clamp(0, 2),
+                enc_mode: 0,
+                is_locked: false,
+                enc_hint: None,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -4227,6 +4885,10 @@ fn pin_note(id: i64, pinned: bool, state: State<AppState>) -> Result<(), String>
 #[tauri::command]
 fn move_to_trash(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
+    // 加密笔记一律不能进回收站：临时解锁也不放行，必须先永久解密
+    if encryption::note_enc_mode(&conn, id)? != 0 {
+        return Err(json!({ "code": "encrypted_note" }).to_string());
+    }
     let now = Local::now().to_rfc3339();
 
     conn.execute(
@@ -4243,6 +4905,21 @@ fn move_to_trash(id: i64, state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn restore_note(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
+    let (category_id, enc_mode): (Option<i64>, i64) = conn
+        .query_row(
+            "SELECT category_id, COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
+    // 明文笔记（或只有自己密码的笔记）还原进已加密分组会破坏“组内全是密文”，先要求解密分组
+    if enc_mode != 2 {
+        if let Some(cat_id) = category_id {
+            if encryption::category_is_encrypted(&conn, cat_id)? {
+                return Err(json!({ "code": "category_encrypted", "reason": "restore" }).to_string());
+            }
+        }
+    }
 
     conn.execute(
         "UPDATE notes SET is_deleted = 0, deleted_at = NULL WHERE id = ?1",
@@ -4261,7 +4938,7 @@ fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
 
     let mut stmt = conn.prepare(
         "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, 
-                is_pinned, ai_access
+                is_pinned, ai_access, COALESCE(enc_mode, 0) AS enc_mode
          FROM notes 
          WHERE is_deleted = 1 
          ORDER BY deleted_at DESC"
@@ -4276,16 +4953,36 @@ fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
         result.push(note.map_err(|e| e.to_string())?);
     }
 
+    encryption::apply_lock_state(&conn, &state.encryption, &mut result);
     Ok(result)
+}
+
+/// 永久删除笔记时清掉所有按 note_id 存的旁路行（密钥、语义块、索引状态）。
+/// 没有外键，只能逐表删，否则 encrypted_keys 会留孤儿行。
+fn drop_note_side_rows(conn: &Connection, note_id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![note_id])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM note_index_state WHERE note_id = ?1",
+        params![note_id],
+    )
+    .map_err(|e| e.to_string())?;
+    encryption::cleanup_note_key(conn, note_id)
 }
 
 #[tauri::command]
 fn delete_note_permanently(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
+    // 加密笔记不可永久删除（解密会删 encrypted_keys，直接删只会留下无法恢复的密文）
+    if encryption::note_enc_mode(&conn, id)? != 0 {
+        return Err(json!({ "code": "encrypted_note" }).to_string());
+    }
 
     conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     purge_note_history(&conn, id)?;
+    drop_note_side_rows(&conn, id)?;
+    state.encryption.lock(encryption::NOTE_SCOPE, id, true);
 
     // 没开级联外键，笔记没了标签关联会留成孤儿（list_tags 的计数会飘）
     prune_tag_links(&conn)?;
@@ -4295,21 +4992,29 @@ fn delete_note_permanently(id: i64, state: State<AppState>) -> Result<(), String
     Ok(())
 }
 
+/// 批量永久删除；返回因加密而跳过的条数（调用方据此提示用户先解密）
 #[tauri::command]
-fn delete_multiple_notes_permanently(ids: Vec<i64>, state: State<AppState>) -> Result<(), String> {
+fn delete_multiple_notes_permanently(ids: Vec<i64>, state: State<AppState>) -> Result<usize, String> {
     let conn = state.conn.lock().unwrap();
 
+    let mut skipped = 0usize;
     for id in ids {
+        if encryption::note_enc_mode(&conn, id).unwrap_or(0) != 0 {
+            skipped += 1;
+            continue;
+        }
         conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         purge_note_history(&conn, id)?;
+        drop_note_side_rows(&conn, id)?;
+        state.encryption.lock(encryption::NOTE_SCOPE, id, true);
     }
 
     prune_tag_links(&conn)?;
     drop(conn);
     semantic::invalidate(&state.semantic);
 
-    Ok(())
+    Ok(skipped)
 }
 
 #[tauri::command]
@@ -4318,18 +5023,36 @@ fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
     let thirty_days_ago = Local::now() - Duration::days(30);
     let threshold = thirty_days_ago.to_rfc3339();
 
+    // 加密笔记不参与自动清理：它们的密文和密钥只能由用户先永久解密再删除
     conn.execute(
         "DELETE FROM notes_history WHERE note_id IN (
-            SELECT id FROM notes WHERE is_deleted = 1 AND deleted_at < ?1
+            SELECT id FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0
          )",
         params![threshold],
     )
     .map_err(|e| e.to_string())?;
+    let expired: Vec<i64> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM notes
+                 WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![threshold], |row| row.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
     conn.execute(
-        "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1",
+        "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0",
         params![threshold],
     )
     .map_err(|e| e.to_string())?;
+    for id in expired {
+        drop_note_side_rows(&conn, id)?;
+        state.encryption.lock(encryption::NOTE_SCOPE, id, true);
+    }
 
     prune_tag_links(&conn)?;
     drop(conn);
@@ -5785,6 +6508,22 @@ pub fn run() {
             delete_note_permanently,
             delete_multiple_notes_permanently,
             cleanup_old_trash,
+            encryption::encryption_status,
+            encryption::encryption_info,
+            encryption::set_root_password,
+            encryption::unlock_root,
+            encryption::change_root_password,
+            encryption::encrypt_note,
+            encryption::unlock_note,
+            encryption::lock_note,
+            encryption::lock_all,
+            encryption::decrypt_note,
+            encryption::encrypt_category,
+            encryption::unlock_category,
+            encryption::lock_category,
+            encryption::decrypt_category,
+            encryption::crypto_scrub_flush,
+            encryption::encryption_self_check,
             create_ai_provider,
             get_ai_providers,
             update_ai_provider,
@@ -5805,6 +6544,8 @@ pub fn run() {
             import_backup,
             export_sqlite_backup,
             import_sqlite_backup,
+            export_encrypted_backup,
+            import_encrypted_backup,
             webdav::webdav_status,
             webdav::webdav_set_password,
             webdav::webdav_test,
@@ -5856,6 +6597,9 @@ pub fn run() {
             let db_path = data_dir.join(DB_FILE_NAME);
 
             let conn = Connection::open(db_path).expect("failed to open database");
+            // 删除/覆盖加密前的明文行时，尽量把旧页清零，减少数据库文件里的残留。
+            // temp_store=MEMORY 让 VACUUM / 排序的临时结构留在内存，不落磁盘临时目录。
+            let _ = conn.execute_batch("PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;");
             init_database(&conn).expect("failed to initialize database");
 
             let state = AppState {
@@ -5864,6 +6608,7 @@ pub fn run() {
                 download: download::DownloadState::default(),
                 webdav: webdav::WebdavState::default(),
                 updater: updater::UpdateState::default(),
+                encryption: encryption::EncryptionState::default(),
             };
 
             app.manage(state);

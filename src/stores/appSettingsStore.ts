@@ -14,7 +14,7 @@ import { normalizeHex, normalizeHexList } from "@/lib/theme";
  *     general：cleanTrashOnStartup / trayEnabled / closeBehavior / autostart /
  *              minimizeToTray / enableAI / singleInstance / noteSearchRegex /
  *              semanticSearch / semanticAutoIndex / semanticModel / downloadThreads /
- *              noteHistoryLimit / noteHistoryIntervalMinutes
+ *              noteHistoryLimit / noteHistoryIntervalMinutes / updateCheckIntervalMinutes
  *     editor： 见 interface/settings.ts 的 EditorSettings（config/editorSettingSpecs.ts 里的规格表）
  *     layout： sidebarCollapsed / aiPanelOpen
  *     view：   sortBy / sortOrder
@@ -53,6 +53,8 @@ const RANGE_BY_KEY: Record<string, readonly [number, number]> = {
   "general.downloadThreads": [1, 128],
   "general.noteHistoryLimit": [1, 100],
   "general.noteHistoryIntervalMinutes": [1, 60],
+  "general.updateCheckIntervalMinutes": [0, 1440],
+  "general.autoLockMinutes": [0, 120],
   "webdav.autoIntervalHours": [1, 720],
   "webdav.autoMaxLocal": [1, 200],
 };

@@ -80,8 +80,8 @@ export const deleteNotePermanently = async (id: number): Promise<void> => {
   return await invoke('delete_note_permanently', { id });
 };
 
-/** 批量永久删除（delete_multiple_notes_permanently）；Rust 侧逐条 DELETE，非事务 */
-export const deleteMultipleNotesPermanently = async (ids: number[]): Promise<void> => {
+/** 批量永久删除（delete_multiple_notes_permanently）；加密笔记会被跳过，返回跳过条数 */
+export const deleteMultipleNotesPermanently = async (ids: number[]): Promise<number> => {
   return await invoke('delete_multiple_notes_permanently', { ids });
 };
 

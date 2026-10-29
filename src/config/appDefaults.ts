@@ -73,6 +73,10 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   noteHistoryLimit: 10,
   /** 自动历史版本最小间隔（分钟）：默认 5，避免打字停顿刷爆历史（后端会夹到 1–60） */
   noteHistoryIntervalMinutes: 5,
+  /** 运行期间自动检查更新的间隔（分钟）：默认 10，0 = 关闭（读库时夹到 0–1440） */
+  updateCheckIntervalMinutes: 10,
+  /** 空闲自动锁定（分钟）：默认 10，0 = 关闭；判断依据是键盘/鼠标/滚轮活动 */
+  autoLockMinutes: 10,
 };
 
 /* ---------- Editor ---------- */

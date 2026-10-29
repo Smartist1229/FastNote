@@ -9,6 +9,7 @@ import type { Category, Note, NoteHistoryEntry, NoteHistoryKind, Tag } from "@/i
 import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import type { PropertiesTarget } from "@/interface/ui";
+import * as encryptionApi from "@/api/encryption";
 import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
@@ -169,6 +170,15 @@ export const PropertiesModal: React.FC<{
   onCreateHistoryVersion?: () => void | Promise<void>;
   /** 固定 / 取消固定某个版本：固定的版本不会被自动清理 */
   onToggleHistoryPinned?: (entry: NoteHistoryEntry) => void | Promise<void>;
+  /** 加密动作：弹窗只负责触发，密码收集与命令调用由 App 负责 */
+  onEncryptNote?: (note: Note) => void;
+  onUnlockNote?: (note: Note) => void;
+  onLockNote?: (note: Note) => void;
+  onDecryptNote?: (note: Note) => void;
+  onEncryptCategory?: (category: Category) => void;
+  onUnlockCategory?: (category: Category) => void;
+  onLockCategory?: (category: Category) => void;
+  onDecryptCategory?: (category: Category) => void;
 }> = ({
   target,
   categories,
@@ -191,6 +201,14 @@ export const PropertiesModal: React.FC<{
   onClearHistory,
   onCreateHistoryVersion,
   onToggleHistoryPinned,
+  onEncryptNote,
+  onUnlockNote,
+  onLockNote,
+  onDecryptNote,
+  onEncryptCategory,
+  onUnlockCategory,
+  onLockCategory,
+  onDecryptCategory,
 }) => {
   const { locale, t } = useI18n();
   const note: Note | null = target?.kind === "note" ? target.note : null;
@@ -221,6 +239,30 @@ export const PropertiesModal: React.FC<{
   }, [targetKey]);
 
   /**
+   * 根密码可恢复性不在 Note / Category 行里，单独问后端：早期数据的 wrap_root 可能为空。
+   * null 表示未取到（非加密项或查询中）。
+   */
+  const [rootWrapped, setRootWrapped] = useState<boolean | null>(null);
+  useEffect(() => {
+    const scope = note && note.enc_mode !== 0 ? "note" : category?.is_encrypted ? "category" : null;
+    const id = note?.id ?? category?.id ?? null;
+    setRootWrapped(null);
+    if (!scope || id === null) return;
+    let cancelled = false;
+    encryptionApi
+      .getEncryptionInfo(scope, id)
+      .then((info) => {
+        if (!cancelled) setRootWrapped(info.root_wrapped);
+      })
+      .catch(() => {
+        if (!cancelled) setRootWrapped(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetKey, note?.enc_mode, category?.is_encrypted]);
+
+  /**
    * 字数：列表本身就带正文，直接取，不用再按 id 读一次。
    */
   const wordCount = note ? note.content.length : 0;
@@ -246,13 +288,17 @@ export const PropertiesModal: React.FC<{
 
   const startEdit = (field: "noteTitle" | "categoryName", draft: string) => setEditing({ field, draft });
 
+  /** 锁定态：标题/正文不下发、标签不可改、历史不可读，界面上要明确说明原因 */
+  const noteLocked = note != null && note.enc_mode !== 0 && note.is_locked;
+
   /* ---------------- 标签 ---------------- */
   /** 新建草稿输入框：show=false 时只留一个「+」按钮 */
   const [addingTag, setAddingTag] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
   /** 正在改名的标签（行内输入框替掉徽标），与新建互斥 */
   const [tagEdit, setTagEdit] = useState<TagEdit>(null);
-  const canEditTags = !!onAddTags && !!onRemoveTag;
+  // 加密笔记的标签随正文一起加密，后端也会拒绝直接增删
+  const canEditTags = !!onAddTags && !!onRemoveTag && note?.enc_mode === 0;
   /** 二次确认中的历史版本 id：回滚会覆盖当前正文，点一次先亮出「确认」 */
   const [confirmRollbackId, setConfirmRollbackId] = useState<number | null>(null);
   /** 二次确认中的删除 / 清空：删了就找不回来，同样先亮「确认」 */
@@ -300,6 +346,14 @@ export const PropertiesModal: React.FC<{
   };
   const closeGroupMenu = () => setGroupMenu((m) => ({ ...m, open: false }));
 
+  // 属性窗在矮窗口下内容区会滚动，fixed 定位的浮层不跟着走，一滚就和按钮脱节——干脆收起
+  useEffect(() => {
+    if (!groupMenu.open) return;
+    const close = () => setGroupMenu((m) => ({ ...m, open: false }));
+    window.addEventListener("scroll", close, true);
+    return () => window.removeEventListener("scroll", close, true);
+  }, [groupMenu.open]);
+
   return (
     <Modal isOpen={target !== null} onClose={onClose} title={note ? t("笔记属性") : t("分组属性")}>
       <div className="rounded-xl border border-line-soft px-3.5 py-1">
@@ -320,25 +374,81 @@ export const PropertiesModal: React.FC<{
                 )
               }
               action={
-                <RowButton
-                  icon={editing?.field === "noteTitle" ? "sidebar-check" : "sidebar-edit"}
-                  title={editing?.field === "noteTitle" ? t("保存标题") : t("编辑标题")}
-                  active={editing?.field === "noteTitle"}
-                  onClick={() => (editing?.field === "noteTitle" ? commitEdit() : startEdit("noteTitle", note.title))}
-                />
+                noteLocked ? undefined : (
+                  <RowButton
+                    icon={editing?.field === "noteTitle" ? "sidebar-check" : "sidebar-edit"}
+                    title={editing?.field === "noteTitle" ? t("保存标题") : t("编辑标题")}
+                    active={editing?.field === "noteTitle"}
+                    onClick={() => (editing?.field === "noteTitle" ? commitEdit() : startEdit("noteTitle", note.title))}
+                  />
+                )
               }
             />
             <Row
+              label={t("加密状态")}
+              content={
+                note.enc_mode === 0 ? (
+                  <span className="text-muted">{t("未加密")}</span>
+                ) : note.enc_mode === 2 ? (
+                  <span className="text-body">
+                    {t("分组加密")} · {note.is_locked ? t("已锁定") : t("已解锁")}
+                    <span className="ml-1.5 text-[11px] text-faint">{t("此笔记随所属分组加密，请在分组上操作")}</span>
+                  </span>
+                ) : (
+                  <span className={note.is_locked ? "text-warning" : "text-primary-500"}>
+                    {t("单篇加密")} · {note.is_locked ? t("已锁定") : t("已解锁")}
+                  </span>
+                )
+              }
+              action={
+                note.enc_mode === 0 ? (
+                  <RowButton icon="security-lock" title={t("加密")} onClick={() => onEncryptNote?.(note)} />
+                ) : note.enc_mode === 1 ? (
+                  <div className="flex items-center gap-0.5">
+                    {note.is_locked ? (
+                      <RowButton icon="security-unlock" title={t("解锁")} onClick={() => onUnlockNote?.(note)} />
+                    ) : (
+                      <RowButton icon="security-lock" title={t("锁定")} onClick={() => onLockNote?.(note)} />
+                    )}
+                    <RowButton icon="security-unlock" title={t("永久解密")} onClick={() => onDecryptNote?.(note)} />
+                  </div>
+                ) : undefined
+              }
+            />
+            {note.enc_mode !== 0 && (
+              <Row
+                label={t("根密码恢复")}
+                content={
+                  rootWrapped === false ? (
+                    <span className="text-warning">{t("无法用根密码恢复（早期数据）")}</span>
+                  ) : rootWrapped ? (
+                    <span className="text-muted">{t("忘记条目密码时可用根密码解密")}</span>
+                  ) : (
+                    <span className="text-faint">—</span>
+                  )
+                }
+              />
+            )}
+            {note.enc_mode !== 0 && note.enc_hint && (
+              <Row label={t("密码提示")} content={<span className="text-muted">{note.enc_hint}</span>} />
+            )}
+            <Row
               label={t("所属分组")}
               content={categoryName}
-              action={<RowButton icon="sidebar-edit" title={t("移动到其他分组")} onClick={openGroupMenu} />}
+              action={
+                note.enc_mode === 0 ? (
+                  <RowButton icon="sidebar-edit" title={t("移动到其他分组")} onClick={openGroupMenu} />
+                ) : undefined
+              }
             />
             <div className="py-2 border-b border-line-soft min-h-[38px]">
               <div className="flex items-start gap-3">
                 <span className="w-[92px] flex-shrink-0 text-xs text-faint mt-1">{t("标签")}</span>
                 <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
                   {tags.length === 0 && !addingTag && (
-                    <span className="text-[13px] text-muted leading-5">{t("暂无标签")}</span>
+                    <span className="text-[13px] text-muted leading-5">
+                      {note.enc_mode !== 0 && note.is_locked ? t("标签随笔记加密") : t("暂无标签")}
+                    </span>
                   )}
                   {tags.map((tag) =>
                     tagEdit?.kind === "rename" && tagEdit.id === tag.id ? (
@@ -408,8 +518,8 @@ export const PropertiesModal: React.FC<{
                 />
               }
             />
-            {/* 关闭 AI 能力时整行不显示：那时 AI 不存在，权限设置没有意义 */}
-            {enableAI && (
+            {/* 关闭 AI 能力时整行不显示：那时 AI 不存在，权限设置没有意义；加密内容对 AI 恒为禁止 */}
+            {enableAI && note.enc_mode === 0 && (
               <Row
                 label={t("AI 访问")}
                 content={
@@ -432,7 +542,10 @@ export const PropertiesModal: React.FC<{
                 }
               />
             )}
-            <Row label={t("字数")} content={t(wordCount === 1 ? "1 字" : "{count} 字", { count: wordCount.toLocaleString(locale) })} />
+            <Row
+              label={t("字数")}
+              content={noteLocked ? "—" : t(wordCount === 1 ? "1 字" : "{count} 字", { count: wordCount.toLocaleString(locale) })}
+            />
             <Row label={t("创建时间")} content={formatDateTime(note.created_at, locale)} />
             <Row label={t("更新时间")} content={formatDateTime(note.updated_at, locale)} />
             <Row label={t("编号")} content={note.id} />
@@ -463,8 +576,51 @@ export const PropertiesModal: React.FC<{
                 />
               }
             />
+            <Row
+              label={t("加密状态")}
+              content={
+                !category.is_encrypted ? (
+                  <span className="text-muted">{t("未加密")}</span>
+                ) : (
+                  <span className={category.is_locked ? "text-warning" : "text-primary-500"}>
+                    {t("分组加密")} · {category.is_locked ? t("已锁定") : t("已解锁")}
+                  </span>
+                )
+              }
+              action={
+                !category.is_encrypted ? (
+                  <RowButton icon="security-lock" title={t("加密")} onClick={() => onEncryptCategory?.(category)} />
+                ) : (
+                  <div className="flex items-center gap-0.5">
+                    {category.is_locked ? (
+                      <RowButton icon="security-unlock" title={t("解锁")} onClick={() => onUnlockCategory?.(category)} />
+                    ) : (
+                      <RowButton icon="security-lock" title={t("锁定")} onClick={() => onLockCategory?.(category)} />
+                    )}
+                    <RowButton icon="security-unlock" title={t("永久解密")} onClick={() => onDecryptCategory?.(category)} />
+                  </div>
+                )
+              }
+            />
+            {category.is_encrypted && (
+              <Row
+                label={t("根密码恢复")}
+                content={
+                  rootWrapped === false ? (
+                    <span className="text-warning">{t("无法用根密码恢复（早期数据）")}</span>
+                  ) : rootWrapped ? (
+                    <span className="text-muted">{t("忘记条目密码时可用根密码解密")}</span>
+                  ) : (
+                    <span className="text-faint">—</span>
+                  )
+                }
+              />
+            )}
+            {category.is_encrypted && category.enc_hint && (
+              <Row label={t("密码提示")} content={<span className="text-muted">{category.enc_hint}</span>} />
+            )}
             <Row label={t("笔记数量")} content={t(category.note_count === 1 ? "1 篇" : "{count} 篇", { count: category.note_count.toLocaleString(locale) })} />
-            {enableAI && (
+            {enableAI && !category.is_encrypted && (
               <Row
                 label={t("AI 访问")}
                 content={
@@ -505,7 +661,7 @@ export const PropertiesModal: React.FC<{
             <span className="text-xs font-medium text-body">{t("历史版本")}</span>
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] text-faint">{history.length ? t(history.length === 1 ? "1 个版本" : "{count} 个版本", { count: history.length }) : t("暂无")}</span>
-              {onCreateHistoryVersion && (
+              {onCreateHistoryVersion && !noteLocked && (
                 <button
                   type="button"
                   title={t("把当前内容存为一个手动版本，不会被自动清理")}
@@ -520,7 +676,7 @@ export const PropertiesModal: React.FC<{
                   {t("存版本")}
                 </button>
               )}
-              {history.length > 0 && onClearHistory && (
+              {history.length > 0 && onClearHistory && !noteLocked && (
                 confirmClear ? (
                   <div className="flex items-center gap-1">
                     <button
@@ -559,7 +715,9 @@ export const PropertiesModal: React.FC<{
           </div>
           {history.length === 0 ? (
             <p className="pb-2 text-[11px] text-faint leading-relaxed">
-              {t("编辑并保存后，系统会按设定的间隔自动记录旧版本；最早的一版会一直保留。点「存版本」可随时手动留存，固定或手动的版本不会被自动清理。")}
+              {noteLocked
+                ? t("解锁后可查看历史版本")
+                : t("编辑并保存后，系统会按设定的间隔自动记录旧版本；最早的一版会一直保留。点「存版本」可随时手动留存，固定或手动的版本不会被自动清理。")}
             </p>
           ) : (
             <div className="max-h-[200px] overflow-y-auto -mx-1">
@@ -712,7 +870,8 @@ export const PropertiesModal: React.FC<{
               <Icon name="sidebar-list" className="w-3 h-3 flex-shrink-0" />
               <span>{t("未分类")}</span>
             </button>
-            {categories.map((c) => (
+            {/* 加密分组不能接收明文笔记：与右键菜单的移动列表保持一致 */}
+            {categories.filter((c) => !c.is_encrypted).map((c) => (
               <button
                 key={c.id}
                 type="button"

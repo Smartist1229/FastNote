@@ -106,6 +106,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onNotesUpdated,
   hoverDropCategoryId = null,
   isFileDragActive = false,
+  onEncryptNote,
+  onLockNote,
+  onDecryptNote,
+  onEncryptCategory,
+  onLockCategory,
+  onDecryptCategory,
 }) => {
   const { t } = useI18n();
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
@@ -322,12 +328,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }
       },
       onCreateNote: () => onCreateNote(target.kind === 'category' ? target.category.id : null),
-      onExport: () =>
+      // 导出会把正文落成明文文件，加密笔记一律不参与，也不在弹窗里露出来
+      onExport: () => {
+        const exportable = target.notes.filter((note) => note.enc_mode === 0);
+        if (exportable.length === 0) {
+          showToast(t('该分组没有可导出的笔记'), 'info');
+          return;
+        }
         onExportGroup({
           name,
           defaultFileName: isSearchGroup ? t('"{query}" 的搜索结果', { query: searchQuery.trim() }) : name,
-          notes: target.notes,
-        }),
+          notes: exportable,
+        });
+      },
       onRename: () => {
         if (target.kind === 'category') onEditCategory(target.category);
       },
@@ -338,6 +351,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onShowProperties: () => {
         if (target.kind === 'category') onShowCategoryProperties(target.category);
         else onShowGroupProperties(target.name, target.notes.length);
+      },
+      encrypted: target.kind === 'category' ? target.category.is_encrypted : false,
+      locked: target.kind === 'category' ? target.category.is_locked : false,
+      onEncrypt: () => {
+        if (target.kind === 'category') onEncryptCategory?.(target.category);
+      },
+      onLock: () => {
+        if (target.kind === 'category') onLockCategory?.(target.category);
+      },
+      onDecrypt: () => {
+        if (target.kind === 'category') onDecryptCategory?.(target.category);
       },
     }).map((item) => ({ ...item, label: t(item.label) }));
   };
@@ -350,6 +374,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onTogglePin: () => onTogglePin(note),
       onDeleteNote: () => onDeleteNote(note),
       onShowProperties: () => onShowNoteProperties(note),
+      onEncrypt: () => onEncryptNote?.(note),
+      onLock: () => onLockNote?.(note),
+      onDecrypt: () => onDecryptNote?.(note),
+      onLockGroup: () => {
+        const group = note.category_id === null ? undefined : categories.find((cat) => cat.id === note.category_id);
+        if (group) onLockCategory?.(group);
+      },
+      onDecryptGroup: () => {
+        const group = note.category_id === null ? undefined : categories.find((cat) => cat.id === note.category_id);
+        if (group) onDecryptCategory?.(group);
+      },
     }).map((item) => ({
       ...item,
       label: t(item.label),
@@ -365,6 +400,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (isNaN(noteId)) return;
     const note = notes.find((n) => n.id === noteId);
     if (!note || note.category_id === categoryId) return;
+    // 加密内容不能靠拖拽换分组：笔记的密文与分组密钥绑定，加密分组也不接受明文笔记
+    if (note.enc_mode !== 0) {
+      showToast(t("加密笔记不能移动到其他分组"), 'error');
+      return;
+    }
+    if (categories.find((c) => c.id === categoryId)?.is_encrypted) {
+      showToast(t("该分组已加密，组内笔记不可单独新建或移入"), 'error');
+      return;
+    }
     try {
       await notesApi.updateNote(note.id, note.title, note.content, categoryId);
       showToast(t("笔记分组已更新"), 'success');

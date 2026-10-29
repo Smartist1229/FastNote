@@ -54,3 +54,16 @@ ndarray = "0.17"
 tokio = { version = "1", features = ["fs", "io-util", "time", "macros"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 笔记加密的密码派生：Argon2id（抗 GPU/ASIC 优于 PBKDF2），旧的 PBKDF2 数据仍可读
+argon2 = "0.5"
+# 锁定/退出时把内存里的 DEK/KEK 覆写清零，而不是留给分配器
+zeroize = "1.9.1"
+
+# 开发构建也把密码派生与 SQLite 编译成优化代码。
+# 否则 `tauri dev` 下 PBKDF2(600k) 要 3.7 秒、Argon2id 要数秒，
+# 而 release 只要 0.1~0.4 秒——开发时的「卡顿」大半来自这里。
+[profile.dev.package.ring]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2

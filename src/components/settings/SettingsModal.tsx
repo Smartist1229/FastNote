@@ -15,7 +15,7 @@ import { t, useI18n, getLocale } from "@/i18n";
  *   5. scope=live 立即生效，scope=startup 只影响下次启动时的初始状态。
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -56,7 +56,15 @@ import type { AiAccessLevel } from "@/interface/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
-import { exportBackup, exportSqliteBackup, importBackup, importSqliteBackup } from "@/api/backup";
+import {
+  exportBackup,
+  exportEncryptedBackup,
+  exportSqliteBackup,
+  importBackup,
+  importEncryptedBackup,
+  importSqliteBackup,
+} from "@/api/backup";
+import { BackupPassphraseDialog } from "@/components/common/EncryptionDialogs";
 import { flushThemeSettings } from "@/stores/themeStore";
 import { checkForUpdates, openUpdateDialog, useUpdater } from "@/stores/updaterStore";
 import { normalizeHexList } from "@/lib/theme";
@@ -327,12 +335,15 @@ const SelectInput: React.FC<{
   options: EnumOption[];
   label: string;
   onChange: (v: string) => void;
-}> = ({ value, options, label, onChange }) => {
+  /** 紧凑模式：给「关于」这类小字行用——去掉边框和多余留白，看起来像行内值而不是表单控件 */
+  compact?: boolean;
+}> = ({ value, options, label, onChange, compact = false }) => {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number; minWidth: number } | null>(null);
+  const triggerRect = useRef<DOMRect | null>(null);
   const current = options.find((o) => o.value === value);
 
   const close = () => setOpen(false);
@@ -340,6 +351,7 @@ const SelectInput: React.FC<{
   const openMenu = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
+    triggerRect.current = rect;
     // 下方放不下就往上翻，避免菜单被窗口底边截断
     const height = Math.min(options.length * 28 + 8, 264);
     const flip = rect.bottom + 4 + height > window.innerHeight && rect.top - 4 - height > 0;
@@ -350,6 +362,17 @@ const SelectInput: React.FC<{
     });
     setOpen(true);
   };
+
+  // 紧凑触发器只有几十像素宽，菜单按左边缘对齐会探出面板外；量完宽度后改成右对齐。
+  // 用 offsetWidth 而非 getBoundingClientRect：入场动画的 scale 会让后者偏小。
+  useLayoutEffect(() => {
+    if (!open || !compact || !pos) return;
+    const width = menuRef.current?.offsetWidth;
+    const rect = triggerRect.current;
+    if (!width || !rect) return;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    if (Math.abs(left - pos.left) > 0.5) setPos({ ...pos, left });
+  }, [compact, open, pos]);
 
   useEffect(() => {
     if (!open) return;
@@ -415,8 +438,14 @@ const SelectInput: React.FC<{
         onClick={() => (open ? setOpen(false) : openMenu())}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 text-[11px] rounded-lg bg-surface border transition-colors cursor-pointer ${
-          open ? "border-primary-400 text-primary-600" : "border-line text-body hover:bg-surface-alt"
+        className={`inline-flex items-center text-[11px] transition-colors cursor-pointer ${
+          compact
+            ? `-mr-1 gap-1 px-1.5 py-0.5 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary-300 ${
+                open ? "bg-primary-50 text-primary-600" : "text-body hover:bg-surface-alt"
+              }`
+            : `gap-1.5 pl-2.5 pr-2 py-1.5 rounded-lg bg-surface border ${
+                open ? "border-primary-400 text-primary-600" : "border-line text-body hover:bg-surface-alt"
+              }`
         }`}
       >
         <OptionSwatch swatch={current?.swatch} />
@@ -551,6 +580,16 @@ const ACCESS_LEVEL_OPTIONS: EnumOption[] = ([0, 1, 2] as AiAccessLevel[]).map((l
   label: AI_ACCESS_LABELS[level],
 }));
 
+/** 运行期间自动检查更新的间隔选项（分钟）；0 = 关闭，默认值与 appDefaults 保持一致 */
+const UPDATE_CHECK_INTERVAL_OPTIONS: EnumOption[] = [
+  { value: "0", label: "关闭" },
+  { value: "5", label: "5 分钟" },
+  { value: "10", label: "10 分钟" },
+  { value: "15", label: "15 分钟" },
+  { value: "30", label: "30 分钟" },
+  { value: "60", label: "1 小时" },
+];
+
 /* ---------- 备份工具函数 ---------- */
 
 /** 备份文件名里的时间戳：20261006-1930 */
@@ -613,6 +652,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSetNoteAiAccess,
   theme,
   onThemeChange,
+  onRequestRootPasswordChange,
 }) => {
   const { t } = useI18n();
   const { showToast } = useToast();
@@ -622,6 +662,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   /** 搜索关键词：非空时只渲染命中的分区与行 */
   const [query, setQuery] = useState("");
+  /** 关于页「作者」的连续点击时间戳：5 次 / 2 秒内触发隐藏的根密码修改入口 */
+  const authorClicksRef = useRef<number[]>([]);
+  // 关闭设置窗就清空计数：下次打开不该接着上一次的点击数（组件常驻，不会随关闭卸载）
+  useEffect(() => {
+    if (!isOpen) authorClicksRef.current = [];
+  }, [isOpen]);
+  const handleAuthorClick = () => {
+    if (!onRequestRootPasswordChange) return;
+    const now = Date.now();
+    const clicks = authorClicksRef.current.filter((at) => now - at < 2000);
+    clicks.push(now);
+    authorClicksRef.current = clicks;
+    if (clicks.length >= 5) {
+      authorClicksRef.current = [];
+      onRequestRootPasswordChange();
+    }
+  };
   /** 「AI 访问权限」里展开了哪些分组（key 为分组 id，未分类用 UNCATEGORIZED_KEY） */
   const [expandedCategories, setExpandedCategories] = useState<Set<number>>(new Set());
   const toggleCategory = (key: number) =>
@@ -663,8 +720,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [backupIncludeApiKey, setBackupIncludeApiKey] = useState(false);
   /** 导出备份时是否一并写入 WebDAV 配置（JSON 含明文密码，SQLite 保留本机密文） */
   const [backupIncludeWebdav, setBackupIncludeWebdav] = useState(false);
-  /** 备份格式：JSON 适合换机迁移，SQLite 是整库快照、适合本机快速备份 */
-  const [backupFormat, setBackupFormat] = useState<"json" | "sqlite">("json");
+  /**
+ * 备份格式：JSON 适合换机迁移，SQLite 是整库快照、适合本机快速备份，
+ * 加密备份（.fnbak）在整库快照外再套一层独立备份口令，连加密笔记一起带走。
+ */
+  const [backupFormat, setBackupFormat] = useState<"json" | "sqlite" | "encrypted">("json");
+  /** 加密备份的口令弹窗：选完文件/确认覆盖后才弹，取消则整个操作作废 */
+  const [backupPassphrase, setBackupPassphrase] = useState<{
+    mode: "export" | "import";
+    path: string;
+  } | null>(null);
 
   /* 顶部「已保存」提示：平时隐藏，发生修改后短暂出现 */
   const [savedFlash, setSavedFlash] = useState(false);
@@ -846,6 +911,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         max: 60,
         unit: "分钟",
         onChange: (v) => setApp("general", "noteHistoryIntervalMinutes", v),
+      },
+      {
+        section: "general",
+        kind: "number",
+        scope: "live",
+        title: "空闲自动锁定",
+        desc: "超过这段时间没有任何键盘、鼠标或滚轮操作，就清空内存里的解密密钥：已解锁的加密笔记与分组会回到锁定态，需要重新输入密码。设为 0 表示不自动锁定。",
+        keywords: "加密 锁定 自动 lock idle 离开 安全 密码",
+        value: appSettings.general.autoLockMinutes,
+        min: 0,
+        max: 120,
+        step: 5,
+        unit: "分钟",
+        onChange: (v) => setApp("general", "autoLockMinutes", v),
       },
       ...editorRows,
       {
@@ -1140,7 +1219,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
    * 弹窗关闭时本组件仍挂载（保留状态），这里用 isOpen 兜底，避免关着也白算一遍。
    */
   const uncategorized = useMemo(
-    () => (isOpen ? notes.filter((n) => !n.is_deleted && n.category_id === null) : []),
+    // 加密笔记对 AI 恒为禁止档，不参与权限设置
+    () => (isOpen ? notes.filter((n) => !n.is_deleted && n.category_id === null && n.enc_mode === 0) : []),
     [notes, isOpen],
   );
 
@@ -1153,8 +1233,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     () =>
       isOpen
         ? new Map(
-            categories.map((c) => {
-              const rows = notes.filter((n) => !n.is_deleted && n.category_id === c.id);
+            // 加密分组及其笔记对 AI 恒为禁止档，权限分区里直接不列出
+            categories.filter((c) => !c.is_encrypted).map((c) => {
+              const rows = notes.filter((n) => !n.is_deleted && n.enc_mode === 0 && n.category_id === c.id);
               return [c.id, { rows, capped: rows.filter((n) => n.ai_access > c.ai_access).length }] as const;
             }),
           )
@@ -1186,7 +1267,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       access: "访问 权限 分组 笔记 ai 隐私 限制 禁止 只读 完全 三档 access permission privacy readonly category note",
       reset: "恢复默认 重置 出厂值 reset default",
       backup:
-        "备份 恢复 导出 导入 数据 json sqlite db 数据库 快照 迁移 webdav 云同步 云端 网盘 nextcloud 群晖 坚果云 alist 自动备份 服务器 账号 密码 文件夹 backup restore cloud sync",
+        "备份 恢复 导出 导入 数据 json sqlite db 数据库 快照 迁移 加密 口令 fnbak 加密备份 webdav 云同步 云端 网盘 nextcloud 群晖 坚果云 alist 自动备份 服务器 账号 密码 文件夹 backup restore cloud sync encrypted passphrase",
       about:
         "关于 版本 作者 应用名 图标 开源项目 开源 about version author name iconfont opensource",
     }),
@@ -1372,16 +1453,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   /** 导出：先让用户选保存路径（取消则返回），再交给后端写文件；失败只弹提示 */
   const handleExport = async () => {
     const isSqlite = backupFormat === "sqlite";
+    const isEncrypted = backupFormat === "encrypted";
     try {
       const path = await save({
-        defaultPath: `fastnote-backup-${fileStamp()}.${isSqlite ? "db" : "json"}`,
+        defaultPath: `fastnote-backup-${fileStamp()}.${isEncrypted ? "fnbak" : isSqlite ? "db" : "json"}`,
         filters: [
-          isSqlite
-            ? { name: t("SQLite 数据库备份"), extensions: ["db", "sqlite"] }
-            : { name: t("FastNote 备份"), extensions: ["json"] },
+          isEncrypted
+            ? { name: t("FastNote 加密备份"), extensions: ["fnbak"] }
+            : isSqlite
+              ? { name: t("SQLite 数据库备份"), extensions: ["db", "sqlite"] }
+              : { name: t("FastNote 备份"), extensions: ["json"] },
         ],
       });
       if (!path) return;
+      // 加密备份还要口令：先记下路径，等弹窗确认后再真正写文件
+      if (isEncrypted) {
+        setBackupPassphrase({ mode: "export", path });
+        return;
+      }
       // 主题落库有防抖：导出前把最后一次改动冲下去，避免备份里少了刚改的主题
       await flushThemeSettings();
       setBackupBusy("export");
@@ -1395,8 +1484,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       ].filter(Boolean);
       const keyNote = extras.length ? t("（含{value1}）", { value1: extras.join(getLocale() === "zh-CN" ? "、" : ", ") }) : "";
       showToast(t("已导出 {notes} 篇笔记{keyNote}", { notes: summary.notes, keyNote: keyNote }), "success");
+      if (summary.skipped_encrypted > 0) {
+        showToast(t("备份已跳过 {count} 篇加密笔记", { count: summary.skipped_encrypted }), "info");
+      }
     } catch (e) {
       showToast(t("导出失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  /**
+   * 加密备份：口令由弹窗收集，这里只负责调用后端。
+   * 失败直接抛出，让弹窗原地显示错误（口令错要能重试），不再额外弹 toast。
+   */
+  const runEncryptedExport = async (passphrase: string) => {
+    const path = backupPassphrase?.path;
+    if (!path) return;
+    // 主题落库有防抖：导出前把最后一次改动冲下去
+    await flushThemeSettings();
+    setBackupBusy("export");
+    try {
+      const summary = await exportEncryptedBackup(path, passphrase);
+      setLastExport({ summary, path });
+      showToast(t("已导出加密备份：{notes} 篇笔记（含加密笔记与密钥元数据）", { notes: summary.notes }), "success");
     } finally {
       setBackupBusy(null);
     }
@@ -1411,13 +1522,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: t("FastNote 备份"), extensions: ["json", "db", "sqlite"] }],
+        filters: [
+          { name: t("FastNote 备份"), extensions: ["json", "db", "sqlite", "fnbak"] },
+        ],
       });
       if (!selected || typeof selected !== "string") return;
 
       const lower = selected.toLowerCase();
+      const isEncrypted = lower.endsWith(".fnbak");
       const isSqlite = lower.endsWith(".db") || lower.endsWith(".sqlite");
-      const formatLabel = isSqlite ? t("SQLite 数据库") : "JSON";
+      const formatLabel = isEncrypted
+        ? t("加密容器")
+        : isSqlite
+          ? t("SQLite 数据库")
+          : "JSON";
       const ok = await confirm({
         title: t("从备份恢复"),
         message: t("恢复会用{formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：{value2}", { formatLabel: formatLabel, value2: baseName(selected) }),
@@ -1425,6 +1543,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         danger: true,
       });
       if (!ok) return;
+
+      // 加密备份覆盖前先问口令：口令错就原地重试，不会碰到现有数据
+      if (isEncrypted) {
+        setBackupPassphrase({ mode: "import", path: selected });
+        return;
+      }
 
       // 主题有防抖写入：先冲掉旧改动，导入后再由备份内容覆盖，避免旧主题回写
       await flushThemeSettings();
@@ -1436,7 +1560,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setTimeout(() => window.location.reload(), 800);
     } catch (e) {
       setBackupBusy(null);
-      showToast(t("恢复失败：{value1}", { value1: errorText(e) }), "error");
+      // 加密相关的拒绝是带 code 的 JSON 字符串，直接展示会让用户看到 {"code":...}
+      const raw = errorText(e);
+      const friendly = raw.includes("local_has_encrypted")
+        ? t("当前库存在加密内容，恢复会丢失密钥，已取消")
+        : raw.includes("backup_contains_encrypted")
+          ? t("备份包含加密内容，无法恢复")
+          : raw;
+      showToast(t("恢复失败：{value1}", { value1: friendly }), "error");
+    }
+  };
+
+  /** 加密备份恢复：口令由弹窗收集；失败抛出给弹窗显示，成功后才整页刷新 */
+  const runEncryptedImport = async (passphrase: string) => {
+    const path = backupPassphrase?.path;
+    if (!path) return;
+    await flushThemeSettings();
+    setBackupBusy("import");
+    try {
+      const summary = await importEncryptedBackup(path, passphrase);
+      showToast(t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes }), "success");
+      setTimeout(() => window.location.reload(), 800);
+    } finally {
+      setBackupBusy(null);
     }
   };
 
@@ -1787,7 +1933,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           )}
 
                           <div className="rounded-xl border border-line divide-y divide-line-soft">
-                            {categories.map((c) => {
+                            {categories.filter((c) => !c.is_encrypted).map((c) => {
                               const { rows, capped } = accessByCategory.get(c.id) ?? { rows: [], capped: 0 };
                               const expanded = expandedCategories.has(c.id);
                               return (
@@ -1949,19 +2095,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
-                      {/* 备份与恢复：JSON / SQLite 两种整库备份，恢复时覆盖当前数据 */}
+                      {/* 备份与恢复：JSON / SQLite / 加密容器三种整库备份，恢复时覆盖当前数据 */}
                       {s.key === "backup" && (
                         <div className="space-y-3">
-                          <p className="text-[11px] text-faint leading-relaxed">{t("备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON 与 SQLite 两种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。")}</p>
+                          <p className="text-[11px] text-faint leading-relaxed">{t("备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。")}</p>
 
-                          {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照 */}
+                          {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照，加密备份再套一层口令 */}
                           <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
                             <div className="min-w-0 flex-1 basis-[220px]">
                               <span className="text-xs font-medium text-body">{t("备份格式")}</span>
                               <p className="text-[11px] text-faint leading-relaxed mt-1">
                                 {backupFormat === "sqlite"
                                   ? t("SQLite 是整库快照（.db），恢复更快，适合本机定期备份。")
-                                  : t("JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。")}
+                                  : backupFormat === "encrypted"
+                                    ? t("加密备份（.fnbak）是整库快照再用独立口令加密的密文，包含加密笔记与密钥元数据，恢复时需要输入备份口令。")
+                                    : t("JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。")}
                               </p>
                             </div>
                             <SegmentedInput
@@ -1969,12 +2117,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               options={[
                                 { value: "json", label: "JSON" },
                                 { value: "sqlite", label: "SQLite" },
+                                { value: "encrypted", label: "加密备份" },
                               ]}
-                              onChange={(v) => setBackupFormat(v === "sqlite" ? "sqlite" : "json")}
+                              onChange={(v) =>
+                                setBackupFormat(
+                                  v === "sqlite" || v === "encrypted" ? v : "json",
+                                )
+                              }
                             />
                           </div>
 
+                          {/* 加密备份是整库打包：两个开关不适用，改为说明一行 */}
+                          {backupFormat === "encrypted" && (
+                            <div className="px-3 py-2.5 rounded-xl bg-app border border-line-soft">
+                              <p className="text-[11px] text-faint leading-relaxed">
+                                {t("加密备份会把整库（含加密笔记、API Key 与 WebDAV 配置的本机密文、密钥元数据）一起放进容器，由备份口令保护，无需单独勾选。")}
+                              </p>
+                            </div>
+                          )}
+
                           {/* API Key 默认不备份，避免密钥被误带到网盘 */}
+                          {backupFormat !== "encrypted" && (
+                          <>
                           <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
                             <div className="min-w-0">
                               <span className="text-xs font-medium text-body">{t("备份 API Key")}</span>
@@ -1995,6 +2159,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <Switch value={backupIncludeWebdav} onChange={setBackupIncludeWebdav} />
                             </div>
                           </div>
+                          </>
+                          )}
 
                           <div className="flex items-center gap-3 p-3 rounded-xl bg-app border border-line-soft">
                             <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
@@ -2005,7 +2171,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <p className="text-[11px] text-faint mt-0.5">
                                 {backupFormat === "sqlite"
                                   ? t("保存为一个 SQLite 数据库文件（.db），可放到 U 盘或备份目录。")
-                                  : t("保存为一个 JSON 文件，可放到网盘或 U 盘带走。")}
+                                  : backupFormat === "encrypted"
+                                    ? t("保存为一个加密备份文件（.fnbak），需要备份口令才能打开。")
+                                    : t("保存为一个 JSON 文件，可放到网盘或 U 盘带走。")}
                               </p>
                               {lastExport && (
                                 <p className="text-[11px] text-success mt-1 truncate" title={lastExport.path}>{t("已导出：{value1} · {notes} 篇笔记 · {messages} 条对话消息", { value1: baseName(lastExport.path), notes: lastExport.summary.notes, messages: lastExport.summary.messages })}</p>
@@ -2026,7 +2194,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </div>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-body">{t("从备份恢复")}</p>
-                              <p className="text-[11px] text-faint mt-0.5">{t("支持 .json 与 .db 备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。")}</p>
+                              <p className="text-[11px] text-faint mt-0.5">{t("支持 .json、.db 与 .fnbak 加密备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key，加密备份还需输入备份口令。")}</p>
                             </div>
                             <button
                               onClick={() => void guard(handleImport)}
@@ -2063,7 +2231,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             />
                             <div className="min-w-0">
                               <p className="text-sm font-semibold text-ink">{appName}</p>
-                              <p className="text-[11px] text-faint mt-0.5">{t("作者：{APP_AUTHOR}", { APP_AUTHOR: APP_AUTHOR })}</p>
+                              <p
+                                onClick={handleAuthorClick}
+                                className="mt-0.5 text-[11px] text-faint select-none cursor-default"
+                              >
+                                {t("作者：{APP_AUTHOR}", { APP_AUTHOR: APP_AUTHOR })}
+                              </p>
                             </div>
                           </div>
                           <div className="mt-3 pt-3 border-t border-line-soft">
@@ -2085,6 +2258,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   {updater.phase === "checking" ? t("检查中...") : t("检查更新")}
                                 </button>
                               </div>
+                            </div>
+
+                            {/* 运行期间的自动检查：启动时的静默检查不受此间隔影响 */}
+                            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                              <span className="text-faint">{t("自动检查更新")}</span>
+                              <SelectInput
+                                compact
+                                label={t("自动检查更新间隔")}
+                                value={String(appSettings.general.updateCheckIntervalMinutes)}
+                                options={UPDATE_CHECK_INTERVAL_OPTIONS}
+                                onChange={(value) => setApp("general", "updateCheckIntervalMinutes", Number(value))}
+                              />
                             </div>
 
                             {/* 更新地址：想自己去发布页看版本/下载安装包时用 */}
@@ -2219,6 +2404,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       </div>
 
       {confirmDialog}
+
+      {/* 加密备份口令：导出/恢复共用，口令只活在这个弹窗里 */}
+      <BackupPassphraseDialog
+        isOpen={backupPassphrase !== null}
+        mode={backupPassphrase?.mode ?? "export"}
+        onClose={() => setBackupPassphrase(null)}
+        onSubmit={
+          backupPassphrase?.mode === "import" ? runEncryptedImport : runEncryptedExport
+        }
+      />
     </>
   );
 };

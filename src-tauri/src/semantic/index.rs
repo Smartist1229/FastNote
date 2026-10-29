@@ -8,7 +8,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -159,6 +159,7 @@ fn dirty_count(conn: &Connection, model_id: &str) -> Result<i64, String> {
          FROM notes n
          LEFT JOIN note_index_state s ON s.note_id = n.id
          WHERE n.is_deleted = 0
+           AND COALESCE(n.enc_mode, 0) = 0
            AND (s.note_id IS NULL OR s.note_updated_at <> n.updated_at OR s.model_id <> ?1)",
         params![model_id],
         |row| row.get(0),
@@ -173,6 +174,7 @@ fn load_dirty(conn: &Connection, limit: usize, model_id: &str) -> Result<Vec<Dir
              FROM notes n
              LEFT JOIN note_index_state s ON s.note_id = n.id
              WHERE n.is_deleted = 0
+               AND COALESCE(n.enc_mode, 0) = 0
                AND (s.note_id IS NULL OR s.note_updated_at <> n.updated_at OR s.model_id <> ?1)
              ORDER BY n.updated_at DESC
              LIMIT ?2",
@@ -205,6 +207,19 @@ fn store_note(
         .lock()
         .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // 防御性检查：取脏数据与写索引之间隔着推理，笔记可能已被加密或删除。
+    // 已加密的正文不是明文，写进索引等于把密文块留给语义搜索（加密流程会清掉旧块）。
+    let enc_mode: Option<i64> = tx
+        .query_row(
+            "SELECT COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
+            params![note.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if enc_mode != Some(0) {
+        return Ok(());
+    }
     tx.execute(
         "DELETE FROM note_chunks WHERE note_id = ?1",
         params![note.id],
@@ -303,7 +318,8 @@ mod tests {
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                is_deleted INTEGER NOT NULL DEFAULT 0
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                enc_mode INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE note_chunks (
                 note_id INTEGER NOT NULL,

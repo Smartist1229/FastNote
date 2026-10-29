@@ -118,4 +118,14 @@ export interface SidebarProps {
   hoverDropCategoryId?: number | null;
   /** 是否有系统文件正拖拽在窗口上方 */
   isFileDragActive?: boolean;
+  /**
+   * 加密相关动作：右键菜单按加密状态改展示，具体弹窗与命令调用由 App 负责。
+   * 缺省时不显示加密菜单项（纯浏览器预览下也没有后端命令）。
+   */
+  onEncryptNote?: (note: Note) => void;
+  onLockNote?: (note: Note) => void;
+  onDecryptNote?: (note: Note) => void;
+  onEncryptCategory?: (category: Category) => void;
+  onLockCategory?: (category: Category) => void;
+  onDecryptCategory?: (category: Category) => void;
 }

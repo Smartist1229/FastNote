@@ -1,9 +1,11 @@
 /**
  * 数据备份/恢复前端 API 层。
  *
- * 两种格式：
+ * 三种格式：
  *   - JSON（export_backup / import_backup）：带 format 标记，字段级兼容旧版本，适合换机迁移；
- *   - SQLite（export_sqlite_backup / import_sqlite_backup）：整库快照，本机备份恢复更快。
+ *   - SQLite（export_sqlite_backup / import_sqlite_backup）：整库快照，本机备份恢复更快；
+ *   - 加密容器（export_encrypted_backup / import_encrypted_backup）：整库快照
+ *     用独立备份口令再加密一层，含加密笔记与密钥元数据，文件本身是密文。
  * 恢复都是覆盖式：事务内清空各表后按备份写回；失败以字符串 reject。
  */
 
@@ -53,4 +55,28 @@ export const exportSqliteBackup = async (
  */
 export const importSqliteBackup = async (path: string): Promise<BackupSummary> => {
   return await invoke<BackupSummary>('import_sqlite_backup', { path });
+};
+
+/**
+ * 导出加密备份容器（export_encrypted_backup）。
+ * 内容是一份**完整**的整库快照（含加密笔记、密钥元数据、根密码元数据、API Key 与 WebDAV 配置），
+ * 用独立备份口令 Argon2id + AES-256-GCM 包成密文文件（.fnbak），口令本身不落盘、不进文件。
+ */
+export const exportEncryptedBackup = async (
+  path: string,
+  passphrase: string,
+): Promise<BackupSummary> => {
+  return await invoke<BackupSummary>('export_encrypted_backup', { path, passphrase });
+};
+
+/**
+ * 用加密备份容器覆盖当前数据（import_encrypted_backup）。
+ * 口令错误或文件被篡改时以 `{"code":"bad_backup_passphrase"}` 拒绝；
+ * 恢复后加密笔记仍是密文，需要各自密码或根密码解锁。
+ */
+export const importEncryptedBackup = async (
+  path: string,
+  passphrase: string,
+): Promise<BackupSummary> => {
+  return await invoke<BackupSummary>('import_encrypted_backup', { path, passphrase });
 };

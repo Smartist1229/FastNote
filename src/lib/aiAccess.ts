@@ -25,22 +25,31 @@ export const normalizeLevel = (value: unknown): AiAccessLevel => {
   return n >= 2 ? 2 : 1;
 };
 
-/** 从分组列表构建快照 */
+/** 从分组列表构建快照；加密分组一律按 0 记，组内笔记不会继承出可读档位 */
 export const buildAiAccessRules = (enabled: boolean, categories: Category[]): AiAccessRules => ({
   enabled,
-  categoryLevels: new Map(categories.map((c) => [c.id, normalizeLevel(c.ai_access)])),
+  categoryLevels: new Map(categories.map((c) => [c.id, c.is_encrypted ? 0 : normalizeLevel(c.ai_access)])),
 });
 
-/** 分组的生效档位（总开关关闭 → 0） */
-export const categoryAiLevel = (rules: AiAccessRules, category: Pick<Category, "ai_access">): AiAccessLevel =>
-  rules.enabled ? normalizeLevel(category.ai_access) : 0;
+/**
+ * 加密内容对 AI 恒为「禁止」：密钥可能根本没解锁，AI 连标题都不该看到。
+ * 这里不区分临时解锁与否——解密后重新归入普通笔记，权限按 ai_access 正常生效。
+ */
+const isEncryptedNote = (note: Pick<Note, "enc_mode">) => note.enc_mode !== 0;
+
+/** 分组的生效档位（总开关关闭 / 分组加密 → 0） */
+export const categoryAiLevel = (
+  rules: AiAccessRules,
+  category: Pick<Category, "ai_access" | "is_encrypted">,
+): AiAccessLevel =>
+  rules.enabled && !category.is_encrypted ? normalizeLevel(category.ai_access) : 0;
 
 /** 笔记的生效档位：笔记档位与所属分组档位取小；未分类只看自己 */
 export const noteAiLevel = (
   rules: AiAccessRules,
-  note: Pick<Note, "ai_access" | "category_id">,
+  note: Pick<Note, "ai_access" | "category_id" | "enc_mode">,
 ): AiAccessLevel => {
-  if (!rules.enabled) return 0;
+  if (!rules.enabled || isEncryptedNote(note)) return 0;
   const own = normalizeLevel(note.ai_access);
   if (note.category_id === null) return own;
   const inherited = rules.categoryLevels.get(note.category_id) ?? 2;
@@ -48,20 +57,28 @@ export const noteAiLevel = (
 };
 
 /** 能否读到这篇笔记（只读及以上） */
-export const canAiReadNote = (rules: AiAccessRules, note: Pick<Note, "ai_access" | "category_id">): boolean =>
-  noteAiLevel(rules, note) >= 1;
+export const canAiReadNote = (
+  rules: AiAccessRules,
+  note: Pick<Note, "ai_access" | "category_id" | "enc_mode">,
+): boolean => noteAiLevel(rules, note) >= 1;
 
 /** 能否修改这篇笔记（必须"完全"档） */
-export const canAiWriteNote = (rules: AiAccessRules, note: Pick<Note, "ai_access" | "category_id">): boolean =>
-  noteAiLevel(rules, note) >= 2;
+export const canAiWriteNote = (
+  rules: AiAccessRules,
+  note: Pick<Note, "ai_access" | "category_id" | "enc_mode">,
+): boolean => noteAiLevel(rules, note) >= 2;
 
 /** 能否看到/检索这个分组（只读及以上） */
-export const canAiReadCategory = (rules: AiAccessRules, category: Pick<Category, "ai_access">): boolean =>
-  categoryAiLevel(rules, category) >= 1;
+export const canAiReadCategory = (
+  rules: AiAccessRules,
+  category: Pick<Category, "ai_access" | "is_encrypted">,
+): boolean => categoryAiLevel(rules, category) >= 1;
 
 /** 能否往这个分组写（新建/移动进去、改名、删除）：必须"完全"档 */
-export const canAiWriteCategory = (rules: AiAccessRules, category: Pick<Category, "ai_access">): boolean =>
-  categoryAiLevel(rules, category) >= 2;
+export const canAiWriteCategory = (
+  rules: AiAccessRules,
+  category: Pick<Category, "ai_access" | "is_encrypted">,
+): boolean => categoryAiLevel(rules, category) >= 2;
 
 /** 总开关关闭时的统一拒答文案：明确告诉模型"这是用户设置"，不要反复重试 */
 export const AI_ACCESS_DISABLED_NOTE =

@@ -194,7 +194,10 @@ const RecentRow: React.FC<{ note: Note; onSelect: (note: Note) => void }> = ({ n
     className="group flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors duration-200 first:rounded-t-xl last:rounded-b-xl hover:bg-app"
   >
     <span className="flex h-7 w-7 flex-none items-center justify-center rounded-md bg-surface-alt text-faint transition-colors duration-200 group-hover:bg-primary-50 group-hover:text-primary-600">
-      <Icon name="sidebar-note" className="h-3.5 w-3.5" />
+      <Icon
+        name={note.is_locked ? 'security-sealed' : 'sidebar-note'}
+        className="h-3.5 w-3.5"
+      />
     </span>
     <span className="min-w-0 flex-1">
       <span className="flex items-center gap-1.5">
@@ -204,7 +207,9 @@ const RecentRow: React.FC<{ note: Note; onSelect: (note: Note) => void }> = ({ n
         {note.is_pinned ? <Icon name="sidebar-star-filled" className="h-3 w-3 flex-none text-warning" /> : null}
       </span>
       <span className="mt-0.5 block truncate text-[11px] text-faint">
-        {toSnippet(note.content, note.title) || t("暂无内容")}
+        {note.is_locked
+          ? t("解锁后可查看内容")
+          : toSnippet(note.content, note.title) || t("暂无内容")}
       </span>
     </span>
     <span

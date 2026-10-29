@@ -3,6 +3,8 @@
  * 关闭方式只有右上角按钮——点遮罩不关（避免误点把正在填的表单关掉），Esc 也不关
  * （非模态时面板不持有焦点，Esc 多半是用户想关编辑器里的东西）。
  * 不带焦点陷阱与滚动锁定，内容区（及其中的浮层）需自行处理；size 仅决定最大宽度。
+ * 卡片始终被限制在视口内（`max-h-full`，外层 p-4 之外不越界），内容放不下时内容区自己滚——
+ * 窗口没最大化或屏幕矮的时候，底部内容不会再被推出可视区。
  * 要固定尺寸就传 width / height：宽度走内联 style（不再套 size 的 max-w），
  * 高度传了之后卡片固定高、内容区自己滚，弹窗不会再被内容撑大或缩水。
  *
@@ -32,8 +34,6 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
 
   /** 固定宽度时不套 w-full / max-w：max-width 会把内联的 width 夹回去 */
   const widthClass = width == null ? `w-full ${SIZE_CLASS[size]}` : "";
-  /** 固定高度（或浮窗）时卡片必须是 flex 列，内容区才能被压成滚动容器 */
-  const scrollBody = floating || height != null;
 
   return (
     <div
@@ -46,7 +46,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
       <div
         ref={drag.panelRef}
         className={`modal-content relative rounded-2xl flex flex-col overflow-hidden ${widthClass} ${
-          floating ? "floating-panel bg-surface pointer-events-auto max-h-[92vh]" : "bg-surface shadow-2xl"
+          floating ? "floating-panel bg-surface pointer-events-auto max-h-[92vh]" : "bg-surface shadow-2xl max-h-full"
         }`}
         style={{
           ...(floating ? drag.style : undefined),
@@ -69,7 +69,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
             <Icon name="modal-close" className="w-4 h-4" />
           </button>
         </div>
-        <div className={scrollBody ? "flex-1 min-h-0 overflow-y-auto chat-scrollbar p-5" : "p-5"}>{children}</div>
+        <div className="flex-1 min-h-0 overflow-y-auto chat-scrollbar p-5">{children}</div>
       </div>
     </div>
   );

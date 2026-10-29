@@ -27,6 +27,12 @@ export interface Note {
    * 实际生效值 = min(本字段, 所属分组档位)，总开关关闭时一律按 0。
    */
   ai_access: AiAccessLevel;
+  /** 加密模式：0 明文 / 1 独立密码（自己的 DEK） / 2 随分组加密（用分组 DEK） */
+  enc_mode: 0 | 1 | 2;
+  /** 当前是否锁着：锁着时 title 仍是明文，content 为空串，标签也不下发 */
+  is_locked: boolean;
+  /** 加密时留下的密码提示（明文，可能为空） */
+  enc_hint: string | null;
 }
 
 /** categories 表的一行；note_count 是查询时 LEFT JOIN notes 聚合的结果（已排除软删除） */
@@ -37,6 +43,12 @@ export interface Category {
   note_count: number;
   /** AI 访问档位（0 禁止 / 1 只读 / 2 完全）：作为组内笔记的上限，不改写笔记自身的档位 */
   ai_access: AiAccessLevel;
+  /** 分组是否整体加密（组内笔记的正文/标签在库里是密文，标题保持明文） */
+  is_encrypted: boolean;
+  /** 分组是否锁着：锁着时组内笔记一律不可打开，分组名仍是明文 */
+  is_locked: boolean;
+  /** 加密时留下的密码提示（明文，可能为空） */
+  enc_hint: string | null;
 }
 
 /**

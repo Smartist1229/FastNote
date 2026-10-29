@@ -193,6 +193,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   /** 另存为文件（Ctrl+S / 工具栏 / 侧边栏右键共用）；用户取消保存时静默返回，不提示成功 */
   const handleExport = useCallback(async () => {
     if (!note) return;
+    // 加密笔记的明文只存在于本次解锁期间，不允许落成外部文件
+    if (note.enc_mode !== 0) {
+      showToast(t("加密笔记不支持导出，请先永久解密"), "error");
+      return;
+    }
     try {
       if (await saveNoteAsFile(title, content)) {
         showToast(t("导出成功！"), "success");

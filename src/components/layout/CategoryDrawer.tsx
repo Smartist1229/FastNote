@@ -94,11 +94,23 @@ export const DrawerNoteItem: React.FC<{
         )}
         <div className="flex-1 min-w-0">
           <h4
-            className={`text-[12.5px] font-medium truncate leading-snug ${
+            className={`flex items-center gap-1 text-[12.5px] font-medium truncate leading-snug ${
               isSelected ? 'text-on-accent' : 'text-body'
             }`}
           >
-            {hit ? highlightSegments(note.title || t("无标题"), hit.titleRanges) : note.title || t("无标题")}
+            {/* 加密标记：只在锁定时显示，解锁后不残留；标题始终是明文 */}
+            {note.is_locked && (
+              <Icon
+                name="security-sealed"
+                className={`w-3 h-3 flex-shrink-0 ${isSelected ? 'text-on-accent/80' : 'text-faint'}`}
+                title={t('已加密（已锁定）')}
+              />
+            )}
+            <span className="truncate">
+              {hit
+                ? highlightSegments(note.title || t("无标题"), hit.titleRanges)
+                : note.title || t("无标题")}
+            </span>
           </h4>
           {/* 搜索视图才有的上下文行：大部分命中都在正文中间，只显示标题等于没告诉用户为什么命中 */}
           {hit && !hit.titleOnly && hit.snippet && (
@@ -111,21 +123,23 @@ export const DrawerNoteItem: React.FC<{
             </p>
           )}
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDeleteNote(note);
-          }}
-          className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center opacity-0 group-hover/note:opacity-100 transition-all ${
-            isSelected
-              ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
-              : 'text-faint-soft hover:bg-danger-soft hover:text-danger'
-          }`}
-          title={t("移到回收站")}
-        >
-          <Icon name="sidebar-trash" className="w-3 h-3" />
-        </button>
-        <button
+        {/* 加密笔记不能进回收站（临时解锁也不允许），不提供删除入口 */}
+        {note.enc_mode === 0 && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDeleteNote(note);
+            }}
+            className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center opacity-0 group-hover/note:opacity-100 transition-all ${
+              isSelected
+                ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
+                : 'text-faint-soft hover:bg-danger-soft hover:text-danger'
+            }`}
+            title={t("移到回收站")}
+          >
+            <Icon name="sidebar-trash" className="w-3 h-3" />
+          </button>
+        )}        <button
           onClick={(e) => {
             e.stopPropagation();
             onTogglePin?.(note);
@@ -176,6 +190,8 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   // 搜索视图存在多个 category 为 null 的虚拟分组，用 headerIcon 保证 list id 唯一
   const noteListId = `drawer-notes-${category ? category.id : headerIcon ?? 'all'}`;
   const open = isExpanded;
+  /** 已加密且锁定：不能新建笔记（分组标题行仍保留按钮槽位，避免加密后高度跳变） */
+  const lockedEncrypted = Boolean(!isAllNotes && category?.is_encrypted && category.is_locked);
 
   const headerBase =
     `drawer-header relative w-full text-left px-2.5 rounded-lg transition-all duration-200 flex items-center gap-2 group/drawer border ${
@@ -223,13 +239,28 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
           {headerTitle ?? (isAllNotes ? t("全部笔记") : category?.name)}
         </span>
 
-        {/* 悬停操作按钮（仅分组） */}
+        {/* 加密分组标记：只在锁定时显示，解锁后不残留；分组名始终是明文 */}
+        {lockedEncrypted && (
+          <Icon
+            name="security-sealed"
+            className="w-3 h-3 flex-shrink-0 text-faint"
+            title={t('已加密（已锁定）')}
+          />
+        )}
+
+        {/* 悬停操作按钮（仅分组）。
+            锁定的加密分组不能新建笔记，但槽位仍渲染：直接不渲染会让标题行少掉 20px，
+            加密后整个分组看起来「矮了一截」。 */}
         {!isAllNotes && category && (
-          <span className="flex items-center gap-0.5 opacity-0 group-hover/drawer:opacity-100 transition-opacity flex-shrink-0 text-faint">
+          <span className="flex items-center gap-0.5 flex-shrink-0 text-faint">
             <span
-              data-drawer-action="create-note"
-              className="p-1 rounded-md transition-colors hover:bg-surface-alt"
-              title={t("在此分组新建笔记")}
+              data-drawer-action={lockedEncrypted ? undefined : "create-note"}
+              className={`p-1 rounded-md transition-opacity ${
+                lockedEncrypted
+                  ? "opacity-0 pointer-events-none"
+                  : "opacity-0 group-hover/drawer:opacity-100 hover:bg-surface-alt"
+              }`}
+              title={lockedEncrypted ? undefined : t("在此分组新建笔记")}
             >
               <Icon name="sidebar-plus-bold" className="w-3 h-3 pointer-events-none" />
             </span>
