@@ -25,6 +25,7 @@ import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/conte
 import type { GroupMenuKind } from '@/config/contextMenus';
 import { buildNoteMatcher, findMatchRanges, searchNotes, type NoteSearchHit } from '@/lib/noteSearch';
 import { useSemanticSearch } from '@/lib/useSemanticSearch';
+import { openUpdateDialog, useUpdater } from '@/stores/updaterStore';
 /** 排序选项：value 直接作为后端排序字段使用 */
 const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' }];
 /** 排序浮层宽度（px）：定位时用它把浮层夹在视口内 */
@@ -109,6 +110,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const { t } = useI18n();
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
   const { showToast } = useToast();
+  /** 启动静默检查到的新版本：底栏出一个「更新」按钮，点开才展示更新说明（跳过过的版本不再提示） */
+  const { phase: updatePhase, version: updateVersion, skippedVersion } = useUpdater();
+  const updateReady =
+    !!updateVersion &&
+    (updatePhase === "downloading" || (updatePhase === "available" && updateVersion !== skippedVersion));
   /** 排序下拉浮层：位置在点击时按按钮 rect 算出，用 fixed 定位避免被列表滚动容器裁掉 */
   const sortBtnRef = useRef<HTMLButtonElement>(null);
   const [sortMenu, setSortMenu] = useState<{ open: boolean; top: number; left: number; width: number }>({ open: false, top: 0, left: 0, width: 0 });
@@ -1030,12 +1036,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         )}
       </div>
-      {/* 底部统计 + 刷新界面：打包后没有浏览器的右键"刷新"，这里给一个常驻入口 */}
+      {/* 底部统计 + 更新/刷新：打包后没有浏览器的右键"刷新"，这里给一个常驻入口；
+          启动静默检查到新版本时，刷新按钮左侧多一个「更新」按钮（不弹窗、不弹 Toast） */}
       <div className="px-4 py-2 border-t border-line/60 flex-shrink-0">
-        <div className="flex items-center justify-between text-[11px] text-faint">
-          <span>{t(categoryCount === 1 ? "1 个分组" : "{count} 个分组", { count: categoryCount })}</span>
-          <div className="flex items-center gap-1.5">
-            <span>{t(allNotesCount === 1 ? "1 篇笔记" : "{count} 篇笔记", { count: allNotesCount })}</span>
+        <div className="flex items-center justify-between gap-2 text-[11px] text-faint">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="truncate">{t(categoryCount === 1 ? "1 个分组" : "{count} 个分组", { count: categoryCount })}</span>
+            <span className="h-2.5 w-px flex-none bg-line" aria-hidden />
+            <span className="truncate">{t(allNotesCount === 1 ? "1 篇笔记" : "{count} 篇笔记", { count: allNotesCount })}</span>
+          </div>
+          <div className="flex items-center gap-1 flex-none">
+            {updateReady && updateVersion && (
+              <button
+                onClick={openUpdateDialog}
+                className="p-1 rounded-md text-primary-500 hover:text-primary-600 hover:bg-primary-50 transition-colors active:scale-90"
+                title={t("发现新版本 {value1}，点击查看更新说明", { value1: updateVersion })}
+                aria-label={t("发现新版本 {value1}，点击查看更新说明", { value1: updateVersion })}
+              >
+                <Icon name="sidebar-update" className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               onClick={() => window.location.reload()}
               className="p-1 -mr-1 rounded-md text-faint-soft hover:text-primary-500 hover:bg-primary-50 transition-colors active:scale-90"

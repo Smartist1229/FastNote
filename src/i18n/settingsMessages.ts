@@ -184,7 +184,6 @@ export const settingsMessages: Record<string, string> = {
   "正在下载更新...": "Downloading update…",
   "正在下载更新... {value1}%": "Downloading update… {value1}%",
   "更新失败：{value1}": "Update failed: {value1}",
-  "发现新版本 {value1}，可在「设置 → 关于」中更新": "Version {value1} is available. Go to Settings → About to update.",
   "跳过此版本": "Skip this version",
   "启动时不再提示这个版本；下次有新版本仍会提醒": "Stop showing this version at startup. You'll still be notified about newer versions.",
   "已跳过版本 {value1}，手动检查仍会提示": "Skipped version {value1}. Manual checks still show it.",

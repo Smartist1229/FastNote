@@ -1006,9 +1006,83 @@ body.is-dragging-panel * {
   overscroll-behavior: contain;
   /* 限高 70vh，拖多高都撑不爆面板；overscroll-behavior 阻止滚动链传到聊天区 */
   max-height: 70vh;
+  /* contenteditable：换行靠文本节点里的 \n，块与文字同一行内流动 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 26px;
 }
-.composer-input::placeholder {
+/* contenteditable 没有原生 placeholder，用伪元素顶替；pointer-events 关掉免得挡住点击 */
+.composer-input[data-empty="true"]::before {
+  content: attr(data-placeholder);
   color: var(--color-border-strong);
+  pointer-events: none;
+}
+
+/* ---------- 笔记引用块（输入框里的可删块 & 消息气泡里的展示态） ---------- */
+.chat-note-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* 固定宽度：标签只截断，不随选区文字长短把草稿或气泡撑开 */
+  width: 148px;
+  max-width: 100%;
+  margin: 0 2px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius-md) * 1.35);
+  background: var(--color-surface-alt);
+  color: var(--color-text-body);
+  font-size: 12px;
+  line-height: 1.6;
+  vertical-align: middle;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+}
+.chat-note-ref-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-note-ref-range {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+/* 可删块右侧常驻留出 × 的位置，悬停时只改透明度，避免文字回流 */
+.chat-note-ref.is-removable {
+  padding-right: 18px;
+}
+.chat-note-ref-x {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+.chat-note-ref:hover .chat-note-ref-x,
+.chat-note-ref-x:focus-visible {
+  opacity: 1;
+}
+.chat-note-ref-x:hover {
+  background: var(--color-border);
+  color: var(--color-danger);
 }
 
 .composer-foot {

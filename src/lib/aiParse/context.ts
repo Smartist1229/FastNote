@@ -7,6 +7,7 @@
 
 import { buildLocalSummaryFallback } from "@/config/aiDefaults";
 import type { ContextMessage } from "@/interface/aiOutput";
+import { flattenNoteRefs } from "@/lib/aiParse/noteRef";
 
 /**
  * 粗略估算 token：CJK（假名/汉字/韩文）按 1 字 1 token，其余按 4 字符 1 token 向上取整。
@@ -68,7 +69,9 @@ export const selectContextWindow = (
  */
 export const localSummaryFallback = (dropped: ContextMessage[]): string => {
   if (dropped.length === 0) return "";
-  const firstUser = dropped.find((m) => m.role === "user")?.content.replace(/\s+/g, " ").slice(0, 60) || "";
+  const firstUser = flattenNoteRefs(dropped.find((m) => m.role === "user")?.content || "")
+    .replace(/\s+/g, " ")
+    .slice(0, 60) || "";
   return buildLocalSummaryFallback(dropped.length, firstUser);
 };
 
@@ -78,7 +81,8 @@ export const localSummaryFallback = (dropped: ContextMessage[]): string => {
  * 防止「摘要请求本身又超长」；非 user 角色一律标为 Assistant。
  */
 export const compressTranscript = (dropped: ContextMessage[], maxChars = 6000): string => {
-  const lines = dropped.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content.replace(/\s+/g, " ").trim()}`);
+  // 引用块先展开成「出处 + 正文」：否则硬截断可能切出半个 JSON，摘要模型会读到残缺协议
+  const lines = dropped.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${flattenNoteRefs(m.content).replace(/\s+/g, " ").trim()}`);
   const text = lines.join("\n");
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n...(rest omitted)` : text;
 };

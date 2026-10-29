@@ -28,7 +28,10 @@ import type { EditorSettings } from "@/interface/settings";
 import { finalReplyText, parseResponse, parseStreamContent } from "@/lib/aiParse/parse";
 import { isThinkingDeepEnough, shouldRetryForShallowThinking, streamStartsWithThinking } from "@/lib/aiParse/thinking";
 import { compressTranscript, estimateTokens, localSummaryFallback, selectContextWindow } from "@/lib/aiParse/context";
+import { expandRefs, splitContent, stripNoteRefs } from "@/lib/aiParse/noteRef";
 import { buildFinalContent, cleanSessionTitle, firstLine, formatError, hasActionClaim, stripAiTags } from "@/lib/aiParse/text";
+import { ChatComposer, type ChatComposerHandle } from "@/components/ai/ChatComposer";
+import { ChatNoteRefChip } from "@/components/ai/ChatNoteRefChip";
 import {
   AI_ACCESS_DENIED_NOTE,
   AI_ACCESS_DISABLED_NOTE,
@@ -1160,7 +1163,8 @@ const CopyIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
  * 复用上下文预算的同一套估算规则，保证两处口径一致。
  */
 const msgTokens = (msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[] }): number => {
-  const parts = [msg.content || ""];
+  // 用户消息里的引用块按正文计（JSON 包装只是协议开销，不该算进"这条消息有多少字"）
+  const parts = [msg.role === "user" ? expandRefs(msg.content || "") : msg.content || ""];
   if (msg.thinking) parts.push(msg.thinking);
   if (msg.tools?.length) parts.push(JSON.stringify(msg.tools));
   return estimateTokens(parts.join("\n"));
@@ -1227,13 +1231,21 @@ const ChatMessageRow = memo(function ChatMessageRow({
   ].filter(Boolean).join(" · ");
 
   if (msg.role === 'user') {
+    // 用户消息里可能有引用块：按块还原显示，复制时展开成正文
+    const segments = splitContent(msg.content);
     return (
       <div data-chat-anchor="true" className="group/msg flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
-        <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-surface-alt text-body max-w-[85%]">{msg.content}</div>
+        <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-surface-alt text-body max-w-[85%]">
+          {segments.map((segment, i) => (
+            segment.kind === "text"
+              ? <span key={i}>{segment.text}</span>
+              : <ChatNoteRefChip key={i} noteRef={segment.ref} />
+          ))}
+        </div>
         <div className="mt-0.5 mr-1 flex items-center gap-0.5">
           <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-faint-soft tabular-nums select-none" title={t("整条消息的估算 token")}>{msg.at ? `${formatMessageTime(msg.at, t)} · ` : ""}{formatTokens(msgTokens(msg))} tok</span>
           <button
-            onClick={() => onCopyText(content)}
+            onClick={() => onCopyText(expandRefs(msg.content))}
             className={MSG_ACTION_BTN}
             title={t("复制消息")}
           >
@@ -1621,7 +1633,7 @@ const formatMessageTime = (at: number | undefined, t: typeof translate): string 
  * 副作用：写 chat_sessions / chat_messages，并派发 fastnote-data-changed、
  * fastnote-select-note 通知外部刷新列表与切换笔记。
  */
-export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, editorSettings, onClose, enableAI, isExternalFile, pendingPrompt }) => {
+export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, noteContent, currentNoteId, categories = [], currentNoteAiLevel = 2, onInsertText, onReplaceContent, onOpenInEditor, onOpenProviderSettings, onOpenAiMemory, aiPrompts, aiSettings, onAiSettingsChange, editorSettings, onClose, enableAI, isExternalFile, pendingNoteRef }) => {
   const { t } = useI18n();
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<number>(0);
@@ -1709,7 +1721,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 刚点击过的锚点：平滑滚动过程中锁定高亮，等用户自己滚轮滚动时再交还给视口 */
   const jumpTargetRef = useRef<number | null>(null);
   const dragRef = useRef(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<ChatComposerHandle>(null);
   /** 模型下拉菜单的 DOM 引用：用于点击外部时关闭 */
   const modelMenuRef = useRef<HTMLDivElement>(null);
   /** 已经生成过标题的会话 ID；用 ref 记住具体会话，避免"新对话"标题反复生成 */
@@ -1944,6 +1956,17 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (streamTimerRef.current !== null) window.clearTimeout(streamTimerRef.current);
   }, []);
 
+  /**
+   * 消息区被挤矮时补一次贴底。
+   * 输入框长高（自动长高 / 拖上边缘）会让视口变矮，而 scrollTop 仍停在原值，
+   * 表现就是底部几条消息被输入框吞掉。跟随模式下必须重新滚到底。
+   */
+  const pinScrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
+
   /** 同步滚动状态：是否贴底 + 当前视口由哪条用户消息"领读"（驱动锚点高亮） */
   const syncScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -2021,6 +2044,19 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     ro.observe(content);
     return () => ro.disconnect();
   }, [isOpen, syncScrollState]);
+
+  /**
+   * 视口本身变矮（拖动输入框、窗口缩放）也要贴底：
+   * 内容尺寸没变时上面的观察器不会触发，这里补一个只看容器尺寸的。
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => pinScrollToBottom());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isOpen, pinScrollToBottom]);
 
   /**
    * 仅"贴底"时才自动跟随最新内容：
@@ -2145,8 +2181,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       const list = await aiApi.getChatSessions();
       const session = list.find(s => s.id === sid);
       if (!session || session.title !== "新对话") return;
-      // 送进去的内容也要先去标签：否则整段 <thinking> 推理会被当成"对话内容"喂给标题模型
-      const userText = stripAiTags(up).replace(/<[^>]+>/g, "").trim().slice(0, 300);
+      // 送进去的内容也要先去标签：否则整段 <thinking> 推理会被当成"对话内容"喂给标题模型；
+      // 引用块是 JSON 包装，先剥掉，只留用户自己打的字（纯引用时给一句占位）
+      const userText = (stripNoteRefs(stripAiTags(up)).replace(/<[^>]+>/g, "").trim() || translate("引用了笔记片段")).slice(0, 300);
       const assistantText = stripAiTags(ar).replace(/<[^>]+>/g, "").trim().slice(0, 300);
       const t = await aiApi.sendAiChat(activeProvider.id, [{ role: "system", content: buildTitlePrompt(userText, assistantText) }, { role: "user", content: TITLE_USER_MESSAGE }], "", "");
       const ct = cleanSessionTitle(t);
@@ -2604,7 +2641,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    * 自动模式每次都先归零再按 scrollHeight 计算，否则删掉内容后高度不会缩回去。
    */
   useEffect(() => {
-    const el = inputRef.current;
+    const el = inputRef.current?.element;
     if (!el) return;
     const areaH = messagesAreaRef.current?.clientHeight || 600;
     const manual = aiSettings.composerHeight > 0 ? aiSettings.composerHeight : 0;
@@ -2615,12 +2652,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
        * 上限交给 CSS max-height 兜底。
        */
       el.style.height = `${manual}px`;
+      pinScrollToBottom();
       return;
     }
     el.style.height = "auto";
     const autoMax = Math.max(44, Math.min(320, Math.round(areaH * 0.45)));
     el.style.height = `${Math.min(Math.max(el.scrollHeight, 44), autoMax)}px`;
-  }, [input, aiSettings.composerHeight, activeSessionId, isOpen]);
+    pinScrollToBottom();
+  }, [input, aiSettings.composerHeight, activeSessionId, isOpen, pinScrollToBottom]);
 
   /** 生成中每 500ms 走一次秒表 */
   useEffect(() => {
@@ -2635,18 +2674,17 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   }, [isOpen, activeSessionId]);
 
   /**
-   * 选区工具条注入的提示词：追加到草稿末尾。
-   * 不覆盖已经写了一半的话，也不自动发送——模型调用要花钱，最终按回车仍由用户决定。
+   * 选区工具条投递的引用块：追加到草稿末尾，不发送。
+   * 润色/翻译/总结会再跟一句指令；块与指令一起放进同一条消息。
    */
-  const injectedPromptRef = useRef(0);
+  const injectedRefRef = useRef(0);
   useEffect(() => {
-    if (!isOpen || !pendingPrompt || pendingPrompt.id === injectedPromptRef.current) return;
-    injectedPromptRef.current = pendingPrompt.id;
-    setInput((prev) =>
-      prev.trim() ? `${prev.replace(/\s+$/, "")}\n\n${pendingPrompt.text}` : pendingPrompt.text,
-    );
+    if (!isOpen || !pendingNoteRef || pendingNoteRef.id === injectedRefRef.current) return;
+    injectedRefRef.current = pendingNoteRef.id;
+    inputRef.current?.insertRef(pendingNoteRef.ref);
+    if (pendingNoteRef.prompt) inputRef.current?.insertText(pendingNoteRef.prompt);
     inputRef.current?.focus();
-  }, [isOpen, pendingPrompt]);
+  }, [isOpen, pendingNoteRef]);
 
   /** 发送入口：加同步锁并递增 runId，落用户消息后交给 agentLoop；解锁前须确认自己仍是最新一轮 */
   const handleSend = async () => {
@@ -2925,6 +2963,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     return buckets.filter(b => b.items.length > 0);
   })();
 
+  /** 字数按可见文本算：引用块的 JSON 包装只是协议开销，不计入 */
+  const inputLength = expandRefs(input).length;
+
   if (!isOpen) return null;
 
   return (<>
@@ -3101,7 +3142,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           className={"composer-resize" + (composerDragging ? " is-dragging" : "")}
           onMouseDown={(e) => {
             e.preventDefault();
-            const el = inputRef.current;
+            const el = inputRef.current?.element;
             if (!el) return;
             const startY = e.clientY;
             /*
@@ -3122,6 +3163,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             const onMove = (ev: MouseEvent) => {
               next = Math.min(maxH, Math.max(44, startH + (startY - ev.clientY)));
               el.style.height = `${next}px`;
+              // 同步补贴底：等 ResizeObserver 回调会晚一帧，拖动时能看见底部内容被裁一下
+              pinScrollToBottom();
             };
             const onUp = () => {
               document.removeEventListener("mousemove", onMove);
@@ -3175,33 +3218,16 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         )}
 
         <div className="composer-card">
-          <textarea
+          <ChatComposer
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-              // Esc：生成中=停止，否则清空输入
-              if (e.key === "Escape") {
-                if (isSendingRef.current) { e.preventDefault(); handleStop(); }
-                else if (input) { e.preventDefault(); setInput(""); }
-                return;
-              }
-              // ↑：输入为空且光标在最前时，召回上一条发送过的内容
-              if (e.key === "ArrowUp" && !input && sentHistoryRef.current.length > 0) {
-                e.preventDefault();
-                setInput(sentHistoryRef.current[sentHistoryRef.current.length - 1]);
-                return;
-              }
-              if (e.key === "Enter" && (e.shiftKey === false || e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                if (isSendingRef.current) handleStop();
-                else handleSend();
-              }
-            }}
+            onChange={setInput}
+            onSend={() => { void handleSend(); }}
+            onStop={handleStop}
+            isSending={isSending}
+            canRecall={!input && sentHistoryRef.current.length > 0}
+            onRecall={() => setInput(sentHistoryRef.current[sentHistoryRef.current.length - 1])}
             placeholder={t("输入消息…（Enter 发送 / Shift+Enter 换行）")}
-            rows={2}
-            className="composer-input chat-scrollbar"
           />
           <div className="composer-foot">
             {/* 左：模型 + 附加选项。整组可压缩、超出裁掉，绝不把右边的按钮顶出去 */}
@@ -3280,9 +3306,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
             </div>
 
             {/* 右：字数（够宽才显示）+ 清空 + 发送/停止。固定不压缩，保证永远点得到 */}
-            {showCount && input.length > 0 && (
-              <span className={"text-[10.5px] tabular-nums flex-shrink-0 " + (input.length > 2000 ? "text-warning" : "text-faint-soft")} title={input.length > 2000 ? t("内容较长，发送前会先做瘦身") : ""}>
-                {input.length > 2000 ? t("{count} 字 · 较长", { count: input.length }) : t("{count} 字", { count: input.length })}
+            {showCount && inputLength > 0 && (
+              <span className={"text-[10.5px] tabular-nums flex-shrink-0 " + (inputLength > 2000 ? "text-warning" : "text-faint-soft")} title={inputLength > 2000 ? t("内容较长，发送前会先做瘦身") : ""}>
+                {inputLength > 2000 ? t("{count} 字 · 较长", { count: inputLength }) : t("{count} 字", { count: inputLength })}
               </span>
             )}
             {messages.length > 0 && !isSending && (

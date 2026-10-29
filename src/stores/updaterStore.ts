@@ -350,17 +350,16 @@ export const closeUpdateDialog = () => publish({ dialogOpen: false });
 
 /**
  * 启动后静默检查一次（延迟执行，避开启动时的读库与首屏渲染）。
+ * 结果只写进状态层：有更新时由侧栏底部的「更新」按钮提示，不弹弹窗也不弹 Toast。
  * 用模块级标记去重：StrictMode 下 effect 会跑两遍，这里只真正调度一次。
  */
 let startupCheckScheduled = false;
-export const scheduleStartupCheck = (onUpdate: (info: UpdateInfo) => void) => {
+export const scheduleStartupCheck = () => {
   // 开发期版本号低于线上发布版时会被判定为「有更新」，不打扰调试
   if (startupCheckScheduled || import.meta.env.DEV) return;
   startupCheckScheduled = true;
   window.setTimeout(() => {
-    void checkForUpdates(true).then((info) => {
-      if (info) onUpdate(info);
-    });
+    void checkForUpdates(true);
   }, 5000);
 };
 

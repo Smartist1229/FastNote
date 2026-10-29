@@ -27,6 +27,7 @@ import type { AppSettings } from "@/interface/settings";
 import type { ExportTarget } from "@/interface/exportCategory";
 import type { SettingsSection } from "@/interface/settingsModal";
 import type { AiAccessLevel } from "@/interface/aiAccess";
+import type { AiNoteRefInjection, ChatNoteRef } from "@/interface/aiChat";
 import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
 import type { ThemeSettings } from "@/interface/theme";
 import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
@@ -203,14 +204,14 @@ function AppContent() {
   /** AI 面板是否展开：仅启动时从 layout 恢复，切换本身不写设置 */
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   /**
-   * 选区 AI 工具条注入的提示词。只追加到面板草稿里，不自动发送——
-   * 因此这里存的是「待粘贴的文本」而不是「待发送的消息」。
+   * 选区 AI 工具条投递的引用块：润色/翻译/总结会再带一句指令。
+   * 只追加到面板草稿里，不自动发送——发车前按回车仍由用户决定。
    */
-  const [pendingPrompt, setPendingPrompt] = useState<{ id: number; text: string } | null>(null);
+  const [pendingNoteRef, setPendingNoteRef] = useState<AiNoteRefInjection | null>(null);
   const promptSeqRef = useRef(0);
-  const handleSelectionPrompt = useCallback((text: string) => {
+  const handleSelectionAddRef = useCallback((ref: ChatNoteRef, prompt?: string) => {
     promptSeqRef.current += 1;
-    setPendingPrompt({ id: promptSeqRef.current, text });
+    setPendingNoteRef({ id: promptSeqRef.current, ref, prompt });
     setAiPanelOpen(true);
   }, []);
   /**
@@ -330,18 +331,13 @@ function AppContent() {
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
   /**
-   * 启动后静默检查一次更新：只提示有新版本，不自动下载。
-   * 文案用 translateNow 在触发时取当前语言，避免用了首帧的旧语言。
+   * 启动后静默检查一次更新：只更新状态层，不弹 Toast、不自动下载。
+   * 有更新时侧栏底部会出现「更新」按钮，由用户点击后再打开更新说明。
    */
   useEffect(() => {
     if (!appSettingsLoaded) return;
-    scheduleStartupCheck((info) => {
-      showToast(
-        translateNow("发现新版本 {value1}，可在「设置 → 关于」中更新", { value1: info.version }),
-        "info",
-      );
-    });
-  }, [appSettingsLoaded, showToast]);
+    scheduleStartupCheck();
+  }, [appSettingsLoaded]);
   /**
    * 更新完成提示：安装前缓存的说明与当前版本对得上才弹，版本没变化不打扰。
    * 放在软件设置读回之后，避开启动时的读库与首屏渲染。
@@ -1967,7 +1963,11 @@ function AppContent() {
                   />
                   {/* 选中文本浮出的 AI 工具条：纯浮层，不改编辑器内部结构 */}
                   {appSettings.general.enableAI && (
-                    <SelectionAiToolbar onPrompt={handleSelectionPrompt} />
+                    <SelectionAiToolbar
+                      onAddToChat={handleSelectionAddRef}
+                      noteId={selectedNote?.id ?? null}
+                      noteTitle={selectedNote?.title || ""}
+                    />
                   )}
                 </div>
               ) : (
@@ -2021,7 +2021,7 @@ function AppContent() {
             }}
             enableAI={appSettings.general.enableAI}
             isExternalFile={!!externalFile && !overlayActive}
-            pendingPrompt={pendingPrompt}
+            pendingNoteRef={pendingNoteRef}
           />
         </div>
       </div>

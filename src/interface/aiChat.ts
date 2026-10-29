@@ -9,12 +9,28 @@ import type { Category } from "./note";
 import type { EditorSettings } from "./settings";
 
 /**
- * 一次性注入输入框的提示词（来自编辑器选区工具条）。
- * id 用来保证同一条注入只被消费一次；text 只追加到草稿末尾，不自动发送。
+ * 对话里引用的一段笔记文本（「添加到对话」）。
+ * 快照语义：存下选区当时的文本与行区间，之后笔记怎么改都不影响这条引用；
+ * 发出去时序列化成 content 里的内联标记，模型读到的就是这段 JSON。
  */
-export interface AiPromptInjection {
-  id: number;
+export interface ChatNoteRef {
+  noteId: number | null;
+  noteTitle: string;
+  /** 选区起止行，1 起算，闭区间；单行时 from === to */
+  from: number;
+  to: number;
   text: string;
+}
+
+/**
+ * 一次性注入输入框的引用块（来自编辑器选区工具条）。
+ * id 用来保证同一条注入只被消费一次；prompt 是随块追加的指令
+ * （润色 / 翻译 / 总结），「添加到对话」不带指令。只进草稿，不自动发送。
+ */
+export interface AiNoteRefInjection {
+  id: number;
+  ref: ChatNoteRef;
+  prompt?: string;
 }
 
 /**
@@ -55,8 +71,8 @@ export interface AIChatPanelProps {
   enableAI?: boolean;
   /** 是否为外部文件模式（正在编辑电脑文件）：启用 AI 时显示提示 */
   isExternalFile?: boolean;
-  /** 编辑器选区工具条要注入的提示词；不传表示没有 */
-  pendingPrompt?: AiPromptInjection | null;
+  /** 编辑器选区工具条要插入的引用块（可带一条指令）；不传表示没有 */
+  pendingNoteRef?: AiNoteRefInjection | null;
 }
 
 /**

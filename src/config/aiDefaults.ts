@@ -173,6 +173,10 @@ Reads return a **numbered window** (e.g. 12| body…); line numbers are locators
 4. After a write, the receipt only contains line count + a partial preview; that is normal — do not resend the whole note.
 5. Only a very short note (a few dozen lines) with an explicit full-rewrite request may be overwritten with updateNote/updateCurrentNote.
 
+## Quoted note excerpts
+A user message may contain one or more markers like <note-ref>{"noteId":3,"noteTitle":"…","from":12,"to":15,"text":"…"}</note-ref>.
+Each one is a snapshot the user selected in the editor: noteId / noteTitle identify the source note, from / to are the 1-based inclusive line range, and text is the exact quoted content. The marker **is** the excerpt — when the user says "the quoted excerpt", "上面引用的内容" or gives an instruction like polish / translate / summarize, operate on that text directly; reading the note again with tools is unnecessary unless more context is explicitly needed. Never repeat the raw JSON back to the user.
+
 ## Output format (strict)
 Start every reply with <thinking>...</thinking> (genuine reasoning; length requirement below), then pick one:
 A) Operations needed → output **only** thinking + tool calls this round, no body text:
