@@ -120,7 +120,7 @@ export const CustomModelImportForm: React.FC<CustomModelImportFormProps> = ({
           onClick={cancel}
           disabled={busy}
           title={t("收起导入表单")}
-          className="toolbar-btn hover:!bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40"
+          className="toolbar-btn hover:bg-surface-alt! disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Icon name="modal-close" className="w-3.5 h-3.5" />
         </button>

@@ -7,7 +7,7 @@ const ErrorFallback = ({ error, onDismiss }: { error: Error; onDismiss: () => vo
   const { t } = useI18n();
   return (
     <div className="h-screen w-full flex items-center justify-center bg-app p-6">
-      <div className="max-w-lg w-full bg-surface rounded-2xl border border-line shadow-sm p-6">
+      <div className="max-w-lg w-full bg-surface rounded-2xl border border-line shadow-xs p-6">
         <h1 className="text-base font-semibold text-ink mb-2">{t("界面遇到了一个错误")}</h1>
         <p className="text-sm text-muted leading-relaxed mb-4">
           {t("数据都还在，没有丢失。可以先尝试重载；如果反复出现，把下面的信息反馈一下。")}

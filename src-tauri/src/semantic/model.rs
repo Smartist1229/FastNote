@@ -877,9 +877,13 @@ fn ensure_size(path: &Path, min: u64, max: u64, label: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// 摘要转小写十六进制；sha2 0.11 的 Array 不再实现 LowerHex。
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// 复制文件并同时计算 SHA-256；超过上限立即中止，不会把异常大文件读进内存。
-fn copy_with_digest(src: &Path, dst: &Path, max: u64) -> Result<FileDigest, String> {
-    let mut input = File::open(src).map_err(|e| format!("读取模型文件失败：{e}"))?;
+fn copy_with_digest(src: &Path, dst: &Path, max: u64) -> Result<FileDigest, String> {    let mut input = File::open(src).map_err(|e| format!("读取模型文件失败：{e}"))?;
     let mut output = File::create(dst).map_err(|e| format!("写入模型文件失败：{e}"))?;
     let mut hasher = Sha256::new();
     let mut size = 0u64;
@@ -905,7 +909,7 @@ fn copy_with_digest(src: &Path, dst: &Path, max: u64) -> Result<FileDigest, Stri
         .map_err(|e| format!("写入模型文件失败：{e}"))?;
     Ok(FileDigest {
         size,
-        sha256: format!("{:x}", hasher.finalize()),
+        sha256: hex_digest(&hasher.finalize()),
     })
 }
 
@@ -914,7 +918,7 @@ fn custom_id(model: &FileDigest, tokenizer: &FileDigest) -> String {
     hasher.update(model.sha256.as_bytes());
     hasher.update(b":");
     hasher.update(tokenizer.sha256.as_bytes());
-    let digest = format!("{:x}", hasher.finalize());
+    let digest = hex_digest(&hasher.finalize());
     format!("{CUSTOM_PREFIX}{}", &digest[..CUSTOM_ID_HEX_LEN])
 }
 
@@ -1024,7 +1028,7 @@ mod tests {
 
         let digest = copy_with_digest(&src, &dst, 20_000).unwrap();
         assert_eq!(digest.size, 10_000);
-        assert_eq!(digest.sha256, format!("{:x}", Sha256::digest(&data)));
+        assert_eq!(digest.sha256, hex_digest(&Sha256::digest(&data)));
         assert_eq!(std::fs::read(&dst).unwrap(), data);
 
         // 超过上限必须在写完之前中止

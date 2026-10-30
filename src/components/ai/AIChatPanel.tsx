@@ -21,7 +21,7 @@ import * as tagsApi from "@/api/tags";
 import * as aiApi from "@/api/ai";
 import * as semanticApi from "@/api/semantic";
 import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai";
-import type { Tag } from "@/interface/note";
+import type { Note, Tag } from "@/interface/note";
 import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/aiChat";
 import type { ToolCall, ToolTrace } from "@/interface/aiOutput";
 import type { EditorSettings } from "@/interface/settings";
@@ -394,7 +394,7 @@ const activeModelOf = (provider: AiProvider | null, enabled: string[]): string =
  */
 const fetchNoteById = async (noteId: number, access: AiAccessRules) => {
   // 按 id 取单条：列表虽然也带正文，但没打开的笔记可能刚被别处改过，单条读取更能保证拿到最新内容
-  let hit: any = null;
+  let hit: Note | null = null;
   try {
     hit = await notesApi.getNote(noteId);
   } catch {
@@ -406,7 +406,7 @@ const fetchNoteById = async (noteId: number, access: AiAccessRules) => {
 /** 列表/搜索类工具共用：只保留未删除、且对 AI 开放的笔记 */
 const visibleNotes = async (access: AiAccessRules) => {
   const all = await notesApi.getNotes(null, "updated_at", "desc");
-  return all.filter((n: any) => !n.is_deleted && canAiReadNote(access, n));
+  return all.filter((n) => !n.is_deleted && canAiReadNote(access, n));
 };
 
 /**
@@ -417,7 +417,7 @@ const findCategoryByName = async (categoryName: unknown, access: AiAccessRules) 
   const name = String(categoryName ?? "").trim();
   if (!name) return null;
   const cats = await categoriesApi.getCategories();
-  return cats.find((c: any) => c.name === name && canAiReadCategory(access, c)) || null;
+  return cats.find((c) => c.name === name && canAiReadCategory(access, c)) || null;
 };
 
 /**
@@ -428,7 +428,7 @@ const findWritableCategoryByName = async (categoryName: unknown, access: AiAcces
   const name = String(categoryName ?? "").trim();
   if (!name) return null;
   const cats = await categoriesApi.getCategories();
-  return cats.find((c: any) => c.name === name && canAiWriteCategory(access, c)) || null;
+  return cats.find((c) => c.name === name && canAiWriteCategory(access, c)) || null;
 };
 
 /**
@@ -459,9 +459,9 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     // 只搜对 AI 开放的笔记：受限内容连"命中数量"都不该出现在结果里
     const visible = await visibleNotes(ctx.access);
     const q = String(args.query || "").trim().toLowerCase();
-    const hay = (n: any) => `${n.title || ""}\n${n.content || ""}`.toLowerCase();
+    const hay = (n: Note) => `${n.title || ""}\n${n.content || ""}`.toLowerCase();
     // 先做严格的连续子串匹配
-    let hits = q ? visible.filter((n: any) => hay(n).includes(q)) : visible;
+    let hits = q ? visible.filter((n) => hay(n).includes(q)) : visible;
     let fuzzy = false;
     // 命中为空时退化为宽松匹配：中文按"每个字都出现"，英文按"每个词都出现"。
     // 否则"浏览器渲染"匹配不到标题《浏览器是如何渲染页面的？》（中间隔了"是如何"）。
@@ -470,7 +470,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
       const words = q.split(/\s+/).filter(t => t.length >= 2);
       const key = cjkChars.length >= 2 ? cjkChars : words;
       if (key.length >= 2) {
-        hits = visible.filter((n: any) => key.every(k => hay(n).includes(k)));
+        hits = visible.filter((n) => key.every(k => hay(n).includes(k)));
         fuzzy = hits.length > 0;
       }
     }
@@ -479,7 +479,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     for (const n of hits) titleCounts.set(n.title, (titleCounts.get(n.title) || 0) + 1);
     const duplicateTitles = [...titleCounts.entries()].filter(([, c]) => c > 1).map(([t]) => t);
     return {
-      matches: hits.slice(0, 15).map((n: any) => ({ id: n.id, title: n.title, content: n.content ? n.content.substring(0, 100) : "", category_id: n.category_id })),
+      matches: hits.slice(0, 15).map((n) => ({ id: n.id, title: n.title, content: n.content ? n.content.substring(0, 100) : "", category_id: n.category_id })),
       total: hits.length,
       duplicateTitles,
       ...(fuzzy
@@ -528,7 +528,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
 
     // 权限过滤在 Rust 侧完成：只传可见笔记 id，受限笔记的标题与片段不会进入返回值
     const visible = await visibleNotes(ctx.access);
-    const byId = new Map<number, any>(visible.map((n: any) => [n.id as number, n]));
+    const byId = new Map<number, Note>(visible.map((n) => [n.id, n]));
     if (byId.size === 0) return { matches: [], total: 0 };
 
     try {
@@ -558,7 +558,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     }
   },
   getNoteContent: async (args, ctx) => {
-    const n: any = await fetchNoteById(Number(args.noteId), ctx.access);
+    const n = await fetchNoteById(Number(args.noteId), ctx.access);
     if (!n) return null;
     return readNoteWindow(n, args.startLine, args.lineCount);
   },
@@ -568,14 +568,14 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (args.categoryName) {
       const cat = await findCategoryByName(args.categoryName, ctx.access);
       if (!cat) return { error: `未找到分组「${String(args.categoryName)}」` };
-      list = list.filter((n: any) => n.category_id === cat.id);
+      list = list.filter((n) => n.category_id === cat.id);
     }
     const limit = Math.min(Math.max(Number(args.limit) || 15, 1), 50);
     const categories = await categoriesApi.getCategories();
     const nameOf = (id: number | null) => categories.find(c => c.id === id)?.name || "未分类";
     return {
       total: list.length,
-      notes: list.slice(0, limit).map((n: any) => ({
+      notes: list.slice(0, limit).map((n) => ({
         id: n.id, title: n.title, category: nameOf(n.category_id), updated_at: n.updated_at,
         preview: String(n.content || "").replace(/\s+/g, " ").slice(0, 60),
       })),
@@ -585,7 +585,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   getCurrentNote: async (_args, ctx) => {
     const nid = Number(ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { error: "当前没有打开任何笔记，请让用户先打开一篇或提供标题" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     return n ? readNoteWindow(n) : { error: `未找到 ID 为 ${nid} 的笔记` };
   },
   /**
@@ -595,7 +595,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   readNoteLines: async (args, ctx) => {
     const nid = Number(args.noteId ?? args.id);
     if (!Number.isFinite(nid) || nid <= 0) return { error: "缺少 noteId" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { error: `未找到 ID 为 ${nid} 的笔记` };
     return readNoteWindow(n, args.startLine, args.lineCount);
   },
@@ -607,7 +607,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   findInNote: async (args, ctx) => {
     const nid = Number(args.noteId ?? args.id);
     if (!Number.isFinite(nid) || nid <= 0) return { error: "缺少 noteId" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { error: `未找到 ID 为 ${nid} 的笔记` };
     const query = String(args.query ?? "").trim();
     if (!query) return { error: "query 不能为空" };
@@ -644,7 +644,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   /** 按行替换：只改指定行区间，前后内容原样保留（不必全文覆盖） */
   replaceLines: async (args, ctx) => {
     const nid = Number(args.noteId);
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -666,7 +666,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   /** 在指定行之后插入内容；afterLine=0 表示插到最前面 */
   insertLines: async (args, ctx) => {
     const nid = Number(args.noteId);
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -688,7 +688,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   /** 按行删除 */
   deleteLines: async (args, ctx) => {
     const nid = Number(args.noteId);
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -708,7 +708,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   /** 定点替换文本：适合改错别字、统一措辞、替换某个词（不必按行） */
   replaceInNote: async (args, ctx) => {
     const nid = Number(args.noteId);
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -736,7 +736,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   appendToNote: async (args, ctx) => {
     const nid = Number(args.noteId ?? ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -749,7 +749,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   /** 查看回收站（受限笔记不出现：连"回收站里有几篇"都不该暴露给它） */
   listTrash: async (_args, ctx) => {
-    const notes: any[] = (await notesApi.getTrashNotes()).filter((n) => canAiReadNote(ctx.access, n));
+    const notes = (await notesApi.getTrashNotes()).filter((n) => canAiReadNote(ctx.access, n));
     return {
       total: notes.length,
       notes: notes.slice(0, 20).map((n) => ({ id: n.id, title: n.title, deleted_at: n.deleted_at })),
@@ -762,7 +762,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     // 从回收站列表里取标题（回收站里的笔记用 get_note_content 不一定可靠）
     let title = "";
     try {
-      const trashed: any[] = await notesApi.getTrashNotes();
+      const trashed = await notesApi.getTrashNotes();
       const hit = trashed.find((n) => n.id === nid);
       if (hit && !canAiReadNote(ctx.access, hit)) return { success: false, error: AI_ACCESS_DENIED_NOTE };
       // 还原是写操作：只读档也不能动
@@ -776,7 +776,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   deleteFromTrash: async (args, ctx) => {
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId" };
-    const trashed: any[] = await notesApi.getTrashNotes();
+    const trashed = await notesApi.getTrashNotes();
     const target = trashed.find(n => n.id === nid);
     if (!target) return { success: false, error: `回收站里没有 ID 为 ${nid} 的笔记（先用 listTrash 确认）` };
     if (!canAiReadNote(ctx.access, target)) return { success: false, error: AI_ACCESS_DENIED_NOTE };
@@ -786,7 +786,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   /** 清空回收站（不可恢复） */
   emptyTrash: async (_args, ctx) => {
-    const trashed: any[] = await notesApi.getTrashNotes();
+    const trashed = await notesApi.getTrashNotes();
     if (trashed.length === 0) return { success: true, deleted: 0, note: "回收站本来就是空的" };
     // 只要有一篇"禁止"或"只读"的笔记就整体拒绝：清空不可恢复，不能顺带删掉 AI 无权删除的内容
     const blocked = trashed.filter((n) => !canAiWriteNote(ctx.access, n));
@@ -801,11 +801,11 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   /** 一次创建多篇笔记（例如把一段内容拆成若干篇） */
   createNotes: async (args, ctx) => {
-    const raw = Array.isArray(args.notes) ? (args.notes as any[]) : [];
+    const raw: unknown[] = Array.isArray(args.notes) ? args.notes : [];
     if (raw.length === 0) return { success: false, error: "notes 为空，需要 [{title, content?, categoryName?}]" };
     const created: { id: number; title: string }[] = [];
     for (const item of raw.slice(0, 10)) {
-      const it: any = item || {};
+      const it = (item || {}) as Record<string, unknown>;
       const cat = it.categoryName ? await findWritableCategoryByName(it.categoryName, ctx.access) : null;
       // 名字存在但分组受限时不能悄悄写到"未分类"，直接中止并说明原因
       if (it.categoryName && !cat) {
@@ -827,7 +827,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   getCategories: async (_args, ctx) => {
     const cats = await categoriesApi.getCategories();
-    return cats.filter((c: any) => canAiReadCategory(ctx.access, c)).map((c: any) => ({ id: c.id, name: c.name }));
+    return cats.filter((c) => canAiReadCategory(ctx.access, c)).map((c) => ({ id: c.id, name: c.name }));
   },
   createNote: async (args, ctx) => {
     const cat = args.categoryName ? await findWritableCategoryByName(args.categoryName, ctx.access) : null;
@@ -843,7 +843,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   updateNote: async (args, ctx) => {
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId，无法定位笔记" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -857,7 +857,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (!Number.isFinite(nid) || nid <= 0) {
       return { success: false, error: "当前没有打开的笔记，无法执行 updateCurrentNote" };
     }
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到当前笔记（ID ${nid}）` };
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
     const nextTitle = args.title !== undefined ? String(args.title) : n.title;
@@ -872,7 +872,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (!Number.isFinite(nid)) return { success: false, error: "缺少有效的 noteId" };
     // 先取出标题：轨迹里要能显示"删除笔记 #16 · 《XX》"，只有一个 ID 用户看不出删了什么
     // 顺带拦下受限笔记：取不到就直接拒，绝不先删再说
-    const before: any = await fetchNoteById(nid, ctx.access);
+    const before = await fetchNoteById(nid, ctx.access);
     if (!before) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     if (!canAiWriteNote(ctx.access, before)) return { success: false, error: AI_READ_ONLY_NOTE };
     await notesApi.moveToTrash(nid);
@@ -903,7 +903,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     let name = "";
     let noteCount = 0;
     try {
-      const cats: any[] = await categoriesApi.getCategories();
+      const cats = await categoriesApi.getCategories();
       const hit = cats.find(c => c.id === cid);
       if (!hit) return { success: false, error: `未找到 ID 为 ${cid} 的分组` };
       if (!canAiWriteCategory(ctx.access, hit)) return { success: false, error: AI_ACCESS_DENIED_NOTE };
@@ -922,7 +922,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   },
   moveNote: async (args, ctx) => {
     const nid = Number(args.noteId);
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     // 只读档：读得到但改不了，明确告诉模型原因，别让它反复重试
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
@@ -933,7 +933,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     if (targetId !== null) {
       if (!Number.isFinite(targetId)) return { success: false, error: "缺少有效的 categoryId" };
       const cats = await categoriesApi.getCategories();
-      const target = cats.find((c: any) => c.id === targetId);
+      const target = cats.find((c) => c.id === targetId);
       if (!target) return { success: false, error: `未找到 ID 为 ${targetId} 的分组` };
       if (!canAiWriteCategory(ctx.access, target)) return { success: false, error: AI_ACCESS_DENIED_NOTE };
       category = target.name || "";
@@ -945,7 +945,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
     const nid = Number(args.noteId);
     if (!Number.isFinite(nid) || nid <= 0) return { selected: false, error: "缺少有效的 noteId" };
     // 先确认笔记存在再打开：否则"s打开成功"只是谎报，模型会以为已经打开而继续往下说
-    const note: any = await fetchNoteById(nid, ctx.access);
+    const note = await fetchNoteById(nid, ctx.access);
     if (!note) return { selected: false, error: `未找到 ID 为 ${nid} 的笔记，请先用 searchNotes 确认 ID` };
     window.dispatchEvent(new CustomEvent('fastnote-select-note', { detail: { noteId: nid } }));
     return { selected: true, noteId: nid, title: note.title };
@@ -970,7 +970,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   getNoteTags: async (args, ctx) => {
     const nid = Number(args.noteId ?? ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { error: "缺少 noteId，且当前没有打开的笔记" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { error: `未找到 ID 为 ${nid} 的笔记` };
     const tags = await tagsApi.listNoteTags(nid);
     const user = tags.filter((t) => t.source !== "ai").map((t) => t.name);
@@ -997,7 +997,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   findNotesByTag: async (args, ctx) => {
     const name = String(args.tagName ?? args.name ?? "").trim();
     if (!name) return { error: "缺少 tagName" };
-    let all: any[] = await tagsApi.listNotesByTag(name);
+    let all = await tagsApi.listNotesByTag(name);
     /** 退一步时实际用到的标签名（回给模型核对，避免它以为「读书」这个标签本身存在） */
     const matchedTags: string[] = [];
     if (all.length === 0) {
@@ -1008,14 +1008,14 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
       for (const t of near) {
         const notes = await tagsApi.listNotesByTag(t.name).catch(() => []);
         matchedTags.push(t.name);
-        for (const n of notes) if (!all.some((x: any) => x.id === n.id)) all.push(n);
+        for (const n of notes) if (!all.some((x) => x.id === n.id)) all.push(n);
       }
       if (matchedTags.length > 0) {
-        all.sort((a: any, b: any) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
+        all.sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
       }
     }
     // 与别处一致：未授权的笔记连出现在结果里都不行
-    const visible = all.filter((n: any) => canAiReadNote(ctx.access, n));
+    const visible = all.filter((n) => canAiReadNote(ctx.access, n));
     const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
     const categories = await categoriesApi.getCategories();
     const nameOf = (id: number | null) => categories.find((c) => c.id === id)?.name || "未分类";
@@ -1023,7 +1023,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
       tag: name,
       ...(matchedTags.length > 0 ? { matchedTags } : {}),
       total: visible.length,
-      notes: visible.slice(0, limit).map((n: any) => ({
+      notes: visible.slice(0, limit).map((n) => ({
         id: n.id,
         title: n.title,
         category: nameOf(n.category_id),
@@ -1045,7 +1045,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   addNoteTags: async (args, ctx) => {
     const nid = Number(args.noteId ?? ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
     const names = normalizeTagNames(args.names ?? args.name);
@@ -1064,7 +1064,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   removeNoteTags: async (args, ctx) => {
     const nid = Number(args.noteId ?? ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
     const names = normalizeTagNames(args.names ?? args.name);
@@ -1092,7 +1092,7 @@ const TOOL_EXECUTORS: Record<string, (args: Record<string, unknown>, ctx: ToolCo
   setNoteTags: async (args, ctx) => {
     const nid = Number(args.noteId ?? ctx.currentNoteId);
     if (!Number.isFinite(nid) || nid <= 0) return { success: false, error: "缺少 noteId，且当前没有打开的笔记" };
-    const n: any = await fetchNoteById(nid, ctx.access);
+    const n = await fetchNoteById(nid, ctx.access);
     if (!n) return { success: false, error: `未找到 ID 为 ${nid} 的笔记` };
     if (!canAiWriteNote(ctx.access, n)) return { success: false, error: AI_READ_ONLY_NOTE };
     const names = normalizeTagNames(args.names ?? args.name);
@@ -1162,7 +1162,7 @@ const CopyIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
  * 因为它们同样要回传给模型、同样占上下文。
  * 复用上下文预算的同一套估算规则，保证两处口径一致。
  */
-const msgTokens = (msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[] }): number => {
+const msgTokens = (msg: UiChatMessage): number => {
   // 用户消息里的引用块按正文计（JSON 包装只是协议开销，不该算进"这条消息有多少字"）
   const parts = [msg.role === "user" ? expandRefs(msg.content || "") : msg.content || ""];
   if (msg.thinking) parts.push(msg.thinking);
@@ -1182,7 +1182,7 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
 const ChatMessageRow = memo(function ChatMessageRow({
   msg, index, expanded, thoughtOpen, toolOpen, live, isSending, showToolTrace, editorSettings, onToggleGroup, onToggleThought, onToggleTool, onInsertText, onReplaceContent, onCopyText, onOpenInEditor,
 }: {
-  msg: AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number; uiNotice?: UiNotice };
+  msg: UiChatMessage;
   index: number;
   /** 「深度思考」父折叠是否展开（思考中默认展开，回答结束后默认收起） */
   expanded: boolean;
@@ -1355,9 +1355,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
           {msg.content && !isSending && (
             <>
               <button onClick={() => onInsertText(content)} className={MSG_ACTION_BTN} title={t("将内容插入到光标处")}><Icon name="ai-plus" className="w-3.5 h-3.5" /></button>
-              <button onClick={() => onReplaceContent(content)} className={`${MSG_ACTION_BTN} hover:!text-warning hover:!bg-warning-soft`} title={t("覆盖当前打开的笔记")}><Icon name="ai-replace" className="w-3.5 h-3.5" /></button>
+              <button onClick={() => onReplaceContent(content)} className={`${MSG_ACTION_BTN} hover:text-warning! hover:bg-warning-soft!`} title={t("覆盖当前打开的笔记")}><Icon name="ai-replace" className="w-3.5 h-3.5" /></button>
               <button onClick={() => onCopyText(content)} className={MSG_ACTION_BTN} title={t("复制消息")}><CopyIcon /></button>
-              <button onClick={() => onOpenInEditor(content)} className={`${MSG_ACTION_BTN} hover:!text-info hover:!bg-info-soft`} title={t("在编辑器中打开（临时预览，不会保存为笔记）")}><Icon name="open-in-editor" className="w-3.5 h-3.5" /></button>
+              <button onClick={() => onOpenInEditor(content)} className={`${MSG_ACTION_BTN} hover:text-info! hover:bg-info-soft!`} title={t("在编辑器中打开（临时预览，不会保存为笔记）")}><Icon name="open-in-editor" className="w-3.5 h-3.5" /></button>
             </>
           )}
           <span className="inline-flex h-[22px] items-center text-[10.5px] leading-none text-faint-soft tabular-nums select-none" title={t("整条回复的估算 token（含思考过程与工具调用）")}>{metaText}</span>
@@ -1485,6 +1485,18 @@ interface UiNotice {
   unverified?: string[];
 }
 
+/**
+ * 面板里的一条消息：协议字段之外还带渲染用的状态（思考过程、工具轨迹、时间戳）。
+ * 持久化到库里时只保留 AiChatMessage 的字段。
+ */
+type UiChatMessage = AiChatMessage & {
+  thinking?: string;
+  tools?: ToolTrace[];
+  at?: number;
+  thinkMs?: number;
+  uiNotice?: UiNotice;
+};
+
 const renderUiNotice = (notice: UiNotice, tools: ToolTrace[] | undefined, t: typeof translate): string => {
   if (notice.kind === "reply") {
     const body = [notice.prefix, notice.source ? t(notice.source) : ""].filter(Boolean).join("\n\n");
@@ -1573,7 +1585,7 @@ const safeNoteTags = async (noteId: number): Promise<Tag[]> => {
  * 一定带上 tags / aiTags：模型是看着这份结果决定"要不要顺手补标签"的，
  * 结果里没有这个字段，提示词里写再多"读完要打标签"也没有判断依据。
  */
-const readNoteWindow = async (n: any, startLineArg?: unknown, lineCountArg?: unknown) => {
+const readNoteWindow = async (n: Note, startLineArg?: unknown, lineCountArg?: unknown) => {
   const content = String(n.content ?? "");
   const startLine = Math.max(1, Math.floor(Number(startLineArg) || 1));
   const lineCount = Math.min(Math.max(Math.floor(Number(lineCountArg) || NOTE_READ_LINES), 1), NOTE_READ_MAX_LINES);
@@ -1641,7 +1653,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const [activeSessionId, setActiveSessionId] = useState<number>(0);
   /** 读取服务商失败时的错误文案（用于界面提示，便于定位问题） */
   const [providersError, setProvidersError] = useState("");
-  const [messages, setMessages] = useState<AiChatMessage[]>([]);
+  const [messages, setMessages] = useState<UiChatMessage[]>([]);
   const [input, setInput] = useState("");
   /** 模型下拉菜单（自定义，替代原生 select） */
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -1748,7 +1760,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   /** 本轮流式开始的时间：作为流式预览消息的时间戳，避免中途跳成当前时刻 */
   const streamStartedAtRef = useRef(0);
   /** 本轮唯一的助手占位气泡：思考与工具轨迹都挂在它上面，null 表示本轮尚未创建 */
-  const placeholderRef = useRef<AiChatMessage | null>(null);
+  const placeholderRef = useRef<UiChatMessage | null>(null);
   /** 当前打开笔记的 ID（组件内持有，工具执行时作为上下文传入） */
   const currentNoteIdRef = useRef<number | null>(null);
   /**
@@ -1899,12 +1911,12 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   );
 
   /** 把一段结果说明写回对话：优先就地替换占位气泡，没有占位就追加 */
-  const commitNotice = useCallback(async (sid: number, uiNotice: UiNotice, leftover: any) => {
+  const commitNotice = useCallback(async (sid: number, uiNotice: UiNotice, leftover: UiChatMessage | null) => {
     // 全局 t 在异步请求结束时读取当前语言；渲染时仍通过 uiNotice 订阅切换。
     const text = renderUiNotice(uiNotice, leftover?.tools, translate);
     const usedMs = turnStartedAtRef.current ? Date.now() - turnStartedAtRef.current : 0;
     setMessages(m => {
-      const msg = { role: 'assistant' as const, content: text, uiNotice, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now(), thinkMs: usedMs || undefined } as any;
+      const msg: UiChatMessage = { role: 'assistant', content: text, uiNotice, thinking: leftover?.thinking, tools: leftover?.tools, at: leftover?.at ?? Date.now(), thinkMs: usedMs || undefined };
       const idx = leftover ? m.findIndex(x => x === leftover) : -1;
       return idx >= 0 ? [...m.slice(0, idx), msg] : [...m, msg];
     });
@@ -2395,7 +2407,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           // 先把占位对象抓成局部变量、并清空 ref，再调用 setMessages：
           // updater 必须是纯函数——StrictMode 在开发模式下会执行两次，
           // 若在里面改 ref，第二次就会找不到占位而"追加"出一条重复消息。
-          const placeholderAtFinal = placeholderRef.current as any;
+          const placeholderAtFinal = placeholderRef.current;
           placeholderRef.current = null;
           // 工具调用之前已经写给用户的正文（如"先总结剧情，再打开下一篇"里的总结）要保留；
           // 并对"声称已完成却没执行"做事实校验（见 buildFinalContent）。
@@ -2408,14 +2420,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           setMessages(m => {
             const msg = { role: 'assistant' as const, content: finalContent, thinking: thinkingDisplay, tools: carriedTools, at: finalAt, thinkMs: usedMs || undefined };
             const idx = placeholderAtFinal ? m.findIndex(x => x === placeholderAtFinal) : -1;
-            if (idx >= 0) return [...m.slice(0, idx), msg as any];
+            if (idx >= 0) return [...m.slice(0, idx), msg];
             // 兜底：末尾若残留了"内容为空但有思考"的空壳助手消息，直接替换掉，
             // 否则它会和最终回复各带一份深度思考，看起来又是重复。
             const last = m[m.length - 1] as { role?: string; content?: string } | undefined;
             if (last && last.role === 'assistant' && !last.content) {
-              return [...m.slice(0, -1), msg as any];
+              return [...m.slice(0, -1), msg];
             }
-            return [...m, msg as any];
+            return [...m, msg];
           });
           try { await aiApi.saveChatMessage(sid, 'assistant', full); } catch {}
           // 生成标题只喂清洗后的正文，避免把截断的工具调用 JSON 塞给标题模型
@@ -2429,7 +2441,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         const roundReply = parsed.reply;
         const existingPlaceholder = placeholderRef.current;
         if (existingPlaceholder) {
-          const nextPlaceholder: any = {
+          const nextPlaceholder: UiChatMessage = {
             ...existingPlaceholder,
             // 本轮若同时给了正文（例如"先总结剧情，再打开下一篇"），要留在气泡里，
             // 否则下一轮把它替换掉时，这段正文就凭空消失了。
@@ -2439,7 +2451,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
           placeholderRef.current = nextPlaceholder;
           setMessages(m => m.map(x => (x === existingPlaceholder ? nextPlaceholder : x)));
         } else {
-          const createdPlaceholder: any = { role: 'assistant' as const, content: roundReply, thinking: thinkingDisplay, at: Date.now() };
+          const createdPlaceholder: UiChatMessage = { role: 'assistant', content: roundReply, thinking: thinkingDisplay, at: Date.now() };
           placeholderRef.current = createdPlaceholder;
           setMessages(m => [...m, createdPlaceholder]);
         }
@@ -2530,7 +2542,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         setIsSending(false);
         setTurnActive(false);
         resetStreaming();
-        const leftover: any = placeholderRef.current;
+        const leftover = placeholderRef.current;
         placeholderRef.current = null;
         await commitNotice(sid, { kind: "failure", error: e == null ? undefined : formatError(e) }, leftover);
         return;
@@ -2542,7 +2554,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     setIsSending(false);
     setTurnActive(false);
     resetStreaming();
-    const leftover: any = placeholderRef.current;
+    const leftover = placeholderRef.current;
     placeholderRef.current = null;
     // 这份清单同时是给模型看的上下文：工具调用记录只存在于界面，不在对话历史里，
     // 写进正文用户下次说"继续"时模型才知道自己刚做了什么。
@@ -2586,7 +2598,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       .replace(/^([-*+]|\d+[.)])\s+/, "")                 // 列表符号 / 有序编号
       .replace(/^>\s*/, "")                               // 引用符号
       .replace(/\*\*|__|`|\*/g, "")                       // 加粗 / 斜体 / 行内代码
-      .replace(/^[【\[](.+?)[】\]]$/, "$1")               // 整体被括号包裹
+      .replace(/^(?:【|\[)(.+?)(?:】|\])$/, "$1")         // 整体被括号包裹
       .replace(/[。：:，,、；;！!？?~～·]+$/, "")         // 结尾标点
       .trim();
 
@@ -2605,9 +2617,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    * 执行完再回填状态与结果——界面上就能看到 打开笔记 #16 ▸ 读取笔记 #16 ▸ … 依次出现。
    */
   const appendToolTrace = useCallback((call: { name: string; args: Record<string, unknown> }) => {
-    const target: any = placeholderRef.current;
+    const target = placeholderRef.current;
     if (!target) return;
-    const traced: any = {
+    const traced: UiChatMessage = {
       ...target,
       tools: [
         ...(target.tools || []),
@@ -2620,7 +2632,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
   /** 回填最后一条轨迹的执行结果，与 appendToolTrace 成对使用（按顺序一一对应） */
   const finishToolTrace = useCallback((done: { name: string; args: Record<string, unknown>; result: unknown; success: boolean }) => {
-    const target: any = placeholderRef.current;
+    const target = placeholderRef.current;
     if (!target?.tools?.length) return;
     const tools = [...target.tools];
     tools[tools.length - 1] = {
@@ -2629,7 +2641,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       result: done.result,
       detail: toolDetail(done.name, done.args, done.result),
     };
-    const traced: any = { ...target, tools };
+    const traced: UiChatMessage = { ...target, tools };
     placeholderRef.current = traced;
     setMessages(m => m.map(x => (x === target ? traced : x)));
   }, []);
@@ -2750,7 +2762,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     // 若正卡在"等待确认"，把它按取消结算，agentLoop 才能立刻退出
     settleConfirm(false);
     // 中断时把"空壳占位气泡"就地替换成"已停止"，避免它带着一份思考留在对话里
-    const placeholder = placeholderRef.current as any;
+    const placeholder = placeholderRef.current;
     placeholderRef.current = null;
     setMessages(m => {
       const stopped = {
@@ -2820,7 +2832,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    * 否则同一次回复会同时出现两份「思考」和两个时间（占位一条、预览一条）。
    * 合并时保留靠上的那份思考与它原来的时间，即"只有一个思考、一个时间"。
    */
-  const lastMsg = messages[messages.length - 1] as any;
+  const lastMsg = messages[messages.length - 1];
   const mergeIntoPlaceholder = !!streamingPreview && !!placeholderRef.current && lastMsg === placeholderRef.current;
   const previewReply = streamingPreview ? (holdEarlyReply ? '' : streamingPreview.reply) : '';
   const previewContent = (() => {
@@ -2831,7 +2843,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     const carried = String(lastMsg?.content || '').trim();
     return carried && !previewReply.includes(carried) ? `${carried}\n\n${previewReply}` : previewReply;
   })();
-  const allMsgs: (AiChatMessage & { thinking?: string; tools?: ToolTrace[]; at?: number; thinkMs?: number })[] = streamingPreview
+  const allMsgs: UiChatMessage[] = streamingPreview
     ? mergeIntoPlaceholder
       ? [...messages.slice(0, -1), { ...lastMsg, content: previewContent, thinking: lastMsg?.thinking || streamingPreview.thinking }]
       : [...messages, {
@@ -3059,7 +3071,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         ) : (allMsgs.map((msg, i) => (
           <ChatMessageRow
             key={i}
-            msg={msg as AiChatMessage & { thinking?: string; tools?: ToolTrace[] }}
+            msg={msg}
             index={i}
             expanded={groupOpen[i] ?? (i === liveRowIndex)}
             thoughtOpen={!!thoughtOpen[i]}

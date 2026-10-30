@@ -205,8 +205,8 @@ fn resolve_filename(url: &str, custom: Option<&str>) -> String {
 /// 从链接最后一段取文件名；取不到时用时间戳兜底
 pub fn filename_from_url(raw: &str) -> String {
     if let Ok(url) = reqwest::Url::parse(raw) {
-        if let Some(segments) = url.path_segments() {
-            if let Some(last) = segments.last() {
+        if let Some(mut segments) = url.path_segments() {
+            if let Some(last) = segments.next_back() {
                 let name = sanitize_filename(&percent_decode(last));
                 if !name.is_empty() && name != "." && name != ".." {
                     return name;

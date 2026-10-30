@@ -3460,11 +3460,14 @@ fn snapshot_note(
     Ok(inserted > 0)
 }
 
-/// 最新一条历史（标题 / 正文 / 分组 / 保存时间）；没有历史时返回 None
+/// 历史快照字段顺序：标题 / 正文 / 分组 / 保存时间
+type HistorySnapshot = (String, String, Option<i64>, String);
+
+/// 最新一条历史；没有历史时返回 None
 fn latest_history(
     conn: &Connection,
     note_id: i64,
-) -> Result<Option<(String, String, Option<i64>, String)>, String> {
+) -> Result<Option<HistorySnapshot>, String> {
     let latest = conn.query_row(
         "SELECT title, content, category_id, saved_at
          FROM notes_history WHERE note_id = ?1 ORDER BY id DESC LIMIT 1",
@@ -5277,7 +5280,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn from_hex(text: &str) -> Result<Vec<u8>, String> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err("密文格式不正确".into());
     }
     let bytes = text.as_bytes();
@@ -6456,7 +6459,6 @@ fn sync_autostart_shortcut(app: &AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-
 pub fn run() {
     // 单实例开关必须在 Builder 之前读：插件一旦注册就必然创建互斥量，事后无法撤销。
     // 关掉时干脆不注册——第二实例不会创建互斥量，也就不会被挡下，可以真正多开。
@@ -6597,9 +6599,32 @@ pub fn run() {
             let db_path = data_dir.join(DB_FILE_NAME);
 
             let conn = Connection::open(db_path).expect("failed to open database");
-            // 删除/覆盖加密前的明文行时，尽量把旧页清零，减少数据库文件里的残留。
-            // temp_store=MEMORY 让 VACUUM / 排序的临时结构留在内存，不落磁盘临时目录。
-            let _ = conn.execute_batch("PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;");
+            /*
+             * 连接级参数。全库只有一个可写连接（`AppState::conn` 里的 Mutex），
+             * 但手动保存、AI 工具写入、历史快照、语义索引 worker 都要抢它，
+             * 默认的 rollback journal 加上没有超时，会让"正在写"直接返回 SQLITE_BUSY。
+             *
+             * - WAL：读不挡写、写不挡读，自动保存期间列表查询不会被卡住；
+             *   代价是多出 -wal / -shm 两个附属文件。备份不受影响：快照走 `VACUUM INTO`
+             *   （见 build_sqlite_snapshot，与日志模式无关，且生成后会切回 DELETE 单文件），
+             *   webdav 也是先快照再上传，不直接拷活库。
+             * - synchronous=NORMAL：WAL 下的推荐值，断电最多丢最后一个事务、不会坏库；
+             *   默认 FULL 会让每次 500ms 防抖的自动保存都 fsync 一次。
+             * - busy_timeout：等锁最多 5 秒再报错，而不是立刻把 SQLITE_BUSY 抛给界面。
+             * - secure_delete：删除/覆盖加密前的明文行时清零旧页。
+             *   **WAL 下被覆盖的页会留在 -wal 里直到 checkpoint**，所以"落盘即净"的路径
+             *   必须显式 checkpoint：加解密后统一走 encryption.rs 的 `scrub()` →
+             *   `wal_checkpoint(TRUNCATE)`，空闲时 `crypto_scrub_flush` 再做一次
+             *   checkpoint + VACUUM，把明文页真正抹掉。改加密流程时别绕开这两个入口。
+             * - temp_store=MEMORY：VACUUM / 排序的临时结构留在内存，不落磁盘临时目录。
+             */
+            let _ = conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA busy_timeout = 5000;
+                 PRAGMA secure_delete = ON;
+                 PRAGMA temp_store = MEMORY;",
+            );
             init_database(&conn).expect("failed to initialize database");
 
             let state = AppState {

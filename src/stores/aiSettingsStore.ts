@@ -107,9 +107,12 @@ export const loadAiConfig = async (): Promise<LoadedAiConfig> => {
   let prompts: AiPromptEntry[] = [];
   const fromDbPrompts = safeParse(rows[PROMPTS_KEY]);
   const promptSource = Array.isArray(fromDbPrompts) ? fromDbPrompts : legacyPrompts;
-  prompts = (promptSource as any[])
-    .filter((e) => e && typeof e.text === "string")
-    .map((e) => ({ id: String(e.id || Math.random().toString(36).slice(2)), text: e.text, enabled: e.enabled !== false }));
+  prompts = (promptSource as unknown[]).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    if (typeof item.text !== "string") return [];
+    return [{ id: String(item.id || Math.random().toString(36).slice(2)), text: item.text, enabled: item.enabled !== false }];
+  });
 
   return { settings, prompts, migrated };
 };

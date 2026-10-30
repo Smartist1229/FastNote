@@ -24,6 +24,7 @@
 pnpm install
 pnpm dev      # 桌面端开发模式
 pnpm build    # 打包桌面应用
+pnpm test     # 单元测试（解析器 / 模糊匹配 / 搜索）
 ```
 
 ## 技术栈

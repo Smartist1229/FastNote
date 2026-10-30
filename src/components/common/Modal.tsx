@@ -63,7 +63,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
           <h3 className="text-base font-semibold text-ink">{title}</h3>
           <button
             onClick={onClose}
-            className="toolbar-btn hover:!bg-surface-alt"
+            className="toolbar-btn hover:bg-surface-alt!"
             title={t("关闭")}
           >
             <Icon name="modal-close" className="w-4 h-4" />

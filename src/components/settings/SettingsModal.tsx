@@ -32,6 +32,7 @@ import type {
 } from "@/interface/settingsModal";
 import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
 import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
+import { SETTINGS_SECTIONS } from "@/config/settingsSections";
 import { EDITOR_SETTING_SPECS } from "@/config/editorSettingSpecs";
 import {
   APP_AUTHOR,
@@ -75,31 +76,11 @@ import { formatSpeed } from "@/lib/format";
 /** AI 专属分区：enableAI 为 false 时整组隐藏，避免出现点了没反应的入口 */
 const AI_SECTION_KEYS: SettingsSection[] = ["provider", "chat", "context", "memory", "access"];
 
-/** 分区元数据：key 与 SettingsSection 一一对应，group 决定左侧目录归到哪一栏 */
-const SECTIONS: SectionMeta[] = [
-  { key: "general", label: "通用", icon: "ai-bolt", group: "软件" },
-  { key: "editor", label: "编辑器", icon: "ai-edit", group: "软件" },
-  { key: "view", label: "笔记列表", icon: "sidebar-list", group: "软件" },
-  { key: "layout", label: "界面布局", icon: "sidebar-edit-square", group: "软件" },
-  { key: "shortcuts", label: "快捷键", icon: "settings-shortcuts", group: "软件" },
-  { key: "theme", label: "主题", icon: "settings-theme", group: "软件" },
-  { key: "semantic", label: "语义搜索", icon: "ai-bolt", group: "软件" },
-  { key: "toolbox", label: "工具箱", icon: "toolbox", group: "软件" },
-  { key: "provider", label: "AI 服务商", icon: "settings-provider", group: "AI" },
-  { key: "chat", label: "对话行为", icon: "settings-chat", group: "AI" },
-  { key: "context", label: "上下文", icon: "settings-context", group: "AI" },
-  { key: "memory", label: "记忆与提示词", icon: "settings-memory", group: "AI" },
-  { key: "access", label: "AI 访问权限", icon: "ai-shield-check", group: "AI" },
-  { key: "reset", label: "恢复默认", icon: "app-restore", group: "数据" },
-  { key: "backup", label: "备份与恢复", icon: "app-backup", group: "数据" },
-  { key: "about", label: "关于", icon: "toast-info", group: "其他" },
-];
+/** 分区元数据在 config 里定义（命令面板复用）；这里只做本地别名 */
+const SECTIONS = SETTINGS_SECTIONS;
 
 /** 目录分组顺序：与 SECTIONS 里的 group 对应，空分组在渲染时自动跳过 */
 const ALL_GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
-
-/** 分区元数据对外只读：命令面板据此生成「打开设置：xxx」，免得标题两处各写一份 */
-export const SETTINGS_SECTIONS: readonly SectionMeta[] = SECTIONS;
 
 /** 关闭 AI 能力时，「AI」分组整体不渲染 */
 const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
@@ -312,7 +293,7 @@ const SegmentedInput: React.FC<{
           type="button"
           onClick={() => !active && onChange(o.value)}
           className={`px-2 py-1 text-[11px] rounded-md transition-colors whitespace-nowrap ${
-            active ? "bg-surface text-primary-600 font-medium shadow-sm" : "text-muted"
+            active ? "bg-surface text-primary-600 font-medium shadow-xs" : "text-muted"
           } ${active ? "" : "hover:text-body"}`}
         >
           {o.value === "zh-CN" || o.value === "en-US" ? o.label : t(o.label)}
@@ -1623,7 +1604,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <Icon name="editor-check" className="w-3 h-3 text-success" />
                 {t("更改已自动保存")}</span>
-              <button onClick={onClose} className="toolbar-btn hover:!bg-surface-alt" title={t("关闭设置")}>
+              <button onClick={onClose} className="toolbar-btn hover:bg-surface-alt!" title={t("关闭设置")}>
                 <Icon name="modal-close" className="w-4 h-4" />
               </button>
             </div>

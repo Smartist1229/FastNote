@@ -153,7 +153,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err("密文格式不正确".to_string());
     }
     let bytes = text.as_bytes();

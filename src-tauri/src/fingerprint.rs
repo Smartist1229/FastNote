@@ -1340,7 +1340,7 @@ fn next_u64() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-fn pick<'a, T>(items: &'a [T]) -> &'a T {
+fn pick<T>(items: &[T]) -> &T {
     &items[(next_u64() % items.len() as u64) as usize]
 }
 

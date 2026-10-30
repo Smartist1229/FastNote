@@ -748,7 +748,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={() => onViewChange('groups')}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
-                view === 'groups' ? 'bg-primary-500 text-on-accent shadow-sm' : 'text-faint hover:text-body'
+                view === 'groups' ? 'bg-primary-500 text-on-accent shadow-xs' : 'text-faint hover:text-body'
               }`}
               title={t("分组视图")}
             >
@@ -758,7 +758,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={() => onViewChange('favorites')}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
-                view === 'favorites' ? 'bg-primary-500 text-on-accent shadow-sm' : 'text-faint hover:text-body'
+                view === 'favorites' ? 'bg-primary-500 text-on-accent shadow-xs' : 'text-faint hover:text-body'
               }`}
               title={t("收藏视图")}
             >

@@ -34,13 +34,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # 用 dirs 自己算（规则与 tauri 的 app_data_dir 一致：data_dir()/identifier）
 dirs = "6"
 # 分组导出：ZIP 打包 / EPUB（本质是特定结构的 zip）
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # 分组导出：笔记正文是 Markdown，导出 HTML / EPUB 时渲染成网页
 pulldown-cmark = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 # API Key 加密存储：AES-256-GCM + SHA-256 派生（版本与锁文件一致，可离线构建）
 ring = "0.17"
-sha2 = "0.10"
+sha2 = "0.11"
 # 语义搜索：本地 ONNX 推理。ort 负责加载模型，tokenizers 负责 BGE 分词；
 # 两者都用与锁文件一致的精确版本，避免 RC 期 API 漂移导致重新编译后编译不过。
 ort = { version = "=2.0.0-rc.15", features = ["download-binaries", "ndarray"] }
@@ -55,7 +55,7 @@ tokio = { version = "1", features = ["fs", "io-util", "time", "macros"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # 笔记加密的密码派生：Argon2id（抗 GPU/ASIC 优于 PBKDF2），旧的 PBKDF2 数据仍可读
-argon2 = "0.5"
+argon2 = "0.6"
 # 锁定/退出时把内存里的 DEK/KEK 覆写清零，而不是留给分配器
 zeroize = "1.9.1"
 

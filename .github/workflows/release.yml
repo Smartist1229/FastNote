@@ -75,20 +75,6 @@ jobs:
           }
           Write-Host "更新签名密钥已配置"
 
-      - name: Generate release notes
-        shell: pwsh
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-notes.ps1 -Tag $env:TAG -Output release-notes.md
-
-      # tauri-action 的 releaseBody 只接受字符串：把 Markdown 文件读成多行 step output 再传入
-      - name: Expose release notes as output
-        id: notes
-        shell: pwsh
-        run: |
-          $marker = "FASTNOTE_NOTES_$([guid]::NewGuid().ToString('N'))"
-          "body<<$marker" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Get-Content release-notes.md -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          $marker | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -119,22 +105,8 @@ jobs:
         with:
           tagName: ${{ env.TAG }}
           releaseName: FastNote ${{ env.TAG }}
-          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: ${{ inputs.draft || false }}
           prerelease: false
           args: --bundles nsis
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
-
-      # 把安装包与 CNB 版 latest.json 传到 CNB，作为国内更新线路。
-      # 固定清单地址：https://cnb.cool/Yiygc/FastNote/-/releases/download/latest/latest.json
-      - name: Publish updater manifest to CNB
-        if: ${{ !inputs.draft }}
-        shell: pwsh
-        env:
-          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
-          CNB_REPO: Yiygc/FastNote
-          CNB_BRANCH: master
-          BUNDLE_DIR: src-tauri/target/release/bundle/nsis
-          NOTES_FILE: release-notes.md
-        run: node scripts/publish-cnb.mjs

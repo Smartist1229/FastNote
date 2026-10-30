@@ -646,7 +646,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           {!isTemporary && !isExternal && !historyPreview && (
             <button
               onClick={onDelete}
-              className="toolbar-btn hover:!bg-danger-soft hover:!text-danger"
+              className="toolbar-btn hover:bg-danger-soft! hover:text-danger!"
               title={t("删除笔记")}
             >
               <Icon name="editor-trash" className="w-4 h-4" />
@@ -716,7 +716,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               <div className="divider" />
               <button
                 onClick={onToggleAiPanel}
-                className={`toolbar-btn relative ${isAiPanelOpen ? "!bg-primary-50 !text-primary-500" : ""}`}
+                className={`toolbar-btn relative ${isAiPanelOpen ? "bg-primary-50! text-primary-500!" : ""}`}
                 title={isAiPanelOpen ? t("关闭 AI 对话") : t("打开 AI 对话")}
                 aria-pressed={isAiPanelOpen}
               >

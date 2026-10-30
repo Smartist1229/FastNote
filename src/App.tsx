@@ -22,6 +22,7 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "@/App.css";
 import type { Category, ExternalTextFile, Note, NoteHistoryEntry, Tag } from "@/interface/note";
+
 import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
 import type { AppSettings } from "@/interface/settings";
 import type { ExportTarget } from "@/interface/exportCategory";
@@ -69,18 +70,14 @@ import {
 } from "@/components/common/EncryptionDialogs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
-import { CommandPalette } from "@/components/common/CommandPalette";
 import type { PaletteCommand, PaletteMode } from "@/components/common/CommandPalette";
 import type { NoteEditorActions } from "@/interface/editor";
-import { PropertiesModal } from "@/components/common/PropertiesModal";
 import { ToastProvider, useToast } from "@/components/common/Toast";
 
 import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
-import { AIChatPanel } from "@/components/ai/AIChatPanel";
 import { SelectionAiToolbar } from "@/components/editor/SelectionAiToolbar";
 
-import { SettingsModal, SETTINGS_SECTIONS } from "@/components/settings/SettingsModal";
-import { ExportCategoryModal } from "@/components/data/ExportCategoryModal";
+import { SETTINGS_SECTIONS } from "@/config/settingsSections";
 import { saveNoteAsFile } from "@/utils/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { useRecentFiles } from "@/lib/recentFiles";
@@ -99,6 +96,28 @@ import { getVersion } from "@tauri-apps/api/app";
 const NoteEditor = lazy(() =>
   import("@/components/editor/NoteEditor").then((module) => ({
     default: module.NoteEditor,
+  }))
+);
+
+/**
+ * 设置 / 命令面板 / 属性 / 导出 / AI 面板合计上万行，且只在用户打开时出现：
+ * 全部改成按需加载，避免它们和它们依赖的编辑器渲染层进首屏主包。
+ */
+const AIChatPanel = lazy(() =>
+  import("@/components/ai/AIChatPanel").then((module) => ({ default: module.AIChatPanel }))
+);
+const SettingsModal = lazy(() =>
+  import("@/components/settings/SettingsModal").then((module) => ({ default: module.SettingsModal }))
+);
+const CommandPalette = lazy(() =>
+  import("@/components/common/CommandPalette").then((module) => ({ default: module.CommandPalette }))
+);
+const PropertiesModal = lazy(() =>
+  import("@/components/common/PropertiesModal").then((module) => ({ default: module.PropertiesModal }))
+);
+const ExportCategoryModal = lazy(() =>
+  import("@/components/data/ExportCategoryModal").then((module) => ({
+    default: module.ExportCategoryModal,
   }))
 );
 
@@ -221,6 +240,8 @@ function AppContent() {
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<number>>(new Set());
   /** AI 面板是否展开：仅启动时从 layout 恢复，切换本身不写设置 */
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  /** AI 面板首次展开后才挂载：首屏不加载它依赖的 Markdown 渲染层，之后常驻以保留会话状态 */
+  const [aiPanelMounted, setAiPanelMounted] = useState(false);
   /**
    * 选区 AI 工具条投递的引用块：润色/翻译/总结会再带一句指令。
    * 只追加到面板草稿里，不自动发送——发车前按回车仍由用户决定。
@@ -810,6 +831,13 @@ function AppContent() {
       setAiPanelOpen(false);
     }
   }, [appSettings.general.enableAI, aiPanelOpen]);
+
+  // 首次展开后挂载 AI 面板；收起不复位，避免丢掉正在进行的会话与草稿
+  useEffect(() => {
+    if (aiPanelOpen && appSettings.general.enableAI) {
+      setAiPanelMounted(true);
+    }
+  }, [aiPanelOpen, appSettings.general.enableAI]);
 
   /** 展开/收起分组抽屉（点击同一分组可收起）；锁着的加密分组先走解锁 */
   const toggleDrawer = useCallback((key: number | 'all' | 'uncategorized') => {
@@ -2566,38 +2594,43 @@ function AppContent() {
           </div>
 
           {/* AI 面板与编辑器是 flex 兄弟：展开时挤压编辑区而非覆盖；
-              叠放层激活时清空笔记上下文，避免 AI 误读底下的真实笔记 */}
-          <AIChatPanel
-            isOpen={aiPanelOpen && appSettings.general.enableAI}
-            onClose={() => {
-              setAiPanelOpen(false);
-            }}
-            noteTitle={aiNoteContextBlocked ? "" : selectedNote?.title || ""}
-            noteContent={aiNoteContextBlocked ? "" : selectedNote?.content || ""}
-            currentNoteId={aiNoteContextBlocked ? null : selectedNote?.id ?? null}
-            categories={categories}
-            currentNoteAiLevel={currentNoteAiLevel}
-            aiPrompts={aiPrompts}
-            aiSettings={aiSettings}
-            onAiSettingsChange={(patch) => setAiSettings((prev) => ({ ...prev, ...patch }))}
-            editorSettings={appSettings.editor}
-            onOpenAiMemory={() => openSettings("memory")}
-            onInsertText={handleAiInsertText}
-            onReplaceContent={handleAiReplaceContent}
-            onOpenInEditor={handleOpenInEditor}
-            onOpenProviderSettings={() => {
-              openSettings("provider");
-              aiApi.getAiProviders().then((list) => {
-                setProviderModalProviders(list);
-                if (list.length > 0 && !providerModalSelectedId) {
-                  setProviderModalSelectedId(list[0].id);
-                }
-              });
-            }}
-            enableAI={appSettings.general.enableAI}
-            isExternalFile={!!externalFile && !overlayActive}
-            pendingNoteRef={pendingNoteRef}
-          />
+              叠放层激活时清空笔记上下文，避免 AI 误读底下的真实笔记。
+              首次展开才加载，之后保持挂载以保留会话状态。 */}
+          {aiPanelMounted && (
+            <Suspense fallback={null}>
+              <AIChatPanel
+                isOpen={aiPanelOpen && appSettings.general.enableAI}
+                onClose={() => {
+                  setAiPanelOpen(false);
+                }}
+                noteTitle={aiNoteContextBlocked ? "" : selectedNote?.title || ""}
+                noteContent={aiNoteContextBlocked ? "" : selectedNote?.content || ""}
+                currentNoteId={aiNoteContextBlocked ? null : selectedNote?.id ?? null}
+                categories={categories}
+                currentNoteAiLevel={currentNoteAiLevel}
+                aiPrompts={aiPrompts}
+                aiSettings={aiSettings}
+                onAiSettingsChange={(patch) => setAiSettings((prev) => ({ ...prev, ...patch }))}
+                editorSettings={appSettings.editor}
+                onOpenAiMemory={() => openSettings("memory")}
+                onInsertText={handleAiInsertText}
+                onReplaceContent={handleAiReplaceContent}
+                onOpenInEditor={handleOpenInEditor}
+                onOpenProviderSettings={() => {
+                  openSettings("provider");
+                  aiApi.getAiProviders().then((list) => {
+                    setProviderModalProviders(list);
+                    if (list.length > 0 && !providerModalSelectedId) {
+                      setProviderModalSelectedId(list[0].id);
+                    }
+                  });
+                }}
+                enableAI={appSettings.general.enableAI}
+                isExternalFile={!!externalFile && !overlayActive}
+                pendingNoteRef={pendingNoteRef}
+              />
+            </Suspense>
+          )}
         </div>
       </div>
 
@@ -2643,7 +2676,7 @@ function AppContent() {
             <button onClick={() => setShowDeleteCategoryModal(false)} className="btn-ghost px-4 py-2 text-sm">
               {t("取消")}
             </button>
-            <button onClick={confirmDeleteCategory} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-sm">
+            <button onClick={confirmDeleteCategory} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-xs">
               {t("删除")}
             </button>
           </div>
@@ -2709,17 +2742,17 @@ function AppContent() {
                     <p className="text-[11px] text-faint mt-0.5">{t("删除于 {date}", { date: formatTrashDate(note.deleted_at) })}</p>
                   </div>
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:!bg-success-soft hover:!text-success" title={t("还原")}>
+                    <button onClick={() => handleRestoreNote(note.id)} className="toolbar-btn hover:bg-success-soft! hover:text-success!" title={t("还原")}>
                       <Icon name="app-restore" className="w-3.5 h-3.5" />
                     </button>
                     {note.enc_mode === 0 ? (
-                      <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:!bg-danger-soft hover:!text-danger" title={t("永久删除")}>
+                      <button onClick={() => handleDeletePermanent(note.id)} className="toolbar-btn hover:bg-danger-soft! hover:text-danger!" title={t("永久删除")}>
                         <Icon name="app-trash" className="w-3.5 h-3.5" />
                       </button>
                     ) : (
                       <button
                         onClick={() => handleDecryptTrashNote(note)}
-                        className="toolbar-btn hover:!bg-primary-50 hover:!text-primary-600"
+                        className="toolbar-btn hover:bg-primary-50! hover:text-primary-600!"
                         title={note.enc_mode === 1 ? t("永久解密") : t("此笔记随所属分组加密，请在分组上操作")}
                       >
                         <Icon name="security-unlock" className="w-3.5 h-3.5" />
@@ -2733,102 +2766,117 @@ function AppContent() {
         </div>
       </Modal>
 
-      {/* 统一设置窗口：锚点式布局，融合软件设置 / AI 设置 / 记忆 / 备份恢复 */}
-      <SettingsModal
-        isOpen={showSettings}
-        onClose={() => {
-          // 主题落库有防抖，关窗时把最后一次取色冲下去，避免改完立刻关闭丢设置
-          void flushThemeSettings();
-          setShowSettings(false);
-        }}
-        defaultSection={settingsSection}
-        appSettings={appSettings}
-        onAppSettingChange={applyAppSetting}
-        onResetAppSettings={handleResetAppSettings}
-        onResetEditorSettings={handleResetEditorSettings}
-        onResetThemeSettings={handleResetThemeSettings}
-        aiSettings={aiSettings}
-        onAiSettingsChange={setAiSettings}
-        aiProviders={providerModalProviders}
-        aiSelectedProviderId={providerModalSelectedId}
-        onAiProvidersChange={(list) => {
-          setProviderModalProviders(list);
-          window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
-        }}
-        onAiSelectedProviderChange={setProviderModalSelectedId}
-        aiPrompts={aiPrompts}
-        onAiPromptsChange={setAiPrompts}
-        categories={categories}
-        notes={notes}
-        onSetCategoryAiAccess={handleSetCategoryAiAccess}
-        onSetNoteAiAccess={handleSetNoteAiAccess}
-        theme={theme}
-        onThemeChange={handleThemeChange}
-        onRequestRootPasswordChange={() => {
-          if (!encryptionStatus?.root_set) {
-            showToast(t("尚未设置根密码"), "info");
-            return;
-          }
-          setShowRootChange(true);
-        }}
-      />
+      {/* 统一设置窗口：锚点式布局，融合软件设置 / AI 设置 / 记忆 / 备份恢复。
+          关闭即卸载（状态每次打开都会重置），因此可以按需加载 */}
+      {showSettings && (
+        <Suspense fallback={null}>
+          <SettingsModal
+            isOpen={showSettings}
+            onClose={() => {
+              // 主题落库有防抖，关窗时把最后一次取色冲下去，避免改完立刻关闭丢设置
+              void flushThemeSettings();
+              setShowSettings(false);
+            }}
+            defaultSection={settingsSection}
+            appSettings={appSettings}
+            onAppSettingChange={applyAppSetting}
+            onResetAppSettings={handleResetAppSettings}
+            onResetEditorSettings={handleResetEditorSettings}
+            onResetThemeSettings={handleResetThemeSettings}
+            aiSettings={aiSettings}
+            onAiSettingsChange={setAiSettings}
+            aiProviders={providerModalProviders}
+            aiSelectedProviderId={providerModalSelectedId}
+            onAiProvidersChange={(list) => {
+              setProviderModalProviders(list);
+              window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
+            }}
+            onAiSelectedProviderChange={setProviderModalSelectedId}
+            aiPrompts={aiPrompts}
+            onAiPromptsChange={setAiPrompts}
+            categories={categories}
+            notes={notes}
+            onSetCategoryAiAccess={handleSetCategoryAiAccess}
+            onSetNoteAiAccess={handleSetNoteAiAccess}
+            theme={theme}
+            onThemeChange={handleThemeChange}
+            onRequestRootPasswordChange={() => {
+              if (!encryptionStatus?.root_set) {
+                showToast(t("尚未设置根密码"), "info");
+                return;
+              }
+              setShowRootChange(true);
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* 命令面板 / 快速跳转：Ctrl+P 跳转、Ctrl+Shift+P 命令 */}
       {paletteOpen && (
-        <CommandPalette
-          key={paletteNonce}
-          open={paletteOpen}
-          initialMode={paletteMode}
-          notes={notes}
-          categories={categories}
-          tags={paletteTags}
-          commands={paletteCommands}
-          currentNoteId={selectedNote?.id ?? null}
-          onClose={() => setPaletteOpen(false)}
-          onOpenNote={openNote}
-          onLoadTagNotes={(tag) => tagsApi.listNotesByTag(tag.name)}
-        />
+        <Suspense fallback={null}>
+          <CommandPalette
+            key={paletteNonce}
+            open={paletteOpen}
+            initialMode={paletteMode}
+            notes={notes}
+            categories={categories}
+            tags={paletteTags}
+            commands={paletteCommands}
+            currentNoteId={selectedNote?.id ?? null}
+            onClose={() => setPaletteOpen(false)}
+            onOpenNote={openNote}
+            onLoadTagNotes={(tag) => tagsApi.listNotesByTag(tag.name)}
+          />
+        </Suspense>
       )}
 
       {/* 导出分组：右键分组菜单进入，可导出为压缩包或电子书 */}
-      <ExportCategoryModal
-        target={exportTarget}
-        onClose={() => setExportTarget(null)}
-        onDone={loadData}
-      />
+      {exportTarget && (
+        <Suspense fallback={null}>
+          <ExportCategoryModal
+            target={exportTarget}
+            onClose={() => setExportTarget(null)}
+            onDone={loadData}
+          />
+        </Suspense>
+      )}
 
       {/* 属性弹窗：右键「笔记属性 / 分组属性」进入，可修改字段带行内编辑 */}
-      <PropertiesModal
-        target={propertiesTargetLive}
-        categories={categories}
-        onClose={() => setPropertiesTarget(null)}
-        onRenameNote={handleRenameNote}
-        onMoveNote={handleMoveNoteToCategory}
-        onTogglePin={handleTogglePin}
-        onRenameCategory={handleRenameCategory}
-        onSetNoteAiAccess={handleSetNoteAiAccess}
-        onSetCategoryAiAccess={handleSetCategoryAiAccess}
-        enableAI={appSettings.general.enableAI}
-        tags={noteTags}
-        onAddTags={handleAddTags}
-        onRemoveTag={handleRemoveTag}
-        onRenameTag={handleRenameTag}
-        history={noteHistory}
-        onPreviewHistory={handlePreviewHistory}
-        onRollbackHistory={handleRollbackNoteHistory}
-        onDeleteHistory={handleDeleteNoteHistory}
-        onClearHistory={handleClearNoteHistory}
-        onCreateHistoryVersion={handleCreateNoteHistoryVersion}
-        onToggleHistoryPinned={handleToggleNoteHistoryPinned}
-        onEncryptNote={handleEncryptNote}
-        onUnlockNote={(note) => void requestUnlock("note", note.id)}
-        onLockNote={handleLockNote}
-        onDecryptNote={(note) => void requestUnlock("note", note.id, true)}
-        onEncryptCategory={handleEncryptCategory}
-        onUnlockCategory={(category) => void requestUnlock("category", category.id)}
-        onLockCategory={handleLockCategory}
-        onDecryptCategory={(category) => void requestUnlock("category", category.id, true)}
-      />
+      {propertiesTargetLive && (
+        <Suspense fallback={null}>
+          <PropertiesModal
+            target={propertiesTargetLive}
+            categories={categories}
+            onClose={() => setPropertiesTarget(null)}
+            onRenameNote={handleRenameNote}
+            onMoveNote={handleMoveNoteToCategory}
+            onTogglePin={handleTogglePin}
+            onRenameCategory={handleRenameCategory}
+            onSetNoteAiAccess={handleSetNoteAiAccess}
+            onSetCategoryAiAccess={handleSetCategoryAiAccess}
+            enableAI={appSettings.general.enableAI}
+            tags={noteTags}
+            onAddTags={handleAddTags}
+            onRemoveTag={handleRemoveTag}
+            onRenameTag={handleRenameTag}
+            history={noteHistory}
+            onPreviewHistory={handlePreviewHistory}
+            onRollbackHistory={handleRollbackNoteHistory}
+            onDeleteHistory={handleDeleteNoteHistory}
+            onClearHistory={handleClearNoteHistory}
+            onCreateHistoryVersion={handleCreateNoteHistoryVersion}
+            onToggleHistoryPinned={handleToggleNoteHistoryPinned}
+            onEncryptNote={handleEncryptNote}
+            onUnlockNote={(note) => void requestUnlock("note", note.id)}
+            onLockNote={handleLockNote}
+            onDecryptNote={(note) => void requestUnlock("note", note.id, true)}
+            onEncryptCategory={handleEncryptCategory}
+            onUnlockCategory={(category) => void requestUnlock("category", category.id)}
+            onLockCategory={handleLockCategory}
+            onDecryptCategory={(category) => void requestUnlock("category", category.id, true)}
+          />
+        </Suspense>
+      )}
 
       {/* 系统文件拖拽落点提示：纯展示，pointer-events-none 不影响命中检测 */}
       {isFileDragActive && (

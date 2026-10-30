@@ -8,7 +8,20 @@
     <link rel="stylesheet" href="/fonts/misans/misans-vf.css" />
     <style>
       /* 字体本地内置（public/fonts/misans），不联网加载 */
-      * { box-sizing: border-box; margin: 0; padding: 0; }
+      /*
+       * 这里只做"启动页能看"的最小重置，绝对不能写 `* { margin: 0; padding: 0 }`。
+       *
+       * Tailwind 4 把原子类放在 `@layer utilities` 里，而 CSS 级联里**未分层的样式永远
+       * 压过分层样式**（与选择器优先级、书写顺序都无关）。这条通配重置是未分层的，
+       * 于是 App.css 里所有 `p-* / m-*`（padding、margin）原子类被整批清零——
+       * 内边距、外边距全变 0，卡片和列表挤成一片，看起来就像"样式全没了"。
+       *
+       * 全局的 margin/padding 归 App.css 的 Tailwind preflight 管（它在 @layer base 里，
+       * 顺序正确）。启动页自己那一小块单独重置即可。
+       */
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      #splash, #splash * { margin: 0; padding: 0; }
 
       /*
        * 启动页配色：与 App.css 同样的通道变量，只是范围缩到 splash 需要的几个。

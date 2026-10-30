@@ -188,7 +188,7 @@ fn prune_local(dir: &Path, max: u64) {
             files.push((entry.path(), meta.modified().unwrap_or(std::time::UNIX_EPOCH)));
         }
     }
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (path, _) in files.into_iter().skip(max as usize) {
         let _ = std::fs::remove_file(path);
     }

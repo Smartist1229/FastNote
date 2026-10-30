@@ -98,6 +98,8 @@ export const encryptionMessages: Record<string, string> = {
   "立即锁定笔记": "Lock note now",
   "立即锁定分组": "Lock group now",
   "锁定全部加密内容": "Lock all encrypted items",
+  "清空本次运行缓存的密钥，再打开加密笔记要重新输密码":
+    "Clear the keys cached for this session; encrypted notes will ask for the password again",
   "已锁定": "Locked",
   "已锁定全部加密内容": "All encrypted items locked",
   "当前没有解锁中的加密内容": "No encrypted items are currently unlocked",

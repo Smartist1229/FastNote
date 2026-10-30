@@ -27,7 +27,7 @@ const ConfirmDialog: React.FC<{
             autoFocus
             className={
               danger
-                ? "px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-sm"
+                ? "px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-xs"
                 : "btn-primary px-4 py-2 text-sm"
             }
           >

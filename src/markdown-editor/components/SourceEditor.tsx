@@ -41,6 +41,7 @@ import {
 } from "react";
 import type { MarkdownChangeSource, MarkdownEditorConfig } from "../types";
 import { autoPairOnInput, continueMarkdownOnEnter, runCommand, type EditState } from "../editor/commands";
+import { applyPaste } from "../editor/paste";
 import { lineAtOffset, lineOffsets, splitLines } from "../editor/lines";
 import { useVisualLineRows } from "../editor/hooks/useVisualLineRows";
 import { useVisibleRange } from "../editor/hooks/useVisibleRange";
@@ -1387,7 +1388,34 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
     };
 
     const handlePaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
-      if (pickImage(event.clipboardData?.files ?? null)) event.preventDefault();
+      if (pickImage(event.clipboardData?.files ?? null)) {
+        event.preventDefault();
+        return;
+      }
+      /*
+       * 文本粘贴必须在这里自己接管，不能等 beforeinput。
+       *
+       * `beforeinput` 的 InputEvent 在 WebView2 上拿不到 `dataTransfer`（`data` 也是 null），
+       * 那条分支只能"不拦、让浏览器自己贴、再从 DOM 读回来"。而源码区是虚拟化的：
+       * DOM 里只有视口附近的行，浏览器只替换这一段，readback 又会把窗口内的替换
+       * 当成本地改动收下 —— 于是 Ctrl+A 全选后粘贴，只有一部分旧内容被替换掉。
+       *
+       * `paste` 事件的 clipboardData 一定有文本，直接按**逻辑选区**（全文偏移）拼接。
+       */
+      if (readOnly) return;
+      const pasted = event.clipboardData?.getData("text/plain") ?? "";
+      if (!pasted) return;
+      const next = applyPaste(
+        {
+          text: pendingTextRef.current ?? valueRef.current,
+          start: selRef.current.start,
+          end: selRef.current.end,
+        },
+        pasted,
+      );
+      if (!next) return;
+      event.preventDefault();
+      emit(next, "input");
     };
 
     const handleDrop = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -1894,8 +1922,12 @@ function editForInput(
     case "insertFromDrop":
     case "insertFromYank": {
       const data = native.dataTransfer?.getData("text/plain") ?? "";
-      // 拿不到文本就别拦：让浏览器自己贴，随后按渲染窗口读回来
-      return data ? splice(data) : null;
+      /*
+       * 这是兜底路径：粘贴的主路径是 SourceEditor 的 handlePaste（paste 事件里
+       * clipboardData 一定有文本）。这里只在拖放 / 中键粘贴等没有 paste 事件的场景生效，
+       * 拿不到文本时仍然放行给浏览器，但那条路在虚拟化下只能改到窗口内的行。
+       */
+      return data ? applyPaste({ text, start, end }, data) : null;
     }
     case "deleteContentBackward": {
       if (start !== end) return splice("");

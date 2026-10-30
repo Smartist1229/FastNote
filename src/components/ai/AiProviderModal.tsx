@@ -458,7 +458,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                     className={`group flex items-center gap-3 px-3.5 py-2.5 rounded-xl cursor-pointer transition-all ${
                       p.id === selectedProviderId
                         ? "bg-primary-50 border border-primary-200"
-                        : "bg-surface border border-line-soft hover:border-line hover:shadow-sm"
+                        : "bg-surface border border-line-soft hover:border-line hover:shadow-xs"
                     }`}
                     onClick={() => handleSelectProvider(p.id)}
                   >
@@ -530,7 +530,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
                   onClick={() => changeProviderType(type)}
                   className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                     draftProvider.provider_type === type
-                      ? "bg-primary-500 text-on-accent shadow-sm"
+                      ? "bg-primary-500 text-on-accent shadow-xs"
                       : "bg-surface-alt text-body hover:bg-surface-strong"
                   }`}
                 >
@@ -676,7 +676,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
             </p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteTarget(null)} className="btn-ghost px-4 py-2 text-sm">{t("取消")}</button>
-              <button autoFocus onClick={() => { if (deleteTarget) void handleDeleteProvider(deleteTarget); }} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-sm">{t("删除")}</button>
+              <button autoFocus onClick={() => { if (deleteTarget) void handleDeleteProvider(deleteTarget); }} className="px-4 py-2 text-sm font-medium text-on-accent bg-danger rounded-xl hover:bg-danger-strong transition-colors shadow-xs">{t("删除")}</button>
             </div>
           </div>
         </Modal>
