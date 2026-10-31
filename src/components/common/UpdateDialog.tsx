@@ -144,7 +144,7 @@ export const UpdateDialog: React.FC<{
           : t("发现新版本 {value1}", { value1: version });
 
   return (
-    <Modal isOpen={done || updater.dialogOpen} onClose={close} title={title} size="lg">
+    <Modal isOpen={done || updater.dialogOpen} onClose={close} title={title} size="lg" zIndex={70}>
       <div>
         {done ? (
           <>

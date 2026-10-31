@@ -36,6 +36,8 @@ export interface ModalProps {
    * 点窗外不会关闭（本来就不关），Esc 也不关，只能走关闭按钮。
    */
   floating?: boolean;
+  /** 浮层层级；默认 50。需要盖住同层级的浮窗时传更大值（如更新弹窗 70） */
+  zIndex?: number;
 }
 
 /** useConfirm 的参数；confirmText / cancelText 缺省为「确定」/「取消」 */

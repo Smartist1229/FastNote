@@ -6,19 +6,22 @@ import { t, useI18n } from "@/i18n";
  * - 线程数存在 general.downloadThreads（默认 32，1–128），下一次任务生效；
  * - 文件保存到软件安装目录的 `download` 文件夹，不可写时退回应用数据目录；
  * - 文件名默认取链接路径最后一段；用户填了自定义文件名时优先使用（非法字符与重名仍由后端处理）；
- * - 进度走 `toolbox-download-progress`，事件里的 segments 用来显示单线程/多段并发；
+ * - 后端把文件切成远多于线程数的小分片，先下完的线程接着取下一片，避免快的闲着；
+ * - 进度走 `toolbox-download-progress`：`segments` 是并发连接数，
+ *   `segment_progress` 只包含尚未下完的分片，界面按快照渲染，
+ *   `elapsed` 是后端计的已用时长（毫秒），界面重开也能接上；
  * - 下载中可以取消，取消后后端会清理临时文件。
  */
 import { useEffect, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import * as toolboxApi from "@/api/toolbox";
+import type { ToolboxDownloadProgress, ToolboxSegmentProgress } from "@/api/toolbox";
 import { openAppFolder } from "@/api/system";
 import { Icon } from "@/components/common/Icon";
 import { ProgressBar } from "@/components/common/ProgressBar";
 import { useToast } from "@/components/common/Toast";
 import { useActionGuard } from "@/hooks/useActionGuard";
-import { formatBytes, formatSpeed } from "@/lib/format";
-import type { ToolboxDownloadProgress } from "@/interface/toolbox";
+import { formatBytes, formatDuration, formatSpeed } from "@/lib/format";
 import { FingerprintPanel } from "@/components/settings/FingerprintPanel";
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -107,11 +110,21 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState<ToolboxDownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
-  const [lastFile, setLastFile] = useState<{ name: string; path: string } | null>(null);
+  /** 线程进度默认折叠：大多数时候看总进度就够了 */
+  const [threadsOpen, setThreadsOpen] = useState(false);
+  /** 已下载用时（毫秒）：事件里以后端绝对值为准，没事件时由本地秒表续着走 */
+  const [elapsed, setElapsed] = useState(0);
+  const [lastFile, setLastFile] = useState<{
+    name: string;
+    path: string;
+    elapsed: number;
+  } | null>(null);
   const [downloadDir, setDownloadDir] = useState("");
 
   const aliveRef = useRef(true);
   const speedSampleRef = useRef<{ time: number; bytes: number; speed: number } | null>(null);
+  /** 用时锚点：后端绝对值 + 收到事件的本地时刻，两次事件之间据此推算 */
+  const elapsedAnchorRef = useRef<{ at: number; elapsed: number } | null>(null);
 
   /** 事件订阅：面板卸载时统一取消 */
   useEffect(() => {
@@ -138,17 +151,20 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
             nextSpeed = prev.speed > 0 ? prev.speed * 0.7 + instant * 0.3 : instant;
           }
           speedSampleRef.current = { time: now, bytes: next.downloaded, speed: nextSpeed };
+          elapsedAnchorRef.current = { at: now, elapsed: next.elapsed };
           setSpeed(nextSpeed);
+          setElapsed(next.elapsed);
           setProgress(next);
           return;
         }
 
         setSpeed(0);
         speedSampleRef.current = null;
+        elapsedAnchorRef.current = null;
         setProgress(null);
         setDownloading(false);
         if (next.stage === "done") {
-          setLastFile({ name: next.filename, path: next.path });
+          setLastFile({ name: next.filename, path: next.path, elapsed: next.elapsed });
           showToast(t("「{filename}」已保存到 {path}", { filename: next.filename, path: next.path }), "success");
         } else if (next.stage === "cancelled") {
           showToast(t("已取消下载"), "info");
@@ -171,6 +187,18 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
     };
   }, [showToast, t]);
 
+  // 事件大约 250ms 一次，但连接卡住时可能长时间没有事件；
+  // 以最后一次事件为锚点按真实经过时间往后推，事件到达时再用后端绝对值重新对齐——
+  // 不能用「每秒 +1000」的累加：界面比后端早起步，事件一来数字会往回跳。
+  useEffect(() => {
+    if (!downloading) return;
+    const timer = window.setInterval(() => {
+      const anchor = elapsedAnchorRef.current;
+      if (anchor) setElapsed(anchor.elapsed + (performance.now() - anchor.at));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [downloading]);
+
   const handleDownload = async () => {
     const target = url.trim();
     if (!target) {
@@ -186,7 +214,9 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
     setDownloading(true);
     setLastFile(null);
     setSpeed(0);
+    setElapsed(0);
     speedSampleRef.current = null;
+    elapsedAnchorRef.current = null;
     // 先用目标文件名画 0%，后端事件到达后会覆盖成清理后的真实文件名
     setProgress({
       stage: "download",
@@ -195,6 +225,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       downloaded: 0,
       total: 0,
       segments: 0,
+      segment_progress: [],
+      elapsed: 0,
       error: null,
     });
 
@@ -230,22 +262,18 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
     progress && progress.total > 0
       ? Math.max(0, Math.min(100, Math.round((progress.downloaded / progress.total) * 100)))
       : null;
-  const modeLabel =
-    progress && progress.segments > 1
-      ? t("{segments} 段并发", { segments: progress.segments })
-      : progress?.segments === 1
-        ? t("单线程")
-        : "";
   const detail = progress
     ? progress.total > 0
       ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}${
           speed > 0 ? ` · ${formatSpeed(speed)}` : ""
-        }${modeLabel ? ` · ${modeLabel}` : ""}`
-      : modeLabel
-        ? t("{modeLabel} · 准备下载…", { modeLabel: modeLabel })
-        : t("准备下载…")
+        }`
+      : t("准备下载…")
     : "";
-  // 文件大于 1 MiB 却只有单段，说明服务器没理会 Range，不是线程数没生效
+  // 只渲染还在下载的分片：下完的随快照消失，被其他线程接走的新分片会自己出现
+  const activeSegments: ToolboxSegmentProgress[] = progress
+    ? [...progress.segment_progress].sort((a, b) => a.index - b.index)
+    : [];
+  // 文件大于 1 MiB 却只有单流，说明服务器没理会 Range，不是线程数没生效
   const singleThreadFallback =
     progress?.stage === "download" &&
     progress.segments === 1 &&
@@ -282,7 +310,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium text-body">{t("下载线程")}</p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("同时发起的连接数，默认 32，最高 128。语义模型下载也使用这个值；线程过多可能被服务器限速。")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("同时发起的连接数，默认 32，最高 128。文件会切成更多小分片，先下完的线程自动接手下一片，不会闲着；语义模型下载也使用这个值，线程过多可能被服务器限速。")}</p>
           </div>
           <ThreadInput value={threads} onChange={onThreadsChange} />
         </div>
@@ -343,15 +371,123 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
             className="w-full px-2 py-1.5 text-xs input-modern"
           />
 
+          <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+            <p className="selectable min-w-0 flex-1 break-all text-[10px] leading-relaxed text-faint-soft">{t("保存位置：{value1}", { value1: downloadDir || t("软件安装目录/download") })}</p>
+            <button
+              type="button"
+              onClick={() => void guard(openDir)}
+              disabled={!downloadDir}
+              className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-faint transition-colors hover:bg-surface-alt hover:text-body disabled:cursor-not-allowed disabled:opacity-40"
+              title={t("在文件管理器中打开下载目录")}
+            >
+              <Icon name="sidebar-folder-thin" className="w-3 h-3" />
+              {t("打开目录")}</button>
+          </div>
+        </div>
+      </div>
+
+      {/* 下载状态单独成区：先给完整文件信息与总进度，再列正在下载的线程（分片） */}
+      {tab === "download" && (progress || (lastFile && !downloading)) && (
+        <div className="space-y-2">
           {progress && (
-            <div className="rounded-lg border border-line bg-app px-2.5 py-2">
+            <div className="rounded-xl border border-line bg-surface px-3.5 py-3">
+              <div className="flex items-start gap-2">
+                <Icon
+                  name="editor-export"
+                  className="mt-[1px] h-3.5 w-3.5 flex-shrink-0 text-primary-500"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-body">
+                    {progress.filename || t("正在下载")}
+                  </p>
+                  {progress.path && (
+                    <p className="selectable break-all font-mono text-[10px] leading-relaxed text-faint">
+                      {progress.path}
+                    </p>
+                  )}
+                </div>
+                <span className="flex-shrink-0 whitespace-nowrap text-[10px] tabular-nums text-faint">
+                  {t("用时 {value1}", { value1: formatDuration(elapsed) })}
+                </span>
+              </div>
+
               <ProgressBar
+                className="mt-2.5"
                 value={percent}
-                label={progress.filename || t("正在下载")}
+                label={t("总进度")}
                 detail={detail}
+                // 进度未知时 detail 已经写了「准备下载…」，再挂一个占位「…」就重复了
+                showPercent={percent !== null}
               />
+
+              {progress.segments > 1 && (
+                <p className="mt-1 text-[10px] text-faint-soft">
+                  {t("{segments} 个线程并发 · 先下完的线程自动接下一片", {
+                    segments: progress.segments,
+                  })}
+                </p>
+              )}
+
               {singleThreadFallback && (
                 <p className="mt-1 text-[10px] leading-relaxed text-faint-soft">{t("服务器不支持分段下载，已自动改用单线程（线程数设置在下次支持分段的链接上生效）。")}</p>
+              )}
+
+              {progress.segments > 1 && (
+                <div className="mt-2.5 border-t border-line-soft pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setThreadsOpen((open) => !open)}
+                    aria-expanded={threadsOpen}
+                    className="flex w-full items-center justify-between rounded-md py-0.5 text-[10px] text-faint transition-colors hover:text-body"
+                  >
+                    <span className="flex items-center gap-1">
+                      <Icon
+                        name={threadsOpen ? "ai-chevron-down" : "ai-chevron-right"}
+                        className="h-2.5 w-2.5"
+                      />
+                      {t("线程进度")}
+                    </span>
+                    <span className="tabular-nums">
+                      {t("{value1} 个线程下载中", { value1: activeSegments.length })}
+                    </span>
+                  </button>
+                  {threadsOpen &&
+                    (activeSegments.length === 0 ? (
+                      <p className="py-1 text-[10px] text-faint-soft">{t("等待分片分配…")}</p>
+                    ) : (
+                      <div className="mt-1 max-h-44 space-y-1 overflow-y-auto pr-0.5">
+                        {activeSegments.map((item, position) => {
+                          const segPercent =
+                            item.total > 0
+                              ? Math.max(0, Math.min(100, (item.downloaded / item.total) * 100))
+                              : 0;
+                          return (
+                            <div
+                              key={item.index}
+                              className="flex items-center gap-2 text-[10px] tabular-nums"
+                            >
+                              <span className="w-9 flex-shrink-0 text-faint">#{position + 1}</span>
+                              <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-strong">
+                                <div
+                                  className="h-full rounded-full bg-primary-500 transition-[width] duration-300"
+                                  style={{ width: `${segPercent}%` }}
+                                />
+                              </div>
+                              <span className="w-8 flex-shrink-0 text-right text-faint">
+                                {Math.round(segPercent)}%
+                              </span>
+                              <span className="w-16 flex-shrink-0 text-right text-faint">
+                                {formatSpeed(item.speed)}
+                              </span>
+                              <span className="w-28 flex-shrink-0 whitespace-nowrap text-right text-body">
+                                {formatBytes(item.downloaded)} / {formatBytes(item.total)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                </div>
               )}
             </div>
           )}
@@ -368,6 +504,9 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
                   {lastFile.path}
                 </p>
               </div>
+              <span className="flex-shrink-0 self-center whitespace-nowrap text-[10px] tabular-nums text-faint">
+                {t("用时 {value1}", { value1: formatDuration(lastFile.elapsed) })}
+              </span>
               <button
                 type="button"
                 onClick={() =>
@@ -386,21 +525,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
                 {t("打开")}</button>
             </div>
           )}
-
-          <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
-            <p className="selectable min-w-0 flex-1 break-all text-[10px] leading-relaxed text-faint-soft">{t("保存位置：{value1}", { value1: downloadDir || t("软件安装目录/download") })}</p>
-            <button
-              type="button"
-              onClick={() => void guard(openDir)}
-              disabled={!downloadDir}
-              className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-faint transition-colors hover:bg-surface-alt hover:text-body disabled:cursor-not-allowed disabled:opacity-40"
-              title={t("在文件管理器中打开下载目录")}
-            >
-              <Icon name="sidebar-folder-thin" className="w-3 h-3" />
-              {t("打开目录")}</button>
-          </div>
         </div>
-      </div>
+      )}
 
       {tab === "fingerprint" && <FingerprintPanel />}
     </div>

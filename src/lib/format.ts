@@ -22,6 +22,15 @@ export const formatBytes = (bytes: number, fractionDigits = 1): string => {
 export const formatSpeed = (bytesPerSecond: number): string =>
   `${formatBytes(bytesPerSecond)}/s`;
 
+/** 毫秒 → `时:分:秒`，如 `01:23:45`；不足一小时也补齐小时位，宽度稳定不跳动 */
+export const formatDuration = (ms: number): string => {
+  const total = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+};
+
 /** ISO 时间 → 当前语言的日期时间；空值显示破折号，无法解析时原样返回 */
 export const formatDateTime = (value: string | null, locale: string): string => {
   if (!value) return "—";

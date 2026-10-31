@@ -2227,7 +2227,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <span className="text-body font-medium">{appVersion || "—"}</span>
                                 <button
                                   type="button"
-                                  onClick={() => void checkForUpdates()}
+                                  onClick={() => {
+                                    // 手动检查到新版本就直接打开更新弹窗；
+                                    // 启动/定时静默检查仍只点亮更新提示，不打断用户
+                                    void checkForUpdates().then((info) => {
+                                      if (info) openUpdateDialog();
+                                    });
+                                  }}
                                   disabled={
                                     updater.phase === "checking" ||
                                     updater.phase === "downloading" ||

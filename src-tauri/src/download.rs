@@ -1,17 +1,20 @@
-//! 通用下载模块：多线程分段下载 + 进度回调。
+//! 通用下载模块：动态分片多线程下载 + 进度回调。
 //!
 //! - 线程数来自 `app.config.general.downloadThreads`（1–128，默认 32），
 //!   语义模型下载与工具箱下载共用同一个值；
-//! - 服务器支持 Range 时按段并发，每段至少 512 KiB；不支持或文件很小时退回单流；
-//! - 分段进度留在 `<目标>.part.<序号>`，参数不变时重试可续传；线程数变了就丢弃旧分段；
+//! - 服务器支持 Range 时把文件切成比线程数略多的大分片（默认每线程 3 片），
+//!   所有线程从同一个队列里取：先下完的线程继续取下一片，不会出现“快的闲着”；
+//!   分片不能太小——连接刚进入满速就结束，整体吞吐反而比少而大的分片差；
+//! - 不支持 Range 或文件很小时退回单流；
+//! - 分段进度留在 `<目标>.part.<序号>`，参数不变时重试可续传；分片布局变了就丢弃旧分段；
 //! - 工具箱下载的分片放在 `<下载目录>/<文件名>` 临时目录，完成后合并回下载根目录并删除；
 //! - 工具箱下载可以取消：取消标记在每个数据块之间检查，退出后清理临时文件；
-//! - 进度通过回调交给调用方（附带实际分段数，便于界面显示单线程/多段并发），
+//! - 进度通过回调交给调用方（总进度 + 正在下载的各分片信息），
 //!   模型下载发 `semantic-model-progress`，工具箱发 `toolbox-download-progress`。
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,11 +31,21 @@ pub const DEFAULT_THREADS: u64 = 32;
 pub const MAX_THREADS: u64 = 128;
 pub const THREADS_KEY: &str = "app.config.general.downloadThreads";
 
-/// 单段建议下限：太小的文件拆成几十段，请求开销比数据还大
-const MIN_SEGMENT: u64 = 512 * 1024;
+/// 单段建议下限：分片太小会让每条连接都停在自己刚爬坡的阶段，吞吐反而下降
+const MIN_SEGMENT: u64 = 4 * 1024 * 1024;
+/// 单段上限：分片总数为硬约束，单片再大也不会撑爆临时目录
+const MAX_SEGMENT: u64 = 256 * 1024 * 1024;
+/// 每个线程在队列里预置的分片数：先下完的线程接着取下一片，直到文件下完
+const SEGMENTS_PER_THREAD: usize = 3;
+/// 分片总数上限：超大文件也不至于生成几万个临时文件
+const MAX_SEGMENTS: usize = 4096;
 const MAX_ATTEMPTS: usize = 3;
 const EMIT_INTERVAL_MS: u64 = 250;
 const PROGRESS_EVENT: &str = "toolbox-download-progress";
+/// 入口预检最多跟几跳：落地页 → 落地页 → 文件
+const ENTRY_HOPS: usize = 3;
+/// 落地页最多读这么多字节用于找下载地址（正常页面远小于这个值）
+const HTML_LIMIT: usize = 512 * 1024;
 
 pub const CANCELLED: &str = "已取消下载";
 
@@ -59,6 +72,25 @@ pub struct DownloadState {
     /// 当前工具箱任务的取消标记：同一时间只跑一个任务
     pub active: Mutex<Option<Cancel>>,
 }
+
+/// 单个分片（= 一个线程正在负责的片段）的实时进度，随总进度一起交给调用方。
+/// `downloaded` 是相对整个文件的偏移之外的“本片已下载字节”，界面直接按片展示。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SegmentProgress {
+    /// 分片序号，从 0 开始；分片布局在同一个任务内固定
+    pub index: usize,
+    /// 分片在文件中的起始字节（含）
+    pub start: u64,
+    /// 分片在文件中的结束字节（含）
+    pub end: u64,
+    pub downloaded: u64,
+    pub total: u64,
+    /// 本片当前速度（字节/秒）
+    pub speed: f64,
+}
+
+/// 进度回调：总已下载、总大小、并发数、正在进行的分片列表（只含未完成的分片）
+pub type ProgressSink<'a> = &'a (dyn Fn(u64, u64, usize, &[SegmentProgress]) + Sync);
 
 /// 没有取消令牌时永远 pending；有令牌时每 100ms 轮询一次
 async fn wait_cancel(cancel: Option<&Cancel>) {
@@ -202,22 +234,28 @@ fn resolve_filename(url: &str, custom: Option<&str>) -> String {
     }
 }
 
-/// 从链接最后一段取文件名；取不到时用时间戳兜底
-pub fn filename_from_url(raw: &str) -> String {
-    if let Ok(url) = reqwest::Url::parse(raw) {
-        if let Some(mut segments) = url.path_segments() {
-            if let Some(last) = segments.next_back() {
-                let name = sanitize_filename(&percent_decode(last));
-                if !name.is_empty() && name != "." && name != ".." {
-                    return name;
-                }
-            }
-        }
+/// 从链接路径最后一段取文件名；路径为空、以 `/` 结尾或只有 `.`/`..` 时返回 None
+fn filename_from_path(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw).ok()?;
+    let last = url.path_segments()?.next_back()?;
+    let name = sanitize_filename(&percent_decode(last));
+    if name.is_empty() || name == "." || name == ".." {
+        None
+    } else {
+        Some(name)
     }
-    format!(
-        "download-{}.bin",
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    )
+}
+
+/// 从链接最后一段取文件名；取不到时用时间戳兜底。
+/// 注意：这里只看原始链接。入口是脚本（`download.php?pro=x`）时，
+/// 真实文件名在重定向之后，由 [`suggest_filename`] 负责取。
+pub fn filename_from_url(raw: &str) -> String {
+    filename_from_path(raw).unwrap_or_else(|| {
+        format!(
+            "download-{}.bin",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        )
+    })
 }
 
 /// 从 `Content-Disposition` 取文件名：优先 RFC 5987 的 `filename*`，其次 `filename`。
@@ -246,28 +284,285 @@ fn filename_from_disposition(value: &str) -> Option<String> {
     plain
 }
 
-/// 预检一次，读响应头里的文件名。用户没填文件名时调用：
-/// 链接形如 `/download/windows/nsis/x64` 时路径推导不出 `Comfy-Desktop-Setup.exe`，
-/// 只有响应头里有。失败不影响下载，回退到链接推导。
-async fn suggest_filename(client: &Client, url: &str) -> Option<String> {
-    let mut response = client
-        .get(url)
-        .header(reqwest::header::RANGE, "bytes=0-0")
-        .send()
-        .await
-        .ok()?;
-    if !response.status().is_success() {
-        // 有些站拒绝 Range，普通 GET 的头才是对的；不读 body，拿到头就丢
-        response = client.get(url).send().await.ok()?;
+/// 入口预检结果：实际要下载的地址 + 能拿到的文件名
+struct Entry {
+    /// 实际发起请求的地址。普通跳转沿用原始链接（保留 Referer 跟随），
+    /// 落地页则换成页面里解析出的真实地址。
+    url: String,
+    /// 建议文件名：优先 `Content-Disposition`，其次跳转后地址的路径名
+    filename: Option<String>,
+}
+
+/// 预检入口链接：跟随 HTTP 跳转；如果最终拿到的是网页（下载落地页），
+/// 就从 HTML 里找真实文件地址（meta refresh / JS 跳转 / 带文件扩展名的链接），
+/// 最多跟 [`ENTRY_HOPS`] 跳。
+///
+/// 两类“看不到文件地址”的链接都在这里解决：
+/// - 入口脚本 301/302 到真实文件（`downloadHr60.php?pro=hr60` → `….exe`）：
+///   传输本来就会跟随跳转，但文件名要取最终地址，入口脚本名没有意义；
+/// - 下载落地页：文件地址由页面里的 JS 拼出来，HTTP 层没有跳转，
+///   只能解析页面。解析不到就报错——把网页当文件存下来只会让人困惑。
+async fn resolve_entry(
+    client: &Client,
+    url: &str,
+    cancel: Option<&Cancel>,
+) -> Result<Entry, String> {
+    let no_file = "这个链接返回的是网页，没有找到可下载的文件地址".to_string();
+    let mut current = url.to_string();
+    for _ in 0..ENTRY_HOPS {
+        let response = entry_response(client, &current, cancel).await?;
+        let final_url = response.url().clone();
+        let disposition = response
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(filename_from_disposition);
+
+        if !is_html(&response) {
+            return Ok(Entry {
+                url: current,
+                filename: disposition.or_else(|| filename_from_path(final_url.as_str())),
+            });
+        }
+
+        // 带 Range 的探测对网页只拿到了 1 字节，得整页重取一次
+        let page = if response.status() == StatusCode::PARTIAL_CONTENT {
+            send_get(client, final_url.as_str(), cancel).await?
+        } else {
+            response
+        };
+        let html = read_limited(page, HTML_LIMIT).await;
+        let Some(next) = download_url_from_html(&html, &final_url) else {
+            return Err(no_file);
+        };
+        if next == final_url {
+            return Err(no_file);
+        }
+        current = next.to_string();
     }
-    if !response.status().is_success() {
-        return None;
+    Err("链接经过多次跳转仍未指向文件".to_string())
+}
+
+/// 先带 `Range: bytes=0-0` 探测（支持分段的站点只回 1 字节），
+/// 被拒时退回普通 GET——有些站对带 Range 的请求直接 400/403。
+async fn entry_response(
+    client: &Client,
+    url: &str,
+    cancel: Option<&Cancel>,
+) -> Result<Response, String> {
+    let response = tokio::select! {
+        _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+        result = client.get(url).header(reqwest::header::RANGE, "bytes=0-0").send() => {
+            result.map_err(|e| format!("请求失败：{e}"))?
+        }
+    };
+    if response.status().is_success() {
+        return Ok(response);
     }
+    send_get(client, url, cancel).await
+}
+
+async fn send_get(
+    client: &Client,
+    url: &str,
+    cancel: Option<&Cancel>,
+) -> Result<Response, String> {
+    let response = tokio::select! {
+        _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+        result = client.get(url).send() => result.map_err(|e| format!("请求失败：{e}"))?,
+    };
+    if response.status().is_success() {
+        Ok(response)
+    } else {
+        Err(format!("HTTP {}", response.status()))
+    }
+}
+
+fn is_html(response: &Response) -> bool {
     response
         .headers()
-        .get(reqwest::header::CONTENT_DISPOSITION)
+        .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .and_then(filename_from_disposition)
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("text/html") || value.contains("application/xhtml")
+        })
+}
+
+/// 读响应体前 `limit` 字节：落地页解析只需要页面开头的链接，不整页拉下来
+async fn read_limited(response: Response, limit: usize) -> String {
+    let mut buffer = Vec::with_capacity(8192);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { break };
+        buffer.extend_from_slice(&chunk);
+        if buffer.len() >= limit {
+            break;
+        }
+    }
+    buffer.truncate(limit);
+    String::from_utf8_lossy(&buffer).into_owned()
+}
+
+/// 页面里只有带这些扩展名的链接才当作下载地址，避免把导航、图标、样式表误认成文件
+const DOWNLOAD_EXTS: &[&str] = &[
+    "exe", "msi", "msix", "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "zst",
+    "dmg", "pkg", "deb", "rpm", "apk", "iso", "pdf", "whl", "jar", "bin", "appimage",
+    "mp4", "mkv", "mp3",
+];
+
+/// 从落地页里找真实下载地址，依次看：
+/// 1. `<meta http-equiv="refresh" content="0;url=...">`
+/// 2. JS 跳转：`location.href =` / `window.location =` / `location.replace(...)` / `assign(...)`
+/// 3. `<a href="...">` 里带文件扩展名的链接
+fn download_url_from_html(html: &str, base: &reqwest::Url) -> Option<reqwest::Url> {
+    // 只做 ASCII 小写：非 ASCII 字节原样保留，下标与原文一一对应，
+    // 定位用小写副本，取值回原文（URL 大小写敏感）
+    let lower = html.to_ascii_lowercase();
+    meta_refresh_target(&lower, html, base)
+        .or_else(|| js_location_target(&lower, html, base))
+        .or_else(|| anchor_target(&lower, html, base))
+}
+
+fn meta_refresh_target(lower: &str, html: &str, base: &reqwest::Url) -> Option<reqwest::Url> {
+    let mut cursor = 0;
+    while let Some(at) = lower[cursor..].find("<meta") {
+        let start = cursor + at;
+        let Some(close) = lower[start..].find('>') else { break };
+        let end = start + close;
+        let tag = &lower[start..end];
+        if tag.contains("http-equiv") && tag.contains("refresh") {
+            if let Some(pos) = tag.find("content") {
+                if let Some(value) = attr_value(tag, &html[start..end], pos) {
+                    let value_lower = value.to_ascii_lowercase();
+                    if let Some(url_pos) = value_lower.find("url") {
+                        if let Some((_, raw)) = value[url_pos..].split_once('=') {
+                            let raw = raw.trim().trim_matches(|c| c == '\'' || c == '"');
+                            if let Some(url) = normalize_url(raw, base) {
+                                return Some(url);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cursor = end + 1;
+    }
+    None
+}
+
+fn js_location_target(lower: &str, html: &str, base: &reqwest::Url) -> Option<reqwest::Url> {
+    let mut cursor = 0;
+    while let Some(at) = lower[cursor..].find("location") {
+        let start = cursor + at;
+        cursor = start + "location".len();
+        let tail = &lower[cursor..];
+        // 只认 `.href`、`.replace(`、`.assign(`，以及 `location = "..."` 这种直接赋值；
+        // `regexp.location` 之类的正文不会被误当成跳转
+        let op = if tail.starts_with(".href") {
+            cursor + ".href".len()
+        } else if tail.starts_with(".replace") {
+            cursor + ".replace".len()
+        } else if tail.starts_with(".assign") {
+            cursor + ".assign".len()
+        } else {
+            let trimmed = tail.trim_start();
+            if !trimmed.starts_with('=') {
+                continue;
+            }
+            cursor + (tail.len() - trimmed.len())
+        };
+        // 符号前只允许空白，避免把 `location.href.indexOf(` 这类调用当成跳转
+        let window = &lower[op..(op + 16).min(lower.len())];
+        let Some(sign) = window.find(['=', '(']) else { continue };
+        if !window[..sign].trim().is_empty() {
+            continue;
+        }
+        if let Some(raw) = next_quoted(lower, html, op + sign + 1, 256) {
+            if let Some(url) = normalize_url(&raw, base) {
+                return Some(url);
+            }
+        }
+    }
+    None
+}
+
+fn anchor_target(lower: &str, html: &str, base: &reqwest::Url) -> Option<reqwest::Url> {
+    let mut cursor = 0;
+    while let Some(at) = lower[cursor..].find("<a ") {
+        let start = cursor + at;
+        let Some(close) = lower[start..].find('>') else { break };
+        let end = start + close;
+        let (tag_lower, tag) = (&lower[start..end], &html[start..end]);
+        if let Some(pos) = tag_lower.find("href") {
+            if let Some(raw) = attr_value(tag_lower, tag, pos) {
+                if let Some(url) = normalize_url(&raw, base) {
+                    if has_download_ext(&url) {
+                        return Some(url);
+                    }
+                }
+            }
+        }
+        cursor = end + 1;
+    }
+    None
+}
+
+/// 取 `pos` 处属性 `key=` 后面的值（`pos` 是属性名起点），支持单/双引号与无引号。
+/// `lower` 与 `source` 是同一段文本的大小写两版，返回值保留原文大小写。
+fn attr_value(lower: &str, source: &str, pos: usize) -> Option<String> {
+    let eq = lower[pos..].find('=')?;
+    let rest = &source[pos + eq + 1..];
+    let trimmed = rest.trim_start();
+    let first = trimmed.chars().next()?;
+    if first == '"' || first == '\'' {
+        let body = &trimmed[1..];
+        let end = body.find(first)?;
+        Some(body[..end].to_string())
+    } else {
+        let end = trimmed
+            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(trimmed.len());
+        Some(trimmed[..end].to_string())
+    }
+}
+
+/// 从 `from` 开始找第一个引号字符串；超过 `limit` 字节说明不是 URL，放弃
+fn next_quoted(lower: &str, html: &str, from: usize, limit: usize) -> Option<String> {
+    let window = &lower[from..(from + limit).min(lower.len())];
+    let offset = window.find(['"', '\''])?;
+    let quote_at = from + offset;
+    let quote = html.as_bytes()[quote_at];
+    let body = &html[quote_at + 1..];
+    let end = body.as_bytes().iter().position(|b| *b == quote)?;
+    Some(body[..end].to_string())
+}
+
+fn normalize_url(raw: &str, base: &reqwest::Url) -> Option<reqwest::Url> {
+    let raw = raw.trim().trim_matches(|c| c == '\'' || c == '"');
+    if raw.is_empty() || raw.starts_with('#') {
+        return None;
+    }
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("javascript:")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("data:")
+    {
+        return None;
+    }
+    let url = base.join(raw).ok()?;
+    matches!(url.scheme(), "http" | "https").then_some(url)
+}
+
+fn has_download_ext(url: &reqwest::Url) -> bool {
+    let name = url
+        .path()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let Some(ext) = name.rsplit('.').next() else { return false };
+    name.contains('.') && DOWNLOAD_EXTS.contains(&ext)
 }
 
 /// 重名时追加 ` (1)`、` (2)`…，不覆盖用户已有文件
@@ -299,14 +594,14 @@ pub fn unique_dest(dir: &Path, filename: &str) -> PathBuf {
 }
 
 /// 下载一个文件到 `dest`。`progress` 会被高频调用，节流由本模块负责；
-/// 第三个参数是实际分段数（1 表示单流），用于界面提示实际走的是哪种模式。
+/// 第三个数值参数是并发连接数（1 表示单流），最后一个参数是正在进行的分片列表。
 pub async fn fetch(
     client: &Client,
     url: &str,
     dest: &Path,
     threads: usize,
     cancel: Option<&Cancel>,
-    progress: &(dyn Fn(u64, u64, usize) + Sync),
+    progress: ProgressSink<'_>,
 ) -> Result<u64, String> {
     ensure_not_cancelled(cancel)?;
     if let Some(parent) = dest.parent() {
@@ -400,11 +695,12 @@ async fn download_segmented(
     total: u64,
     threads: usize,
     cancel: Option<&Cancel>,
-    progress: &(dyn Fn(u64, u64, usize) + Sync),
+    progress: ProgressSink<'_>,
 ) -> Result<u64, String> {
     ensure_not_cancelled(cancel)?;
-    let plan = plan_segments(total, threads);
-    reset_plan_if_changed(dest, total, plan.len()).await?;
+    let chunk = chunk_size(total, threads);
+    let plan = plan_segments(total, chunk);
+    reset_plan_if_changed(dest, total, chunk).await?;
 
     // 旧版本只留了一个 `<文件>.part`：能塞进第一段就当作第 0 段继续用
     let legacy = dest.with_extension("part");
@@ -418,7 +714,9 @@ async fn download_segmented(
         }
     }
 
+    // 先扫一遍已有分片：能续传的计入总进度，超长的直接作废
     let mut existing = 0u64;
+    let mut existing_lens = vec![0u64; plan.len()];
     for (index, (start, end)) in plan.iter().enumerate() {
         let part = segment_path(dest, index);
         let expected = end - start + 1;
@@ -426,24 +724,53 @@ async fn download_segmented(
         if len > expected {
             let _ = tokio::fs::remove_file(&part).await;
         } else {
+            existing_lens[index] = len;
             existing = existing.saturating_add(len);
         }
     }
 
-    let meter = Progress::new(existing, total, plan.len(), progress);
+    let parallelism = threads
+        .clamp(1, MAX_THREADS as usize)
+        .min(plan.len())
+        .max(1);
+    let meter = Progress::new(
+        &plan,
+        &existing_lens,
+        existing,
+        total,
+        parallelism,
+        progress,
+    );
     meter.emit();
 
+    // 动态调度：所有线程共用一个分片游标，先下完的线程直接取下一片。
+    // 单片的下载速度受服务器/线路影响差别很大，谁快谁多干，慢的不会拖住整体。
+    let cursor = AtomicUsize::new(0);
+    let cursor = &cursor;
+    let plan_ref = &plan;
+    let lens_ref = &existing_lens;
     let meter_ref: &Progress<'_> = &meter;
-    let results =
-        join_all(
-            plan.iter().enumerate().map(move |(index, (start, end))| {
-                let part = segment_path(dest, index);
-                async move {
-                    download_segment(client, url, &part, *start, *end, cancel, meter_ref).await
-                }
-            }),
-        )
-        .await;
+    let results = join_all((0..parallelism).map(|_| async move {
+        loop {
+            ensure_not_cancelled(cancel)?;
+            let index = cursor.fetch_add(1, Ordering::Relaxed);
+            let Some(&(start, end)) = plan_ref.get(index) else {
+                break;
+            };
+            let expected = end - start + 1;
+            if lens_ref[index] >= expected {
+                continue;
+            }
+            let part = segment_path(dest, index);
+            meter_ref.begin(index);
+            let result =
+                download_segment(client, url, &part, start, end, cancel, meter_ref, index).await;
+            meter_ref.end(index);
+            result?;
+        }
+        Ok::<(), String>(())
+    }))
+    .await;
     for result in results {
         result?;
     }
@@ -473,12 +800,17 @@ async fn download_segment(
     end: u64,
     cancel: Option<&Cancel>,
     meter: &Progress<'_>,
+    index: usize,
 ) -> Result<(), String> {
     let expected = end - start + 1;
     let mut last_error = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         ensure_not_cancelled(cancel)?;
-        match segment_once(client, url, part, start, end, expected, cancel, meter).await {
+        match segment_once(
+            client, url, part, start, end, expected, cancel, meter, index,
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if cancel.is_some_and(Cancel::is_cancelled) {
@@ -503,6 +835,7 @@ async fn segment_once(
     expected: u64,
     cancel: Option<&Cancel>,
     meter: &Progress<'_>,
+    index: usize,
 ) -> Result<(), String> {
     ensure_not_cancelled(cancel)?;
     let mut existing = file_len(part);
@@ -557,7 +890,7 @@ async fn segment_once(
             .await
             .map_err(|e| format!("写入失败：{e}"))?;
         written += chunk.len() as u64;
-        meter.add(chunk.len() as u64);
+        meter.add(index, chunk.len() as u64);
     }
     file.flush().await.map_err(|e| format!("写入失败：{e}"))?;
 
@@ -574,10 +907,10 @@ async fn download_single(
     known_total: Option<u64>,
     initial: Option<Response>,
     cancel: Option<&Cancel>,
-    progress: &(dyn Fn(u64, u64, usize) + Sync),
+    progress: ProgressSink<'_>,
 ) -> Result<u64, String> {
     let part = dest.with_extension("part");
-    let meter = Progress::new(file_len(&part), known_total.unwrap_or(0), 1, progress);
+    let meter = Progress::single(file_len(&part), known_total.unwrap_or(0), progress);
     // 先把总长与「单线程」模式送给界面，避免长连接建立期间只有「准备下载…」
     meter.emit();
     let mut response = initial;
@@ -701,7 +1034,7 @@ async fn single_once(
             .await
             .map_err(|e| format!("写入失败：{e}"))?;
         downloaded += chunk.len() as u64;
-        meter.add(chunk.len() as u64);
+        meter.add_global(chunk.len() as u64);
     }
     file.flush().await.map_err(|e| format!("写入失败：{e}"))?;
 
@@ -713,36 +1046,139 @@ async fn single_once(
     Ok(downloaded)
 }
 
-/// 分段进度：多段共享一个计数，250ms 最多回调一次
+/// 单个分片的计数与测速：下载线程写入，emit 时读取快照
+struct SegmentSlot {
+    start: u64,
+    end: u64,
+    done: AtomicU64,
+    active: AtomicBool,
+    last_bytes: AtomicU64,
+    last_ms: AtomicU64,
+    /// f64 的位模式；原子类型只有整数操作
+    speed: AtomicU64,
+}
+
+impl SegmentSlot {
+    fn new(start: u64, end: u64, done: u64) -> Self {
+        Self {
+            start,
+            end,
+            done: AtomicU64::new(done),
+            active: AtomicBool::new(false),
+            last_bytes: AtomicU64::new(done),
+            last_ms: AtomicU64::new(0),
+            speed: AtomicU64::new(0f64.to_bits()),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        self.end - self.start + 1
+    }
+
+    /// 两次 emit 之间的瞬时速度做指数平滑，避免界面数字乱跳
+    fn measure(&self, now_ms: u64) -> f64 {
+        let prev = f64::from_bits(self.speed.load(Ordering::Relaxed));
+        let last_ms = self.last_ms.load(Ordering::Relaxed);
+        if now_ms <= last_ms {
+            return prev;
+        }
+        let last_bytes = self.last_bytes.load(Ordering::Relaxed);
+        let done = self.done.load(Ordering::Relaxed);
+        if self
+            .last_ms
+            .compare_exchange(last_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return prev;
+        }
+        let instant = done.saturating_sub(last_bytes) as f64 * 1000.0 / (now_ms - last_ms) as f64;
+        let next = if prev > 0.0 {
+            prev * 0.6 + instant * 0.4
+        } else {
+            instant
+        };
+        self.last_bytes.store(done, Ordering::Relaxed);
+        self.speed.store(next.to_bits(), Ordering::Relaxed);
+        next
+    }
+}
+
+/// 进度汇聚：总计数 + 各分片计数，250ms 最多回调一次，避免事件把前端刷爆
 struct Progress<'a> {
     start: Instant,
     last_emit_ms: AtomicU64,
     done: AtomicU64,
     total: u64,
-    /// 实际分段数；1 表示单流
-    segments: usize,
-    callback: &'a (dyn Fn(u64, u64, usize) + Sync),
+    /// 并发连接数；1 表示单流
+    parallelism: usize,
+    slots: Vec<SegmentSlot>,
+    callback: ProgressSink<'a>,
 }
 
 impl<'a> Progress<'a> {
     fn new(
+        plan: &[(u64, u64)],
+        existing_lens: &[u64],
         done: u64,
         total: u64,
-        segments: usize,
-        callback: &'a (dyn Fn(u64, u64, usize) + Sync),
+        parallelism: usize,
+        callback: ProgressSink<'a>,
     ) -> Self {
+        let slots = plan
+            .iter()
+            .zip(existing_lens)
+            .map(|((start, end), len)| SegmentSlot::new(*start, *end, *len))
+            .collect();
         Self {
             start: Instant::now(),
             last_emit_ms: AtomicU64::new(0),
             done: AtomicU64::new(done),
             total,
-            segments,
+            parallelism,
+            slots,
             callback,
         }
     }
 
-    fn add(&self, bytes: u64) {
-        let done = self.done.fetch_add(bytes, Ordering::Relaxed) + bytes;
+    fn single(done: u64, total: u64, callback: ProgressSink<'a>) -> Self {
+        Self {
+            start: Instant::now(),
+            last_emit_ms: AtomicU64::new(0),
+            done: AtomicU64::new(done),
+            total,
+            parallelism: 1,
+            slots: Vec::new(),
+            callback,
+        }
+    }
+
+    /// 分片开始下载：重置测速基准并尽快把新分片送到界面
+    fn begin(&self, index: usize) {
+        let slot = &self.slots[index];
+        let now = self.start.elapsed().as_millis() as u64;
+        slot.last_bytes
+            .store(slot.done.load(Ordering::Relaxed), Ordering::Relaxed);
+        slot.last_ms.store(now, Ordering::Relaxed);
+        slot.speed.store(0f64.to_bits(), Ordering::Relaxed);
+        slot.active.store(true, Ordering::Relaxed);
+        self.maybe_emit();
+    }
+
+    fn end(&self, index: usize) {
+        self.slots[index].active.store(false, Ordering::Relaxed);
+    }
+
+    fn add(&self, index: usize, bytes: u64) {
+        self.slots[index].done.fetch_add(bytes, Ordering::Relaxed);
+        self.add_global(bytes);
+    }
+
+    fn add_global(&self, bytes: u64) {
+        self.done.fetch_add(bytes, Ordering::Relaxed);
+        self.maybe_emit();
+    }
+
+    fn maybe_emit(&self) {
         let now = self.start.elapsed().as_millis() as u64;
         let last = self.last_emit_ms.load(Ordering::Relaxed);
         if now.saturating_sub(last) >= EMIT_INTERVAL_MS
@@ -751,7 +1187,12 @@ impl<'a> Progress<'a> {
                 .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
         {
-            (self.callback)(done, self.total, self.segments);
+            (self.callback)(
+                self.done.load(Ordering::Relaxed),
+                self.total,
+                self.parallelism,
+                &self.snapshot(now),
+            );
         }
     }
 
@@ -760,27 +1201,64 @@ impl<'a> Progress<'a> {
     }
 
     fn emit(&self) {
-        (self.callback)(self.done.load(Ordering::Relaxed), self.total, self.segments);
+        let now = self.start.elapsed().as_millis() as u64;
+        (self.callback)(
+            self.done.load(Ordering::Relaxed),
+            self.total,
+            self.parallelism,
+            &self.snapshot(now),
+        );
     }
 
     fn finish(&self, done: u64) {
-        self.done.store(done, Ordering::Relaxed);
+        self.set_done(done);
         self.emit();
+    }
+
+    /// 只输出仍在下载的分片：下完的立刻从列表里消失，接替它的新分片自然出现
+    fn snapshot(&self, now_ms: u64) -> Vec<SegmentProgress> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                if !slot.active.load(Ordering::Relaxed) {
+                    return None;
+                }
+                Some(SegmentProgress {
+                    index,
+                    start: slot.start,
+                    end: slot.end,
+                    downloaded: slot.done.load(Ordering::Relaxed).min(slot.len()),
+                    total: slot.len(),
+                    speed: slot.measure(now_ms),
+                })
+            })
+            .collect()
     }
 }
 
-/// 分段范围（闭区间）；每段至少 MIN_SEGMENT，实际段数不超过线程数
-fn plan_segments(total: u64, threads: usize) -> Vec<(u64, u64)> {
+/// 分片大小：并发越多分片越多，队列里始终有可抢的份数；
+/// 夹在 4 MiB–256 MiB 之间——大分片让连接有足够时间跑满带宽，小分片只留作兜底。
+fn chunk_size(total: u64, threads: usize) -> u64 {
     let threads = threads.clamp(1, MAX_THREADS as usize) as u64;
-    let n = threads.min((total / MIN_SEGMENT).max(1)).max(1);
-    let base = total / n;
-    let remainder = total % n;
-    let mut out = Vec::with_capacity(n as usize);
-    let mut start = 0u64;
-    for index in 0..n {
-        let len = base + if index == n - 1 { remainder } else { 0 };
-        out.push((start, start + len - 1));
-        start += len;
+    (total / (threads * SEGMENTS_PER_THREAD as u64)).clamp(MIN_SEGMENT, MAX_SEGMENT)
+}
+
+/// 分片范围（闭区间）；个数有上限，超大文件按上限反推单片长度
+fn plan_segments(total: u64, chunk: u64) -> Vec<(u64, u64)> {
+    let chunk = chunk.max(1);
+    let count = total.div_ceil(chunk).clamp(1, MAX_SEGMENTS as u64);
+    let chunk = total.div_ceil(count).max(1);
+    let last = total.saturating_sub(1);
+    let mut out = Vec::with_capacity(count as usize);
+    let mut begin = 0u64;
+    for _ in 0..count {
+        let end = begin.saturating_add(chunk - 1).min(last);
+        out.push((begin, end));
+        if end >= last {
+            break;
+        }
+        begin = end + 1;
     }
     out
 }
@@ -801,10 +1279,10 @@ fn plan_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{name}.part.plan"))
 }
 
-/// 线程数或文件大小变了，旧分段的位置就不能复用：清掉重下
-async fn reset_plan_if_changed(dest: &Path, total: u64, segments: usize) -> Result<(), String> {
+/// 分片布局（总长或单片长度）变了，旧分段的位置就不能复用：清掉重下
+async fn reset_plan_if_changed(dest: &Path, total: u64, chunk: u64) -> Result<(), String> {
     let path = plan_path(dest);
-    let expected = json!({ "total": total, "segments": segments }).to_string();
+    let expected = json!({ "total": total, "chunk": chunk }).to_string();
     if let Ok(raw) = tokio::fs::read_to_string(&path).await {
         if raw.trim() == expected {
             return Ok(());
@@ -962,9 +1440,9 @@ pub async fn toolbox_download(
         }
         if let Err(error) = outcome {
             if task_cancel.is_cancelled() {
-                emit_toolbox(&handle, "cancelled", "", "", 0, 0, 0, None);
+                emit_toolbox(&handle, "cancelled", "", "", 0, 0, 0, &[], 0, None);
             } else {
-                emit_toolbox(&handle, "error", "", "", 0, 0, 0, Some(&error));
+                emit_toolbox(&handle, "error", "", "", 0, 0, 0, &[], 0, Some(&error));
             }
         }
     });
@@ -997,12 +1475,15 @@ async fn run_toolbox_download(
 ) -> Result<(), String> {
     let dir = default_dir(app)?;
     let client = client()?;
+    // 入口可能不是文件本身（脚本跳转 / 下载落地页）；解析出的地址用于实际下载，
+    // 避免把网页当文件存下来，顺带拿到真实文件名。
+    let entry = resolve_entry(&client, url, Some(cancel)).await?;
     let mut base_name = resolve_filename(url, filename);
     let custom_blank = filename
         .map(|name| sanitize_filename(name).is_empty())
         .unwrap_or(true);
     if custom_blank {
-        if let Some(remote) = suggest_filename(&client, url).await {
+        if let Some(remote) = entry.filename {
             base_name = remote;
         }
     }
@@ -1025,14 +1506,26 @@ async fn run_toolbox_download(
         .to_string();
     let path = dest.to_string_lossy().to_string();
 
-    emit_toolbox(app, "download", &filename, &path, 0, 0, 0, None);
+    // 计时从真正开始传输算起：前面的文件名解析 / 建暂存目录不算下载时间。
+    // 进度事件带绝对用时，界面中途关闭再打开也能接上。
+    let started = Instant::now();
+    emit_toolbox(app, "download", &filename, &path, 0, 0, 0, &[], 0, None);
     let count = threads(app);
-    let progress = |done: u64, total: u64, segments: usize| {
+    let progress = |done: u64, total: u64, parallel: usize, active: &[SegmentProgress]| {
         emit_toolbox(
-            app, "download", &filename, &path, done, total, segments, None,
+            app,
+            "download",
+            &filename,
+            &path,
+            done,
+            total,
+            parallel,
+            active,
+            started.elapsed().as_millis() as u64,
+            None,
         );
     };
-    let size = match fetch(&client, url, &temp_dest, count, Some(cancel), &progress).await {
+    let size = match fetch(&client, &entry.url, &temp_dest, count, Some(cancel), &progress).await {
         Ok(size) => size,
         Err(error) => {
             // 工具箱每次都选新的文件名，残留分段不会再被续传，失败或取消都清掉
@@ -1068,6 +1561,8 @@ async fn run_toolbox_download(
         size,
         size,
         0,
+        &[],
+        started.elapsed().as_millis() as u64,
         None,
     );
     Ok(())
@@ -1080,7 +1575,9 @@ fn emit_toolbox(
     path: &str,
     downloaded: u64,
     total: u64,
-    segments: usize,
+    parallel: usize,
+    active: &[SegmentProgress],
+    elapsed_ms: u64,
     error: Option<&str>,
 ) {
     let _ = app.emit(
@@ -1091,7 +1588,9 @@ fn emit_toolbox(
             "path": path,
             "downloaded": downloaded,
             "total": total,
-            "segments": segments,
+            "segments": parallel,
+            "segment_progress": active,
+            "elapsed": elapsed_ms,
             "error": error,
         }),
     );
@@ -1157,19 +1656,37 @@ mod tests {
     #[test]
     fn segments_cover_whole_file_without_overlap() {
         let total = 10 * 1024 * 1024u64;
-        let parts = plan_segments(total, 32);
+        let chunk = chunk_size(total, 32);
+        assert_eq!(
+            chunk, MIN_SEGMENT,
+            "10 MiB / (32 × 3) 低于下限，按 4 MiB 切"
+        );
+        let parts = plan_segments(total, chunk);
         assert_eq!(parts[0].0, 0);
         assert_eq!(parts.last().unwrap().1, total - 1);
         for pair in parts.windows(2) {
             assert_eq!(pair[0].1 + 1, pair[1].0);
         }
-        assert_eq!(parts.len(), 20, "10 MiB / 512 KiB = 20 段");
+        assert_eq!(parts.len(), 3, "10 MiB 按 4 MiB 切，得到 3 片");
     }
 
     #[test]
-    fn segments_never_exceed_thread_cap() {
-        assert_eq!(plan_segments(1024, 32).len(), 1);
-        assert_eq!(plan_segments(u64::MAX / 2, 999).len(), MAX_THREADS as usize);
+    fn chunk_plan_keeps_extra_work_queued_for_fast_threads() {
+        let total = 1024 * 1024 * 1024u64; // 1 GiB
+        let parts = plan_segments(total, chunk_size(total, 8));
+        assert!(
+            parts.len() >= 8 * 2,
+            "分片数要明显多于线程数，先下完的线程才有片段可抢"
+        );
+        assert_eq!(parts[0].0, 0);
+        assert_eq!(parts.last().unwrap().1, total - 1);
+
+        // 超大文件受分片总数上限约束，不会生成海量临时文件
+        let huge = u64::MAX / 2;
+        assert!(plan_segments(huge, chunk_size(huge, 128)).len() <= MAX_SEGMENTS);
+
+        // 小文件只切一颗
+        assert_eq!(plan_segments(1024, chunk_size(1024, 32)).len(), 1);
     }
 
     #[test]
@@ -1296,7 +1813,7 @@ mod tests {
 
     #[test]
     fn downloads_segmented_and_single_from_local_server() {
-        let payload: Arc<Vec<u8>> = Arc::new((0..2_500_000).map(|i| (i % 251) as u8).collect());
+        let payload: Arc<Vec<u8>> = Arc::new((0..20_000_000).map(|i| (i % 251) as u8).collect());
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -1311,7 +1828,7 @@ mod tests {
             let seen_segments = AtomicUsize::new(0);
             runtime.block_on(async {
                 let client = client().unwrap();
-                let progress = |_done: u64, _total: u64, segments: usize| {
+                let progress = |_done: u64, _total: u64, segments: usize, _: &[SegmentProgress]| {
                     seen_segments.fetch_max(segments, Ordering::Relaxed);
                 };
                 let size = fetch(&client, &url, &dest, 8, None, &progress)
@@ -1341,6 +1858,143 @@ mod tests {
         }
     }
 
+    /// 入口脚本服务器：任何请求都 301 到 `location`，模拟 `download.php?pro=x` 这类入口
+    fn spawn_redirect_server(location: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 301 Moved Permanently\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}/product/download.php?pro=x")
+    }
+
+    /// 落地页服务器：任何请求都返回一段 HTML，模拟文件地址写在页面里的下载页
+    fn spawn_html_server(html: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    html.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(html.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}/downloads/app")
+    }
+
+    #[test]
+    fn redirected_entry_takes_filename_from_final_url() {
+        let payload: Arc<Vec<u8>> = Arc::new(vec![9u8; 4096]);
+        let (target, _) = spawn_server(payload, true);
+        let entry = spawn_redirect_server(target.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let client = client().unwrap();
+            let found = resolve_entry(&client, &entry, None).await.unwrap();
+            assert_eq!(
+                found.filename.as_deref(),
+                Some("file.bin"),
+                "入口是 download.php 时，文件名要取重定向后的最终地址"
+            );
+            assert_eq!(found.url, entry, "普通跳转沿用原始链接，保留 Referer 跟随");
+        });
+    }
+
+    #[test]
+    fn landing_page_urls_are_extracted() {
+        let base = reqwest::Url::parse("https://example.com/download/page.html").unwrap();
+        let meta = r#"<meta http-equiv="refresh" content="0;URL='/files/app.exe'">"#;
+        assert_eq!(
+            download_url_from_html(meta, &base).unwrap().as_str(),
+            "https://example.com/files/app.exe"
+        );
+        let js = r#"<script>window.location.href = "/files/app.zip";</script>"#;
+        assert_eq!(
+            download_url_from_html(js, &base).unwrap().as_str(),
+            "https://example.com/files/app.zip"
+        );
+        let assign = r#"<script>location.assign('/files/setup.msi')</script>"#;
+        assert_eq!(
+            download_url_from_html(assign, &base).unwrap().as_str(),
+            "https://example.com/files/setup.msi"
+        );
+        let anchor = r#"<a class="btn" href="/files/tool-1.2.dmg">下载</a>"#;
+        assert_eq!(
+            download_url_from_html(anchor, &base).unwrap().as_str(),
+            "https://example.com/files/tool-1.2.dmg"
+        );
+        // 普通导航链接、JS 取值调用都不算下载地址
+        assert!(download_url_from_html(r#"<a href="/about">关于</a>"#, &base).is_none());
+        assert!(
+            download_url_from_html(r#"<script>if (location.href.indexOf("x") > 0) {}</script>"#, &base)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn landing_page_resolves_to_real_file() {
+        let payload: Arc<Vec<u8>> = Arc::new(vec![3u8; 4096]);
+        let (target, _) = spawn_server(payload, true);
+        for template in [
+            r#"<html><head><meta http-equiv="refresh" content="0; url=TARGET"></head></html>"#,
+            r#"<html><script>window.location = "TARGET";</script></html>"#,
+        ] {
+            let entry_url = spawn_html_server(template.replace("TARGET", &target));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let client = client().unwrap();
+                let found = resolve_entry(&client, &entry_url, None).await.unwrap();
+                assert_eq!(found.url, target);
+                assert_eq!(found.filename.as_deref(), Some("file.bin"));
+            });
+        }
+    }
+
+    #[test]
+    fn landing_page_without_file_link_errors() {
+        let entry_url = spawn_html_server("<html><body>没有下载链接</body></html>".to_string());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let client = client().unwrap();
+            assert!(resolve_entry(&client, &entry_url, None).await.is_err());
+        });
+    }
+
     #[test]
     fn cancelled_download_returns_without_touching_disk() {
         let payload: Arc<Vec<u8>> = Arc::new(vec![7u8; 100_000]);
@@ -1356,7 +2010,7 @@ mod tests {
         cancel.cancel();
         runtime.block_on(async {
             let client = client().unwrap();
-            let progress = |_done: u64, _total: u64, _segments: usize| {};
+            let progress = |_done: u64, _total: u64, _segments: usize, _: &[SegmentProgress]| {};
             let error = fetch(&client, &url, &dest, 4, Some(&cancel), &progress)
                 .await
                 .unwrap_err();

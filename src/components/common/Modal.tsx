@@ -25,7 +25,7 @@ const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
   "2xl": "max-w-3xl",
 };
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = "lg", width, height, floating = false }) => {
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = "lg", width, height, floating = false, zIndex }) => {
   const { t } = useI18n();
   // hooks 不能条件调用：非浮窗时 enabled=false，startDrag 直接返回
   const drag = useDraggable(floating && isOpen);
@@ -42,6 +42,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
           ? "fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
           : "modal-overlay fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       }
+      style={zIndex == null ? undefined : { zIndex }}
     >
       <div
         ref={drag.panelRef}

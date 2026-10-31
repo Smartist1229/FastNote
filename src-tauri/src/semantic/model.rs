@@ -599,7 +599,7 @@ pub async fn download(app: &AppHandle, spec: &ModelSpec) -> Result<(), String> {
         let mut downloaded = false;
         for base in &bases {
             let url = format!("{base}{remote_path}");
-            let progress = |file_done: u64, _: u64, segments: usize| {
+            let progress = |file_done: u64, _: u64, segments: usize, _: &[crate::download::SegmentProgress]| {
                 emit_progress(
                     app,
                     &spec.id,

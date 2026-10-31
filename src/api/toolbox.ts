@@ -9,6 +9,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type { ToolboxDownloadProgress } from '@/interface/toolbox';
 
+/** 下载进度的数据结构由下载模块统一导出，界面直接引用，避免两边各写一份 */
+export type { ToolboxDownloadProgress, ToolboxSegmentProgress } from '@/interface/toolbox';
+
 /** 默认下载目录（安装目录下的 download，不可写时退回应用数据目录） */
 export const getDownloadDir = async (): Promise<string> => {
   return await invoke('toolbox_download_dir');

@@ -95,7 +95,7 @@ export interface SemanticModelProgress {
   stage: "download" | "verify" | "done" | "error";
   downloaded: number;
   total: number;
-  /** 实际分段数：1 表示单流（服务器不支持 Range），>1 表示分片并发；verify/done 为 0 */
+  /** 并发连接数：1 表示单流（服务器不支持 Range），>1 表示分片并发；verify/done 为 0 */
   segments: number;
   error: string | null;
 }
