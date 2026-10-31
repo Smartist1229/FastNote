@@ -1,0 +1,776 @@
+import { t, useI18n, getLocale } from "@/i18n";
+/**
+ * 设置 · 备份与恢复 · WebDAV 云同步。
+ *
+ * 三块能力：
+ * - 连接配置：服务器 / 账号 / 密码 / 云端文件夹，密码单独加密入库；
+ * - 自动备份：本地 / 云端 / 两者，间隔与本地保留份数存在 app.config.webdav.*，
+ *   真正的定时任务在 Rust 后端（只生成 JSON、永不含 API Key）；
+ * - 手动备份与恢复：上传当前数据到云端，以及从云端 / 本地备份目录列表中选择恢复。
+ *
+ * 恢复是覆盖式的：先 flush 主题的防抖写入，成功后延迟 reload，让各 store 重新读库。
+ */
+import { useCallback, useEffect, useRef, useState } from "react";
+import * as webdavApi from "@/api/webdav";
+import type { BackupFileEntry } from "@/api/webdav";
+import { openAppFolder } from "@/api/system";
+import type { AutoBackupTarget, WebdavSettings } from "@/interface/settings";
+import { DEFAULT_WEBDAV_SETTINGS } from "@/config/appDefaults";
+import { Icon } from "@/components/common/Icon";
+import { useToast } from "@/components/common/Toast";
+import { useConfirm } from "@/components/common/ConfirmDialog";
+import { SyncConflictDialog } from "@/components/settings/SyncConflictDialog";
+import type { SyncConflictInfo } from "@/components/settings/SyncConflictDialog";
+import { useActionGuard } from "@/hooks/useActionGuard";
+import { flushThemeSettings } from "@/stores/themeStore";
+import { formatBytes } from "@/lib/format";
+
+const errorText = (e: unknown): string =>
+  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+
+/** ISO 时间去秒，展示成 2026-10-06 19:30；缺值或非法日期显示「未知」 */
+const prettyTime = (iso: string | null) => {
+  if (!iso) return t("未知");
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return t("未知");
+  return new Intl.DateTimeFormat(getLocale(), {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  }).format(d);
+};
+
+/** 备份创建时间：优先用文件名里的时间戳（本机时钟），失败再回落到服务器 / 文件修改时间 */
+const backupTimestamp = (entry: BackupFileEntry | undefined): number | null => {
+  if (!entry) return null;
+  const match = /fastnote-.*?(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(entry.name);
+  if (match) {
+    const [, year, month, day, hour, minute, second] = match;
+    const date = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+    );
+    if (!Number.isNaN(date.getTime())) return date.getTime();
+  }
+  const parsed = entry.modified ? Date.parse(entry.modified) : NaN;
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+/** 数值输入：输入过程中不夹取，失焦 / 回车时收敛到 [min, max] */
+const NumberField: React.FC<{
+  value: number;
+  min: number;
+  max: number;
+  unit: string;
+  onChange: (value: number) => void;
+}> = ({ value, min, max, unit, onChange }) => {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const next = Number(text);
+    if (!Number.isFinite(next)) {
+      setText(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, Math.round(next)));
+    setText(String(clamped));
+    if (clamped !== value) onChange(clamped);
+  };
+
+  return (
+    <div className="flex flex-shrink-0 items-center gap-1.5">
+      <input
+        type="number"
+        value={text}
+        min={min}
+        max={max}
+        step={1}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        className="w-16 px-2 py-1 text-right text-xs input-modern bg-app/60 transition-colors focus:bg-surface"
+      />
+      <span className="whitespace-nowrap text-[11px] text-faint">{unit}</span>
+    </div>
+  );
+};
+
+/** 开关：与设置弹窗里的 Switch 同一套外观 */
+const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void }> = ({
+  value,
+  onChange,
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={value}
+    onClick={() => onChange(!value)}
+    className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${
+      value ? "bg-primary-500" : "bg-surface-strong"
+    }`}
+  >
+    <span
+      className={`absolute top-0.5 w-4 h-4 rounded-full bg-surface shadow transition-all ${
+        value ? "left-[18px]" : "left-0.5"
+      }`}
+    />
+  </button>
+);
+
+const TARGET_OPTIONS: { value: AutoBackupTarget; label: string }[] = [
+  { value: "local", label: "仅本地" },
+  { value: "cloud", label: "仅云端" },
+  { value: "both", label: "云端 + 本地" },
+];
+
+/** 备份条目：文件名 + 大小 + 时间 + 恢复按钮 */
+const BackupRow: React.FC<{
+  entry: BackupFileEntry;
+  busy: boolean;
+  onRestore: () => void;
+}> = ({ entry, busy, onRestore }) => {
+  const { t } = useI18n();
+  return (
+  <div className="flex items-center gap-3 border-b border-line-soft px-3.5 py-2 last:border-0">
+    <Icon name="app-backup" className="h-3.5 w-3.5 flex-shrink-0 text-faint-soft" />
+    <div className="min-w-0 flex-1">
+      <p className="truncate text-[12px] text-body" title={entry.name}>
+        {entry.name}
+      </p>
+      <p className="text-[10px] text-faint">
+        {prettyTime(entry.modified)}
+        {entry.size > 0 ? ` · ${formatBytes(entry.size)}` : ""}
+      </p>
+    </div>
+    <button
+      type="button"
+      onClick={onRestore}
+      disabled={busy}
+      className="flex-shrink-0 rounded-lg bg-warning-soft px-2.5 py-1 text-[11px] font-medium text-warning-deep transition-colors hover:bg-warning-line disabled:opacity-40"
+    >{t("恢复")}</button>
+  </div>
+);
+};
+
+interface WebdavPanelProps {
+  settings: WebdavSettings;
+  /** 写入 app.config.webdav.*（App 侧立即落库并生效） */
+  onAppSettingChange: (
+    category: "webdav",
+    field: keyof WebdavSettings,
+    value: boolean | number | string,
+  ) => void;
+  /** 与上方「备份 API Key」开关共用：手动云端备份是否带上 Key（自动备份永远不带） */
+  includeApiKeys: boolean;
+  /** 与上方「备份 WebDAV 配置」开关共用：手动云端备份是否带上 WebDAV 配置 */
+  includeWebdav: boolean;
+}
+
+type Busy =
+  | "password"
+  | "test"
+  | "backup"
+  | "remoteList"
+  | "restoreRemote"
+  | "localList"
+  | "restoreLocal"
+  | "syncCheck"
+  | null;
+
+export const WebdavPanel: React.FC<WebdavPanelProps> = ({
+  settings,
+  onAppSettingChange,
+  includeApiKeys,
+  includeWebdav,
+}) => {
+  const { t } = useI18n();
+  const { showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
+  const guard = useActionGuard();
+
+  const [server, setServer] = useState(settings.server);
+  const [username, setUsername] = useState(settings.username);
+  const [folder, setFolder] = useState(settings.folder);
+  const [password, setPassword] = useState("");
+
+  const [status, setStatus] = useState<webdavApi.WebdavStatus | null>(null);
+  const [remoteFiles, setRemoteFiles] = useState<BackupFileEntry[] | null>(null);
+  const [localFiles, setLocalFiles] = useState<BackupFileEntry[] | null>(null);
+  const [busy, setBusy] = useState<Busy>(null);
+  /** 非空时弹出冲突选择框：本地数据比所选备份新，不直接覆盖 */
+  const [conflict, setConflict] = useState<SyncConflictInfo | null>(null);
+  const [conflictBusy, setConflictBusy] = useState<"keepCloud" | "saveCopy" | null>(null);
+  const aliveRef = useRef(true);
+
+  // 外部恢复设置（如导入备份）后同步草稿
+  useEffect(() => setServer(settings.server), [settings.server]);
+  useEffect(() => setUsername(settings.username), [settings.username]);
+  useEffect(() => setFolder(settings.folder), [settings.folder]);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const next = await webdavApi.getWebdavStatus();
+      if (aliveRef.current) setStatus(next);
+    } catch {
+      // 状态只是辅助展示，读不到不影响配置与备份操作
+    }
+  }, []);
+
+  const refreshLocal = useCallback(async () => {
+    try {
+      const list = await webdavApi.listLocalBackups();
+      if (aliveRef.current) setLocalFiles(list);
+    } catch (e) {
+      showToast(t("读取本地备份失败：{value1}", { value1: errorText(e) }), "error");
+    }
+  }, [showToast, t]);
+
+  useEffect(() => {
+    void refreshStatus();
+    void refreshLocal();
+  }, [refreshStatus, refreshLocal]);
+
+  /** 草稿提交：文件夹留空回落到默认 FastNote，避免把备份写到根目录 */
+  const commitText = (field: "server" | "username" | "folder", raw: string) => {
+    const value = raw.trim();
+    if (field === "folder") {
+      onAppSettingChange("webdav", field, value || DEFAULT_WEBDAV_SETTINGS.folder);
+      if (!value) setFolder(DEFAULT_WEBDAV_SETTINGS.folder);
+      return;
+    }
+    onAppSettingChange("webdav", field, value);
+  };
+
+  const handleSavePassword = async () => {
+    if (!password.trim()) {
+      showToast(t("请输入 WebDAV 密码"), "info");
+      return;
+    }
+    setBusy("password");
+    try {
+      await webdavApi.setWebdavPassword(password);
+      setPassword("");
+      await refreshStatus();
+      showToast(t("WebDAV 密码已保存"), "success");
+    } catch (e) {
+      showToast(t("保存密码失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleClearPassword = async () => {
+    const ok = await confirm({
+      title: t("清除 WebDAV 密码"),
+      message: t("清除后自动备份会停止上传云端，直到重新填写密码。已上传的云端备份不受影响。"),
+      confirmText: t("清除"),
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy("password");
+    try {
+      await webdavApi.setWebdavPassword("");
+      await refreshStatus();
+      showToast(t("已清除 WebDAV 密码"), "success");
+    } catch (e) {
+      showToast(t("清除密码失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleTest = async () => {
+    setBusy("test");
+    try {
+      const typedPassword = password.trim();
+      const message = await webdavApi.testWebdav({
+        server: server.trim(),
+        username: username.trim(),
+        // 留空表示沿用已保存的密码，不能传空串把它覆盖掉
+        password: typedPassword ? password : undefined,
+        folder: folder.trim() || DEFAULT_WEBDAV_SETTINGS.folder,
+      });
+      showToast(message.startsWith("连接成功：")
+        ? t("连接成功：{path}", { path: message.slice("连接成功：".length) })
+        : t(message), "success");
+      // 连接验证通过就把新密码落库，避免测试成功但自动备份仍用旧密码
+      if (typedPassword) {
+        try {
+          await webdavApi.setWebdavPassword(password);
+          setPassword("");
+          await refreshStatus();
+        } catch (e) {
+          showToast(t("连接成功，但密码保存失败：{value1}", { value1: errorText(e) }), "error");
+        }
+      }
+    } catch (e) {
+      showToast(t("连接失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleBackup = async () => {
+    setBusy("backup");
+    try {
+      const result = await webdavApi.backupToWebdav(includeApiKeys, includeWebdav);
+      showToast(t("已上传 {file}（{notes} 篇笔记）", { file: result.file, notes: result.summary.notes }), "success");
+      await refreshStatus();
+      if (remoteFiles) {
+        const list = await webdavApi.listRemoteBackups();
+        if (aliveRef.current) setRemoteFiles(list);
+      }
+    } catch (e) {
+      showToast(t("云端备份失败：{value1}", { value1: errorText(e) }), "error");
+      void refreshStatus();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleListRemote = async () => {
+    setBusy("remoteList");
+    try {
+      const list = await webdavApi.listRemoteBackups();
+      if (aliveRef.current) setRemoteFiles(list);
+    } catch (e) {
+      showToast(t("读取云端备份失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** 恢复前先冲掉主题防抖写入，否则旧主题会在恢复后回写覆盖备份里的主题 */
+  const performRestore = async (
+    source: "remote" | "local",
+    name: string,
+    skipConfirm: boolean,
+  ) => {
+    if (!skipConfirm) {
+      const formatLabel = source === "remote" ? t("云端备份") : t("本地备份");
+      const ok = await confirm({
+        title: t("从备份恢复"),
+        message: t("恢复会用{formatLabel}「{name}」覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。", { formatLabel: formatLabel, name: name }),
+        confirmText: t("覆盖并恢复"),
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
+    setBusy(source === "remote" ? "restoreRemote" : "restoreLocal");
+    try {
+      await flushThemeSettings();
+      const summary =
+        source === "remote"
+          ? await webdavApi.restoreRemoteBackup(name)
+          : await webdavApi.restoreLocalBackup(name);
+      showToast(t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes }), "success");
+      window.setTimeout(() => window.location.reload(), 800);
+    } catch (e) {
+      setBusy(null);
+      showToast(t("恢复失败：{value1}", { value1: errorText(e) }), "error");
+    }
+  };
+
+  /**
+   * 恢复入口：先比较「本地最新改动时间」与「备份创建时间」。
+   * 本地更新说明这份备份落后于本机数据，直接覆盖会丢改动，因此改为弹冲突选择框。
+   * 拿不到本地状态（命令失败 / 无笔记）时不拦截，退回原来的覆盖确认。
+   */
+  const restore = async (source: "remote" | "local", name: string) => {
+    setBusy("syncCheck");
+    let found: SyncConflictInfo | null = null;
+    try {
+      const entry = (source === "remote" ? remoteFiles : localFiles)?.find(
+        (file) => file.name === name,
+      );
+      const backupTime = backupTimestamp(entry);
+      const local = await webdavApi.getLocalState();
+      const localTime = local.latest_updated_at ? Date.parse(local.latest_updated_at) : NaN;
+      if (backupTime != null && Number.isFinite(localTime) && localTime > backupTime) {
+        found = {
+          source,
+          backupName: name,
+          backupTime: new Date(backupTime).toISOString(),
+          localTime: new Date(localTime).toISOString(),
+          localNotes: local.notes,
+        };
+      }
+    } catch {
+      // 状态读不到就按老流程走，不能因为检查失败挡住恢复
+    } finally {
+      setBusy(null);
+    }
+    if (found) {
+      setConflict(found);
+      return;
+    }
+    await performRestore(source, name, false);
+  };
+
+  /** 保留本地：什么都不做，只关掉对话框 */
+  const handleKeepLocal = () => setConflict(null);
+
+  /** 保留云端：覆盖前先留一份本地安全快照，快照失败就放弃恢复 */
+  const handleKeepCloud = async () => {
+    if (!conflict) return;
+    const target = conflict;
+    setConflictBusy("keepCloud");
+    try {
+      await webdavApi.snapshotLocal();
+    } catch (e) {
+      setConflictBusy(null);
+      showToast(t("安全快照创建失败，已取消恢复：{value1}", { value1: errorText(e) }), "error");
+      return;
+    }
+    setConflictBusy(null);
+    setConflict(null);
+    await performRestore(target.source, target.backupName, true);
+  };
+
+  /** 另存为副本：当前数据不动，把选中的备份复制到本地备份目录 */
+  const handleSaveCopy = async () => {
+    if (!conflict) return;
+    setConflictBusy("saveCopy");
+    try {
+      const copyName = await webdavApi.saveBackupCopy(conflict.source, conflict.backupName);
+      setConflict(null);
+      showToast(t("已另存为副本：{value1}", { value1: copyName }), "success");
+      await refreshLocal();
+    } catch (e) {
+      showToast(t("另存为副本失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setConflictBusy(null);
+    }
+  };
+
+  const openBackupDir = async () => {
+    try {
+      const dir = status?.backup_dir ?? (await webdavApi.getBackupDir());
+      await openAppFolder(dir);
+    } catch (e) {
+      showToast(t("打开备份目录失败：{value1}", { value1: errorText(e) }), "error");
+    }
+  };
+
+  const target = settings.autoTarget;
+  const autoBusy = busy !== null;
+  const busyLabel = (label: string) => (busy !== null ? t("处理中…") : label);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] leading-relaxed text-faint">{t("WebDAV 可与 Nextcloud、群晖、坚果云、Alist 等服务配合，把备份保存到自己的云端。 自动备份只生成 JSON 且不包含 API Key；手动备份是否带 Key 由上方开关决定。")}</p>
+
+      {/* 连接配置 */}
+      <div className="overflow-hidden rounded-xl border border-line">
+        <div className="flex items-start justify-between gap-3 px-3.5 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-body">{t("连接配置")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("服务器填 WebDAV 根地址；备份会放进该地址下的文件夹（默认 FastNote，不存在时自动创建）。")}</p>
+          </div>
+          <span
+            className={`flex-shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+              status?.has_password
+                ? "bg-success-soft text-success"
+                : "bg-surface-alt text-faint"
+            }`}
+          >
+            {status?.has_password ? t("密码已保存") : t("密码未设置")}
+          </span>
+        </div>
+
+        <div className="space-y-2 border-t border-line-soft px-3.5 py-3">
+          <label className="block">
+            <span className="mb-1 block text-[11px] text-faint">{t("服务器地址")}</span>
+            <input
+              type="url"
+              value={server}
+              onChange={(e) => setServer(e.target.value)}
+              onBlur={() => commitText("server", server)}
+              placeholder="https://dav.example.com/remote.php/dav/files/user/"
+              spellCheck={false}
+              className="w-full px-2 py-1.5 text-xs input-modern"
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-faint">{t("账号")}</span>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                onBlur={() => commitText("username", username)}
+                autoComplete="username"
+                spellCheck={false}
+                className="w-full px-2 py-1.5 text-xs input-modern"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-faint">{t("密码")}</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void handleSavePassword();
+                  }}
+                  placeholder={status?.has_password ? t("已保存，留空不修改") : t("WebDAV 密码")}
+                  autoComplete="new-password"
+                  className="min-w-0 flex-1 px-2 py-1.5 text-xs input-modern"
+                />
+                <button
+                  type="button"
+                  onClick={() => void guard(handleSavePassword)}
+                  disabled={autoBusy}
+                  className="flex-shrink-0 rounded-lg bg-primary-500 px-2.5 py-1.5 text-[11px] font-medium text-on-accent transition-colors hover:bg-primary-600 disabled:opacity-40"
+                >
+                  {busy === "password" ? t("保存中…") : t("保存")}
+                </button>
+                {status?.has_password && (
+                  <button
+                    type="button"
+                    onClick={() => void guard(handleClearPassword)}
+                    disabled={autoBusy}
+                    title={t("清除已保存的密码")}
+                    className="flex h-[26px] w-[26px] flex-shrink-0 items-center justify-center rounded-lg border border-line text-faint transition-colors hover:bg-surface-alt hover:text-danger disabled:opacity-40"
+                  >
+                    <Icon name="modal-close" className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            </label>
+          </div>
+
+          <label className="block">
+            <span className="mb-1 block text-[11px] text-faint">{t("云端文件夹")}</span>
+            <input
+              type="text"
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              onBlur={() => commitText("folder", folder)}
+              placeholder={DEFAULT_WEBDAV_SETTINGS.folder}
+              spellCheck={false}
+              className="w-full px-2 py-1.5 text-xs input-modern"
+            />
+          </label>
+
+          <div className="flex items-center justify-between gap-3 pt-0.5">
+            <p className="text-[10px] leading-relaxed text-faint">
+              {status?.last_backup_at
+                ? t("最近自动备份：{value1}{value2}", { value1: prettyTime(status.last_backup_at), value2: status.last_file ? `（${status.last_file}）` : "" })
+                : t("还没有自动备份记录")}
+            </p>
+            <button
+              type="button"
+              onClick={() => void guard(handleTest)}
+              disabled={autoBusy}
+              className="flex-shrink-0 rounded-lg border border-line px-3 py-1.5 text-xs text-body transition-colors hover:bg-surface-alt disabled:opacity-40"
+            >
+              {busy === "test" ? t("测试中…") : t("测试连接")}
+            </button>
+          </div>
+
+          {status?.last_error && (
+            <p className="break-all rounded-lg bg-danger-soft px-2 py-1.5 text-[10px] leading-relaxed text-danger">{t("上次自动备份失败：{last_error}", { last_error: status.last_error })}</p>
+          )}
+        </div>
+      </div>
+
+      {/* 自动备份 */}
+      <div className="overflow-hidden rounded-xl border border-line">
+        <div className="flex items-start justify-between gap-3 px-3.5 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-body">{t("自动备份")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("后台按间隔自动生成本地 JSON 备份，并可按目标上传云端；失败 10 分钟后重试。")}</p>
+          </div>
+          <Toggle
+            value={settings.autoBackup}
+            onChange={(v) => onAppSettingChange("webdav", "autoBackup", v)}
+          />
+        </div>
+
+        {settings.autoBackup && (
+          <div className="space-y-2.5 border-t border-line-soft px-3.5 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-body">{t("备份间隔")}</p>
+                <p className="mt-0.5 text-[10px] text-faint">{t("1–720 小时，修改后下一轮生效。")}</p>
+              </div>
+              <NumberField
+                value={settings.autoIntervalHours}
+                min={1}
+                max={720}
+                unit={t("小时")}
+                onChange={(v) => onAppSettingChange("webdav", "autoIntervalHours", v)}
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-body">{t("备份目标")}</p>
+                <p className="mt-0.5 text-[10px] text-faint">{t("本地备份默认写入软件目录下的 backup 文件夹。")}</p>
+              </div>
+              <div className="flex flex-shrink-0 gap-1">
+                {TARGET_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => onAppSettingChange("webdav", "autoTarget", option.value)}
+                    className={`rounded-lg px-2 py-1 text-[11px] transition-colors ${
+                      target === option.value
+                        ? "bg-primary-50 font-medium text-primary-600"
+                        : "bg-surface-alt text-muted hover:text-body"
+                    }`}
+                  >
+                    {t(option.label)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {target !== "cloud" && (
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-body">{t("本地最多保留")}</p>
+                  <p className="mt-0.5 text-[10px] text-faint">{t("超出后删除最早的自动备份；云端备份不清理。")}</p>
+                </div>
+                <NumberField
+                  value={settings.autoMaxLocal}
+                  min={1}
+                  max={200}
+                  unit={t("份")}
+                  onChange={(v) => onAppSettingChange("webdav", "autoMaxLocal", v)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 手动备份 */}
+      <div className="flex items-center gap-3 rounded-xl bg-app border border-line-soft p-3">
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-primary-50">
+          <Icon name="app-backup" className="h-4 w-4 text-primary-500" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-body">{t("备份到云端")}</p>
+          <p className="mt-0.5 text-[11px] text-faint">{t("立即上传一份 JSON 备份{value1}。", { value1: includeApiKeys || includeWebdav
+              ? t("（含{value1}）", { value1: [includeApiKeys ? "API Key" : "", includeWebdav ? t("WebDAV 配置") : ""].filter(Boolean).join(getLocale() === "zh-CN" ? "、" : ", ") })
+              : t("（不含 API Key 与 WebDAV 配置）") })}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void guard(handleBackup)}
+          disabled={autoBusy}
+          className="btn-primary flex-shrink-0 px-3 py-1.5 text-xs disabled:opacity-50"
+        >
+          {busyLabel(t("备份"))}
+        </button>
+      </div>
+
+      {/* 云端恢复 */}
+      <div className="overflow-hidden rounded-xl border border-line">
+        <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-body">{t("从云端恢复")}</p>
+            <p className="mt-0.5 text-[11px] text-faint">{t("获取云端备份列表后，选择一份拉取并覆盖当前数据。")}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void guard(handleListRemote)}
+            disabled={autoBusy}
+            className="flex-shrink-0 rounded-lg border border-line px-2.5 py-1 text-[11px] text-body transition-colors hover:bg-surface-alt disabled:opacity-40"
+          >
+            {busy === "remoteList" ? t("读取中…") : remoteFiles ? t("刷新列表") : t("获取列表")}
+          </button>
+        </div>
+        {remoteFiles && remoteFiles.length > 0 && (
+          <div className="border-t border-line-soft">
+            <div className="max-h-56 overflow-y-auto">
+              {remoteFiles.map((entry) => (
+                <BackupRow
+                  key={entry.name}
+                  entry={entry}
+                  busy={autoBusy}
+                  onRestore={() => void guard(() => restore("remote", entry.name))}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        {remoteFiles && remoteFiles.length === 0 && (
+          <p className="border-t border-line-soft px-3.5 py-3 text-[11px] text-faint">{t("云端文件夹里还没有 FastNote 备份。")}</p>
+        )}
+      </div>
+
+      {/* 本地恢复 */}
+      <div className="overflow-hidden rounded-xl border border-line">
+        <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-body">{t("从本地恢复")}</p>
+            <p className="mt-0.5 text-[11px] text-faint">{t("自动备份目录{value1}", { value1: status?.backup_dir ? `：${status.backup_dir}` : "" })}</p>
+          </div>
+          <div className="flex flex-shrink-0 gap-1.5">
+            <button
+              type="button"
+              onClick={() => void guard(openBackupDir)}
+              className="rounded-lg border border-line px-2.5 py-1 text-[11px] text-body transition-colors hover:bg-surface-alt"
+            >{t("打开目录")}</button>
+            <button
+              type="button"
+              onClick={() => void guard(refreshLocal)}
+              disabled={autoBusy}
+              className="rounded-lg border border-line px-2.5 py-1 text-[11px] text-body transition-colors hover:bg-surface-alt disabled:opacity-40"
+            >{t("刷新")}</button>
+          </div>
+        </div>
+        {localFiles && localFiles.length > 0 && (
+          <div className="max-h-56 overflow-y-auto border-t border-line-soft">
+            {localFiles.map((entry) => (
+              <BackupRow
+                key={entry.name}
+                entry={entry}
+                busy={autoBusy}
+                onRestore={() => void guard(() => restore("local", entry.name))}
+              />
+            ))}
+          </div>
+        )}
+        {localFiles && localFiles.length === 0 && (
+          <p className="border-t border-line-soft px-3.5 py-3 text-[11px] text-faint">{t("备份目录里还没有备份文件；开启自动备份或手动导出后会出现在这里。")}</p>
+        )}
+      </div>
+
+      <SyncConflictDialog
+        info={conflict}
+        busy={conflictBusy}
+        onKeepLocal={handleKeepLocal}
+        onKeepCloud={() => void handleKeepCloud()}
+        onSaveCopy={() => void handleSaveCopy()}
+        onClose={() => {
+          if (conflictBusy === null) setConflict(null);
+        }}
+      />
+
+      {confirmDialog}
+    </div>
+  );
+};

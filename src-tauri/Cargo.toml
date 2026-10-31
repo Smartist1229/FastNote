@@ -1,0 +1,69 @@
+[package]
+name = "fastnote"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "fastnote_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon：托盘图标必须在 Rust 侧编译进来，否则前端的 tray 命令运行时不存在
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"
+# 真正的跨进程单实例：命名互斥量实现，第二实例会回调并退出自己
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "cookies"] }
+futures-util = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 数据目录兜底：Builder 之前要读单例开关，那时还没有 AppHandle 拿不到 tauri 的路径解析，
+# 用 dirs 自己算（规则与 tauri 的 app_data_dir 一致：data_dir()/identifier）
+dirs = "6"
+# 分组导出：ZIP 打包 / EPUB（本质是特定结构的 zip）
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# 分组导出：笔记正文是 Markdown，导出 HTML / EPUB 时渲染成网页
+pulldown-cmark = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+# API Key 加密存储：AES-256-GCM + SHA-256 派生（版本与锁文件一致，可离线构建）
+ring = "0.17"
+sha2 = "0.11"
+# 语义搜索：本地 ONNX 推理。ort 负责加载模型，tokenizers 负责 BGE 分词；
+# 两者都用与锁文件一致的精确版本，避免 RC 期 API 漂移导致重新编译后编译不过。
+ort = { version = "=2.0.0-rc.15", features = ["download-binaries", "ndarray"] }
+# 必须关掉默认特性：默认的 esaxx_fast 会编译 C++ 并强制 /MT，
+# 与 ONNX Runtime 预编译静态库的 /MD 在链接期冲突（LNK2038/LNK1169）。
+# BGE 用 WordPiece 分词，不需要 esaxx / onig。
+# fancy-regex 是纯 Rust 正则后端，正好替代默认的 onig（C 依赖）。
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+ndarray = "0.17"
+# 模型下载的异步文件写入（Tauri 本身已带 tokio，这里只是显式启用 fs/io-util）
+tokio = { version = "1", features = ["fs", "io-util", "time", "macros"] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+# 笔记加密的密码派生：Argon2id（抗 GPU/ASIC 优于 PBKDF2），旧的 PBKDF2 数据仍可读
+argon2 = "0.6"
+# 锁定/退出时把内存里的 DEK/KEK 覆写清零，而不是留给分配器
+zeroize = "1.9.1"
+
+# 开发构建也把密码派生与 SQLite 编译成优化代码。
+# 否则 `tauri dev` 下 PBKDF2(600k) 要 3.7 秒、Argon2id 要数秒，
+# 而 release 只要 0.1~0.4 秒——开发时的「卡顿」大半来自这里。
+[profile.dev.package.ring]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2

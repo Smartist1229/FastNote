@@ -1,0 +1,649 @@
+/**
+ * 默认配置、预设与文案表。
+ *
+ * 所有可调项都集中在这里：外部只传 `config` 的差异部分，`resolveConfig` 负责深合并。
+ * 数组一律整体替换（工具栏顺序、可用模式），对象做合并，函数/ReactNode 原样保留。
+ */
+import type {
+  CodeThemeColors,
+  CodeThemePreset,
+  DeepPartial,
+  MarkdownEditorConfig,
+  MarkdownEditorMode,
+  MarkdownThemeColors,
+  ToolbarEntry,
+} from "./types";
+import { LABELS, resolveLocaleLabels } from "./locales";
+export { LABELS } from "./locales";
+
+/** 通用字体栈 */
+export const FONT_STACKS = {
+  sans: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+  mono: '"JetBrains Mono", "Cascadia Code", "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
+};
+
+/** 亮色主题 */
+export const LIGHT_COLORS: MarkdownThemeColors = {
+  bg: "#ffffff",
+  editorBg: "#ffffff",
+  previewBg: "#ffffff",
+  toolbarBg: "#f8fafc",
+  toolbarHover: "#f1f5f9",
+  toolbarActiveBg: "#eef2ff",
+  toolbarActiveText: "#4f46e5",
+  border: "#e5e9f0",
+  borderStrong: "#cbd5e1",
+  text: "#0f172a",
+  textBody: "#334155",
+  textMuted: "#64748b",
+  textFaint: "#94a3b8",
+  accent: "#6366f1",
+  accentHover: "#4f46e5",
+  accentSoft: "#eef2ff",
+  onAccent: "#ffffff",
+  link: "#4338ca",
+  selection: "rgba(99, 102, 241, 0.22)",
+  inlineCodeBg: "#f1f5f9",
+  inlineCodeText: "#be123c",
+  codeBg: "#282c34",
+  codeText: "#abb2bf",
+  codeHeaderBg: "#21252b",
+  codeBorder: "#e5e9f0",
+  codeHighlight: "rgba(99, 102, 241, 0.18)",
+  codeToolHover: "rgba(15, 23, 42, 0.08)",
+  quoteBorder: "#c7d2fe",
+  quoteBg: "#f8fafc",
+  quoteText: "#475569",
+  tableBorder: "#e2e8f0",
+  tableHeaderBg: "#f8fafc",
+  tableStripeBg: "#fafafa",
+  markBg: "#fef08a",
+  markText: "#713f12",
+  noteColor: "#3b82f6",
+  tipColor: "#10b981",
+  warningColor: "#f59e0b",
+  cautionColor: "#ef4444",
+  danger: "#ef4444",
+  shadow: "0 12px 32px -12px rgba(15, 23, 42, 0.18), 0 2px 6px -2px rgba(15, 23, 42, 0.08)",
+  chipShadow: "0 1px 2px rgba(15, 23, 42, 0.08)",
+  overlay: "rgba(15, 23, 42, 0.24)",
+  divider: "#e5e9f0",
+  gutterBg: "transparent",
+  gutterText: "#94a3b8",
+  gutterActiveText: "#6366f1",
+  scrollbarThumb: "#cbd5e1",
+  scrollbarThumbHover: "#94a3b8",
+  statusBg: "#f8fafc",
+  statusText: "#64748b",
+  outlineBg: "#ffffff",
+  outlineActiveBg: "#eef2ff",
+  outlineActiveText: "#4f46e5",
+  menuBg: "#ffffff",
+  menuBorder: "#e5e9f0",
+  inputBg: "#f1f5f9",
+  inputText: "#0f172a",
+  inputBorder: "transparent",
+  searchBg: "#ffffff",
+  searchBorder: "#e5e9f0",
+  searchShadow: "0 6px 20px -8px rgba(15, 23, 42, 0.22), 0 1px 3px rgba(15, 23, 42, 0.06)",
+  searchMatchBg: "rgba(255, 197, 66, 0.42)",
+  searchMatchBorder: "rgba(202, 148, 40, 0.55)",
+  searchMatchActiveBg: "rgba(234, 92, 0, 0.5)",
+  searchMatchActiveBorder: "#ea5c00",
+  activeLineBg: "rgba(15, 23, 42, 0.045)",
+  jumpFlashBg: "rgba(234, 92, 0, 0.18)",
+  sourceCodeBg: "rgba(15, 23, 42, 0.035)",
+  imageViewerBg: "rgba(15, 23, 42, 0.8)",
+};
+
+/** 暗色主题 */
+export const DARK_COLORS: MarkdownThemeColors = {
+  bg: "#0b1220",
+  editorBg: "#0b1220",
+  previewBg: "#0b1220",
+  toolbarBg: "#111a2e",
+  toolbarHover: "#1a2438",
+  toolbarActiveBg: "#1e2a4a",
+  toolbarActiveText: "#c7d2fe",
+  border: "#1e293b",
+  borderStrong: "#334155",
+  text: "#e2e8f0",
+  textBody: "#cbd5e1",
+  textMuted: "#94a3b8",
+  textFaint: "#64748b",
+  accent: "#818cf8",
+  accentHover: "#a5b4fc",
+  accentSoft: "#1e293b",
+  onAccent: "#0b1220",
+  link: "#a5b4fc",
+  selection: "rgba(129, 140, 248, 0.3)",
+  inlineCodeBg: "#1e293b",
+  inlineCodeText: "#fda4af",
+  codeBg: "#0d1117",
+  codeText: "#c9d1d9",
+  codeHeaderBg: "#111823",
+  codeBorder: "rgba(148, 163, 184, 0.18)",
+  codeHighlight: "rgba(129, 140, 248, 0.22)",
+  codeToolHover: "rgba(255, 255, 255, 0.08)",
+  quoteBorder: "#312e81",
+  quoteBg: "#111a2e",
+  quoteText: "#cbd5e1",
+  tableBorder: "#1e293b",
+  tableHeaderBg: "#111a2e",
+  tableStripeBg: "#0f172a",
+  markBg: "#854d0e",
+  markText: "#fef3c7",
+  noteColor: "#60a5fa",
+  tipColor: "#34d399",
+  warningColor: "#fbbf24",
+  cautionColor: "#f87171",
+  danger: "#f87171",
+  shadow: "0 16px 40px -16px rgba(0, 0, 0, 0.65), 0 2px 8px -2px rgba(0, 0, 0, 0.4)",
+  chipShadow: "0 1px 2px rgba(0, 0, 0, 0.4)",
+  overlay: "rgba(2, 6, 23, 0.6)",
+  divider: "#1e293b",
+  gutterBg: "transparent",
+  gutterText: "#64748b",
+  gutterActiveText: "#818cf8",
+  scrollbarThumb: "#334155",
+  scrollbarThumbHover: "#64748b",
+  statusBg: "#111a2e",
+  statusText: "#94a3b8",
+  outlineBg: "#0b1220",
+  outlineActiveBg: "#1e293b",
+  outlineActiveText: "#c7d2fe",
+  menuBg: "#0b1220",
+  menuBorder: "#1e293b",
+  inputBg: "#0b1220",
+  inputText: "#e2e8f0",
+  inputBorder: "#1e293b",
+  searchBg: "#111a2e",
+  searchBorder: "#1e293b",
+  searchShadow: "0 8px 24px -10px rgba(0, 0, 0, 0.7), 0 1px 3px rgba(0, 0, 0, 0.35)",
+  searchMatchBg: "rgba(81, 92, 106, 0.85)",
+  searchMatchBorder: "rgba(121, 133, 148, 0.8)",
+  searchMatchActiveBg: "rgba(187, 92, 0, 0.72)",
+  searchMatchActiveBorder: "#f0a35e",
+  activeLineBg: "rgba(255, 255, 255, 0.055)",
+  jumpFlashBg: "rgba(240, 163, 94, 0.22)",
+  sourceCodeBg: "rgba(255, 255, 255, 0.045)",
+  imageViewerBg: "rgba(2, 6, 14, 0.86)",
+};
+
+/** 代码配色定义 */
+export interface CodeThemeDefinition {
+  label: string;
+  bg: string;
+  headerBg: string;
+  text: string;
+  colors: CodeThemeColors;
+}
+
+/**
+ * 「主题」占位定义（preset key 是 follow）。
+ *
+ * 这套配色没有固定色值——它的底/字/token 全部由当前主题的语义色推算，
+ * 计算在 theme.ts 的 `buildFollowCodeTheme` 里做（那里才拿得到最终生效的主题色）。
+ * 这里必须留一条记录，是因为 CODE_THEMES 是 Record<CodeThemePreset, ...>；
+ * resolveCodeTheme 遇到 "follow" 会走那条动态分支，不会用到下面这些透明值。
+ */
+const FOLLOW_CODE_THEME: CodeThemeDefinition = {
+  label: LABELS["en-US"]["codeTheme.follow"],
+  bg: "transparent",
+  headerBg: "transparent",
+  text: "inherit",
+  colors: {} as CodeThemeColors,
+};
+
+/** 内置代码配色预设 */
+export const CODE_THEMES: Record<CodeThemePreset, CodeThemeDefinition> = {
+  follow: FOLLOW_CODE_THEME,
+  github: {
+    label: "GitHub Light",
+    bg: "#f6f8fa",
+    headerBg: "#eef1f4",
+    text: "#24292f",
+    colors: {
+      keyword: "#cf222e",
+      string: "#0a3069",
+      number: "#0550ae",
+      comment: "#6e7781",
+      function: "#8250df",
+      variable: "#953800",
+      type: "#0550ae",
+      tag: "#116329",
+      attr: "#0550ae",
+      builtin: "#0550ae",
+      literal: "#0550ae",
+      meta: "#6e7781",
+      punctuation: "#24292f",
+      addition: "#116329",
+      deletion: "#82071e",
+    },
+  },
+  atom: {
+    label: "Atom One Dark",
+    bg: "#282c34",
+    headerBg: "#21252b",
+    text: "#abb2bf",
+    colors: {
+      keyword: "#c678dd",
+      string: "#98c379",
+      number: "#d19a66",
+      comment: "#5c6370",
+      function: "#61afef",
+      variable: "#e06c75",
+      type: "#e5c07b",
+      tag: "#e06c75",
+      attr: "#d19a66",
+      builtin: "#56b6c2",
+      literal: "#d19a66",
+      meta: "#7f848e",
+      punctuation: "#abb2bf",
+      addition: "#98c379",
+      deletion: "#e06c75",
+    },
+  },
+  nord: {
+    label: "Nord",
+    bg: "#2e3440",
+    headerBg: "#272c36",
+    text: "#d8dee9",
+    colors: {
+      keyword: "#81a1c1",
+      string: "#a3be8c",
+      number: "#b48ead",
+      comment: "#616e88",
+      function: "#88c0d0",
+      variable: "#d8dee9",
+      type: "#8fbcbb",
+      tag: "#81a1c1",
+      attr: "#8fbcbb",
+      builtin: "#88c0d0",
+      literal: "#b48ead",
+      meta: "#5e81ac",
+      punctuation: "#eceff4",
+      addition: "#a3be8c",
+      deletion: "#bf616a",
+    },
+  },
+  solarized: {
+    label: "Solarized",
+    bg: "#fdf6e3",
+    headerBg: "#eee8d5",
+    text: "#657b83",
+    colors: {
+      keyword: "#859900",
+      string: "#2aa198",
+      number: "#d33682",
+      comment: "#93a1a1",
+      function: "#268bd2",
+      variable: "#b58900",
+      type: "#cb4b16",
+      tag: "#268bd2",
+      attr: "#b58900",
+      builtin: "#2aa198",
+      literal: "#d33682",
+      meta: "#93a1a1",
+      punctuation: "#586e75",
+      addition: "#859900",
+      deletion: "#dc322f",
+    },
+  },
+  monokai: {
+    label: "Monokai",
+    bg: "#272822",
+    headerBg: "#1f201b",
+    text: "#f8f8f2",
+    colors: {
+      keyword: "#f92672",
+      string: "#e6db74",
+      number: "#ae81ff",
+      comment: "#75715e",
+      function: "#a6e22e",
+      variable: "#fd971f",
+      type: "#66d9ef",
+      tag: "#f92672",
+      attr: "#a6e22e",
+      builtin: "#66d9ef",
+      literal: "#ae81ff",
+      meta: "#75715e",
+      punctuation: "#f8f8f2",
+      addition: "#a6e22e",
+      deletion: "#f92672",
+    },
+  },
+  plain: {
+    label: "Plain",
+    bg: "transparent",
+    headerBg: "transparent",
+    text: "inherit",
+    colors: {
+      keyword: "inherit",
+      string: "inherit",
+      number: "inherit",
+      comment: "inherit",
+      function: "inherit",
+      variable: "inherit",
+      type: "inherit",
+      tag: "inherit",
+      attr: "inherit",
+      builtin: "inherit",
+      literal: "inherit",
+      meta: "inherit",
+      punctuation: "inherit",
+      addition: "inherit",
+      deletion: "inherit",
+    },
+  },
+};
+
+/** 工具栏预设（default 已收录全部语法工具，工具栏溢出时可横向滚动） */
+export const TOOLBAR_PRESETS: Record<"full" | "default" | "minimal", ToolbarEntry[]> = {
+  full: [
+    "undo",
+    "redo",
+    "|",
+    "heading",
+    "bold",
+    "italic",
+    "strike",
+    "textColor",
+    "bgColor",
+    "mark",
+    "underline",
+    "sup",
+    "sub",
+    "inlineCode",
+    "codeBlock",
+    "|",
+    "quote",
+    "alert",
+    "callout",
+    "bulletList",
+    "orderedList",
+    "taskList",
+    "indent",
+    "outdent",
+    "|",
+    "link",
+    "image",
+    "table",
+    "hr",
+    "math",
+    "mathBlock",
+    "mermaid",
+    "footnote",
+    "toc",
+    "|",
+    "mode",
+    "outline",
+    "fullscreen",
+    "copy",
+  ],
+  default: [
+    "undo",
+    "redo",
+    "|",
+    "heading",
+    "bold",
+    "italic",
+    "strike",
+    "textColor",
+    "bgColor",
+    "mark",
+    "underline",
+    "sup",
+    "sub",
+    "inlineCode",
+    "codeBlock",
+    "|",
+    "quote",
+    "alert",
+    "callout",
+    "bulletList",
+    "orderedList",
+    "taskList",
+    "indent",
+    "outdent",
+    "|",
+    "link",
+    "image",
+    "table",
+    "hr",
+    "math",
+    "mathBlock",
+    "mermaid",
+    "footnote",
+    "toc",
+    "|",
+    "mode",
+    "outline",
+    "fullscreen",
+  ],
+  minimal: ["bold", "italic", "inlineCode", "codeBlock", "link", "|", "mode"],
+};
+
+/** 默认配置 */
+export const DEFAULT_CONFIG: MarkdownEditorConfig = {
+  locale: "en-US",
+  labels: {},
+  mode: {
+    defaultMode: "split",
+    available: ["split", "code", "read"],
+    showSwitch: true,
+  },
+  editor: {
+    fontFamily: FONT_STACKS.mono,
+    fontSize: 14,
+    lineHeight: 1.75,
+    // 字间距默认不额外加：组件本身不替宿主决定排版松紧
+    letterSpacing: "0",
+    tabSize: 2,
+    tabKey: "indent",
+    placeholder: LABELS["en-US"].placeholder,
+    spellCheck: false,
+    // 编辑区里的 `~~`、`->` 是 Markdown 语法本身，连成一坨会误读，默认关掉连字
+    fontLigatures: false,
+    wrap: true,
+    lineNumbers: false,
+    autoPair: { brackets: true, quotes: false, backticks: true },
+    continueMarkdownOnEnter: true,
+    historyLimit: 200,
+    // 字号缩放：默认开，步长 1px；范围比多数宿主更宽，宿主可再夹紧
+    zoom: { enabled: true, step: 1, min: 10, max: 32 },
+    scrollPaddingBottom: 120,
+    gutterClickSelectsLine: true,
+    // 当前行高亮：按行虚拟化之后只是给那一个 .mde-line 加类，开销可忽略
+    highlightActiveLine: true,
+    // 自绘光标宽度：原生那根恒为 1px，高缩放下几乎看不见
+    caretWidth: 2,
+    // 光标高度 = 字号 × 该值：比字略高一点（上下各出头），但不占满整个行盒
+    caretHeight: 1.25,
+    // 编辑区代码块增强：围栏语言识别 + 整块浅底色 + token 着色（依赖 preview.highlight 的 highlight.js）
+    codeHighlight: true,
+  },
+  preview: {
+    debounce: 120,
+    syncScroll: true,
+    syncScrollMode: "anchor",
+    highlight: true,
+    showCodeLineNumbers: true,
+    showCodeLanguage: true,
+    codeCollapsible: true,
+    codeHighlightLines: true,
+    codeCollapseDefault: false,
+    codeCollapseThreshold: 14,
+    codeCollapseHeight: 260,
+    codeActions: { copy: true, wrap: false },
+    calloutCollapsible: true,
+    math: true,
+    mermaid: true,
+    mermaidTheme: "default",
+    tables: { striped: true, bordered: false, compact: false, fullWidth: true },
+    taskInteractive: true,
+    // 点击图片放大预览：分栏预览区与阅读视图里点图弹浮层，滚轮缩放
+    imagePreview: true,
+    imageZoom: { step: 1.2, min: 0.2, max: 8 },
+    allowHtml: true,
+    breaks: false,
+    setext: true,
+    sanitizeHtml: true,
+    linkTarget: "_blank",
+    emptyText: "",
+    showFrontmatter: true,
+    showFootnotes: true,
+    typography: {
+      fontFamily: FONT_STACKS.sans,
+      fontSize: 15,
+      lineHeight: 1.8,
+      letterSpacing: "0.01em",
+      paragraphSpacing: 0.9,
+      headingTopSpacing: 1.4,
+      headingBottomSpacing: 0.6,
+      maxWidth: 820,
+      padding: "28px 32px",
+      headingWeight: 650,
+      textAlign: "left",
+    },
+  },
+  toolbar: {
+    show: true,
+    sticky: false,
+    items: TOOLBAR_PRESETS.default,
+    exclude: [],
+    labels: false,
+    compact: false,
+    tooltip: true,
+    scrollable: true,
+    scrollWheel: true,
+    pinTail: true,
+    // 色盘预设：明度压在中段——纯亮色在浅底预览里看不出轮廓，纯深色在暗色主题里会和正文糊在一起
+    colorSwatches: [
+      "#e03131", "#f06595", "#f76707", "#f59f00",
+      "#f2c037", "#a9e34b", "#2f9e44", "#0ca678",
+      "#1098ad", "#1c7ed6", "#4c6ef5", "#7048e8",
+      "#ae3ec9", "#862e9c", "#495057", "#868e96",
+    ],
+    // 取色器起始色：文字色用常用红，底色用常用高亮黄
+    textColorFallback: "#e03131",
+    backgroundColorFallback: "#ffe066",
+    openOnHover: true,
+    hoverOpenDelay: 140,
+    hoverCloseDelay: 220,
+    customItems: [],
+  },
+  statusBar: {
+    show: true,
+    words: true,
+    chars: true,
+    lines: true,
+    cursor: false,
+    readingTime: true,
+    mode: true,
+    readingSpeed: 400,
+  },
+  outline: {
+    show: false,
+    position: "left",
+    width: 220,
+    title: LABELS["en-US"].outline,
+    maxDepth: 3,
+    indent: true,
+    // 点大纲后光标落在行首（`###` 前面）：改标题级别比改文字更常见
+    caretTarget: "lineStart",
+    // 跳转后把目标标题高亮一下，光标移到别处自动撤掉
+    flashTarget: true,
+  },
+  split: {
+    ratio: 0.5,
+    resizable: true,
+    dividerWidth: 1,
+  },
+  search: {
+    enabled: true,
+    showReplace: true,
+    caseSensitive: false,
+    regex: false,
+    regexReplace: false,
+    highlightAll: true,
+    // 预览/阅读视图同样铺命中高亮（阅读时铺；分栏只铺编辑侧）
+    highlightPreview: true,
+    loop: true,
+    /*
+     * 命中上限。
+     *
+     * 这是个「防跑飞」的上限，不是产品功能：几万字的笔记里查一个常用字
+     * （「的」「，」）轻松过两千，卡在 2000 会让后面的命中既看不到也跳不过去。
+     * 命中列表本身只是两个数字的对象，两万条也就几百 KB，真正贵的是渲染，
+     * 而渲染是按可视区间切的（见 SourceEditor 的 WHOLE_RENDER_MATCHES）。
+     */
+    maxMatches: 20000,
+    seedFromSelection: true,
+    blockHostFind: true,
+  },
+  theme: {
+    mode: "light",
+    colors: {},
+    codeTheme: "atom",
+    codeColors: {},
+    radius: 4,
+    fontFamily: FONT_STACKS.sans,
+    monoFontFamily: FONT_STACKS.mono,
+    cssVars: {},
+  },
+  shortcuts: true,
+};
+
+/** 允许的模式集合 */
+export const ALL_MODES: MarkdownEditorMode[] = ["split", "code", "read"];
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+
+/** 深合并：数组整体替换、普通对象递归、其余直接覆盖 */
+export function mergeDeep<T>(base: T, patch?: DeepPartial<T>): T {
+  if (patch === undefined) return base;
+  if (!isPlainObject(base) || !isPlainObject(patch)) return patch as T;
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    const prev = out[key];
+    if (isPlainObject(prev) && isPlainObject(value)) out[key] = mergeDeep(prev, value as never);
+    else out[key] = value;
+  }
+  return out as T;
+}
+
+/** 先按语言解析默认文案，再应用显式配置；不把上一次语言的默认值带入下一次解析。 */
+export const resolveConfig = (patch?: DeepPartial<MarkdownEditorConfig>): MarkdownEditorConfig => {
+  const config = mergeDeep(DEFAULT_CONFIG, patch);
+  const labels = resolveLabels(config);
+  return {
+    ...config,
+    editor: { ...config.editor, placeholder: patch?.editor?.placeholder ?? labels.placeholder },
+    outline: { ...config.outline, title: patch?.outline?.title ?? labels.outline },
+  };
+};
+
+/** 解析文案：内置语言包 + 用户覆盖（undefined 忽略，空字符串保留）。 */
+export const resolveLabels = (config: MarkdownEditorConfig): Record<string, string> =>
+  resolveLocaleLabels(config.locale, config.labels);
+
+/** 判断十六进制颜色是否为深色（用于决定代码块内的选中色、滚动条等细节） */
+const isDarkHex = (hex: string): boolean => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+};
+
+/** 解析代码配色：预设 + 色板覆盖（codeColors 优先） */
+export const resolveCodeTheme = (config: MarkdownEditorConfig) => {
+  const preset = CODE_THEMES[config.theme.codeTheme] ?? CODE_THEMES.atom;
+  const dark = preset.bg === "transparent" ? config.theme.mode === "dark" : isDarkHex(preset.bg);
+  return { ...preset, label: resolveLabels(config)[`codeTheme.${config.theme.codeTheme}`] ?? preset.label, dark, colors: { ...preset.colors, ...config.theme.codeColors } };
+};

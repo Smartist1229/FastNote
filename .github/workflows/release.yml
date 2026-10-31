@@ -1,0 +1,140 @@
+# 发布 + 自动更新流程：
+#   1. 更新 package.json 与 src-tauri/tauri.conf.json 的版本号
+#   2. 提交后打 tag（例如 v2.6.8）并推送：git push <远程名> v2.6.8
+#   3. Actions 会校验版本、生成更新日志、构建 NSIS 安装包，
+#      同时产出最新版清单 latest.json（供应用内 updater 检查）
+#
+# 首次使用前需要在仓库 Secrets 里配置：
+#   TAURI_SIGNING_PRIVATE_KEY          私钥内容（tauri signer generate 生成）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD 私钥密码；无密码时留空/不配置
+#   CNB_TOKEN                          CNB 访问令牌（repo-code:rw + repo-release:rw）
+#
+# 也可以在 Actions 页面手动运行，指定一个已经存在的 tag。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v2.6.8）"
+        required: true
+      draft:
+        description: "创建草稿 Release，不立即公开"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # 有密码的私钥需要同时提供密码；无密码私钥密码变量为空即可
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+jobs:
+  release:
+    name: Build & Release (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # 更新日志需要完整历史才能找到上一个 tag
+          fetch-depth: 0
+
+      - name: Verify version matches tag
+        shell: pwsh
+        run: |
+          $tag = $env:TAG.TrimStart("v")
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauri = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($pkg -ne $tauri) {
+            throw "package.json 版本 ($pkg) 与 tauri.conf.json 版本 ($tauri) 不一致"
+          }
+          if ($tag -ne $pkg) {
+            throw "tag $env:TAG 与项目版本 $pkg 不一致：请先更新 package.json 和 tauri.conf.json 再打 tag"
+          }
+          Write-Host "版本校验通过：$($env:TAG)"
+
+      - name: Verify signing key
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "缺少仓库 Secret TAURI_SIGNING_PRIVATE_KEY，无法签名更新包。请把私钥文件内容写入该 Secret（Settings → Secrets and variables → Actions）。"
+          }
+          Write-Host "更新签名密钥已配置"
+
+      - name: Generate release notes
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-notes.ps1 -Tag $env:TAG -Output release-notes.md
+
+      # tauri-action 的 releaseBody 只接受字符串：把 Markdown 文件读成多行 step output 再传入
+      - name: Expose release notes as output
+        id: notes
+        shell: pwsh
+        run: |
+          $marker = "FASTNOTE_NOTES_$([guid]::NewGuid().ToString('N'))"
+          "body<<$marker" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-Content release-notes.md -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $marker | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # 构建、上传安装包与签名、创建 Release，并自动生成 latest.json
+      - name: Build, publish and generate updater manifest
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ env.TAG }}
+          releaseName: FastNote ${{ env.TAG }}
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: ${{ inputs.draft || false }}
+          prerelease: false
+          args: --bundles nsis
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+      # 把安装包与 CNB 版 latest.json 传到 CNB，作为国内更新线路。
+      # 固定清单地址：https://cnb.cool/Yiygc/FastNote/-/releases/download/latest/latest.json
+      - name: Publish updater manifest to CNB
+        if: ${{ !inputs.draft }}
+        shell: pwsh
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: Yiygc/FastNote
+          CNB_BRANCH: master
+          BUNDLE_DIR: src-tauri/target/release/bundle/nsis
+          NOTES_FILE: release-notes.md
+        run: node scripts/publish-cnb.mjs

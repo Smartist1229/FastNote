@@ -1,12 +1,143 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en-US">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FastNote</title>
+    <link rel="stylesheet" href="/fonts/misans/misans-vf.css" />
+    <style>
+      /* 字体本地内置（public/fonts/misans），不联网加载 */
+      /*
+       * 这里只做"启动页能看"的最小重置，绝对不能写 `* { margin: 0; padding: 0 }`。
+       *
+       * Tailwind 4 把原子类放在 `@layer utilities` 里，而 CSS 级联里**未分层的样式永远
+       * 压过分层样式**（与选择器优先级、书写顺序都无关）。这条通配重置是未分层的，
+       * 于是 App.css 里所有 `p-* / m-*`（padding、margin）原子类被整批清零——
+       * 内边距、外边距全变 0，卡片和列表挤成一片，看起来就像"样式全没了"。
+       *
+       * 全局的 margin/padding 归 App.css 的 Tailwind preflight 管（它在 @layer base 里，
+       * 顺序正确）。启动页自己那一小块单独重置即可。
+       */
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      #splash, #splash * { margin: 0; padding: 0; }
+
+      /*
+       * 启动页配色：与 App.css 同样的通道变量，只是范围缩到 splash 需要的几个。
+       * main.tsx 会在首帧前把缓存的主题写进 <html data-theme>，因此这里只需要两套默认值；
+       * 用户自定义的颜色会在 React 挂载后接管（那时 splash 已经在淡出）。
+       */
+      :root {
+        --c-app: 248 250 252;
+        --c-surface: 255 255 255;
+        --c-surface-alt: 241 245 249;
+        --c-line: 226 232 240;
+        --c-primary-50: 238 238 251;
+        --c-primary-300: 143 145 239;
+        --c-primary-500: 99 102 241;
+        --c-primary-600: 66 70 238;
+        --c-primary-700: 33 38 235;
+        color-scheme: light;
+      }
+      [data-theme="dark"] {
+        --c-app: 13 16 22;
+        --c-surface: 21 26 34;
+        --c-surface-alt: 27 33 43;
+        --c-line: 39 47 59;
+        --c-primary-50: 23 24 69;
+        --c-primary-300: 34 37 180;
+        --c-primary-500: 99 102 241;
+        --c-primary-600: 132 134 244;
+        --c-primary-700: 165 166 247;
+        color-scheme: dark;
+      }
+      :root {
+        --color-bg: rgb(var(--c-app));
+        --color-surface-alt: rgb(var(--c-surface-alt));
+        --color-border: rgb(var(--c-line));
+        --color-accent-light: rgb(var(--c-primary-50));
+        --color-accent: rgb(var(--c-primary-500));
+        --color-accent-hover: rgb(var(--c-primary-600));
+        --color-accent-muted: rgb(var(--c-primary-300));
+        --color-accent-strong: rgb(var(--c-primary-700));
+      }
+
+      #splash {
+        position: fixed; inset: 0; z-index: 9999;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        background: linear-gradient(135deg, var(--color-bg) 0%, var(--color-accent-light) 50%, var(--color-surface-alt) 100%);
+        transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        font-family: "MiSans VF", "Segoe UI", system-ui, -apple-system, "Microsoft YaHei UI", sans-serif;
+      }
+      #splash.hidden { opacity: 0; pointer-events: none; }
+
+      /*
+       * 文档底色先按主题铺好：splash 淡出、React 还没接管的那几帧里，
+       * 看到的是主题底色而不是浏览器默认的白底。
+       */
+      html, body { background-color: var(--color-bg); }
+      
+      .splash-logo {
+        width: 56px; height: 56px;
+        background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-hover) 100%);
+        border-radius: 16px;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 8px 24px -4px rgb(var(--c-primary-500) / 0.35);
+        margin-bottom: 20px;
+        animation: logoPulse 2s ease-in-out infinite;
+      }
+      
+      @keyframes logoPulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 8px 24px -4px rgb(var(--c-primary-500) / 0.35); }
+        50% { transform: scale(1.05); box-shadow: 0 12px 32px -4px rgb(var(--c-primary-500) / 0.45); }
+      }
+      
+      .splash-logo svg { width: 28px; height: 28px; color: #ffffff; }
+      
+      .splash-title {
+        font-size: 20px; font-weight: 700;
+        background: linear-gradient(135deg, var(--color-accent-strong), var(--color-accent));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 24px;
+        letter-spacing: -0.02em;
+      }
+      
+      .splash-bar {
+        width: 120px; height: 3px;
+        background: var(--color-border);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .splash-bar::after {
+        content: '';
+        display: block;
+        width: 40%; height: 100%;
+        background: linear-gradient(90deg, var(--color-accent), var(--color-accent-muted));
+        border-radius: 2px;
+        animation: loading 1.2s ease-in-out infinite;
+      }
+      
+      @keyframes loading {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="./src/main.ts"></script>
-    <script src="./electron/renderer.js" type="module"></script>
+    <div id="splash">
+      <div class="splash-logo">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
+      </div>
+      <div class="splash-title">FastNote</div>
+      <div class="splash-bar"></div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
