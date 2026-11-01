@@ -1,6 +1,7 @@
 import { useI18n } from "@/i18n";
 import { useCallback, useRef, useState } from "react";
-import type { ConfirmOptions } from "@/interface/ui";
+import { createPortal } from "react-dom";
+import type { ConfirmOptions } from "@/interface/app/ui";
 import { Modal } from "@/components/common/Modal";
 
 /** 确认弹窗本体：不对外导出，只由 useConfirm 渲染；options 为 null 时整体不渲染 */
@@ -14,7 +15,7 @@ const ConfirmDialog: React.FC<{
   if (!options) return null;
   const { title, message, confirmText = "确定", cancelText = "取消", danger } = options;
   return (
-    <Modal isOpen={isOpen} onClose={onCancel} title={t(title)}>
+    <Modal isOpen={isOpen} onClose={onCancel} title={t(title)} zIndex={100}>
       {/* Enter 绑定在容器上靠冒泡生效，因此确认按钮必须 autoFocus，否则键盘无法确认 */}
       <div className="space-y-4" onKeyDown={(e) => { if (e.key === "Enter") onConfirm(); }}>
         <p className="text-sm text-body leading-relaxed">{typeof message === "string" ? t(message) : message}</p>
@@ -68,13 +69,19 @@ export const useConfirm = () => {
     resolve?.(ok);
   }, []);
 
-  const confirmDialog = (
+  /*
+   * 挂到 body：设置窗口是可拖动的浮窗（带 transform）且内容区 overflow-hidden，
+   * 留在子树里的 fixed 遮罩会以卡片为定位基准并被裁掉，看起来"点了没反应"，
+   * 而待确认的 Promise 还占着动作守卫，连带之后所有按钮都失效。
+   */
+  const confirmDialog = createPortal(
     <ConfirmDialog
       isOpen={!!options}
       options={options}
       onConfirm={() => settle(true)}
       onCancel={() => settle(false)}
-    />
+    />,
+    document.body,
   );
 
   return { confirm, confirmDialog };

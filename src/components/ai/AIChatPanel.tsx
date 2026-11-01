@@ -15,21 +15,21 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, mem
 import { Icon } from "@/components/common/Icon";
 import { AiConfirmCard } from "@/components/ai/AiConfirmCard";
 import { t as translate, useI18n } from "@/i18n";
-import * as notesApi from "@/api/notes";
-import * as categoriesApi from "@/api/categories";
-import * as tagsApi from "@/api/tags";
-import * as aiApi from "@/api/ai";
-import * as semanticApi from "@/api/semantic";
-import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai";
-import type { Note, Tag } from "@/interface/note";
-import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/aiChat";
-import type { ToolCall, ToolTrace } from "@/interface/aiOutput";
-import type { EditorSettings } from "@/interface/settings";
-import { finalReplyText, parseResponse, parseStreamContent } from "@/lib/aiParse/parse";
-import { isThinkingDeepEnough, shouldRetryForShallowThinking, streamStartsWithThinking } from "@/lib/aiParse/thinking";
-import { compressTranscript, estimateTokens, localSummaryFallback, selectContextWindow } from "@/lib/aiParse/context";
-import { expandRefs, splitContent, stripNoteRefs } from "@/lib/aiParse/noteRef";
-import { buildFinalContent, cleanSessionTitle, firstLine, formatError, hasActionClaim, stripAiTags } from "@/lib/aiParse/text";
+import * as notesApi from "@/api/note/notes";
+import * as categoriesApi from "@/api/note/categories";
+import * as tagsApi from "@/api/note/tags";
+import * as aiApi from "@/api/ai/ai";
+import * as semanticApi from "@/api/ai/semantic";
+import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai/ai";
+import type { Note, Tag } from "@/interface/note/note";
+import type { AIChatPanelProps, ToolContext, ToolResult } from "@/interface/ai/aiChat";
+import type { ToolCall, ToolTrace } from "@/interface/ai/aiOutput";
+import type { EditorSettings } from "@/interface/settings/settings";
+import { finalReplyText, parseResponse, parseStreamContent } from "@/lib/ai/aiParse/parse";
+import { isThinkingDeepEnough, shouldRetryForShallowThinking, streamStartsWithThinking } from "@/lib/ai/aiParse/thinking";
+import { compressTranscript, estimateTokens, localSummaryFallback, selectContextWindow } from "@/lib/ai/aiParse/context";
+import { expandRefs, splitContent, stripNoteRefs } from "@/lib/ai/aiParse/noteRef";
+import { buildFinalContent, cleanSessionTitle, firstLine, formatError, hasActionClaim, stripAiTags } from "@/lib/ai/aiParse/text";
 import { ChatComposer, type ChatComposerHandle } from "@/components/ai/ChatComposer";
 import { ChatNoteRefChip } from "@/components/ai/ChatNoteRefChip";
 import {
@@ -43,7 +43,7 @@ import {
   canAiWriteNote,
   type AiAccessLevel,
   type AiAccessRules,
-} from "@/lib/aiAccess";
+} from "@/lib/ai/aiAccess";
 import { useToast } from "@/components/common/Toast";
 import { AiMarkdown } from "@/components/ai/AiMarkdown";
 import {
@@ -67,7 +67,7 @@ import {
   buildThinkRule,
   buildTitlePrompt,
   buildToolResultMessage,
-} from "@/config/aiDefaults";
+} from "@/config/ai/aiDefaults";
 
 const MIN_PANEL_WIDTH = 350; const MAX_PANEL_WIDTH = 640; const DEFAULT_PANEL_WIDTH = 400;
 /** 内容区保底宽度：面板宽度上限 = 父容器宽度 − 该值，窗口越宽面板越能放宽到 MAX_PANEL_WIDTH */

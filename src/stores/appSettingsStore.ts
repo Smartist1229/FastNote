@@ -1,20 +1,22 @@
-import * as settingsApi from "@/api/settings";
-import type { AppSettings, EditorSettings } from "@/interface/settings";
-import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
-import { EDITOR_SPEC_BY_FIELD } from "@/config/editorSettingSpecs";
-import type { EditorSettingSpec } from "@/config/editorSettingSpecs";
-import { SEMANTIC_MODEL_IDS } from "@/config/semanticModels";
-import { normalizeHex, normalizeHexList } from "@/lib/theme";
+import * as settingsApi from "@/api/settings/settings";
+import type { AppSettings, EditorSettings } from "@/interface/settings/settings";
+import { DEFAULT_APP_SETTINGS } from "@/config/app/appDefaults";
+import { EDITOR_SPEC_BY_FIELD } from "@/config/editor/editorSettingSpecs";
+import type { EditorSettingSpec } from "@/config/editor/editorSettingSpecs";
+import { SEMANTIC_MODEL_IDS } from "@/config/ai/semanticModels";
+import { normalizeHex, normalizeHexList } from "@/lib/theme/theme";
 
 /**
  * 软件设置的持久化层（模块内无 React 状态）。
  *
  * 数据源是 SQLite 的 app_settings 表，与 AI 设置同表、只靠前缀区分：
  *   app.config.<分类>.<字段>
- *     general：cleanTrashOnStartup / trayEnabled / closeBehavior / autostart /
- *              minimizeToTray / enableAI / singleInstance / noteSearchRegex /
- *              semanticSearch / semanticAutoIndex / semanticModel / downloadThreads /
- *              noteHistoryLimit / noteHistoryIntervalMinutes / updateCheckIntervalMinutes
+ *     general：language / linkOpenTarget / browserMultiWindow / browserRandomFingerprint /
+ *              cleanTrashOnStartup /
+ *              trayEnabled / closeBehavior / autostart / minimizeToTray / enableAI /
+ *              singleInstance / noteSearchRegex / semanticSearch / semanticAutoIndex /
+ *              semanticModel / downloadThreads / noteHistoryLimit /
+ *              noteHistoryIntervalMinutes / updateCheckIntervalMinutes
  *     editor： 见 interface/settings.ts 的 EditorSettings（config/editorSettingSpecs.ts 里的规格表）
  *     layout： sidebarCollapsed / aiPanelOpen
  *     view：   sortBy / sortOrder
@@ -43,9 +45,10 @@ const CATEGORIES = ["general", "editor", "layout", "view", "webdav"] as const;
  */
 const ENUM_BY_KEY: Record<string, readonly string[]> = {
   "app.config.general.language": ["system", "zh-CN", "en-US"],
-  "general.closeBehavior": ["minimize", "exit"],
-  "view.sortOrder": ["asc", "desc"],
-  "webdav.autoTarget": ["local", "cloud", "both"],
+  "app.config.general.linkOpenTarget": ["app", "system"],
+  "app.config.general.closeBehavior": ["minimize", "exit"],
+  "app.config.view.sortOrder": ["asc", "desc"],
+  "app.config.webdav.autoTarget": ["local", "cloud", "both"],
 };
 
 /** 非编辑器分类里需要夹到区间的数值字段（与后端 clamp 保持同一范围） */

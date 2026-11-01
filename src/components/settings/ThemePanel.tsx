@@ -14,7 +14,7 @@ import { useI18n } from "@/i18n";
  * 预览就是整个软件本身。面板里的预览卡只是把颜色并排放在一起，方便一次性对比。
  */
 import { memo, useState } from "react";
-import type { SavedTheme, ThemeColorKey, ThemeMode, ThemeSettings, ThemeTokens } from "@/interface/theme";
+import type { SavedTheme, ThemeColorKey, ThemeMode, ThemeSettings, ThemeTokens } from "@/interface/settings/theme";
 import {
   COLOR_FIELD_META,
   COLOR_GROUPS,
@@ -24,8 +24,8 @@ import {
   MAX_SAVED_THEMES,
   RADIUS_PRESETS,
   THEME_PRESETS,
-} from "@/config/themes";
-import { getPreset, getTokenPair, getTokensForMode, hexToCss, normalizeHex, resolveMode } from "@/lib/theme";
+} from "@/config/theme/themes";
+import { getPreset, getTokenPair, getTokensForMode, hexToCss, normalizeHex, resolveMode } from "@/lib/theme/theme";
 import { Icon } from "@/components/common/Icon";
 import { useToast } from "@/components/common/Toast";
 import { ColorPicker } from "@/components/settings/ColorPicker";

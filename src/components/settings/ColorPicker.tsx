@@ -9,7 +9,7 @@ import { useI18n } from "@/i18n";
  */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { normalizeHex } from "@/lib/theme";
+import { normalizeHex } from "@/lib/theme/theme";
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
 

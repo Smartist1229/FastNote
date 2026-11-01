@@ -9,9 +9,9 @@
  */
 import { useI18n } from "@/i18n";
 import { useEffect, useRef } from 'react';
-import type { Note } from "@/interface/note";
-import type { CategoryDrawerProps } from "@/interface/sidebar";
-import type { MatchRange, NoteSearchHit } from "@/lib/noteSearch";
+import type { Note } from "@/interface/note/note";
+import type { CategoryDrawerProps } from "@/interface/note/sidebar";
+import type { MatchRange, NoteSearchHit } from "@/lib/search/noteSearch";
 import { Icon } from '@/components/common/Icon';
 
 /**

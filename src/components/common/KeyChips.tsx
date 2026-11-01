@@ -5,7 +5,7 @@
  * 迟早会跑偏。`/` 分隔的等价键之间插一个「或」。
  */
 import { useI18n } from "@/i18n";
-import { parseKeys } from "@/lib/keyLabel";
+import { parseKeys } from "@/lib/text/keyLabel";
 
 export const KeyChips: React.FC<{ accelerator: string; dimmed?: boolean; className?: string }> = ({
   accelerator,

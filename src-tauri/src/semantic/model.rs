@@ -610,7 +610,8 @@ pub async fn download(app: &AppHandle, spec: &ModelSpec) -> Result<(), String> {
                     None,
                 );
             };
-            match crate::download::fetch(&client, &url, &dest, threads, None, &progress).await {
+            match crate::download::fetch(&client, &url, &dest, threads, None, None, &progress).await
+            {
                 Ok(_) => {
                     downloaded = true;
                     break;

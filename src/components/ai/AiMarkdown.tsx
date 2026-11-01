@@ -10,12 +10,12 @@
  */
 import { memo, useMemo } from "react";
 import { MarkdownEditor } from "@/markdown-editor";
-import { buildAiRenderConfig } from "@/config/markdownEditor";
-import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
-import type { EditorSettings } from "@/interface/settings";
-import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/themeRuntime";
+import { buildAiRenderConfig } from "@/config/editor/markdownEditor";
+import { DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
+import type { EditorSettings } from "@/interface/settings/settings";
+import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
 import { useI18n } from "@/i18n";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternalLink } from "@/lib/app/externalLink";
 
 export interface AiMarkdownProps {
   content: string;
@@ -43,7 +43,7 @@ export const AiMarkdown: React.FC<AiMarkdownProps> = memo(function AiMarkdown({ 
         // 不接的话会走预览的 window.open(_self) —— 在 WebView 里就是整个窗口跳到那个网页
         onLinkClick={(href) => {
           if (href.startsWith("#")) return true;
-          void openUrl(href).catch(() => undefined);
+          void openExternalLink(href).catch(() => undefined);
           return false;
         }}
       />

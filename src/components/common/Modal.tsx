@@ -14,7 +14,7 @@
  * 确认框这类必须挡住全屏的仍走模态。
  */
 import { useI18n } from "@/i18n";
-import type { ModalProps } from "@/interface/ui";
+import type { ModalProps } from "@/interface/app/ui";
 import { Icon } from "@/components/common/Icon";
 import { useDraggable } from "@/components/common/useDraggable";
 

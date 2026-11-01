@@ -11,16 +11,16 @@
  */
 import { useI18n } from "@/i18n";
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
-import type { NoteEditorProps, NoteEditorActions } from "@/interface/editor";
+import type { NoteEditorProps, NoteEditorActions } from "@/interface/note/editor";
 import type { MarkdownEditorInstance, MarkdownEditorMode } from "@/markdown-editor";
-import { buildNoteEditorConfig } from "@/config/markdownEditor";
-import { FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { saveNoteAsFile } from "@/utils/noteFileExport";
+import { buildNoteEditorConfig } from "@/config/editor/markdownEditor";
+import { FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
+import { openExternalLink } from "@/lib/app/externalLink";
+import { saveNoteAsFile } from "@/lib/note/noteFileExport";
 import { useToast } from "@/components/common/Toast";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
-import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/themeRuntime";
+import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
 
 /** 按需加载：编辑器带解析器与样式，首屏不必打包进来 */
 const MarkdownEditor = lazy(() =>
@@ -796,8 +796,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               onLinkClick={(href) => {
                 // 页内锚点（脚注 ↔ 正文）留在编辑器里滚动，不能交给浏览器
                 if (href.startsWith("#")) return true;
-                // 其余一律交给系统浏览器：在 WebView 里跳转会把整个应用顶掉
-                void openUrl(href).catch(() => undefined);
+                // 其余走「链接打开方式」：默认系统浏览器；选软件内打开则交给内置浏览器窗口
+                void openExternalLink(href).catch(() => undefined);
                 return false;
               }}
               style={{ height: "100%" }}

@@ -11,11 +11,11 @@ import { t, useI18n, getLocale } from "@/i18n";
  * 恢复是覆盖式的：先 flush 主题的防抖写入，成功后延迟 reload，让各 store 重新读库。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as webdavApi from "@/api/webdav";
-import type { BackupFileEntry } from "@/api/webdav";
-import { openAppFolder } from "@/api/system";
-import type { AutoBackupTarget, WebdavSettings } from "@/interface/settings";
-import { DEFAULT_WEBDAV_SETTINGS } from "@/config/appDefaults";
+import * as webdavApi from "@/api/settings/webdav";
+import type { BackupFileEntry } from "@/api/settings/webdav";
+import { openAppFolder } from "@/api/system/system";
+import type { AutoBackupTarget, WebdavSettings } from "@/interface/settings/settings";
+import { DEFAULT_WEBDAV_SETTINGS } from "@/config/app/appDefaults";
 import { Icon } from "@/components/common/Icon";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
@@ -23,7 +23,7 @@ import { SyncConflictDialog } from "@/components/settings/SyncConflictDialog";
 import type { SyncConflictInfo } from "@/components/settings/SyncConflictDialog";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { flushThemeSettings } from "@/stores/themeStore";
-import { formatBytes } from "@/lib/format";
+import { formatBytes } from "@/lib/text/format";
 
 const errorText = (e: unknown): string =>
   typeof e === "string" ? e : e instanceof Error ? e.message : String(e);

@@ -1291,6 +1291,7 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "futures-util",
+ "iana-time-zone",
  "ndarray",
  "ort",
  "pulldown-cmark",
@@ -1310,6 +1311,8 @@ dependencies = [
  "tauri-plugin-updater",
  "tokenizers",
  "tokio",
+ "webview2-com",
+ "windows",
  "zeroize",
  "zip",
 ]

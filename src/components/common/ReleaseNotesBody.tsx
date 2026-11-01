@@ -9,12 +9,12 @@
  * 更新弹窗却很少打开，静态引用会把整块渲染层拖进首屏主包。
  */
 import { useMemo } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternalLink } from "@/lib/app/externalLink";
 import { useI18n } from "@/i18n";
 import { MarkdownEditor } from "@/markdown-editor";
-import { buildAiRenderConfig } from "@/config/markdownEditor";
-import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
-import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/themeRuntime";
+import { buildAiRenderConfig } from "@/config/editor/markdownEditor";
+import { DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
+import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
 
 const ReleaseNotesBody: React.FC<{ notes: string }> = ({ notes }) => {
   const { locale } = useI18n();
@@ -46,7 +46,7 @@ const ReleaseNotesBody: React.FC<{ notes: string }> = ({ notes }) => {
         // 不接的话会走预览的 window.open(_self)，WebView 里整个窗口会跳到那个网页
         onLinkClick={(href) => {
           if (href.startsWith("#")) return true;
-          void openUrl(href).catch(() => undefined);
+          void openExternalLink(href).catch(() => undefined);
           return false;
         }}
       />

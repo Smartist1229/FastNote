@@ -6,8 +6,8 @@
  * 平铺三个选项能让用户一眼看到当前档位，也少一次点击。
  */
 import { useI18n } from "@/i18n";
-import type { AiAccessLevel } from "@/interface/aiAccess";
-import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
+import type { AiAccessLevel } from "@/interface/ai/aiAccess";
+import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
 
 /** 各档位选中时的配色：禁止红、只读琥珀、完全主题色 */
 const ACTIVE_STYLE: Record<AiAccessLevel, string> = {

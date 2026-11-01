@@ -5,16 +5,16 @@
  */
 import { useI18n } from "@/i18n";
 import { useEffect, useState } from "react";
-import type { Category, Note, NoteHistoryEntry, NoteHistoryKind, Tag } from "@/interface/note";
-import type { AiAccessLevel } from "@/interface/aiAccess";
-import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
-import type { PropertiesTarget } from "@/interface/ui";
-import * as encryptionApi from "@/api/encryption";
+import type { Category, Note, NoteHistoryEntry, NoteHistoryKind, Tag } from "@/interface/note/note";
+import type { AiAccessLevel } from "@/interface/ai/aiAccess";
+import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
+import type { PropertiesTarget } from "@/interface/app/ui";
+import * as encryptionApi from "@/api/system/encryption";
 import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
 import { HistoryDiffModal } from "@/components/common/HistoryDiffModal";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime } from "@/lib/text/format";
 
 /** 属性行：左侧字段名，中间内容，右侧操作按钮 */
 const Row: React.FC<{ label: string; content: React.ReactNode; action?: React.ReactNode }> = ({ label, content, action }) => (

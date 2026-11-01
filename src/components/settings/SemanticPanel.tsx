@@ -11,21 +11,21 @@ import { t, useI18n } from "@/i18n";
  * - 删除模型会连同全部向量一起清空，所以走二次确认。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as semanticApi from "@/api/semantic";
-import { openAppFolder } from "@/api/system";
+import * as semanticApi from "@/api/ai/semantic";
+import { openAppFolder } from "@/api/system/system";
 import { Icon } from "@/components/common/Icon";
 import { ProgressBar } from "@/components/common/ProgressBar";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { CustomModelImportForm } from "@/components/settings/CustomModelImportForm";
 import { useActionGuard } from "@/hooks/useActionGuard";
-import { formatBytes, formatSpeed } from "@/lib/format";
+import { formatBytes, formatSpeed } from "@/lib/text/format";
 import type {
   SemanticIndexProgress,
   SemanticModelInfo,
   SemanticModelProgress,
   SemanticStatus,
-} from "@/interface/semantic";
+} from "@/interface/ai/semantic";
 
 // Built-in metadata is application copy; custom model names are user data.
 const modelName = (info: SemanticModelInfo): string => info.custom ? info.name : t(info.name);

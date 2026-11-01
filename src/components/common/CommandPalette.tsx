@@ -24,9 +24,9 @@ import {
 
 import { Icon } from "@/components/common/Icon";
 import { KeyChips } from "@/components/common/KeyChips";
-import { fuzzyMatch, splitByRanges } from "@/lib/fuzzy";
-import { recentNotes, useNoteJump, type JumpHit } from "@/lib/noteJump";
-import type { Category, Note, Tag } from "@/interface/note";
+import { fuzzyMatch, splitByRanges } from "@/lib/search/fuzzy";
+import { recentNotes, useNoteJump, type JumpHit } from "@/hooks/useNoteJump";
+import type { Category, Note, Tag } from "@/interface/note/note";
 
 export type PaletteMode = "jump" | "command";
 

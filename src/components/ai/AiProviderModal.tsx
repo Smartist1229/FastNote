@@ -7,9 +7,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as aiApi from "@/api/ai";
-import type { AiProvider, AiProviderType } from "@/interface/ai";
-import type { AiProviderModalProps } from "@/interface/aiProvider";
+import * as aiApi from "@/api/ai/ai";
+import type { AiProvider, AiProviderType } from "@/interface/ai/ai";
+import type { AiProviderModalProps } from "@/interface/ai/aiProvider";
 import { useToast } from "@/components/common/Toast";
 import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";

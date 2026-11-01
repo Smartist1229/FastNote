@@ -6,8 +6,8 @@ import { t, useI18n } from "@/i18n";
  * 与下载客户端创建时取到的指纹同源（UA / UA-CH / 屏幕 / WebGL / WebGPU / 音频等）。
  */
 import { useCallback, useEffect, useState } from "react";
-import { getFingerprint } from "@/api/fingerprint";
-import type { BrowserFingerprint, FingerprintBrand } from "@/interface/fingerprint";
+import { getFingerprint } from "@/api/system/fingerprint";
+import type { BrowserFingerprint, FingerprintBrand } from "@/interface/system/fingerprint";
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 

@@ -74,12 +74,12 @@ import type {
   ParsedDocument,
   ToolbarItemName,
 } from "../types";
-import { SourceEditor, type SourceEditorHandle } from "../components/SourceEditor";
-import { Toolbar } from "../components/Toolbar";
-import { StatusBar } from "../components/StatusBar";
-import { Outline } from "../components/Outline";
-import { SearchBox } from "../components/overlays/SearchBox";
-import { ImageViewer } from "../components/overlays/ImageViewer";
+import { SourceEditor, type SourceEditorHandle } from "./editor/SourceEditor";
+import { Toolbar } from "./toolbar/Toolbar";
+import { StatusBar } from "./status/StatusBar";
+import { Outline } from "./outline/Outline";
+import { SearchBox } from "./overlays/SearchBox";
+import { ImageViewer } from "./overlays/ImageViewer";
 import { MarkdownPreview } from "../render/MarkdownPreview";
 
 /** `## 标题` 这类行里「标记 + 空格」的那一段，光标要跳过它 */

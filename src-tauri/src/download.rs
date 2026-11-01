@@ -8,7 +8,8 @@
 //! - 不支持 Range 或文件很小时退回单流；
 //! - 分段进度留在 `<目标>.part.<序号>`，参数不变时重试可续传；分片布局变了就丢弃旧分段；
 //! - 工具箱下载的分片放在 `<下载目录>/<文件名>` 临时目录，完成后合并回下载根目录并删除；
-//! - 工具箱下载可以取消：取消标记在每个数据块之间检查，退出后清理临时文件；
+//! - 下载可以暂停：暂停只停止传输并保留分段文件，继续时重新调用 `fetch` 从断点续传；
+//! - 下载可以取消：取消标记在每个数据块之间检查，退出后清理临时文件；
 //! - 进度通过回调交给调用方（总进度 + 正在下载的各分片信息），
 //!   模型下载发 `semantic-model-progress`，工具箱发 `toolbox-download-progress`。
 
@@ -20,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
 use futures_util::StreamExt;
+use reqwest::header::HeaderMap;
 use reqwest::{Client, Response, StatusCode};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
@@ -48,29 +50,60 @@ const ENTRY_HOPS: usize = 3;
 const HTML_LIMIT: usize = 512 * 1024;
 
 pub const CANCELLED: &str = "已取消下载";
+pub const PAUSED: &str = "已暂停";
 
-/// 取消标记：克隆后共享同一个原子位，下载循环在每个数据块之间检查
+/// 下载控制：取消 / 暂停都通过这一份共享标记控制同一批下载线程。
+///
+/// 暂停不丢弃已下载的数据：当前数据块写完后线程收尾返回 [`PAUSED`]，
+/// 调用方保留临时文件 / 分片目录并等待；继续时重新调用 [`fetch`]，
+/// 按已有分段长度续传，不会从头开始。
 #[derive(Clone, Default)]
-pub struct Cancel(Arc<AtomicBool>);
+pub struct Control(Arc<ControlFlags>);
 
-impl Cancel {
+#[derive(Default)]
+struct ControlFlags {
+    cancelled: AtomicBool,
+    paused: AtomicBool,
+}
+
+impl Control {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.0.cancelled.store(true, Ordering::Relaxed);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.0.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// 暂停 / 继续；暂停期间已经在传输的数据块会写完再停
+    pub fn set_paused(&self, paused: bool) {
+        self.0.paused.store(paused, Ordering::Relaxed);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.0.paused.load(Ordering::Relaxed)
+    }
+
+    /// 当前该停下的原因：取消优先于暂停
+    pub fn stop_reason(&self) -> Option<&'static str> {
+        if self.is_cancelled() {
+            Some(CANCELLED)
+        } else if self.is_paused() {
+            Some(PAUSED)
+        } else {
+            None
+        }
     }
 }
 
 #[derive(Default)]
 pub struct DownloadState {
-    /// 当前工具箱任务的取消标记：同一时间只跑一个任务
-    pub active: Mutex<Option<Cancel>>,
+    /// 当前工具箱任务的控制标记：同一时间只跑一个任务
+    pub active: Mutex<Option<Control>>,
 }
 
 /// 单个分片（= 一个线程正在负责的片段）的实时进度，随总进度一起交给调用方。
@@ -92,22 +125,23 @@ pub struct SegmentProgress {
 /// 进度回调：总已下载、总大小、并发数、正在进行的分片列表（只含未完成的分片）
 pub type ProgressSink<'a> = &'a (dyn Fn(u64, u64, usize, &[SegmentProgress]) + Sync);
 
-/// 没有取消令牌时永远 pending；有令牌时每 100ms 轮询一次
-async fn wait_cancel(cancel: Option<&Cancel>) {
-    match cancel {
-        Some(cancel) => {
-            while !cancel.is_cancelled() {
+/// 取消 / 暂停时返回原因；没有控制对象时永远 pending
+async fn wait_stop(control: Option<&Control>) -> &'static str {
+    match control {
+        Some(control) => {
+            while control.stop_reason().is_none() {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            control.stop_reason().unwrap_or(CANCELLED)
         }
         None => std::future::pending().await,
     }
 }
 
-fn ensure_not_cancelled(cancel: Option<&Cancel>) -> Result<(), String> {
-    match cancel {
-        Some(cancel) if cancel.is_cancelled() => Err(CANCELLED.to_string()),
-        _ => Ok(()),
+fn ensure_running(control: Option<&Control>) -> Result<(), String> {
+    match control.and_then(Control::stop_reason) {
+        Some(reason) => Err(reason.to_string()),
+        None => Ok(()),
     }
 }
 
@@ -121,11 +155,16 @@ pub fn threads(app: &AppHandle) -> usize {
 /// 另外开启 Cookie 与 Referer 跟随，限制连接超时与空闲读超时，连接池按最大线程数预留。
 ///
 /// 每次创建客户端取一份新的随机指纹：同一个任务的各段 Range 请求共用这个 Client，
-/// 因此共用同一身份，任务之间才会换指纹。
+/// 因此共用同一身份，任务之间才会换指纹。浏览器窗口下载不走这里——它必须复用窗口
+/// 已经固定的指纹，见 [`client_with_headers`]。
 pub fn client() -> Result<Client, String> {
-    let fingerprint = crate::fingerprint::BrowserFingerprint::random();
+    client_with_headers(crate::fingerprint::BrowserFingerprint::random().headers())
+}
+
+/// 用指定的默认请求头建客户端（内置浏览器把窗口指纹的头传进来，保持 UA / UA-CH 一致）。
+pub fn client_with_headers(headers: HeaderMap) -> Result<Client, String> {
     Client::builder()
-        .default_headers(fingerprint.headers())
+        .default_headers(headers)
         .cookie_store(true)
         .referer(true)
         .connect_timeout(Duration::from_secs(20))
@@ -156,7 +195,7 @@ pub fn default_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// 分片临时目录取下载文件名（去扩展名）：既按文件区分任务，又不会和最终文件同名冲突。
 /// 文件名本身没有扩展名时追加 `-parts`，避免目录与最终文件同名。
-fn staging_name(filename: &str) -> String {
+pub(crate) fn staging_name(filename: &str) -> String {
     let path = Path::new(filename);
     let stem = path
         .file_stem()
@@ -170,7 +209,7 @@ fn staging_name(filename: &str) -> String {
 }
 
 /// 准备 `download/<文件名>`：同名文件占位时追加后缀，并清掉上次异常退出留下的分片
-async fn prepare_staging(root: &Path, name: &str) -> Result<PathBuf, String> {
+pub(crate) async fn prepare_staging(root: &Path, name: &str) -> Result<PathBuf, String> {
     for attempt in 0..100 {
         let candidate = if attempt == 0 {
             root.join(name)
@@ -219,7 +258,7 @@ async fn purge_part_files(dir: &Path) {
 }
 
 /// 任务结束后删掉分片目录；目录里还有别的文件时保留，避免误删用户内容
-async fn remove_staging(dir: &Path) {
+pub(crate) async fn remove_staging(dir: &Path) {
     purge_part_files(dir).await;
     let _ = tokio::fs::remove_dir(dir).await;
 }
@@ -305,12 +344,12 @@ struct Entry {
 async fn resolve_entry(
     client: &Client,
     url: &str,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
 ) -> Result<Entry, String> {
     let no_file = "这个链接返回的是网页，没有找到可下载的文件地址".to_string();
     let mut current = url.to_string();
     for _ in 0..ENTRY_HOPS {
-        let response = entry_response(client, &current, cancel).await?;
+        let response = entry_response(client, &current, control).await?;
         let final_url = response.url().clone();
         let disposition = response
             .headers()
@@ -327,7 +366,7 @@ async fn resolve_entry(
 
         // 带 Range 的探测对网页只拿到了 1 字节，得整页重取一次
         let page = if response.status() == StatusCode::PARTIAL_CONTENT {
-            send_get(client, final_url.as_str(), cancel).await?
+            send_get(client, final_url.as_str(), control).await?
         } else {
             response
         };
@@ -348,10 +387,10 @@ async fn resolve_entry(
 async fn entry_response(
     client: &Client,
     url: &str,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
 ) -> Result<Response, String> {
     let response = tokio::select! {
-        _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+        reason = wait_stop(control) => return Err(reason.to_string()),
         result = client.get(url).header(reqwest::header::RANGE, "bytes=0-0").send() => {
             result.map_err(|e| format!("请求失败：{e}"))?
         }
@@ -359,16 +398,16 @@ async fn entry_response(
     if response.status().is_success() {
         return Ok(response);
     }
-    send_get(client, url, cancel).await
+    send_get(client, url, control).await
 }
 
 async fn send_get(
     client: &Client,
     url: &str,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
 ) -> Result<Response, String> {
     let response = tokio::select! {
-        _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+        reason = wait_stop(control) => return Err(reason.to_string()),
         result = client.get(url).send() => result.map_err(|e| format!("请求失败：{e}"))?,
     };
     if response.status().is_success() {
@@ -593,35 +632,46 @@ pub fn unique_dest(dir: &Path, filename: &str) -> PathBuf {
     ))
 }
 
+/// 给请求附加调用方给的额外头（浏览器下载用它带 Cookie / Referer）。
+fn with_extra(request: reqwest::RequestBuilder, extra: Option<&HeaderMap>) -> reqwest::RequestBuilder {
+    match extra {
+        Some(extra) => request.headers(extra.clone()),
+        None => request,
+    }
+}
+
 /// 下载一个文件到 `dest`。`progress` 会被高频调用，节流由本模块负责；
 /// 第三个数值参数是并发连接数（1 表示单流），最后一个参数是正在进行的分片列表。
+/// `extra` 会附加到每一个请求上；工具箱与模型下载传 `None`，行为不变。
 pub async fn fetch(
     client: &Client,
     url: &str,
     dest: &Path,
     threads: usize,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
     progress: ProgressSink<'_>,
 ) -> Result<u64, String> {
-    ensure_not_cancelled(cancel)?;
+    ensure_running(control)?;
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("创建目录失败：{e}"))?;
     }
 
-    let probe = probe(client, url, cancel).await?;
+    let probe = probe(client, url, control, extra).await?;
     let total = probe.total;
     if probe.ranges && total.unwrap_or(0) >= MIN_SEGMENT * 2 && threads > 1 {
         if let Some(total) = total {
-            return download_segmented(client, url, dest, total, threads, cancel, progress).await;
+            return download_segmented(client, url, dest, total, threads, control, extra, progress)
+                .await;
         }
     }
 
     // 单流路径用不上分段文件，顺手清掉上次可能留下的分段进度
     remove_segment_files(dest).await;
     remove_plan(dest).await;
-    download_single(client, url, dest, total, probe.response, cancel, progress).await
+    download_single(client, url, dest, total, probe.response, control, extra, progress).await
 }
 
 /// 取消或失败后清理临时文件；保留的分段只对“可重试的网络错误”有意义，取消一律清掉
@@ -639,18 +689,25 @@ struct Probe {
     response: Option<Response>,
 }
 
-async fn probe(client: &Client, url: &str, cancel: Option<&Cancel>) -> Result<Probe, String> {
-    let request = client.get(url).header(reqwest::header::RANGE, "bytes=0-0");
+async fn probe(
+    client: &Client,
+    url: &str,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
+) -> Result<Probe, String> {
+    let request =
+        with_extra(client.get(url), extra).header(reqwest::header::RANGE, "bytes=0-0");
     let response = tokio::select! {
-        _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+        reason = wait_stop(control) => return Err(reason.to_string()),
         result = request.send() => result.map_err(|e| format!("请求失败：{e}"))?,
     };
     let status = response.status();
     // 416 或 4xx：有些站直接拒绝带 Range 的请求（403/400），换成普通 GET 再试一次
     if !status.is_success() {
+        let request = with_extra(client.get(url), extra);
         let fallback = tokio::select! {
-            _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
-            result = client.get(url).send() => result.map_err(|e| format!("请求失败：{e}"))?,
+            reason = wait_stop(control) => return Err(reason.to_string()),
+            result = request.send() => result.map_err(|e| format!("请求失败：{e}"))?,
         };
         if !fallback.status().is_success() {
             return Err(format!("HTTP {}", fallback.status()));
@@ -694,10 +751,11 @@ async fn download_segmented(
     dest: &Path,
     total: u64,
     threads: usize,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
     progress: ProgressSink<'_>,
 ) -> Result<u64, String> {
-    ensure_not_cancelled(cancel)?;
+    ensure_running(control)?;
     let chunk = chunk_size(total, threads);
     let plan = plan_segments(total, chunk);
     reset_plan_if_changed(dest, total, chunk).await?;
@@ -752,7 +810,7 @@ async fn download_segmented(
     let meter_ref: &Progress<'_> = &meter;
     let results = join_all((0..parallelism).map(|_| async move {
         loop {
-            ensure_not_cancelled(cancel)?;
+            ensure_running(control)?;
             let index = cursor.fetch_add(1, Ordering::Relaxed);
             let Some(&(start, end)) = plan_ref.get(index) else {
                 break;
@@ -764,7 +822,8 @@ async fn download_segmented(
             let part = segment_path(dest, index);
             meter_ref.begin(index);
             let result =
-                download_segment(client, url, &part, start, end, cancel, meter_ref, index).await;
+                download_segment(client, url, &part, start, end, control, extra, meter_ref, index)
+                    .await;
             meter_ref.end(index);
             result?;
         }
@@ -774,7 +833,7 @@ async fn download_segmented(
     for result in results {
         result?;
     }
-    ensure_not_cancelled(cancel)?;
+    ensure_running(control)?;
 
     let parts: Vec<PathBuf> = plan
         .iter()
@@ -798,23 +857,24 @@ async fn download_segment(
     part: &Path,
     start: u64,
     end: u64,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
     meter: &Progress<'_>,
     index: usize,
 ) -> Result<(), String> {
     let expected = end - start + 1;
     let mut last_error = String::new();
     for attempt in 0..MAX_ATTEMPTS {
-        ensure_not_cancelled(cancel)?;
+        ensure_running(control)?;
         match segment_once(
-            client, url, part, start, end, expected, cancel, meter, index,
+            client, url, part, start, end, expected, control, extra, meter, index,
         )
         .await
         {
             Ok(()) => return Ok(()),
             Err(e) => {
-                if cancel.is_some_and(Cancel::is_cancelled) {
-                    return Err(CANCELLED.to_string());
+                if let Some(reason) = control.and_then(Control::stop_reason) {
+                    return Err(reason.to_string());
                 }
                 last_error = e;
                 if attempt + 1 < MAX_ATTEMPTS {
@@ -833,11 +893,12 @@ async fn segment_once(
     start: u64,
     end: u64,
     expected: u64,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
     meter: &Progress<'_>,
     index: usize,
 ) -> Result<(), String> {
-    ensure_not_cancelled(cancel)?;
+    ensure_running(control)?;
     let mut existing = file_len(part);
     if existing > expected {
         let _ = tokio::fs::remove_file(part).await;
@@ -848,11 +909,10 @@ async fn segment_once(
     }
 
     let from = start + existing;
-    let request = client
-        .get(url)
+    let request = with_extra(client.get(url), extra)
         .header(reqwest::header::RANGE, format!("bytes={from}-{end}"));
     let response = tokio::select! {
-        _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+        reason = wait_stop(control) => return Err(reason.to_string()),
         result = request.send() => result.map_err(|e| format!("请求失败：{e}"))?,
     };
     match response.status() {
@@ -881,7 +941,7 @@ async fn segment_once(
     let mut stream = response.bytes_stream();
     loop {
         let next = tokio::select! {
-            _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+            reason = wait_stop(control) => return Err(reason.to_string()),
             next = stream.next() => next,
         };
         let Some(chunk) = next else { break };
@@ -906,7 +966,8 @@ async fn download_single(
     dest: &Path,
     known_total: Option<u64>,
     initial: Option<Response>,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
     progress: ProgressSink<'_>,
 ) -> Result<u64, String> {
     let part = dest.with_extension("part");
@@ -917,7 +978,7 @@ async fn download_single(
     let mut last_error = String::new();
 
     for attempt in 0..MAX_ATTEMPTS {
-        ensure_not_cancelled(cancel)?;
+        ensure_running(control)?;
         let existing = file_len(&part);
         // 探测得到的 200 响应是最新快照，已有续传数据时不能用它覆盖
         let initial_response = if attempt == 0 && existing == 0 {
@@ -932,7 +993,8 @@ async fn download_single(
             existing,
             known_total,
             initial_response,
-            cancel,
+            control,
+            extra,
             &meter,
         )
         .await
@@ -951,8 +1013,8 @@ async fn download_single(
                 return Ok(downloaded);
             }
             Err(e) => {
-                if cancel.is_some_and(Cancel::is_cancelled) {
-                    return Err(CANCELLED.to_string());
+                if let Some(reason) = control.and_then(Control::stop_reason) {
+                    return Err(reason.to_string());
                 }
                 last_error = e;
                 if attempt + 1 < MAX_ATTEMPTS {
@@ -971,19 +1033,20 @@ async fn single_once(
     existing: u64,
     known_total: Option<u64>,
     initial: Option<Response>,
-    cancel: Option<&Cancel>,
+    control: Option<&Control>,
+    extra: Option<&HeaderMap>,
     meter: &Progress<'_>,
 ) -> Result<u64, String> {
-    ensure_not_cancelled(cancel)?;
+    ensure_running(control)?;
     let response = match initial {
         Some(response) => response,
         None => {
-            let mut request = client.get(url);
+            let mut request = with_extra(client.get(url), extra);
             if existing > 0 {
                 request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
             }
             let response = tokio::select! {
-                _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+                reason = wait_stop(control) => return Err(reason.to_string()),
                 result = request.send() => result.map_err(|e| format!("请求失败：{e}"))?,
             };
             if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
@@ -1025,7 +1088,7 @@ async fn single_once(
     let mut stream = response.bytes_stream();
     loop {
         let next = tokio::select! {
-            _ = wait_cancel(cancel) => return Err(CANCELLED.to_string()),
+            reason = wait_stop(control) => return Err(reason.to_string()),
             next = stream.next() => next,
         };
         let Some(chunk) = next else { break };
@@ -1415,7 +1478,7 @@ pub async fn toolbox_download(
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("只支持 http / https 链接".to_string());
     }
-    let cancel = Cancel::new();
+    let control = Control::new();
     {
         let state = app.state::<AppState>();
         let mut active = state
@@ -1426,20 +1489,20 @@ pub async fn toolbox_download(
         if active.is_some() {
             return Err("已有下载任务在进行，请等待完成".to_string());
         }
-        *active = Some(cancel.clone());
+        *active = Some(control.clone());
     }
 
     let handle = app.clone();
-    let task_cancel = cancel.clone();
+    let task_control = control.clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = run_toolbox_download(&handle, &url, filename.as_deref(), &task_cancel).await;
+        let outcome = run_toolbox_download(&handle, &url, filename.as_deref(), &task_control).await;
         if let Some(state) = handle.try_state::<AppState>() {
             if let Ok(mut active) = state.download.active.lock() {
                 *active = None;
             }
         }
         if let Err(error) = outcome {
-            if task_cancel.is_cancelled() {
+            if task_control.is_cancelled() {
                 emit_toolbox(&handle, "cancelled", "", "", 0, 0, 0, &[], 0, None);
             } else {
                 emit_toolbox(&handle, "error", "", "", 0, 0, 0, &[], 0, Some(&error));
@@ -1459,8 +1522,27 @@ pub fn toolbox_download_cancel(app: AppHandle) -> Result<bool, String> {
         .lock()
         .map_err(|_| "下载状态锁被占用".to_string())?;
     match active.as_ref() {
-        Some(cancel) => {
-            cancel.cancel();
+        Some(control) => {
+            control.cancel();
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// 暂停 / 继续当前工具箱下载；没有任务时返回 false。
+/// 暂停只停止传输并保留分片目录，继续后从已下载的位置续传。
+#[tauri::command]
+pub fn toolbox_download_pause(app: AppHandle, paused: bool) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let active = state
+        .download
+        .active
+        .lock()
+        .map_err(|_| "下载状态锁被占用".to_string())?;
+    match active.as_ref() {
+        Some(control) => {
+            control.set_paused(paused);
             Ok(true)
         }
         None => Ok(false),
@@ -1471,13 +1553,13 @@ async fn run_toolbox_download(
     app: &AppHandle,
     url: &str,
     filename: Option<&str>,
-    cancel: &Cancel,
+    control: &Control,
 ) -> Result<(), String> {
     let dir = default_dir(app)?;
     let client = client()?;
     // 入口可能不是文件本身（脚本跳转 / 下载落地页）；解析出的地址用于实际下载，
     // 避免把网页当文件存下来，顺带拿到真实文件名。
-    let entry = resolve_entry(&client, url, Some(cancel)).await?;
+    let entry = resolve_entry(&client, url, Some(control)).await?;
     let mut base_name = resolve_filename(url, filename);
     let custom_blank = filename
         .map(|name| sanitize_filename(name).is_empty())
@@ -1511,7 +1593,13 @@ async fn run_toolbox_download(
     let started = Instant::now();
     emit_toolbox(app, "download", &filename, &path, 0, 0, 0, &[], 0, None);
     let count = threads(app);
+    let last_done = AtomicU64::new(0);
+    let last_total = AtomicU64::new(0);
+    let last_parallel = AtomicUsize::new(0);
     let progress = |done: u64, total: u64, parallel: usize, active: &[SegmentProgress]| {
+        last_done.store(done, Ordering::Relaxed);
+        last_total.store(total, Ordering::Relaxed);
+        last_parallel.store(parallel, Ordering::Relaxed);
         emit_toolbox(
             app,
             "download",
@@ -1525,16 +1613,60 @@ async fn run_toolbox_download(
             None,
         );
     };
-    let size = match fetch(&client, &entry.url, &temp_dest, count, Some(cancel), &progress).await {
-        Ok(size) => size,
-        Err(error) => {
-            // 工具箱每次都选新的文件名，残留分段不会再被续传，失败或取消都清掉
-            cleanup(&temp_dest).await;
-            remove_staging(&staging).await;
-            if cancel.is_cancelled() {
-                return Err(CANCELLED.to_string());
+    /*
+     * 暂停时 fetch 返回 PAUSED：保留分片目录并等用户点「继续」，
+     * 继续后重新调用 fetch，按已有分段长度续传；取消才清理临时文件。
+     */
+    let size = loop {
+        match fetch(
+            &client,
+            &entry.url,
+            &temp_dest,
+            count,
+            Some(control),
+            None,
+            &progress,
+        )
+        .await
+        {
+            Ok(size) => break size,
+            Err(error) => {
+                if control.is_cancelled() {
+                    cleanup(&temp_dest).await;
+                    remove_staging(&staging).await;
+                    return Err(CANCELLED.to_string());
+                }
+                if control.is_paused() || error == PAUSED {
+                    // 已经点了「继续」就不用再报一次暂停，直接续传
+                    if control.is_paused() {
+                        emit_toolbox(
+                            app,
+                            "paused",
+                            &filename,
+                            &path,
+                            last_done.load(Ordering::Relaxed),
+                            last_total.load(Ordering::Relaxed),
+                            last_parallel.load(Ordering::Relaxed),
+                            &[],
+                            started.elapsed().as_millis() as u64,
+                            None,
+                        );
+                    }
+                    while control.is_paused() && !control.is_cancelled() {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    if control.is_cancelled() {
+                        cleanup(&temp_dest).await;
+                        remove_staging(&staging).await;
+                        return Err(CANCELLED.to_string());
+                    }
+                    continue;
+                }
+                // 失败的分段不会被续传（工具箱每次选新文件名），直接清掉
+                cleanup(&temp_dest).await;
+                remove_staging(&staging).await;
+                return Err(error);
             }
-            return Err(error);
         }
     };
 
@@ -1749,6 +1881,16 @@ mod tests {
     /// 本地 Range 服务器：支持 206 分片，也提供忽略 Range 的 200 路径。
     /// 返回值里的计数器记录“真正的分段请求”数量（不含 `bytes=0-0` 探测）。
     fn spawn_server(payload: Arc<Vec<u8>>, ranges: bool) -> (String, Arc<AtomicUsize>) {
+        spawn_throttled_server(payload, ranges, Duration::ZERO)
+    }
+
+    /// 与 [`spawn_server`] 相同，但每发送 64 KiB 停 `delay`：
+    /// 本地回环下载只有几十毫秒，不加限速就没有暂停的触发窗口。
+    fn spawn_throttled_server(
+        payload: Arc<Vec<u8>>,
+        ranges: bool,
+        delay: Duration,
+    ) -> (String, Arc<AtomicUsize>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let segment_requests = Arc::new(AtomicUsize::new(0));
@@ -1802,8 +1944,20 @@ mod tests {
                         head.push_str(&format!("Content-Range: bytes {start}-{end}/{total}\r\n"));
                     }
                     head.push_str("\r\n");
-                    stream.write_all(head.as_bytes()).unwrap();
-                    stream.write_all(body).unwrap();
+                    if stream.write_all(head.as_bytes()).is_err() {
+                        return;
+                    }
+                    if delay.is_zero() {
+                        let _ = stream.write_all(body);
+                    } else {
+                        // 客户端暂停会直接断开连接，后续写入失败就收工，别在测试里 panic
+                        for slice in body.chunks(64 * 1024) {
+                            if stream.write_all(slice).is_err() {
+                                return;
+                            }
+                            std::thread::sleep(delay);
+                        }
+                    }
                     let _ = stream.flush();
                 });
             }
@@ -1831,7 +1985,7 @@ mod tests {
                 let progress = |_done: u64, _total: u64, segments: usize, _: &[SegmentProgress]| {
                     seen_segments.fetch_max(segments, Ordering::Relaxed);
                 };
-                let size = fetch(&client, &url, &dest, 8, None, &progress)
+                let size = fetch(&client, &url, &dest, 8, None, None, &progress)
                     .await
                     .unwrap();
                 assert_eq!(size, payload.len() as u64);
@@ -1856,6 +2010,64 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// 暂停只停传输、保留分段；继续时从已有分段接着下，最终文件完整。
+    #[test]
+    fn pause_keeps_segments_and_resume_finishes_file() {
+        let payload: Arc<Vec<u8>> = Arc::new((0..20_000_000).map(|i| (i % 251) as u8).collect());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (url, _) = spawn_throttled_server(payload.clone(), true, Duration::from_millis(12));
+        let dir = std::env::temp_dir().join(format!("fastnote-dl-pause-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("file.bin");
+        let control = Control::new();
+
+        // 收到第一份“已下载 > 0”的进度就暂停，模拟用户点暂停按钮
+        let pause_once = AtomicBool::new(false);
+        runtime.block_on(async {
+            let client = client().unwrap();
+            let progress = |done: u64, _total: u64, _segments: usize, _: &[SegmentProgress]| {
+                if done > 0 && !pause_once.swap(true, Ordering::Relaxed) {
+                    control.set_paused(true);
+                }
+            };
+            let error = fetch(&client, &url, &dest, 8, Some(&control), None, &progress)
+                .await
+                .unwrap_err();
+            assert_eq!(error, PAUSED, "暂停应让下载以 PAUSED 结束");
+        });
+
+        assert!(!dest.exists(), "暂停不应产出最终文件");
+        let parts: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".part"))
+            })
+            .collect();
+        assert!(!parts.is_empty(), "暂停后应保留分段文件用于续传");
+        assert!(
+            parts.iter().any(|path| file_len(path) > 0),
+            "暂停前已下载的数据要留在分段文件里"
+        );
+
+        control.set_paused(false);
+        runtime.block_on(async {
+            let client = client().unwrap();
+            let progress = |_done: u64, _total: u64, _segments: usize, _: &[SegmentProgress]| {};
+            let size = fetch(&client, &url, &dest, 8, Some(&control), None, &progress)
+                .await
+                .unwrap();
+            assert_eq!(size, payload.len() as u64);
+        });
+        assert_eq!(std::fs::read(&dest).unwrap(), *payload, "续传后内容要完整");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 入口脚本服务器：任何请求都 301 到 `location`，模拟 `download.php?pro=x` 这类入口
@@ -2006,12 +2218,12 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let cancel = Cancel::new();
-        cancel.cancel();
+        let control = Control::new();
+        control.cancel();
         runtime.block_on(async {
             let client = client().unwrap();
             let progress = |_done: u64, _total: u64, _segments: usize, _: &[SegmentProgress]| {};
-            let error = fetch(&client, &url, &dest, 4, Some(&cancel), &progress)
+            let error = fetch(&client, &url, &dest, 4, Some(&control), None, &progress)
                 .await
                 .unwrap_err();
             assert_eq!(error, CANCELLED);

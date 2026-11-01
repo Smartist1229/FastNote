@@ -7,9 +7,9 @@
 import { useEffect, useState } from "react";
 
 import { Modal } from "@/components/common/Modal";
-import { normalizeEncryptionError } from "@/api/encryption";
-import type { EncryptionError } from "@/api/encryption";
-import type { UnlockScope } from "@/interface/encryption";
+import { normalizeEncryptionError } from "@/api/system/encryption";
+import type { EncryptionError } from "@/api/system/encryption";
+import type { UnlockScope } from "@/interface/system/encryption";
 import { useI18n } from "@/i18n";
 
 const PASSWORD_MIN = 8;

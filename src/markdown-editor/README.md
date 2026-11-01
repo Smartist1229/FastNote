@@ -549,13 +549,18 @@ markdown-editor/
 │       ├── useVisibleRange.ts
 │       └── useVisualLineRows.ts
 └── components/           # UI
-    ├── MarkdownEditor.tsx
-    ├── Toolbar.tsx
-    ├── StatusBar.tsx
-    ├── Outline.tsx
-    ├── SourceEditor.tsx
-    ├── Gutter.tsx
-    └── overlays/
+    ├── MarkdownEditor.tsx  # 组件入口：状态编排
+    ├── editor/             # 编辑输入区
+    │   ├── SourceEditor.tsx
+    │   └── Gutter.tsx
+    ├── toolbar/            # 工具栏与自绘取色器
+    │   ├── Toolbar.tsx
+    │   └── ColorPicker.tsx
+    ├── outline/            # 大纲面板
+    │   └── Outline.tsx
+    ├── status/             # 状态栏
+    │   └── StatusBar.tsx
+    └── overlays/           # 浮层
         ├── SearchBox.tsx
         └── ImageViewer.tsx   # 图片放大浮层（portal 到 body，窗口级）
 ```

@@ -6,10 +6,10 @@
  */
 import { useMemo } from "react";
 import { useI18n } from "@/i18n";
-import type { NoteHistoryEntry } from "@/interface/note";
+import type { NoteHistoryEntry } from "@/interface/note/note";
 import { Modal } from "@/components/common/Modal";
-import { formatDateTime } from "@/lib/format";
-import { diffLines } from "@/lib/lineDiff";
+import { formatDateTime } from "@/lib/text/format";
+import { diffLines } from "@/lib/text/lineDiff";
 
 /** 一次最多渲染的差异行数：再长就不是「看差异」而是「读全文」了 */
 const MAX_ROWS = 3000;

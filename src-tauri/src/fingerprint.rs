@@ -307,6 +307,8 @@ pub struct WebglInfo {
     pub version: &'static str,
     pub shading_language_version: &'static str,
     pub webgl2_version: &'static str,
+    /// WebGL2 的 `SHADING_LANGUAGE_VERSION`，与 WebGL1 的 GLSL ES 1.0 不同
+    pub webgl2_shading_language_version: &'static str,
     pub max_texture_size: u32,
     pub max_cube_map_texture_size: u32,
     pub max_renderbuffer_size: u32,
@@ -595,10 +597,27 @@ impl BrowserFingerprint {
     /// 生成一份新的随机指纹：各字段独立抽取，但按平台成套取值，保证组合自洽
     pub fn random() -> Self {
         let (major, full_version) = *pick(CHROME_VERSIONS);
+        Self::generate(major, full_version, pick_os(), pick(LOCALES))
+    }
+
+    /// 内置浏览器专用的身份：操作系统、时区 / 语言、Chrome 版本都钉在本机真实值上，
+    /// 其余字段照旧随机。
+    ///
+    /// 这三项不能随机：字体、显卡、屏幕缩放都来自真实系统（声明成别的系统会出现
+    /// 「UA 是 macOS、字体却全是 Segoe UI」）；时区 / 语言要和出口 IP 对得上；
+    /// 页面能按 API 探测出引擎版本，声明得比内核旧（或新）都会被判不一致。
+    pub fn for_browser(major: &str, full_version: &str) -> Self {
+        Self::generate(major, full_version, host_os(), pick_locale())
+    }
+
+    fn generate(
+        major: &str,
+        full_version: &str,
+        os: OsKind,
+        locale: &'static LocaleProfile,
+    ) -> Self {
         let chrome_major: u32 = major.parse().expect("Chrome 主版本必须是数字");
-        let os = pick_os();
         let profile = os_profile(os);
-        let locale = pick(LOCALES);
         let gpu = pick(profile.gpus);
 
         let spec = *pick(profile.screens);
@@ -704,6 +723,8 @@ impl BrowserFingerprint {
                 shading_language_version:
                     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
                 webgl2_version: "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                webgl2_shading_language_version:
+                    "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
                 max_texture_size: 16384,
                 max_cube_map_texture_size: 16384,
                 max_renderbuffer_size: 16384,
@@ -929,6 +950,19 @@ fn pick_os() -> OsKind {
         *pick(&[OsKind::Linux, OsKind::Linux, OsKind::Windows, OsKind::Macos])
     } else {
         *pick(&[OsKind::Windows, OsKind::Windows, OsKind::Macos, OsKind::Linux])
+    }
+}
+
+/// 内置浏览器的身份必须是本机系统：网页能探到的字体、显卡、屏幕缩放都来自真实系统，
+/// 声明成别的系统会出现「UA 是 macOS、字体却全是 Segoe UI」这类硬伤，
+/// 指纹检测直接判「字体与操作系统不符 / 厂商与真实硬件不符」。
+fn host_os() -> OsKind {
+    if cfg!(target_os = "macos") {
+        OsKind::Macos
+    } else if cfg!(target_os = "linux") {
+        OsKind::Linux
+    } else {
+        OsKind::Windows
     }
 }
 
@@ -1344,6 +1378,31 @@ fn pick<T>(items: &[T]) -> &T {
     &items[(next_u64() % items.len() as u64) as usize]
 }
 
+/// 内置浏览器用：按本机时区挑语言画像。时区与语言必须跟出口 IP 对得上，
+/// 否则指纹检测会直接判「时区不同 / 语言不符」。
+///
+/// 先按本机时区的完整名字精确匹配：同一偏移的不同时区（Asia/Shanghai 与
+/// Asia/Taipei 都是 UTC+8）在检测方看来是两个地方，随机挑错一样会被判不符。
+/// 名字不在表里（例如 Windows 返回 Asia/Chongqing）才退回按偏移匹配，最后全量随机。
+fn pick_locale() -> &'static LocaleProfile {
+    if let Ok(local) = iana_time_zone::get_timezone() {
+        if let Some(matched) = LOCALES.iter().find(|locale| locale.timezone == local) {
+            return matched;
+        }
+    }
+    // chrono 的偏移是「东经为正」，JS 的 getTimezoneOffset 正好相反
+    let js_offset = -(chrono::Local::now().offset().local_minus_utc() / 60);
+    let same_offset: Vec<&'static LocaleProfile> = LOCALES
+        .iter()
+        .filter(|locale| locale.timezone_offset_minutes == js_offset)
+        .collect();
+    if same_offset.is_empty() {
+        pick(LOCALES)
+    } else {
+        *pick(&same_offset)
+    }
+}
+
 fn chance(percent: u64) -> bool {
     next_u64() % 100 < percent
 }
@@ -1421,6 +1480,33 @@ mod tests {
                 || pair[0].webgl.unmasked_renderer != pair[1].webgl.unmasked_renderer
                 || pair[0].language != pair[1].language
         }));
+    }
+
+    #[test]
+    fn browser_identity_matches_the_local_timezone() {
+        let fp = BrowserFingerprint::for_browser("156", "156.0.3456.78");
+        if let Ok(local) = iana_time_zone::get_timezone() {
+            if LOCALES.iter().any(|locale| locale.timezone == local) {
+                assert_eq!(fp.timezone, local);
+                return;
+            }
+        }
+        let js_offset = -(chrono::Local::now().offset().local_minus_utc() / 60);
+        if LOCALES
+            .iter()
+            .any(|locale| locale.timezone_offset_minutes == js_offset)
+        {
+            assert_eq!(fp.timezone_offset_minutes, js_offset);
+        }
+    }
+
+    #[test]
+    fn random_fingerprints_still_cover_other_platforms() {
+        // 原始的随机指纹（下载 / 工具箱）保留「绝大多数是本机平台、少数是其他平台」的分布
+        let platforms = (0..128)
+            .map(|_| BrowserFingerprint::random().ua_platform)
+            .collect::<std::collections::HashSet<_>>();
+        assert!(platforms.len() > 1);
     }
 
     #[test]
@@ -1525,6 +1611,25 @@ mod tests {
     }
 
     #[test]
+    fn chrome_version_can_come_from_the_running_engine() {
+        let fp = BrowserFingerprint::for_browser("156", "156.0.3456.78");
+        assert_eq!(fp.chrome_major, 156);
+        assert_eq!(fp.chrome_version, "156.0.3456.78");
+        assert!(fp.user_agent.ends_with("Chrome/156.0.0.0 Safari/537.36"));
+        assert!(fp.navigator.app_version.contains("Chrome/156.0.0.0"));
+        for brand in fp.brands.iter().filter(|brand| brand.brand != "Not_A Brand") {
+            assert_eq!(brand.version, "156");
+        }
+        for brand in fp
+            .full_version_list
+            .iter()
+            .filter(|brand| brand.brand != "Not_A Brand")
+        {
+            assert_eq!(brand.version, "156.0.3456.78");
+        }
+    }
+
+    #[test]
     fn hardware_and_media_are_coherent() {
         for _ in 0..64 {
             let fp = BrowserFingerprint::random();
@@ -1553,6 +1658,10 @@ mod tests {
             let fp = BrowserFingerprint::random();
             assert!(fp.webgl.version.contains("WebGL 1.0"));
             assert!(fp.webgl.webgl2_version.contains("WebGL 2.0"));
+            assert!(fp
+                .webgl
+                .webgl2_shading_language_version
+                .contains("GLSL ES 3.00"));
             assert!(!fp.webgl.extensions.is_empty());
             assert!(fp.webgl.max_texture_size >= 8192);
             assert!(fp.webgl.max_samples == 4 || fp.webgl.max_samples == 8);

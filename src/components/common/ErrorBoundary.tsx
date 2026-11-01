@@ -1,5 +1,5 @@
 import { Component, ErrorInfo } from "react";
-import type { ErrorBoundaryProps, ErrorBoundaryState } from "@/interface/ui";
+import type { ErrorBoundaryProps, ErrorBoundaryState } from "@/interface/app/ui";
 import { useI18n } from "@/i18n";
 
 /** The class boundary cannot subscribe with hooks; its fallback can. */

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="browser-toolbar.css" />
+    <title>浏览器工具栏</title>
+  </head>
+  <body>
+    <div class="bar">
+      <button id="back" type="button" title="后退" aria-label="后退">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M9.5 3.5 5 8l4.5 4.5" />
+        </svg>
+      </button>
+      <button id="forward" type="button" title="前进" aria-label="前进">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M6.5 3.5 11 8l-4.5 4.5" />
+        </svg>
+      </button>
+      <button id="reload" type="button" title="刷新" aria-label="刷新">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4" />
+          <path d="M12.8 2.6v3h-3" />
+        </svg>
+      </button>
+      <form id="address-form">
+        <input
+          id="address"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+          placeholder="输入网址或搜索词"
+          aria-label="地址栏"
+        />
+      </form>
+      <!-- 下载气泡：点一下展开面板，面板高度由 Rust 把工具栏 WebView 一起加高 -->
+      <button
+        id="download"
+        type="button"
+        title="下载"
+        aria-label="下载"
+        aria-controls="download-panel"
+        aria-expanded="false"
+        hidden
+      >
+        <span id="download-fill"></span>
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 2.5v7" />
+          <path d="M5 7l3 3 3-3" />
+          <path d="M3 12.5h10" />
+        </svg>
+        <span id="download-name"></span>
+        <span id="download-percent"></span>
+        <svg id="download-chevron" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5 6.5 8 9.5l3-3" />
+        </svg>
+      </button>
+    </div>
+
+    <div id="download-panel" hidden>
+      <div id="download-panel-head">
+        <span id="download-panel-title">下载</span>
+        <button id="download-clear" type="button">清除已结束</button>
+        <button id="download-close" type="button" title="收起" aria-label="收起">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4.5 4.5l7 7" />
+            <path d="M11.5 4.5l-7 7" />
+          </svg>
+        </button>
+      </div>
+      <div id="download-list"></div>
+    </div>
+
+    <div id="progress" aria-hidden="true"><div id="progress-fill"></div></div>
+    <script src="browser-toolbar.js"></script>
+  </body>
+</html>

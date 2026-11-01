@@ -19,7 +19,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # tray-icon：托盘图标必须在 Rust 侧编译进来，否则前端的 tray 命令运行时不存在
-tauri = { version = "2", features = ["tray-icon"] }
+# unstable：内置浏览器用多 WebView（同一窗口里工具栏 + 网页各一个 WebView）
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
@@ -38,6 +39,9 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # 分组导出：笔记正文是 Markdown，导出 HTML / EPUB 时渲染成网页
 pulldown-cmark = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
+# 语言/时区画像要跟本机时区（含具体城市名）一致；chrono 只给偏移，拿不到 IANA 名字。
+# 版本与锁文件一致（chrono 已依赖它），不新增编译单元。
+iana-time-zone = "0.1.65"
 # API Key 加密存储：AES-256-GCM + SHA-256 派生（版本与锁文件一致，可离线构建）
 ring = "0.17"
 sha2 = "0.11"
@@ -54,6 +58,12 @@ ndarray = "0.17"
 tokio = { version = "1", features = ["fs", "io-util", "time", "macros"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 内置浏览器：Windows 上通过 WebView2 的 CDP 把伪造身份写进内核
+# （UA-CH 请求头只能由内核生成，改 UA 字符串或 JS 都会与请求头对不上）。
+# 版本与 tauri / wry 锁定的保持一致，避免同一类型出现两份定义。
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows = "0.62"
 # 笔记加密的密码派生：Argon2id（抗 GPU/ASIC 优于 PBKDF2），旧的 PBKDF2 数据仍可读
 argon2 = "0.6"
 # 锁定/退出时把内存里的 DEK/KEK 覆写清零，而不是留给分配器

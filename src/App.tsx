@@ -21,23 +21,23 @@
  */
 import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "@/App.css";
-import type { Category, ExternalTextFile, Note, NoteHistoryEntry, Tag } from "@/interface/note";
+import type { Category, ExternalTextFile, Note, NoteHistoryEntry, Tag } from "@/interface/note/note";
 
-import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai";
-import type { AppSettings } from "@/interface/settings";
-import type { ExportTarget } from "@/interface/exportCategory";
-import type { SettingsSection } from "@/interface/settingsModal";
-import type { AiAccessLevel } from "@/interface/aiAccess";
-import type { AiNoteRefInjection, ChatNoteRef } from "@/interface/aiChat";
-import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
-import type { ThemeSettings } from "@/interface/theme";
-import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
-import { applyTheme, cacheTheme, readCachedTheme } from "@/lib/theme";
-import { setResolvedThemeMode } from "@/lib/themeRuntime";
+import type { AiPromptEntry, AiProvider, AiSettings } from "@/interface/ai/ai";
+import type { AppSettings } from "@/interface/settings/settings";
+import type { ExportTarget } from "@/interface/note/exportCategory";
+import type { SettingsSection } from "@/interface/settings/settingsModal";
+import type { AiAccessLevel } from "@/interface/ai/aiAccess";
+import type { AiNoteRefInjection, ChatNoteRef } from "@/interface/ai/aiChat";
+import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
+import type { ThemeSettings } from "@/interface/settings/theme";
+import { DEFAULT_THEME_SETTINGS } from "@/config/theme/themes";
+import { applyTheme, cacheTheme, readCachedTheme } from "@/lib/theme/theme";
+import { setResolvedThemeMode } from "@/lib/theme/themeRuntime";
 import { flushThemeSettings, loadThemeSettings, resetThemeSettings, saveThemeSettings } from "@/stores/themeStore";
-import type { PropertiesTarget } from "@/interface/ui";
-import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
-import { DEFAULT_APP_SETTINGS } from "@/config/appDefaults";
+import type { PropertiesTarget } from "@/interface/app/ui";
+import { DEFAULT_AI_SETTINGS } from "@/config/ai/aiDefaults";
+import { DEFAULT_APP_SETTINGS } from "@/config/app/appDefaults";
 import { loadAiConfig, saveSetting, saveAllSettings, savePrompts, ensureSettingsSeeded } from "@/stores/aiSettingsStore";
 import {
   loadAppSettings,
@@ -48,19 +48,19 @@ import {
 } from "@/stores/appSettingsStore";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import * as notesApi from "@/api/notes";
-import * as categoriesApi from "@/api/categories";
-import * as tagsApi from "@/api/tags";
-import * as aiApi from "@/api/ai";
-import * as settingsApi from "@/api/settings";
-import * as semanticApi from "@/api/semantic";
-import * as encryptionApi from "@/api/encryption";
+import * as notesApi from "@/api/note/notes";
+import * as categoriesApi from "@/api/note/categories";
+import * as tagsApi from "@/api/note/tags";
+import * as aiApi from "@/api/ai/ai";
+import * as settingsApi from "@/api/settings/settings";
+import * as semanticApi from "@/api/ai/semantic";
+import * as encryptionApi from "@/api/system/encryption";
 import type {
   EncryptionInfo,
   EncryptionScope,
   EncryptionStatus,
   UnlockScope,
-} from "@/interface/encryption";
+} from "@/interface/system/encryption";
 import {
   EncryptDialog,
   describeEncryptionError,
@@ -71,20 +71,21 @@ import {
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Modal } from "@/components/common/Modal";
 import type { PaletteCommand, PaletteMode } from "@/components/common/CommandPalette";
-import type { NoteEditorActions } from "@/interface/editor";
+import type { NoteEditorActions } from "@/interface/note/editor";
 import { ToastProvider, useToast } from "@/components/common/Toast";
 
 import { WelcomeDashboard } from "@/components/layout/WelcomeDashboard";
 import { SelectionAiToolbar } from "@/components/editor/SelectionAiToolbar";
 
-import { SETTINGS_SECTIONS } from "@/config/settingsSections";
-import { saveNoteAsFile } from "@/utils/noteFileExport";
+import { SETTINGS_SECTIONS } from "@/config/app/settingsSections";
+import { saveNoteAsFile } from "@/lib/note/noteFileExport";
 import { useConfirm } from "@/components/common/ConfirmDialog";
-import { useRecentFiles } from "@/lib/recentFiles";
-import { useSearchHistory } from "@/lib/searchHistory";
+import { useRecentFiles } from "@/hooks/useRecentFiles";
+import { useSearchHistory } from "@/hooks/useSearchHistory";
+import { setLinkOpenTarget } from "@/lib/app/externalLink";
 import { useIdleLock } from "@/hooks/useIdleLock";
-import { consumeReleaseNotice } from "@/lib/releaseNotes";
-import type { ReleaseNotice } from "@/lib/releaseNotes";
+import { consumeReleaseNotice } from "@/lib/app/releaseNotes";
+import type { ReleaseNotice } from "@/lib/app/releaseNotes";
 import { UpdateDialog } from "@/components/common/UpdateDialog";
 import { Icon } from "@/components/common/Icon";
 import { setLanguage, t as translateNow, useI18n } from "@/i18n";
@@ -309,8 +310,15 @@ function AppContent() {
   /** 软件设置是否已从数据库读回：读回前不碰开机启动快捷方式，避免用默认值覆盖用户设置 */
   const [appSettingsLoaded, setAppSettingsLoaded] = useState(false);
   useEffect(() => {
-    if (appSettingsLoaded) setLanguage(appSettings.general.language);
-  }, [appSettings.general.language, appSettingsLoaded]);
+    if (!appSettingsLoaded) return;
+    setLanguage(appSettings.general.language);
+    // 链接打开方式同样是模块级运行时状态：同步给所有非 React 消费方的打开入口
+    setLinkOpenTarget(appSettings.general.linkOpenTarget);
+  }, [
+    appSettings.general.language,
+    appSettings.general.linkOpenTarget,
+    appSettingsLoaded,
+  ]);
   /** 语义索引是否在后台构建：只为搜索框下的提示，开启语义搜索后才订阅 */
   const [semanticIndexing, setSemanticIndexing] = useState(false);
   /**

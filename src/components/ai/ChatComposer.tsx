@@ -11,8 +11,8 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
 import { useI18n } from "@/i18n";
-import type { ChatNoteRef } from "@/interface/aiChat";
-import { parseNoteRef, refLabel, refRangeLabel, refTitle, serializeNoteRef, splitContent } from "@/lib/aiParse/noteRef";
+import type { ChatNoteRef } from "@/interface/ai/aiChat";
+import { parseNoteRef, refLabel, refRangeLabel, refTitle, serializeNoteRef, splitContent } from "@/lib/ai/aiParse/noteRef";
 
 /** 块与文本之间不可见的占位符：保证块后面有可落脚的光标位置；序列化时丢弃 */
 const ZWSP = "\u200B";

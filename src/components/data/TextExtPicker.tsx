@@ -2,7 +2,7 @@ import { useI18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-import { TEXT_FORMAT_GROUPS, isSupportedTextExt, normalizeTextExt } from '@/config/textFileFormats';
+import { TEXT_FORMAT_GROUPS, isSupportedTextExt, normalizeTextExt } from '@/config/app/textFileFormats';
 import { Icon } from '@/components/common/Icon';
 
 interface TextExtPickerProps {

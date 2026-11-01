@@ -1,6 +1,6 @@
-import * as settingsApi from "@/api/settings";
-import type { AiPromptEntry, AiSettings, LoadedAiConfig } from "@/interface/ai";
-import { DEFAULT_AI_SETTINGS, normalizeAiSettings } from "@/config/aiDefaults";
+import * as settingsApi from "@/api/settings/settings";
+import type { AiPromptEntry, AiSettings, LoadedAiConfig } from "@/interface/ai/ai";
+import { DEFAULT_AI_SETTINGS, normalizeAiSettings } from "@/config/ai/aiDefaults";
 
 /**
  * AI 设置的持久化层（模块内无 React 状态）。

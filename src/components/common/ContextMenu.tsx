@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { ContextMenuProps } from "@/interface/ui";
+import type { ContextMenuProps } from "@/interface/app/ui";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 

@@ -10,18 +10,18 @@ import { t, useI18n } from "@/i18n";
  * - 进度走 `toolbox-download-progress`：`segments` 是并发连接数，
  *   `segment_progress` 只包含尚未下完的分片，界面按快照渲染，
  *   `elapsed` 是后端计的已用时长（毫秒），界面重开也能接上；
- * - 下载中可以取消，取消后后端会清理临时文件。
+ * - 下载中可以暂停 / 取消：暂停保留已下分段，继续时从原位置续传；取消会清理临时文件。
  */
 import { useEffect, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import * as toolboxApi from "@/api/toolbox";
-import type { ToolboxDownloadProgress, ToolboxSegmentProgress } from "@/api/toolbox";
-import { openAppFolder } from "@/api/system";
+import * as toolboxApi from "@/api/system/toolbox";
+import type { ToolboxDownloadProgress, ToolboxSegmentProgress } from "@/api/system/toolbox";
+import { openAppFolder } from "@/api/system/system";
 import { Icon } from "@/components/common/Icon";
 import { ProgressBar } from "@/components/common/ProgressBar";
 import { useToast } from "@/components/common/Toast";
 import { useActionGuard } from "@/hooks/useActionGuard";
-import { formatBytes, formatDuration, formatSpeed } from "@/lib/format";
+import { formatBytes, formatDuration, formatSpeed } from "@/lib/text/format";
 import { FingerprintPanel } from "@/components/settings/FingerprintPanel";
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -108,6 +108,8 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
   const [url, setUrl] = useState("");
   const [filename, setFilename] = useState("");
   const [downloading, setDownloading] = useState(false);
+  /** 暂停标记由后端事件驱动：点「继续」后等下一个 download 事件复位 */
+  const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState<ToolboxDownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
   /** 线程进度默认折叠：大多数时候看总进度就够了 */
@@ -155,6 +157,18 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
           setSpeed(nextSpeed);
           setElapsed(next.elapsed);
           setProgress(next);
+          setPaused(false);
+          return;
+        }
+
+        if (next.stage === "paused") {
+          // 暂停只停传输，进度条留在原地
+          speedSampleRef.current = null;
+          elapsedAnchorRef.current = null;
+          setSpeed(0);
+          setElapsed(next.elapsed);
+          setProgress(next);
+          setPaused(true);
           return;
         }
 
@@ -163,6 +177,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
         elapsedAnchorRef.current = null;
         setProgress(null);
         setDownloading(false);
+        setPaused(false);
         if (next.stage === "done") {
           setLastFile({ name: next.filename, path: next.path, elapsed: next.elapsed });
           showToast(t("「{filename}」已保存到 {path}", { filename: next.filename, path: next.path }), "success");
@@ -191,13 +206,13 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
   // 以最后一次事件为锚点按真实经过时间往后推，事件到达时再用后端绝对值重新对齐——
   // 不能用「每秒 +1000」的累加：界面比后端早起步，事件一来数字会往回跳。
   useEffect(() => {
-    if (!downloading) return;
+    if (!downloading || paused) return;
     const timer = window.setInterval(() => {
       const anchor = elapsedAnchorRef.current;
       if (anchor) setElapsed(anchor.elapsed + (performance.now() - anchor.at));
     }, 250);
     return () => window.clearInterval(timer);
-  }, [downloading]);
+  }, [downloading, paused]);
 
   const handleDownload = async () => {
     const target = url.trim();
@@ -212,6 +227,7 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
 
     const customName = filename.trim();
     setDownloading(true);
+    setPaused(false);
     setLastFile(null);
     setSpeed(0);
     setElapsed(0);
@@ -246,6 +262,19 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
       if (!stopped) return;
     } catch (e) {
       showToast(t("取消失败：{value1}", { value1: errorText(e) }), "error");
+    }
+  };
+
+  const handlePause = async () => {
+    const next = !paused;
+    try {
+      const changed = await toolboxApi.pauseDownload(next);
+      if (!changed) return;
+      // 先给出即时反馈；后端事件到达后会再对齐一次
+      setPaused(next);
+      if (next) setSpeed(0);
+    } catch (e) {
+      showToast(t("操作失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -348,6 +377,15 @@ export const ToolboxPanel: React.FC<ToolboxPanelProps> = ({ threads, onThreadsCh
               <Icon name="editor-export" className="w-3.5 h-3.5" />
               {downloading ? t("下载中…") : t("下载")}
             </button>
+            {downloading && (
+              <button
+                type="button"
+                onClick={() => void guard(handlePause)}
+                className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-xs text-body transition-colors hover:bg-surface-alt"
+              >
+                {paused ? t("继续") : t("暂停")}
+              </button>
+            )}
             {downloading && (
               <button
                 type="button"

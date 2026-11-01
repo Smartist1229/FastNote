@@ -10,8 +10,8 @@
 import { lazy, Suspense } from "react";
 import { useI18n } from "@/i18n";
 import { Modal } from "@/components/common/Modal";
-import { formatBytes, formatSpeed } from "@/lib/format";
-import type { ReleaseNotice } from "@/lib/releaseNotes";
+import { formatBytes, formatSpeed } from "@/lib/text/format";
+import type { ReleaseNotice } from "@/lib/app/releaseNotes";
 import {
   applyUpdate,
   clearSkippedVersion,

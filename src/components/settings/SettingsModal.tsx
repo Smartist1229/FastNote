@@ -18,22 +18,21 @@ import { t, useI18n, getLocale } from "@/i18n";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { getName, getVersion } from "@tauri-apps/api/app";
-import type { AiSettings } from "@/interface/ai";
-import type { AppSettings, EnumOption } from "@/interface/settings";
-import type { BackupSummary } from "@/interface/backup";
+import type { AiSettings } from "@/interface/ai/ai";
+import type { AppSettings, EnumOption } from "@/interface/settings/settings";
+import type { BackupSummary } from "@/interface/settings/backup";
 import type {
   SectionMeta,
   Scope,
   SettingRow,
   SettingsModalProps,
   SettingsSection,
-} from "@/interface/settingsModal";
-import { DEFAULT_AI_SETTINGS } from "@/config/aiDefaults";
-import { DEFAULT_EDITOR_SETTINGS } from "@/config/appDefaults";
-import { SETTINGS_SECTIONS } from "@/config/settingsSections";
-import { EDITOR_SETTING_SPECS } from "@/config/editorSettingSpecs";
+} from "@/interface/settings/settingsModal";
+import { DEFAULT_AI_SETTINGS } from "@/config/ai/aiDefaults";
+import { DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
+import { SETTINGS_SECTIONS } from "@/config/app/settingsSections";
+import { EDITOR_SETTING_SPECS } from "@/config/editor/editorSettingSpecs";
 import {
   APP_AUTHOR,
   APP_NAME_FALLBACK,
@@ -41,7 +40,8 @@ import {
   ICON_SOURCE,
   OPEN_SOURCE_PROJECTS,
   shortUrl,
-} from "@/config/about";
+} from "@/config/app/about";
+import { openExternalLink } from "@/lib/app/externalLink";
 import { AiProviderSettings } from "@/components/ai/AiProviderModal";
 import { ThemePanel } from "@/components/settings/ThemePanel";
 import { ShortcutPanel } from "@/components/settings/ShortcutPanel";
@@ -53,8 +53,8 @@ import { Icon } from "@/components/common/Icon";
 import { AiAccessLevelSelect } from "@/components/common/AiAccessLevelSelect";
 import { useDraggable } from "@/components/common/useDraggable";
 import { useActionGuard } from "@/hooks/useActionGuard";
-import type { AiAccessLevel } from "@/interface/aiAccess";
-import { AI_ACCESS_LABELS } from "@/interface/aiAccess";
+import type { AiAccessLevel } from "@/interface/ai/aiAccess";
+import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
 import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import {
@@ -64,12 +64,12 @@ import {
   importBackup,
   importEncryptedBackup,
   importSqliteBackup,
-} from "@/api/backup";
+} from "@/api/note/backup";
 import { BackupPassphraseDialog } from "@/components/common/EncryptionDialogs";
 import { flushThemeSettings } from "@/stores/themeStore";
 import { checkForUpdates, openUpdateDialog, useUpdater } from "@/stores/updaterStore";
-import { normalizeHexList } from "@/lib/theme";
-import { formatSpeed } from "@/lib/format";
+import { normalizeHexList } from "@/lib/theme/theme";
+import { formatSpeed } from "@/lib/text/format";
 
 /* ---------- 分区定义 ---------- */
 
@@ -836,6 +836,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ],
         onChange: (v) => setApp("general", "language", v),
       },
+      {
+        section: "general",
+        kind: "segment",
+        scope: "live",
+        title: "链接打开方式",
+        desc: "笔记、AI 回复和关于页里的链接在哪里打开。软件内打开会在独立窗口里显示网页（带后退、前进、刷新、地址栏和加载进度），不打断当前笔记；mailto: 等非网页链接仍交给默认浏览器。",
+        keywords: "链接 打开方式 浏览器 软件内 默认浏览器 外部 link open browser external",
+        value: appSettings.general.linkOpenTarget ?? "system",
+        options: [
+          { value: "app", label: "软件内打开" },
+          { value: "system", label: "默认浏览器" },
+        ],
+        onChange: (v) => setApp("general", "linkOpenTarget", v),
+      },
+      // 链接交给系统浏览器时，内置浏览器才有意义的两个开关整组隐藏；
+      // 已存的值保留在设置里，切回「软件内打开」后原样恢复
+      ...(appSettings.general.linkOpenTarget === "app"
+        ? [
+            {
+              section: "general" as const,
+              kind: "toggle" as const,
+              scope: "live" as const,
+              title: "允许多个浏览器窗口",
+              desc: "「链接打开方式」为软件内打开时生效：开启后每次打开链接都会新建一个浏览器窗口，方便同时看多个页面；关闭后所有链接复用同一个窗口。无论开关如何，在浏览器窗口里点击的链接始终在该窗口内跳转。",
+              keywords: "浏览器 多窗口 多开 复用 browser multi window tabs 软件内",
+              value: appSettings.general.browserMultiWindow,
+              onChange: (v: boolean) => setApp("general", "browserMultiWindow", v),
+            },
+            {
+              section: "general" as const,
+              kind: "toggle" as const,
+              scope: "live" as const,
+              title: "随机浏览器指纹",
+              desc: "软件内打开的每个新浏览器窗口都会随机生成一份独立指纹（屏幕、显卡型号、Canvas / WebGL 噪声、硬件信息等），窗口之间互不相同；同一窗口内换页面不换身份，要换身份先关掉窗口。Chrome 版本取自本机浏览器内核的真实版本，避免按 API 探测出的内核版本与 UA 对不上。操作系统固定为本机系统（字体、显卡、平台版本才对得上），时区与语言跟随本机时区。UA、UA-CH（Sec-CH-UA）请求头与 Accept-Language 由内核按这份指纹生成并逐请求改写，主线程与 Worker 读到的身份一致。不模拟 TLS 指纹与 WebRTC 公网 IP。",
+              keywords: "指纹 随机 浏览器 防关联 隐私 UA 时区 canvas webgl fingerprint random privacy",
+              value: appSettings.general.browserRandomFingerprint,
+              onChange: (v: boolean) => setApp("general", "browserRandomFingerprint", v),
+            },
+          ]
+        : []),
       {
         section: "general",
         kind: "toggle",
@@ -2264,7 +2304,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <span className="text-faint">{t("更新地址")}</span>
                               <button
                                 type="button"
-                                onClick={() => void openUrl(APP_RELEASES_URL).catch(() => undefined)}
+                                onClick={() => void openExternalLink(APP_RELEASES_URL).catch(() => undefined)}
                                 title={APP_RELEASES_URL}
                                 className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
                               >
@@ -2349,7 +2389,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <div className="mt-3 pt-3 border-t border-line-soft">
                             <p className="text-[11px] font-medium text-muted">{t("部分图标来源")}</p>
                             <button
-                              onClick={() => openUrl(ICON_SOURCE.url)}
+                              onClick={() => void openExternalLink(ICON_SOURCE.url).catch(() => undefined)}
                               className="mt-1.5 text-left group"
                             >
                               <span className="block text-[11px] text-body group-hover:text-primary-600 transition-colors">
@@ -2368,7 +2408,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               {OPEN_SOURCE_PROJECTS.map((p) => (
                                 <button
                                   key={p.name}
-                                  onClick={() => openUrl(p.url)}
+                                  onClick={() => void openExternalLink(p.url).catch(() => undefined)}
                                   className="w-full flex items-center justify-between gap-3 px-2 py-1.5 rounded-lg text-[11px] text-left hover:bg-app transition-colors group"
                                 >
                                   <span className="text-body group-hover:text-primary-600 transition-colors">

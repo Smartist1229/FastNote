@@ -12,9 +12,9 @@
  * - 列表摘要由 note.content 现算（剥掉 Markdown 标记），不额外引字段，因此不动数据结构。
  */
 import { useI18n } from "@/i18n";
-import type { Note } from "@/interface/note";
-import type { WelcomeDashboardProps } from "@/interface/welcome";
-import type { RecentFile } from "@/lib/recentFiles";
+import type { Note } from "@/interface/note/note";
+import type { WelcomeDashboardProps } from "@/interface/app/welcome";
+import type { RecentFile } from "@/hooks/useRecentFiles";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
 

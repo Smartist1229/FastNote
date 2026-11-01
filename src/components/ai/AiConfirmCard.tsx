@@ -11,7 +11,7 @@
  * 定位由父级 `.composer-wrap`（position: relative）负责，本组件只管卡片本身。
  */
 import { useEffect, useState } from "react";
-import type { ToolCall } from "@/interface/aiOutput";
+import type { ToolCall } from "@/interface/ai/aiOutput";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 

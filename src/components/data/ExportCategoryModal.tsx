@@ -1,15 +1,15 @@
 import { useI18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
-import type { Note } from "@/interface/note";
-import type { CategoryEbookFormat, NoteFormatSpec } from "@/interface/backup";
-import type { ExportCategoryModalProps, FormatOption, ZipFormatChoice } from "@/interface/exportCategory";
-import * as exportApi from "@/api/export";
+import type { Note } from "@/interface/note/note";
+import type { CategoryEbookFormat, NoteFormatSpec } from "@/interface/settings/backup";
+import type { ExportCategoryModalProps, FormatOption, ZipFormatChoice } from "@/interface/note/exportCategory";
+import * as exportApi from "@/api/note/export";
 import { Modal } from '@/components/common/Modal';
 import { Icon } from '@/components/common/Icon';
 import { useToast } from '@/components/common/Toast';
 import { TextExtPicker } from '@/components/data/TextExtPicker';
-import { DEFAULT_TEXT_EXT } from '@/config/textFileFormats';
+import { DEFAULT_TEXT_EXT } from '@/config/app/textFileFormats';
 
 /** 压缩包内笔记的文件格式：预设四种，或逐篇自选 */
 const ZIP_FORMATS: FormatOption[] = [

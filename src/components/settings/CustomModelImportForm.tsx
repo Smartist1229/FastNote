@@ -9,7 +9,7 @@ import { useI18n } from "@/i18n";
  */
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import * as semanticApi from "@/api/semantic";
+import * as semanticApi from "@/api/ai/semantic";
 import { Icon } from "@/components/common/Icon";
 import { ProgressBar } from "@/components/common/ProgressBar";
 

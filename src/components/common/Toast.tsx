@@ -4,7 +4,7 @@
  * showToast 用 useCallback 固定引用，可以安全放进依赖数组。
  */
 import { createContext, useContext, useCallback, useMemo, useState, ReactNode } from "react";
-import type { Toast, ToastContextType, ToastType } from "@/interface/ui";
+import type { Toast, ToastContextType, ToastType } from "@/interface/app/ui";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 

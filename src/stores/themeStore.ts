@@ -12,10 +12,10 @@
  * 读取失败或结构非法时返回默认主题（normalizeThemeSettings 逐项兜底），
  * 写失败只打日志——主题坏了不该影响记笔记。
  */
-import * as settingsApi from "@/api/settings";
-import type { ThemeSettings } from "@/interface/theme";
-import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
-import { normalizeThemeSettings } from "@/lib/theme";
+import * as settingsApi from "@/api/settings/settings";
+import type { ThemeSettings } from "@/interface/settings/theme";
+import { DEFAULT_THEME_SETTINGS } from "@/config/theme/themes";
+import { normalizeThemeSettings } from "@/lib/theme/theme";
 
 const THEME_KEY = "app.config.theme.settings";
 

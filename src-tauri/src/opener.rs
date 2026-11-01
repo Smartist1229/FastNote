@@ -30,6 +30,25 @@ pub fn open_app_folder(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| format!("打开目录失败：{e}"))
 }
 
+/// 在文件管理器里定位下载文件（打开所在目录并选中它）。
+/// 与 [`open_app_folder`] 一样只放行应用自己的目录下的文件。
+#[tauri::command]
+pub fn reveal_app_file(app: AppHandle, path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|_| format!("文件不存在：{path}"))?;
+    if !target.is_file() {
+        return Err(format!("不是文件：{path}"));
+    }
+    if !roots(&app).iter().any(|root| target.starts_with(root)) {
+        return Err("只能打开应用自己的文件".to_string());
+    }
+
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| format!("打开下载目录失败：{e}"))
+}
+
 fn roots(app: &AppHandle) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(dir) = std::env::current_exe()

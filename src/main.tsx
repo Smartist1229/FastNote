@@ -9,9 +9,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "@/App";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
-import { applyTheme, readCachedTheme } from "@/lib/theme";
-import { setResolvedThemeMode } from "@/lib/themeRuntime";
-import { DEFAULT_THEME_SETTINGS } from "@/config/themes";
+import { applyTheme, readCachedTheme } from "@/lib/theme/theme";
+import { setResolvedThemeMode } from "@/lib/theme/themeRuntime";
+import { DEFAULT_THEME_SETTINGS } from "@/config/theme/themes";
 
 /**
  * 全局禁用「原生组合键」：WebView2 会把这些键交给宿主浏览器处理，

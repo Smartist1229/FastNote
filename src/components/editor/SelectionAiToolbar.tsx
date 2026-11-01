@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getLocale, useI18n } from "@/i18n";
 import { Icon } from "@/components/common/Icon";
-import type { ChatNoteRef } from "@/interface/aiChat";
+import type { ChatNoteRef } from "@/interface/ai/aiChat";
 
 export type SelectionAiAction = "polish" | "translate" | "summarize" | "add";
 

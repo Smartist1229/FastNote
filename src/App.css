@@ -680,6 +680,29 @@ button:focus-visible {
   transform: rotate(180deg);
 }
 
+/* ---------- 侧边栏视图切换（分组 / 收藏） ----------
+ * 选中项显示图标 + 文字，未选中项只留图标。文字不直接卸载，而是收进 0fr 轨道：
+ * 展开 / 收起都能过渡，宽度始终跟随文字内容，不用给每种语言写死 max-width。
+ * 收起的文字被内层 span 裁掉；外层的 0fr 只是把轨道压平，内层留的 4px 间距一并被裁。
+ */
+.sidebar-view-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transition: grid-template-columns var(--duration-base) var(--ease-out-soft),
+    opacity var(--duration-fast) var(--ease-out-soft);
+}
+.sidebar-view-label.is-visible {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+.sidebar-view-label > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  padding-left: 4px;
+}
+
 /* ---------- AI 面板容器：入场动画与拖拽调宽 ---------- */
 .ai-panel {
   /*

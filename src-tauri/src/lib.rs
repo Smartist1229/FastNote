@@ -13,6 +13,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, State};
 use zeroize::{Zeroize, Zeroizing};
 
+mod browser;
 mod crypto;
 mod download;
 mod encryption;
@@ -6177,7 +6178,7 @@ fn read_setting_raw(app: &AppHandle, key: &str) -> Option<String> {
 }
 
 /// 读布尔设置；缺失或解析失败时回退 fallback
-fn read_setting_bool(app: &AppHandle, key: &str, fallback: bool) -> bool {
+pub(crate) fn read_setting_bool(app: &AppHandle, key: &str, fallback: bool) -> bool {
     read_setting_raw(app, key)
         .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
         .unwrap_or(fallback)
@@ -6582,9 +6583,21 @@ pub fn run() {
             semantic::semantic_debug_embed,
             download::toolbox_download,
             download::toolbox_download_cancel,
+            download::toolbox_download_pause,
             download::toolbox_download_dir,
             fingerprint::fingerprint_info,
+            browser::browser_open,
+            browser::browser_random_fingerprint,
+            browser::browser_toolbar_state,
+            browser::browser_toolbar_action,
+            browser::browser_toolbar_navigate,
+            browser::browser_download_pause,
+            browser::browser_download_cancel,
+            browser::browser_download_forget,
+            browser::browser_download_clear,
+            browser::browser_toolbar_panel,
             opener::open_app_folder,
+            opener::reveal_app_file,
             updater::probe_update_lines,
             updater::download_update,
             updater::install_downloaded_update,
@@ -6734,6 +6747,8 @@ pub fn run() {
         })
         // 关闭窗口行为：读库里的设置，决定「隐藏到托盘」还是「退出应用」
         .on_window_event(|window, event| {
+            // 内置浏览器窗口：尺寸变化时重排工具栏与网页两个子 WebView
+            browser::handle_window_event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     return;

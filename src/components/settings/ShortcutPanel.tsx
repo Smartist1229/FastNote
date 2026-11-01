@@ -11,8 +11,8 @@ import { useI18n } from "@/i18n";
  */
 import { Icon } from "@/components/common/Icon";
 import { KeyChips } from "@/components/common/KeyChips";
-import { buildShortcutGroups } from "@/config/shortcuts";
-import type { AppSettings } from "@/interface/settings";
+import { buildShortcutGroups } from "@/config/editor/shortcuts";
+import type { AppSettings } from "@/interface/settings/settings";
 
 export const ShortcutPanel: React.FC<{ settings: AppSettings }> = ({ settings }) => {
   const { t, locale } = useI18n();

@@ -17,7 +17,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useSyncExternalStore } from "react";
 import { t } from "@/i18n";
-import { clearPendingRelease, recordPendingRelease } from "@/lib/releaseNotes";
+import { clearPendingRelease, recordPendingRelease } from "@/lib/app/releaseNotes";
 
 export type UpdaterPhase =
   | "idle"

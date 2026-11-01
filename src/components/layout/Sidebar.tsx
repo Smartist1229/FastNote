@@ -12,19 +12,19 @@
  */
 import { useI18n } from "@/i18n";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Category, Note } from "@/interface/note";
-import type { SidebarProps } from "@/interface/sidebar";
-import type { ContextMenuItem } from "@/interface/ui";
-import * as notesApi from "@/api/notes";
+import type { Category, Note } from "@/interface/note/note";
+import type { SidebarProps } from "@/interface/note/sidebar";
+import type { ContextMenuItem } from "@/interface/app/ui";
+import * as notesApi from "@/api/note/notes";
 import { useToast } from '@/components/common/Toast';
 import { ContextMenu, useContextMenu } from '@/components/common/ContextMenu';
 import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem } from '@/components/layout/CategoryDrawer';
 import { AiSparkleIcon } from '@/components/common/icons';
 import { Icon } from '@/components/common/Icon';
-import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/contextMenus';
-import type { GroupMenuKind } from '@/config/contextMenus';
-import { buildNoteMatcher, findMatchRanges, searchNotes, type NoteSearchHit } from '@/lib/noteSearch';
-import { useSemanticSearch } from '@/lib/useSemanticSearch';
+import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/app/contextMenus';
+import type { GroupMenuKind } from '@/config/app/contextMenus';
+import { buildNoteMatcher, findMatchRanges, searchNotes, type NoteSearchHit } from '@/lib/search/noteSearch';
+import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 import { openUpdateDialog, useUpdater } from '@/stores/updaterStore';
 /** 排序选项：value 直接作为后端排序字段使用 */
 const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' }];
@@ -745,25 +745,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3.5 py-1.5 flex-shrink-0">
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <div className="flex items-center rounded-lg bg-surface/70 border border-line/70 p-0.5">
+            {/* 选中项显示图标 + 文字，未选中只留图标：两个都带文字会把这一行撑满。
+                文字常驻 DOM、靠 .sidebar-view-label 收进 0fr 轨道，切换时宽度与透明度一起过渡 */}
             <button
               onClick={() => onViewChange('groups')}
-              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
+              className={`flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
                 view === 'groups' ? 'bg-primary-500 text-on-accent shadow-xs' : 'text-faint hover:text-body'
               }`}
               title={t("分组视图")}
+              aria-label={t("分组视图")}
+              aria-pressed={view === 'groups'}
             >
               <Icon name="sidebar-folder" className="w-3 h-3" />
-              {t("分组")}
+              <span className={`sidebar-view-label${view === 'groups' ? ' is-visible' : ''}`}>
+                <span>{t("分组")}</span>
+              </span>
             </button>
             <button
               onClick={() => onViewChange('favorites')}
-              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
+              className={`flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-medium transition-all ${
                 view === 'favorites' ? 'bg-primary-500 text-on-accent shadow-xs' : 'text-faint hover:text-body'
               }`}
               title={t("收藏视图")}
+              aria-label={t("收藏视图")}
+              aria-pressed={view === 'favorites'}
             >
               <Icon name="sidebar-star-filled" className="w-3 h-3" />
-              {t("收藏")}
+              <span className={`sidebar-view-label${view === 'favorites' ? ' is-visible' : ''}`}>
+                <span>{t("收藏")}</span>
+              </span>
             </button>
           </div>
         </div>
