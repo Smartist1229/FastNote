@@ -1,17 +1,16 @@
 /**
- * 更新弹窗：把「发现新版本」和「更新完成」合并成一个对话流程。
+ * 更新弹窗：展示「发现新版本 / 下载中 / 已下载待安装」流程。
  *
  * - 发现新版本：展示远端更新说明，可直接跳过此版本、稍后再看或下载安装；
- * - 下载中：展示进度（Windows 安装器接管后自动重启，关闭弹窗不会中断下载）；
- * - 更新完成：启动时版本对得上缓存说明，展示这次更新带来了什么。
+ * - 下载中：展示进度（Windows 安装器接管后自动重启，关闭弹窗不会中断下载）。
  *
  * 手动检查在 store 里会把 dialogOpen 置为 true；启动时的静默检查只发提示，不主动弹窗。
+ * 安装完成后不再单独提示，启动时不弹任何窗口。
  */
 import { lazy, Suspense } from "react";
 import { useI18n } from "@/i18n";
 import { Modal } from "@/components/common/Modal";
 import { formatBytes, formatSpeed } from "@/lib/text/format";
-import type { ReleaseNotice } from "@/lib/app/releaseNotes";
 import {
   applyUpdate,
   clearSkippedVersion,
@@ -64,22 +63,17 @@ const LineOption: React.FC<{
   </button>
 );
 
-export const UpdateDialog: React.FC<{
-  /** 更新完成后的说明；null 表示当前是「发现新版本 / 下载中」模式 */
-  notice: ReleaseNotice | null;
-  onCloseNotice: () => void;
-}> = ({ notice, onCloseNotice }) => {
+export const UpdateDialog: React.FC = () => {
   const { t } = useI18n();
   const updater = useUpdater();
 
-  const done = notice != null;
-  const downloading = !done && updater.phase === "downloading";
+  const downloading = updater.phase === "downloading";
   /** 安装包已下载并验签，等待用户确认安装 */
-  const ready = !done && updater.phase === "ready";
-  const installing = !done && updater.phase === "installing";
-  const version = done ? notice.version : updater.version ?? "";
-  const notes = done ? notice.notes : updater.notes;
-  const skipped = !done && updater.version != null && updater.skippedVersion === updater.version;
+  const ready = updater.phase === "ready";
+  const installing = updater.phase === "installing";
+  const version = updater.version ?? "";
+  const notes = updater.notes;
+  const skipped = updater.version != null && updater.skippedVersion === updater.version;
 
   const lineLabel = (id: UpdateLineId) => (id === "cnb" ? t("CNB（国内）") : t("GitHub"));
   const statusText = (line: UpdateLineProbe) => {
@@ -91,7 +85,7 @@ export const UpdateDialog: React.FC<{
 
   const activeLine = updater.lines.find((line) => line.id === updater.activeLine) ?? null;
   const activeLabel = activeLine ? lineLabel(activeLine.id) : "";
-  const showLinePicker = !done && updater.phase === "available" && updater.lines.length > 0;
+  const showLinePicker = updater.phase === "available" && updater.lines.length > 0;
   // 手动选的线路这次没有新版本时，store 会回落到最快线路，这里把回落原因说清楚
   const fallbackLine =
     updater.lineChoice !== "auto" && activeLine != null && activeLine.id !== updater.lineChoice;
@@ -128,46 +122,30 @@ export const UpdateDialog: React.FC<{
   })();
   const dynamicText = [speedText, etaText].filter(Boolean).join(" · ");
 
-  const close = () => {
-    closeUpdateDialog();
-    onCloseNotice();
-  };
+  const close = () => closeUpdateDialog();
 
-  const title = done
-    ? t("更新完成")
-    : installing
-      ? t("正在安装")
-      : ready
-        ? t("更新已下载")
-        : downloading
-          ? t("正在更新")
-          : t("发现新版本 {value1}", { value1: version });
+  const title = installing
+    ? t("正在安装")
+    : ready
+      ? t("更新已下载")
+      : downloading
+        ? t("正在更新")
+        : t("发现新版本 {value1}", { value1: version });
 
   return (
-    <Modal isOpen={done || updater.dialogOpen} onClose={close} title={title} size="lg" zIndex={70}>
+    <Modal isOpen={updater.dialogOpen} onClose={close} title={title} size="lg" zIndex={70}>
       <div>
-        {done ? (
-          <>
-            <p className="text-sm font-semibold text-ink">{t("已更新到 {value1}", { value1: version })}</p>
-            {notice.previousVersion && (
-              <p className="mt-1 text-[11px] text-faint">
-                {t("从 {value1} 更新而来", { value1: notice.previousVersion })}
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="text-[11px] text-faint">
-            {installing
-              ? t("正在启动安装程序，软件即将关闭。")
-              : ready
-                ? t("安装包已下载完成并通过校验，现在可以关闭软件并安装。")
-                : downloading
-                  ? t("关闭弹窗不会中断下载。")
-                  : t("下载完成后可立即安装并重启。")}
-          </p>
-        )}
+        <p className="text-[11px] text-faint">
+          {installing
+            ? t("正在启动安装程序，软件即将关闭。")
+            : ready
+              ? t("安装包已下载完成并通过校验，现在可以关闭软件并安装。")
+              : downloading
+                ? t("关闭弹窗不会中断下载。")
+                : t("下载完成后可立即安装并重启。")}
+        </p>
 
-        <div className={`rounded-xl border border-line-soft bg-app px-3.5 py-3 ${done ? "mt-3" : "mt-2.5"}`}>
+        <div className="rounded-xl border border-line-soft bg-app px-3.5 py-3 mt-2.5">
           <p className="text-xs font-medium text-body">{t("本次更新内容")}</p>
           {notes ? (
             <Suspense fallback={null}>
@@ -225,7 +203,7 @@ export const UpdateDialog: React.FC<{
           </div>
         )}
 
-        {!done && updater.lineFallback && (
+        {updater.lineFallback && (
           <p className="mt-1.5 text-[11px] text-faint">
             {t("从 {value1} 下载失败，已自动改用 {value2} 重试", {
               value1: lineLabel(updater.lineFallback.from),
@@ -234,7 +212,7 @@ export const UpdateDialog: React.FC<{
           </p>
         )}
 
-        {!done && (updater.phase === "available" || ready) && updater.error && (
+        {(updater.phase === "available" || ready) && updater.error && (
           <p className="mt-2 text-[11px] text-danger-strong break-words">
             {t("更新失败：{value1}", { value1: updater.error })}
           </p>
@@ -244,13 +222,7 @@ export const UpdateDialog: React.FC<{
           <p className="mt-2 text-[11px] text-faint">{t("已跳过版本 {value1}，手动检查仍会提示", { value1: version })}</p>
         )}
 
-        {done ? (
-          <div className="mt-4 flex justify-end">
-            <button type="button" onClick={close} className="btn-primary px-4 py-1.5 text-xs">
-              {t("知道了")}
-            </button>
-          </div>
-        ) : installing ? null : downloading ? (
+        {installing ? null : downloading ? (
           <div className="mt-4 flex justify-end">
             <button
               type="button"

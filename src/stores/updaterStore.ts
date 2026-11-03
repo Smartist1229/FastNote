@@ -5,8 +5,7 @@
  * 用户也可以在「关于」里手动检查。检查时会同时探测两条线路的延迟，
  * 默认选最快的一条，用户可以在弹窗里手动切换后再下载。
  *
- * 本地只持久化三件事——用户跳过的版本、手动选择的线路，
- * 以及安装前缓存的更新说明（见 lib/releaseNotes.ts）。
+ * 本地只持久化两件事——用户跳过的版本和手动选择的线路。
  *
  * 交互约定：
  *   - 启动检查失败保持安静，不把离线等临时问题写进「关于」页；
@@ -17,7 +16,6 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useSyncExternalStore } from "react";
 import { t } from "@/i18n";
-import { clearPendingRelease, recordPendingRelease } from "@/lib/app/releaseNotes";
 
 export type UpdaterPhase =
   | "idle"
@@ -371,7 +369,7 @@ export const applyUpdate = async (): Promise<void> => {
   try {
     await relaunch();
   } catch {
-    // 已经装好、只是自动重启失败：保留缓存的说明，用户手动重启即可
+    // 已经装好、只是自动重启失败：用户手动重启即可
   }
 };
 
@@ -406,9 +404,6 @@ export const downloadUpdate = async (): Promise<void> => {
     error: null,
     lineFallback: null,
   });
-  // 安装完成后会结束进程，后面的代码不保证执行：
-  // 更新说明必须在下载前落盘，下次启动才对得上版本
-  recordPendingRelease(version, snapshot.notes);
 
   let downloaded = false;
   let lastError: unknown = null;
@@ -434,8 +429,6 @@ export const downloadUpdate = async (): Promise<void> => {
   }
 
   if (!downloaded) {
-    // 下载没成功：清掉缓存的说明，避免下次启动误报「已更新」
-    clearPendingRelease();
     // 保留线路与更新资源：回到「可更新」状态，用户可以重试或换线
     publish({
       phase: "available",
