@@ -380,6 +380,13 @@ export interface EditorSettings {
    * 这里放开是为了让需要直角/大圆角的用户自己调，改它就等于覆盖默认值。
    */
   radius: number;
+  /**
+   * 点击宿主 UI（工具栏、侧边栏、插件注入的控件等带 data-editor-blur-ignore 的元素）时，
+   * 编辑器是否保持焦点。开启（默认）时拦截 mousedown 的默认行为并 refocus，
+   * 让插件 insertText 依赖的 selection 始终留在 contenteditable 内部；
+   * 关闭则点击这些区域会正常失焦。
+   */
+  keepFocusOnHostClick: boolean;
 }
 
 /**

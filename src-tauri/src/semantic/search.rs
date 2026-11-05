@@ -16,7 +16,7 @@ pub const MAX_LIMIT: usize = 50;
 const SNIPPET_CHARS: usize = 120;
 
 pub struct CachedChunk {
-    pub note_id: i64,
+    pub note_id: String,
     pub seq: i64,
     pub text: String,
     pub vector: Vec<f32>,
@@ -31,7 +31,7 @@ pub struct VectorCache {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SemanticHit {
-    pub note_id: i64,
+    pub note_id: String,
     pub score: f32,
     pub chunk_seq: i64,
     pub snippet: String,
@@ -51,7 +51,7 @@ pub fn build_cache(conn: &Connection, version: u64, model_id: &str) -> Result<Ve
     let rows = stmt
         .query_map([model_id], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
+                row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
@@ -115,10 +115,10 @@ pub fn search(
     query: &[f32],
     limit: usize,
     min_score: f32,
-    allowed: Option<&HashSet<i64>>,
+    allowed: Option<&HashSet<String>>,
 ) -> Vec<SemanticHit> {
     let limit = limit.clamp(1, MAX_LIMIT);
-    let mut best: HashMap<i64, (f32, i64, &str)> = HashMap::new();
+    let mut best: HashMap<String, (f32, i64, &str)> = HashMap::new();
 
     for chunk in &cache.chunks {
         if chunk.vector.len() != query.len() {
@@ -136,7 +136,7 @@ pub fn search(
         match best.get(&chunk.note_id) {
             Some((current, _, _)) if *current >= score => {}
             _ => {
-                best.insert(chunk.note_id, (score, chunk.seq, chunk.text.as_str()));
+                best.insert(chunk.note_id.clone(), (score, chunk.seq, chunk.text.as_str()));
             }
         }
     }
@@ -194,13 +194,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE notes (
-                id INTEGER PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 is_deleted INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE note_chunks (
-                note_id INTEGER NOT NULL,
+                note_id TEXT NOT NULL,
                 seq INTEGER NOT NULL,
                 text TEXT NOT NULL,
                 dim INTEGER NOT NULL,
@@ -208,7 +208,7 @@ mod tests {
                 PRIMARY KEY (note_id, seq)
             );
             CREATE TABLE note_index_state (
-                note_id INTEGER PRIMARY KEY,
+                note_id TEXT PRIMARY KEY,
                 note_updated_at TEXT NOT NULL,
                 model_id TEXT NOT NULL,
                 indexed_at TEXT NOT NULL
@@ -218,7 +218,7 @@ mod tests {
         conn
     }
 
-    fn insert_note(conn: &Connection, id: i64, deleted: bool) {
+    fn insert_note(conn: &Connection, id: &str, deleted: bool) {
         conn.execute(
             "INSERT INTO notes (id, title, content, is_deleted) VALUES (?1, 't', 'c', ?2)",
             rusqlite::params![id, if deleted { 1 } else { 0 }],
@@ -232,7 +232,7 @@ mod tests {
         .unwrap();
     }
 
-    fn insert_chunk(conn: &Connection, note_id: i64, seq: i64, vector: &[f32], text: &str) {
+    fn insert_chunk(conn: &Connection, note_id: &str, seq: i64, vector: &[f32], text: &str) {
         conn.execute(
             "INSERT INTO note_chunks (note_id, seq, text, dim, embedding) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![note_id, seq, text, vector.len() as i64, vec_to_blob(vector)],
@@ -250,21 +250,21 @@ mod tests {
     #[test]
     fn cache_skips_trashed_notes() {
         let conn = memory_db();
-        insert_note(&conn, 1, false);
-        insert_note(&conn, 2, true);
-        insert_chunk(&conn, 1, 0, &[1.0, 0.0], "保留");
-        insert_chunk(&conn, 2, 0, &[1.0, 0.0], "回收站");
+        insert_note(&conn, "1", false);
+        insert_note(&conn, "2", true);
+        insert_chunk(&conn, "1", 0, &[1.0, 0.0], "保留");
+        insert_chunk(&conn, "2", 0, &[1.0, 0.0], "回收站");
 
         let cache = build_cache(&conn, 0, "test-model").unwrap();
         assert_eq!(cache.chunks.len(), 1);
-        assert_eq!(cache.chunks[0].note_id, 1);
+        assert_eq!(cache.chunks[0].note_id, "1");
     }
 
     #[test]
     fn cache_only_contains_selected_model_vectors() {
         let conn = memory_db();
-        insert_note(&conn, 1, false);
-        insert_chunk(&conn, 1, 0, &[1.0, 0.0], "旧模型");
+        insert_note(&conn, "1", false);
+        insert_chunk(&conn, "1", 0, &[1.0, 0.0], "旧模型");
 
         assert_eq!(build_cache(&conn, 0, "test-model").unwrap().chunks.len(), 1);
         assert!(build_cache(&conn, 0, "another-model")
@@ -276,37 +276,37 @@ mod tests {
     #[test]
     fn search_filters_by_score_limit_and_allowlist() {
         let conn = memory_db();
-        for id in 1..=3 {
+        for id in ["1", "2", "3"] {
             insert_note(&conn, id, false);
         }
-        insert_chunk(&conn, 1, 0, &[1.0, 0.0], "最相关");
-        insert_chunk(&conn, 2, 0, &[0.8, 0.6], "次相关");
-        insert_chunk(&conn, 3, 0, &[0.0, 1.0], "无关");
+        insert_chunk(&conn, "1", 0, &[1.0, 0.0], "最相关");
+        insert_chunk(&conn, "2", 0, &[0.8, 0.6], "次相关");
+        insert_chunk(&conn, "3", 0, &[0.0, 1.0], "无关");
 
         let cache = build_cache(&conn, 0, "test-model").unwrap();
         let query = [1.0, 0.0];
 
         let hits = search(&cache, &query, 10, 0.5, None);
         assert_eq!(hits.len(), 2, "低于 min_score 的块应被过滤");
-        assert_eq!(hits[0].note_id, 1);
-        assert_eq!(hits[1].note_id, 2);
+        assert_eq!(hits[0].note_id, "1");
+        assert_eq!(hits[1].note_id, "2");
 
-        let allowed: HashSet<i64> = [2].into_iter().collect();
+        let allowed: HashSet<String> = ["2".to_string()].into_iter().collect();
         let hits = search(&cache, &query, 10, 0.5, Some(&allowed));
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].note_id, 2);
+        assert_eq!(hits[0].note_id, "2");
 
         let hits = search(&cache, &query, 1, 0.5, None);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].note_id, 1);
+        assert_eq!(hits[0].note_id, "1");
     }
 
     #[test]
     fn per_note_score_is_max_chunk() {
         let conn = memory_db();
-        insert_note(&conn, 1, false);
-        insert_chunk(&conn, 1, 0, &[0.5, 0.866], "低分块");
-        insert_chunk(&conn, 1, 1, &[1.0, 0.0], "高分块");
+        insert_note(&conn, "1", false);
+        insert_chunk(&conn, "1", 0, &[0.5, 0.866], "低分块");
+        insert_chunk(&conn, "1", 1, &[1.0, 0.0], "高分块");
 
         let cache = build_cache(&conn, 0, "test-model").unwrap();
         let hits = search(&cache, &[1.0, 0.0], 10, 0.5, None);

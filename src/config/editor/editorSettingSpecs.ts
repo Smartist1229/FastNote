@@ -1162,6 +1162,14 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     desc: "编辑区与预览区外框的圆角。设为 0 时四角为直角；这也是分栏/阅读视图外层容器的圆角来源。",
     keywords: "圆角 半径 radius 弧度 直角 corners",
   },
+  {
+    field: "keepFocusOnHostClick",
+    group: "主题与其他",
+    kind: "toggle",
+    title: "点击宿主 UI 时保持编辑器焦点",
+    desc: "点击工具栏、侧边栏、插件注入的控件时，拦截默认的失焦行为并立刻 refocus，让插件插入文本依赖的光标始终留在正文内部。关闭则点击这些区域编辑器正常失焦。",
+    keywords: "保持焦点 失焦 blur focus 宿主 插件 toolbar 点击",
+  },
 ];
 
 /** field → 规格，读库校验时按字段取约束 */

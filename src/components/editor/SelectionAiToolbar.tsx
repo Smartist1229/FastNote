@@ -82,7 +82,7 @@ interface SelectionAiToolbarProps {
   /** 投递引用块；prompt 为随块追加的指令（润色/翻译/总结），"添加到对话"不带 */
   onAddToChat?: (ref: ChatNoteRef, prompt?: string) => void;
   /** 当前笔记：一起塞进引用块，方便模型与用户分辨出处 */
-  noteId?: number | null;
+  noteId?: string | null;
   noteTitle?: string;
 }
 

@@ -1,0 +1,190 @@
+use crate::models::*;
+use chrono::{Duration, Local};
+use rusqlite::{params, Connection};
+use serde_json::json;
+use tauri::State;
+use crate::AppState;
+use crate::semantic;
+use crate::encryption;
+use crate::map_row_to_note;
+use super::tags::prune_tag_links;
+use super::history::purge_note_history;
+
+#[tauri::command]
+pub fn move_to_trash(id: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    // 加密笔记一律不能进回收站：临时解锁也不放行，必须先永久解密
+    if encryption::note_enc_mode(&conn, &id)? != 0 {
+        return Err(json!({ "code": "encrypted_note" }).to_string());
+    }
+    let now = Local::now().to_rfc3339();
+
+    conn.execute(
+        "UPDATE notes SET is_deleted = 1, deleted_at = ?1 WHERE id = ?2",
+        params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_note(id: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let (category_id, enc_mode): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT category_id, COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
+            params![&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "笔记不存在，可能已被删除".to_string())?;
+    // 明文笔记（或只有自己密码的笔记）还原进已加密分组会破坏“组内全是密文”，先要求解密分组
+    if enc_mode != 2 {
+        if let Some(cat_id) = &category_id {
+            if encryption::category_is_encrypted(&conn, cat_id)? {
+                return Err(json!({ "code": "category_encrypted", "reason": "restore" }).to_string());
+            }
+        }
+    }
+
+    conn.execute(
+        "UPDATE notes SET is_deleted = 0, deleted_at = NULL WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
+    let conn = state.conn.lock().unwrap();
+
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at, 
+                is_pinned, ai_access, COALESCE(enc_mode, 0) AS enc_mode
+         FROM notes 
+         WHERE is_deleted = 1 
+         ORDER BY deleted_at DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let notes = stmt
+        .query_map([], map_row_to_note)
+        .map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for note in notes {
+        result.push(note.map_err(|e| e.to_string())?);
+    }
+
+    encryption::apply_lock_state(&conn, &state.encryption, &mut result);
+    Ok(result)
+}
+
+/// 永久删除笔记时清掉所有按 note_id 存的旁路行（密钥、语义块、索引状态）。
+/// 没有外键，只能逐表删，否则 encrypted_keys 会留孤儿行。
+pub(crate) fn drop_note_side_rows(conn: &Connection, note_id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![note_id])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM note_index_state WHERE note_id = ?1",
+        params![note_id],
+    )
+    .map_err(|e| e.to_string())?;
+    encryption::cleanup_note_key(conn, note_id)
+}
+
+#[tauri::command]
+pub fn delete_note_permanently(id: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    // 加密笔记不可永久删除（解密会删 encrypted_keys，直接删只会留下无法恢复的密文）
+    if encryption::note_enc_mode(&conn, &id)? != 0 {
+        return Err(json!({ "code": "encrypted_note" }).to_string());
+    }
+
+    conn.execute("DELETE FROM notes WHERE id = ?1", params![&id])
+        .map_err(|e| e.to_string())?;
+    purge_note_history(&conn, &id)?;
+    drop_note_side_rows(&conn, &id)?;
+    state.encryption.lock(encryption::NOTE_SCOPE, &id, true);
+
+    // 没开级联外键，笔记没了标签关联会留成孤儿（list_tags 的计数会飘）
+    prune_tag_links(&conn)?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
+    Ok(())
+}
+
+/// 批量永久删除；返回因加密而跳过的条数（调用方据此提示用户先解密）
+#[tauri::command]
+pub fn delete_multiple_notes_permanently(ids: Vec<String>, state: State<AppState>) -> Result<usize, String> {
+    let conn = state.conn.lock().unwrap();
+
+    let mut skipped = 0usize;
+    for id in ids {
+        if encryption::note_enc_mode(&conn, &id).unwrap_or(0) != 0 {
+            skipped += 1;
+            continue;
+        }
+        conn.execute("DELETE FROM notes WHERE id = ?1", params![&id])
+            .map_err(|e| e.to_string())?;
+        purge_note_history(&conn, &id)?;
+        drop_note_side_rows(&conn, &id)?;
+        state.encryption.lock(encryption::NOTE_SCOPE, &id, true);
+    }
+
+    prune_tag_links(&conn)?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
+    Ok(skipped)
+}
+
+#[tauri::command]
+pub fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let thirty_days_ago = Local::now() - Duration::days(30);
+    let threshold = thirty_days_ago.to_rfc3339();
+
+    // 加密笔记不参与自动清理：它们的密文和密钥只能由用户先永久解密再删除
+    conn.execute(
+        "DELETE FROM notes_history WHERE note_id IN (
+            SELECT id FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0
+         )",
+        params![threshold],
+    )
+    .map_err(|e| e.to_string())?;
+    let expired: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM notes
+                 WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![threshold], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    conn.execute(
+        "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0",
+        params![threshold],
+    )
+    .map_err(|e| e.to_string())?;
+    for id in expired {
+        drop_note_side_rows(&conn, &id)?;
+        state.encryption.lock(encryption::NOTE_SCOPE, &id, true);
+    }
+
+    prune_tag_links(&conn)?;
+    drop(conn);
+    semantic::invalidate(&state.semantic);
+
+    Ok(())
+}

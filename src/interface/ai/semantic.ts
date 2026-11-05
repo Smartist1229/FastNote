@@ -60,7 +60,7 @@ export interface SemanticStatus {
 
 /** 一条语义命中：一个笔记取它得分最高的块 */
 export interface SemanticHit {
-  note_id: number;
+  note_id: string;
   /** 余弦相似度（向量已归一化，即点积），越大越相关 */
   score: number;
   /** 命中块在笔记内的序号（从 0 开始） */

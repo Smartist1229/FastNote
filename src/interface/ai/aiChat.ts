@@ -14,7 +14,7 @@ import type { EditorSettings } from "../settings/settings";
  * 发出去时序列化成 content 里的内联标记，模型读到的就是这段 JSON。
  */
 export interface ChatNoteRef {
-  noteId: number | null;
+  noteId: string | null;
   noteTitle: string;
   /** 选区起止行，1 起算，闭区间；单行时 from === to */
   from: number;
@@ -43,7 +43,7 @@ export interface AIChatPanelProps {
   noteTitle: string;
   noteContent: string;
   /** 当前打开笔记的 ID：AI 用它精确定位"这篇笔记"，避免同名笔记歧义 */
-  currentNoteId?: number | null;
+  currentNoteId?: string | null;
   /** 全部分组：用于合成 AI 访问规则（哪些分组被关闭） */
   categories?: Category[];
   /**
@@ -81,7 +81,7 @@ export interface AIChatPanelProps {
  */
 export interface ToolContext {
   /** 用户此刻正在看的笔记 ID（"这篇笔记"的指代对象） */
-  currentNoteId: number | null;
+  currentNoteId: string | null;
   /** 本轮 AI 访问规则快照：读写工具一律先过 canAiAccessNote / canAiAccessCategory */
   access: AiAccessRules;
   /**

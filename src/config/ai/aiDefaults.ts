@@ -217,6 +217,19 @@ Round 3: selectNote #17.
 Round 4 (all tools done): write the summary and note that the current note switched to 《浏览器是如何渲染页面的？》.`;
 
 /**
+ * 插件工具清单段：把插件注册的 AI 工具按主提示词 "## Tools" 里相同的
+ * `- name: desc. {args}` 格式拼成独立小节，追加在主提示词之后。
+ * 每次发消息都实时从注册表取，插件启停立即反映；没有插件工具时返回空串。
+ */
+export const buildPluginToolsBlock = (
+  tools: { name: string; desc: string; args: Record<string, string> }[],
+): string => {
+  if (tools.length === 0) return "";
+  const lines = tools.map((t) => `- ${t.name}: ${t.desc}. ${JSON.stringify(t.args)}`);
+  return ["## Plugin tools (contributed by plugins; all parameters are JSON objects)", ...lines].join("\n");
+};
+
+/**
  * 深度思考规则，每次请求追加。
  *
  * 字数门槛直接取 minThinkingLen（字符），与「思考太浅」重试提示、Rust 端

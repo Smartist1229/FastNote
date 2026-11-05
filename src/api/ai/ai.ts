@@ -85,7 +85,7 @@ export const sendAiChatStream = async (
   noteContent: string,
   onChunk: (fullText: string, reasoning: string) => void,
   minThinkingLen = 120,
-  currentNoteId: number | null = null,
+  currentNoteId: string | null = null,
   maxTokens = 8192,
 ): Promise<string> => {
   const unlistenChunk = await listen<{ content: string; reasoning?: string; text?: string }>('ai-chat-chunk', (event) => {

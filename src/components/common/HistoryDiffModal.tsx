@@ -2,7 +2,7 @@
  * 历史版本对比：把选中版本与「当前内容」逐行对照。
  *
  * 只做单向对比（历史版本 → 当前），不提供任意两版对比——回滚前的决策只需要知道
- * 当前内容比当时多了 / 少了什么。新增行绿底、删除行红底，行号分左右两列。
+ * 当前内容比当时多了 / 少了什么。新增行绿底、删除行红底，行号只留一列（取该行在新版本中的行号）。
  */
 import { useMemo } from "react";
 import { useI18n } from "@/i18n";
@@ -67,8 +67,9 @@ export const HistoryDiffModal: React.FC<{
                   row.kind === "add" ? "bg-success-soft" : row.kind === "remove" ? "bg-danger-soft" : ""
                 }`}
               >
-                <span className="w-10 flex-none select-none pr-2 text-right text-faint-soft">{row.oldLine ?? ""}</span>
-                <span className="w-10 flex-none select-none pr-2 text-right text-faint-soft">{row.newLine ?? ""}</span>
+                <span className="w-10 flex-none select-none pr-2 text-right text-faint-soft">
+                  {row.newLine ?? row.oldLine ?? ""}
+                </span>
                 <span className="w-4 flex-none select-none text-center text-faint-soft">
                   {row.kind === "add" ? "+" : row.kind === "remove" ? "−" : ""}
                 </span>

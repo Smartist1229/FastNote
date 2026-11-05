@@ -18,7 +18,7 @@ export const listTags = async (): Promise<Tag[]> => {
 };
 
 /** 某篇笔记的标签列表（list_note_tags），按名称排序 */
-export const listNoteTags = async (noteId: number): Promise<Tag[]> => {
+export const listNoteTags = async (noteId: string): Promise<Tag[]> => {
   return await invoke("list_note_tags", { noteId });
 };
 
@@ -26,7 +26,7 @@ export const listNoteTags = async (noteId: number): Promise<Tag[]> => {
  * 给笔记加标签（add_note_tags），词不存在会自动创建，返回加完之后的完整列表。
  * source 省略时按 "user"；已存在的关联不会被重复插入，也不会改写来源。
  */
-export const addNoteTags = async (noteId: number, names: string[], source?: "user" | "ai"): Promise<Tag[]> => {
+export const addNoteTags = async (noteId: string, names: string[], source?: "user" | "ai"): Promise<Tag[]> => {
   return await invoke("add_note_tags", { noteId, names, source });
 };
 
@@ -34,7 +34,7 @@ export const addNoteTags = async (noteId: number, names: string[], source?: "use
  * 摘掉笔记上的标签（remove_note_tags），返回摘完之后的完整列表。
  * source 传了只摘那一种来源（AI 工具固定传 "ai"，删不到用户手打的）；不传则不限来源。
  */
-export const removeNoteTags = async (noteId: number, names: string[], source?: "user" | "ai"): Promise<Tag[]> => {
+export const removeNoteTags = async (noteId: string, names: string[], source?: "user" | "ai"): Promise<Tag[]> => {
   return await invoke("remove_note_tags", { noteId, names, source });
 };
 
@@ -42,7 +42,7 @@ export const removeNoteTags = async (noteId: number, names: string[], source?: "
  * 整体替换笔记在某个来源下的标签（set_note_tags），返回替换后的完整列表。
  * AI 打标签是"重新看一遍这篇笔记"的结果，用替换而不是逐条增删，避免两轮思考留下残留。
  */
-export const setNoteTags = async (noteId: number, names: string[], source?: "user" | "ai"): Promise<Tag[]> => {
+export const setNoteTags = async (noteId: string, names: string[], source?: "user" | "ai"): Promise<Tag[]> => {
   return await invoke("set_note_tags", { noteId, names, source });
 };
 

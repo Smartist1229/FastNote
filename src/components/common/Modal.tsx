@@ -37,6 +37,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
 
   return (
     <div
+      data-editor-blur-ignore="true"
       className={
         floating
           ? "fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
@@ -46,6 +47,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
     >
       <div
         ref={drag.panelRef}
+        data-editor-blur-ignore="true"
         className={`modal-content relative rounded-2xl flex flex-col overflow-hidden ${widthClass} ${
           floating ? "floating-panel bg-surface pointer-events-auto max-h-[92vh]" : "bg-surface shadow-2xl max-h-full"
         }`}

@@ -9,7 +9,7 @@ import type { CategoryEbookFormat, CategoryZipFormat, NoteFormatSpec } from '@/i
 
 /** 整个分组导出为压缩包（export_category_zip），一篇笔记一个文件；返回笔记数 */
 export const exportCategoryZip = async (
-  categoryId: number,
+  categoryId: string,
   path: string,
   format: CategoryZipFormat,
 ): Promise<number> => {
@@ -18,7 +18,7 @@ export const exportCategoryZip = async (
 
 /** 整个分组导出为电子书（export_category_ebook），章节按创建时间正序；返回章节数 */
 export const exportCategoryEbook = async (
-  categoryId: number,
+  categoryId: string,
   path: string,
   format: CategoryEbookFormat,
 ): Promise<number> => {
@@ -31,7 +31,7 @@ export const exportCategoryEbook = async (
  * 未传时发送空数组。
  */
 export const exportNotesZip = async (
-  noteIds: number[],
+  noteIds: string[],
   path: string,
   format: CategoryZipFormat,
   noteFormats?: NoteFormatSpec[],
@@ -41,7 +41,7 @@ export const exportNotesZip = async (
 
 /** 指定笔记导出为电子书（export_notes_ebook），返回章节数；EPUB 书名取保存路径的文件名 */
 export const exportNotesEbook = async (
-  noteIds: number[],
+  noteIds: string[],
   path: string,
   format: CategoryEbookFormat,
 ): Promise<number> => {

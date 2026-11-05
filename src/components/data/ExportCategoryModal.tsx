@@ -52,22 +52,22 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
   /** 文件名（不含扩展名）：默认取分组推导出的名称，可手动改 */
   const [fileName, setFileName] = useState('');
   // 选中的笔记用 Set 存 id，逐篇勾选时判断 O(1)
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   /** 「其他文件格式」模式下每篇笔记自己的后缀，没改过的用 DEFAULT_TEXT_EXT */
-  const [otherExts, setOtherExts] = useState<Record<number, string>>({});
+  const [otherExts, setOtherExts] = useState<Record<string, string>>({});
   /** 正在挑后缀的笔记，以及浮层贴着的位置 */
-  const [pickerFor, setPickerFor] = useState<{ noteId: number; anchor: DOMRect } | null>(null);
+  const [pickerFor, setPickerFor] = useState<{ noteId: string; anchor: DOMRect } | null>(null);
   /**
    * 电子书章节顺序（笔记 id）。压缩包仍用 notes 的创建时间顺序，
    * 因此这里单独维护，切换格式时不会把压缩包的顺序也改掉。
    */
-  const [ebookOrder, setEbookOrder] = useState<number[]>([]);
+  const [ebookOrder, setEbookOrder] = useState<string[]>([]);
   /** 拖拽中的笔记 / 当前悬停的目标行，仅用于视觉反馈 */
-  const [draggingId, setDraggingId] = useState<number | null>(null);
-  const [dragOverId, setDragOverId] = useState<number | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
   // 指针事件回调里要读最新值，state 在同一轮事件中可能还没刷新
-  const dragRef = useRef<{ pointerId: number; startY: number; active: boolean; noteId: number } | null>(null);
-  const dragOverRef = useRef<number | null>(null);
+  const dragRef = useRef<{ pointerId: number; startY: number; active: boolean; noteId: string } | null>(null);
+  const dragOverRef = useRef<string | null>(null);
 
   // 每次打开都回到默认选项，避免上次的选择让人困惑
   useEffect(() => {
@@ -81,7 +81,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
     setPickerFor(null);
     // 章节顺序按创建时间正序，时间相同再按 id 兜底
     const sorted = [...target.notes].sort(
-      (a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id
+      (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
     );
     setNotes(sorted);
     setEbookOrder(sorted.map((n) => n.id));
@@ -126,7 +126,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
     .map((n) => n.id);
 
   /** 电子书章节拖拽：指针拖动比 HTML5 DnD 稳（窗口开启了 Tauri 原生文件拖放，会干扰 DnD） */
-  const beginEbookDrag = (event: React.PointerEvent<HTMLElement>, noteId: number) => {
+  const beginEbookDrag = (event: React.PointerEvent<HTMLElement>, noteId: string) => {
     if (isZip) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -145,7 +145,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
       .elementFromPoint(event.clientX, event.clientY)
       ?.closest<HTMLElement>('[data-ebook-drag-id]');
     const raw = row?.dataset.ebookDragId;
-    const overId = raw ? Number(raw) : null;
+    const overId = raw ?? null;
     const next = overId !== null && overId !== drag.noteId ? overId : null;
     dragOverRef.current = next;
     setDragOverId(next);
@@ -176,7 +176,7 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
 
   /** 压缩包逐篇自选后缀：每篇笔记可能不一样 */
   const isOtherExt = isZip && zipFormat === 'other';
-  const noteExt = (id: number) => otherExts[id] ?? DEFAULT_TEXT_EXT;
+  const noteExt = (id: string) => otherExts[id] ?? DEFAULT_TEXT_EXT;
   const formats: FormatOption[] = isZip ? ZIP_FORMATS : EBOOK_FORMATS;
   const format = isZip ? zipFormat : ebookFormat;
   const current = formats.find((f) => f.value === format) ?? formats[0];

@@ -1,5 +1,6 @@
 /* 设置窗口的组件层类型：分区枚举、设置行模型与窗口 Props。 */
 
+import type { SettingBadgeId } from "@/config/app/settingBadges";
 import type { AiPromptEntry, AiProvider, AiSettings } from "../ai/ai";
 import type { AiAccessLevel } from "../ai/aiAccess";
 import type { Category, Note } from "../note/note";
@@ -38,6 +39,8 @@ export type SettingsSection =
   | "reset"
   /** 备份与恢复 */
   | "backup"
+  /** 插件管理：安装 / 启用 / 卸载插件 */
+  | "plugins"
   /** 关于 */
   | "about";
 
@@ -49,19 +52,18 @@ export interface SectionMeta {
   group: "软件" | "AI" | "数据" | "其他";
 }
 
-/**
- * 设置项的生效时机：
- * live = 改完立刻生效；startup = 只在下次启动 / 初始化阶段读取
- * （如启动清空回收站、开机自启、初始布局）。
- */
-export type Scope = "live" | "startup";
-
 /** 所有设置行的公共字段 */
 export interface RowBase {
   section: SettingsSection;
   title: string;
   desc: string;
-  scope: Scope;
+  /**
+   * 行上要挂的徽标 id 列表（目录见 config/app/settingBadges.json）：
+   * live = 改完立刻生效；startup = 只在下次启动 / 初始化阶段读取
+   * （如启动清空回收站、开机自启、初始布局）；danger = 提示"改了可能出问题"；
+   * experimental = 实验性功能。
+   */
+  badges?: SettingBadgeId[];
   /**
    * 分区内的小分组：相邻同 group 的行归到同一段，前面加一行小标题。
    * 只有设置项多到需要再切一刀的分区（目前是「编辑器」）才用，其余不传。
@@ -69,11 +71,6 @@ export interface RowBase {
   group?: string;
   /** 供搜索命中的额外关键词 */
   keywords?: string;
-  /**
-   * 危险标记：只是在标题后额外挂一枚「不建议修改」徽标，
-   * 用来提示"改了可能出问题"的项（例如关掉单例模式导致多进程同时写库）。
-   */
-  danger?: boolean;
 }
 
 /**

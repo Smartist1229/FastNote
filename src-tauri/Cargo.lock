@@ -1311,6 +1311,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokenizers",
  "tokio",
+ "uuid",
  "webview2-com",
  "windows",
  "zeroize",

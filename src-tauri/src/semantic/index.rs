@@ -23,7 +23,7 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(30);
 const BATCH_NOTES: usize = 4;
 
 struct DirtyNote {
-    id: i64,
+    id: String,
     title: String,
     content: String,
     updated_at: String,
@@ -212,7 +212,7 @@ fn store_note(
     let enc_mode: Option<i64> = tx
         .query_row(
             "SELECT COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
-            params![note.id],
+            params![&note.id],
             |row| row.get(0),
         )
         .optional()
@@ -222,7 +222,7 @@ fn store_note(
     }
     tx.execute(
         "DELETE FROM note_chunks WHERE note_id = ?1",
-        params![note.id],
+        params![&note.id],
     )
     .map_err(|e| e.to_string())?;
     {
@@ -234,7 +234,7 @@ fn store_note(
             .map_err(|e| e.to_string())?;
         for (seq, (text, vector)) in chunks.iter().zip(vectors.iter()).enumerate() {
             stmt.execute(params![
-                note.id,
+                &note.id,
                 seq as i64,
                 text,
                 vector.len() as i64,
@@ -250,7 +250,7 @@ fn store_note(
              note_updated_at = excluded.note_updated_at,
              model_id = excluded.model_id,
              indexed_at = excluded.indexed_at",
-        params![note.id, note.updated_at, model_id, now],
+        params![&note.id, &note.updated_at, model_id, now],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -314,7 +314,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE notes (
-                id INTEGER PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -322,7 +322,7 @@ mod tests {
                 enc_mode INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE note_chunks (
-                note_id INTEGER NOT NULL,
+                note_id TEXT NOT NULL,
                 seq INTEGER NOT NULL,
                 text TEXT NOT NULL,
                 dim INTEGER NOT NULL,
@@ -330,7 +330,7 @@ mod tests {
                 PRIMARY KEY (note_id, seq)
             );
             CREATE TABLE note_index_state (
-                note_id INTEGER PRIMARY KEY,
+                note_id TEXT PRIMARY KEY,
                 note_updated_at TEXT NOT NULL,
                 model_id TEXT NOT NULL,
                 indexed_at TEXT NOT NULL
@@ -340,7 +340,7 @@ mod tests {
         conn
     }
 
-    fn insert_note(conn: &Connection, id: i64, updated_at: &str, deleted: bool) {
+    fn insert_note(conn: &Connection, id: &str, updated_at: &str, deleted: bool) {
         conn.execute(
             "INSERT INTO notes (id, title, content, updated_at, is_deleted)
              VALUES (?1, 't', 'c', ?2, ?3)",
@@ -349,7 +349,7 @@ mod tests {
         .unwrap();
     }
 
-    fn mark_indexed(conn: &Connection, id: i64, updated_at: &str, model_id: &str) {
+    fn mark_indexed(conn: &Connection, id: &str, updated_at: &str, model_id: &str) {
         conn.execute(
             "INSERT OR REPLACE INTO note_index_state (note_id, note_updated_at, model_id, indexed_at)
              VALUES (?1, ?2, ?3, 'now')",
@@ -361,10 +361,10 @@ mod tests {
     #[test]
     fn dirty_tracks_updated_at_and_model() {
         let conn = memory_db();
-        insert_note(&conn, 1, "2026-01-01T00:00:00", false);
-        insert_note(&conn, 2, "2026-01-02T00:00:00", false);
-        insert_note(&conn, 3, "2026-01-03T00:00:00", true);
-        mark_indexed(&conn, 1, "2026-01-01T00:00:00", "test-model");
+        insert_note(&conn, "1", "2026-01-01T00:00:00", false);
+        insert_note(&conn, "2", "2026-01-02T00:00:00", false);
+        insert_note(&conn, "3", "2026-01-03T00:00:00", true);
+        mark_indexed(&conn, "1", "2026-01-01T00:00:00", "test-model");
 
         assert_eq!(
             dirty_count(&conn, "test-model").unwrap(),
@@ -373,7 +373,7 @@ mod tests {
         );
         let dirty = load_dirty(&conn, 10, "test-model").unwrap();
         assert_eq!(dirty.len(), 1);
-        assert_eq!(dirty[0].id, 2);
+        assert_eq!(dirty[0].id, "2");
 
         // 内容变过（updated_at 变了）→ 重新变脏
         conn.execute(
@@ -384,15 +384,15 @@ mod tests {
         assert_eq!(dirty_count(&conn, "test-model").unwrap(), 2);
 
         // 换了模型 → 已索引的也要重建
-        mark_indexed(&conn, 1, "2026-01-04T00:00:00", "other-model");
+        mark_indexed(&conn, "1", "2026-01-04T00:00:00", "other-model");
         let dirty = load_dirty(&conn, 10, "test-model").unwrap();
-        assert!(dirty.iter().any(|n| n.id == 1));
+        assert!(dirty.iter().any(|n| n.id == "1"));
     }
 
     #[test]
     fn trashed_notes_are_never_dirty() {
         let conn = memory_db();
-        insert_note(&conn, 1, "2026-01-01T00:00:00", true);
+        insert_note(&conn, "1", "2026-01-01T00:00:00", true);
         assert_eq!(dirty_count(&conn, "test-model").unwrap(), 0);
         assert!(load_dirty(&conn, 10, "test-model").unwrap().is_empty());
     }
@@ -400,8 +400,8 @@ mod tests {
     #[test]
     fn orphan_sweep_removes_deleted_note_rows() {
         let conn = memory_db();
-        insert_note(&conn, 1, "2026-01-01T00:00:00", false);
-        for id in [1, 99] {
+        insert_note(&conn, "1", "2026-01-01T00:00:00", false);
+        for id in ["1", "99"] {
             conn.execute(
                 "INSERT INTO note_chunks (note_id, seq, text, dim, embedding) VALUES (?1, 0, 'x', 2, x'0000000000000000')",
                 params![id],

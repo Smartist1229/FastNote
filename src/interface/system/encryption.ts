@@ -57,7 +57,7 @@ export interface EncryptionInfo {
 export interface EncryptionSelfCheckReport {
   repaired: number[];
   missing_keys: number[];
-  missing_category_keys: number[];
+  missing_category_keys: string[];
   orphan_keys: number[];
   content_mismatch: number[];
 }

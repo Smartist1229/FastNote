@@ -19,7 +19,7 @@ export const getCategories = async (): Promise<Category[]> => {
 };
 
 /** 重命名分组（update_category）；笔记的 category_id 不变 */
-export const updateCategory = async (id: number, name: string): Promise<void> => {
+export const updateCategory = async (id: string, name: string): Promise<void> => {
   return await invoke('update_category', { id, name });
 };
 
@@ -27,7 +27,7 @@ export const updateCategory = async (id: number, name: string): Promise<void> =>
  * 设置分组的 AI 访问档位（set_category_ai_access，0 禁止 / 1 只读 / 2 完全）。
  * 分组档位是组内笔记的上限，但不会改写笔记自身的档位，放开分组即可恢复。
  */
-export const setCategoryAiAccess = async (id: number, level: number): Promise<void> => {
+export const setCategoryAiAccess = async (id: string, level: number): Promise<void> => {
   return await invoke('set_category_ai_access', { id, level });
 };
 
@@ -35,6 +35,6 @@ export const setCategoryAiAccess = async (id: number, level: number): Promise<vo
  * 删除分组（delete_category）。deleteNotes=true 时组内笔记先移入回收站并清空分组，
  * false 时笔记保留但 category_id 置空；两种都不会永久删除笔记。
  */
-export const deleteCategory = async (id: number, deleteNotes: boolean): Promise<void> => {
+export const deleteCategory = async (id: string, deleteNotes: boolean): Promise<void> => {
   return await invoke('delete_category', { id, deleteNotes });
 };

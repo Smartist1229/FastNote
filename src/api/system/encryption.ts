@@ -84,7 +84,7 @@ export const getEncryptionStatus = () => call<EncryptionStatus>("encryption_stat
 export const runEncryptionSelfCheck = () =>
   call<EncryptionSelfCheckReport>("encryption_self_check");
 
-export const getEncryptionInfo = (scope: EncryptionScope, id: number) =>
+export const getEncryptionInfo = (scope: EncryptionScope, id: string) =>
   call<EncryptionInfo>("encryption_info", { scope, id });
 
 /** 首次设置根密码；设置后本次运行立即缓存 KEK，可直接用于加密新内容 */
@@ -107,7 +107,7 @@ export const changeRootPassword = async (oldPassword: string, newPassword: strin
 
 /** 加密单篇笔记；rootPassword 仅在本次运行未缓存根 KEK 时需要传 */
 export const encryptNote = async (
-  noteId: number,
+  noteId: string,
   password: string,
   hint: string | null,
   rootPassword: string | null,
@@ -119,26 +119,26 @@ export const encryptNote = async (
 
 /** 临时解锁单篇笔记：useRoot 时 password 是根密码 */
 export const unlockNote = (
-  noteId: number,
+  noteId: string,
   password: string,
   useRoot: boolean,
   scope: UnlockScope,
 ): Promise<Note> => call<Note>("unlock_note", { noteId, password, useRoot, scope });
 
-export const lockNote = (noteId: number, force = false) => call<void>("lock_note", { noteId, force });
+export const lockNote = (noteId: string, force = false) => call<void>("lock_note", { noteId, force });
 
 /** 锁定全部：退出/重开前后端都会清空内存密钥，这里供「一键锁定」使用 */
 export const lockAll = () => call<void>("lock_all");
 
 /** 永久解密单篇笔记（解密后标签恢复、历史恢复、语义索引重建） */
-export const decryptNote = async (noteId: number, password: string, useRoot: boolean): Promise<Note> => {
+export const decryptNote = async (noteId: string, password: string, useRoot: boolean): Promise<Note> => {
   const note = await call<Note>("decrypt_note", { noteId, password, useRoot });
   scheduleScrub();
   return note;
 };
 
 export const encryptCategory = async (
-  categoryId: number,
+  categoryId: string,
   password: string,
   hint: string | null,
   rootPassword: string | null,
@@ -148,16 +148,16 @@ export const encryptCategory = async (
 };
 
 export const unlockCategory = (
-  categoryId: number,
+  categoryId: string,
   password: string,
   useRoot: boolean,
   scope: UnlockScope,
 ) => call<void>("unlock_category", { categoryId, password, useRoot, scope });
 
-export const lockCategory = (categoryId: number, force = false) =>
+export const lockCategory = (categoryId: string, force = false) =>
   call<void>("lock_category", { categoryId, force });
 
-export const decryptCategory = async (categoryId: number, password: string, useRoot: boolean) => {
+export const decryptCategory = async (categoryId: string, password: string, useRoot: boolean) => {
   await call<void>("decrypt_category", { categoryId, password, useRoot });
   scheduleScrub();
 };

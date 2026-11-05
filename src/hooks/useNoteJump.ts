@@ -41,7 +41,7 @@ const SCAN_SLICE_MS = 8;
 /** 小写副本的缓存预算（字符数）：超出后不再缓存新的大笔记，仍可搜索，只是每次现算 */
 const CACHE_CHARS_BUDGET = 8_000_000;
 
-const contentCache = new Map<number, { updatedAt: string; lower: string }>();
+const contentCache = new Map<string, { updatedAt: string; lower: string }>();
 let cachedChars = 0;
 
 /** 取笔记正文的小写副本（带缓存与预算控制） */
@@ -203,7 +203,7 @@ export const useNoteJump = (notes: Note[], query: string, active: boolean): Note
   }, [active, notes, q, titleHits]);
 
   const hits = useMemo(() => {
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     const merged: JumpHit[] = [];
     for (const hit of [...titleHits, ...contentHits]) {
       if (seen.has(hit.note.id)) continue;

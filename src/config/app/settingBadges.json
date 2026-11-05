@@ -1,0 +1,6 @@
+{
+  "live": { "label": "实时生效", "tone": "primary", "hint": "修改后立即生效" },
+  "startup": { "label": "重启生效", "tone": "amber", "hint": "在软件下次启动时生效" },
+  "danger": { "label": "不建议修改", "tone": "red", "hint": "该项改动可能导致数据异常，非必要请勿修改" },
+  "experimental": { "label": "实验性功能", "tone": "purple" }
+}

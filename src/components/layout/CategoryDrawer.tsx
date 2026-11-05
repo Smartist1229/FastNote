@@ -310,8 +310,8 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
 export const UncategorizedDrawer: React.FC<{
   notes: Note[];
   isExpanded: boolean;
-  selectedNoteId: number | null;
-  focusNoteId: number | null;
+  selectedNoteId: string | null;
+  focusNoteId: string | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
@@ -396,8 +396,8 @@ export const UncategorizedDrawer: React.FC<{
 export const ChildNotesDrawer: React.FC<{
   notes: Note[];
   isExpanded: boolean;
-  selectedNoteId: number | null;
-  focusNoteId: number | null;
+  selectedNoteId: string | null;
+  focusNoteId: string | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
   onDeleteNote: (note: Note) => void;

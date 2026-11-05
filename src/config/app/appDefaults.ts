@@ -332,6 +332,11 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   shortcuts: true,
   /** 编辑器外框圆角（px）：与 config/markdownEditor.ts 的 NOTE_EDITOR_RADIUS 保持一致 */
   radius: 4,
+  /**
+   * 点击宿主自定义 UI（工具栏、侧边栏、插件注入控件等带 data-editor-blur-ignore 的元素）时
+   * 是否保持编辑器焦点。开启时插件 insertText 依赖的光标不会丢；关闭时点击这些区域编辑器正常失焦。
+   */
+  keepFocusOnHostClick: true,
 };
 
 /* ---------- Layout ---------- */

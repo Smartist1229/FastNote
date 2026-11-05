@@ -9,7 +9,7 @@ import {
 } from "./noteSearch";
 
 const note = (patch: Partial<Note> = {}): Note => ({
-  id: 1,
+  id: "1",
   title: "标题",
   content: "",
   category_id: null,
@@ -95,20 +95,20 @@ describe("buildMatchSnippet", () => {
 
 describe("searchNotes", () => {
   const notes = [
-    note({ id: 1, title: "React 入门", content: "正文提到 hook" }),
-    note({ id: 2, title: "Rust 笔记", content: "REACT 只出现在正文" }),
-    note({ id: 3, title: "无关", content: "什么也没有" }),
+    note({ id: "1", title: "React 入门", content: "正文提到 hook" }),
+    note({ id: "2", title: "Rust 笔记", content: "REACT 只出现在正文" }),
+    note({ id: "3", title: "无关", content: "什么也没有" }),
   ];
 
   it("标题与正文都不区分大小写", () => {
     const { hits, invalid } = searchNotes(notes, "react", false);
     expect(invalid).toBe(false);
-    expect(hits.map((h) => h.note.id)).toEqual([1, 2]);
+    expect(hits.map((h) => h.note.id)).toEqual(["1", "2"]);
   });
 
   it("只有正文命中时标记 titleOnly 为 false 并给出片段", () => {
     const { hits } = searchNotes(notes, "react", false);
-    const bodyHit = hits.find((h) => h.note.id === 2)!;
+    const bodyHit = hits.find((h) => h.note.id === "2")!;
     expect(bodyHit.titleOnly).toBe(false);
     expect(bodyHit.snippet).toContain("REACT");
     const [range] = bodyHit.snippetRanges;
@@ -129,7 +129,7 @@ describe("searchNotes", () => {
 
   it("正则模式可用，且保留原始大小写", () => {
     const { hits } = searchNotes(notes, "R[ae]act", true);
-    expect(hits.map((h) => h.note.id)).toEqual([1, 2]);
+    expect(hits.map((h) => h.note.id)).toEqual(["1", "2"]);
   });
 
   it("空查询返回空结果且不算错误", () => {

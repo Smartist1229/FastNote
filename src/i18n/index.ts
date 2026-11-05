@@ -96,6 +96,9 @@ const translators = {
   "en-US": (source: string, params?: TranslationParams) => translate(source, params, "en-US"),
 };
 
+/** 订阅界面语言变化（locale 真正变化时触发，返回取消订阅函数）；插件宿主用它重激活插件 */
+export const subscribeLocale = (listener: () => void): (() => void) => subscribe(listener);
+
 export const useI18n = () => {
   const current = useSyncExternalStore(subscribe, getLocale, getLocale);
   return { locale: current, t: translators[current] };

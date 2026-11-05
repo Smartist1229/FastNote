@@ -32,7 +32,7 @@ export type CategoryEbookFormat = "txt" | "html" | "epub";
 
 /** export_notes_zip 的 noteFormats 元素：按笔记 id 逐篇指定压缩包内的后缀 */
 export interface NoteFormatSpec {
-  id: number;
+  id: string;
   /** 后缀，不含点；限纯文本白名单 */
   ext: string;
 }

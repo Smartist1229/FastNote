@@ -73,7 +73,7 @@ export const cancelSemanticIndex = async (): Promise<void> => {
 export const semanticSearch = async (
   query: string,
   limit = 15,
-  noteIds?: number[],
+  noteIds?: string[],
 ): Promise<SemanticHit[]> => {
   return await invoke('semantic_search', { query, limit, noteIds });
 };

@@ -30,7 +30,7 @@ import { openUpdateDialog, useUpdater } from '@/stores/updaterStore';
 const SORT_OPTIONS = [{ value: 'updated_at', label: '更新时间' }, { value: 'created_at', label: '创建时间' }, { value: 'title', label: '标题' }];
 /** 排序浮层宽度（px）：定位时用它把浮层夹在视口内 */
 const SORT_MENU_WIDTH = 132;
-const ORPHAN_GROUP_ID = -1; // 虚拟分组 ID：承载 category_id 指向已删除分组的遗留笔记
+const ORPHAN_GROUP_ID = "__orphan__"; // 虚拟分组 ID：承载 category_id 指向已删除分组的遗留笔记
 /* ---------- 侧边栏宽度（拖拽右边缘调节，规则与 AI 对话面板一致） ----------
  * 宽度不落库：每次启动都是默认值。理由是侧边栏宽度高度依赖窗口尺寸，
  * 记住一个窄窗口下的宽度，换到大屏反而显得局促，收益不如"拖一下就调好"。
@@ -141,7 +141,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Tauri 已禁用系统级 HTML5 拖放，因此用 pointerdown/move/up 自行实现；
   // 落点用 document.elementFromPoint 命中 [data-drop-category]，不依赖 dragover 事件。
   /** 按下时命中的笔记 id（尚未进入拖拽） */
-  const pointerNoteIdRef = useRef<number | null>(null);
+  const pointerNoteIdRef = useRef<string | null>(null);
   /** 按下起点，用于判断是否超过拖拽阈值 */
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   /** 是否已真正进入拖拽（超过阈值） */
@@ -153,7 +153,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   /** 拖拽浮层（跟随指针显示笔记标题） */
   const [dragGhost, setDragGhost] = useState<{ x: number; y: number; title: string } | null>(null);
   /** 指针拖拽当前悬停的分组 id（内部拖拽高亮） */
-  const [dragHoverCategoryId, setDragHoverCategoryId] = useState<number | null>(null);
+  const [dragHoverCategoryId, setDragHoverCategoryId] = useState<string | null>(null);
   /** 搜索历史下拉是否展开（聚焦时展开，失焦延后收起） */
   const [historyOpen, setHistoryOpen] = useState(false);
   const isSearching = searchQuery.trim().length > 0;
@@ -199,7 +199,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
   /** 分组 id → 笔记列表；额外的一桶（ORPHAN_GROUP_ID）收留分组已删除的孤儿笔记 */
   const categorized = useMemo(() => {
-    const map = new Map<number, Note[]>();
+    const map = new Map<string, Note[]>();
     for (const category of categories) {
       map.set(
         category.id,
@@ -210,7 +210,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     // 分组已被删除但笔记的 category_id 仍指向它的历史遗留数据
     map.set(
       ORPHAN_GROUP_ID,
-      notes.filter((n) => n.category_id !== null && !categoryIds.has(n.category_id as number))
+      notes.filter((n) => n.category_id !== null && !categoryIds.has(n.category_id))
     )
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -265,7 +265,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const semanticMatches = useMemo(() => semanticHitInfos.map((h) => h.note), [semanticHitInfos]);
   /** id → 命中信息：关键词与语义合并，列表据此渲染标题/片段高亮 */
   const hitMap = useMemo(() => {
-    const map = new Map<number, NoteSearchHit>();
+    const map = new Map<string, NoteSearchHit>();
     for (const hit of searchHits) map.set(hit.note.id, hit);
     for (const hit of semanticHitInfos) map.set(hit.note.id, hit);
     return map;
@@ -395,9 +395,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
    * 拖拽落点写库：侧边栏里唯一直接改数据的地方。
    * 落点与笔记当前分组相同时直接返回——否则会白白触发一次 update + 全量刷新，列表还会闪一下。
    */
-  const handleDropToCategory = async (noteIdStr: string, categoryId: number | null) => {
-    const noteId = parseInt(noteIdStr, 10);
-    if (isNaN(noteId)) return;
+  const handleDropToCategory = async (noteId: string, categoryId: string | null) => {
     const note = notes.find((n) => n.id === noteId);
     if (!note || note.category_id === categoryId) return;
     // 加密内容不能靠拖拽换分组：笔记的密文与分组密钥绑定，加密分组也不接受明文笔记
@@ -421,12 +419,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const dropToCategoryRef = useRef(handleDropToCategory);
   dropToCategoryRef.current = handleDropToCategory;
   /** 指针坐标处命中的分组 id（用 elementFromPoint 做落点检测） */
-  const findCategoryIdAt = (x: number, y: number): number | null => {
+  const findCategoryIdAt = (x: number, y: number): string | null => {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
     const catEl = el?.closest('[data-drop-category]') as HTMLElement | null;
     if (!catEl) return null;
-    const id = Number(catEl.dataset.dropCategory);
-    return Number.isFinite(id) ? id : null;
+    return catEl.dataset.dropCategory ?? null;
   };
   /** 笔记卡片上按下：先记录候选，等移动超过阈值才真正进入拖拽（不影响单击打开） */
   const handleNotePointerDown = (e: React.PointerEvent) => {
@@ -435,8 +432,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (target.closest('button')) return; // 点删除等按钮不算拖拽
     const noteEl = target.closest('[data-note-id]') as HTMLElement | null;
     if (!noteEl) return;
-    const id = Number(noteEl.dataset.noteId);
-    if (!Number.isFinite(id)) return;
+    const id = noteEl.dataset.noteId;
+    if (!id) return;
     pointerNoteIdRef.current = id;
     pointerStartRef.current = { x: e.clientX, y: e.clientY };
     isPointerDraggingRef.current = false;

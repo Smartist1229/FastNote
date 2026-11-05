@@ -47,7 +47,7 @@ export interface NoteEditorProps {
   editable?: boolean;
   /** 历史版本预览：传了即进入只读预览并显示顶部提示条 */
   historyPreview?: EditorHistoryPreview;
-  onSave: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
+  onSave: (id: string, title: string, content: string, categoryId: string | null) => Promise<void>;
   onDelete: () => void;
   /** 上报正文末尾偏移（AI 插入文本时的定位基准） */
   onCursorOffsetChange?: (offset: number) => void;
@@ -65,7 +65,7 @@ export interface NoteEditorProps {
   /** 全部分组：临时预览下「保存到分组」菜单用 */
   categories?: Category[];
   /** 把临时预览另存为真实笔记（保存到指定分组） */
-  onSaveToCategory?: (categoryId: number | null, title: string, content: string) => Promise<void>;
+  onSaveToCategory?: (categoryId: string | null, title: string, content: string) => Promise<void>;
   /** 把「保存笔记到文件」的能力暴露给外部（侧边栏右键菜单用，等价于 Ctrl+S） */
   onRegisterExport?: (exportNote: (() => void) | null) => void;
   /** 正在编辑的电脑文件路径：非空即进入「外部文件」模式（标题=文件名、内容实时写回原文件） */
@@ -73,7 +73,7 @@ export interface NoteEditorProps {
   /** 外部文件模式：把编辑器当前内容写回电脑上的原文件 */
   onSaveExternal?: (content: string) => Promise<void>;
   /** 外部文件模式：把当前内容另存为一条真实笔记 */
-  onSaveExternalToNote?: (categoryId: number | null, title: string, content: string) => Promise<void>;
+  onSaveExternalToNote?: (categoryId: string | null, title: string, content: string) => Promise<void>;
   /** 外部文件模式：关闭（回到原笔记） */
   onCloseExternal?: () => void;
   /** 把「立即写回电脑文件」的能力暴露给外部（切换/关闭文件前先 flush） */

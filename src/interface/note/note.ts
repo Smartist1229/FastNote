@@ -10,11 +10,11 @@ import type { AiAccessLevel } from "../ai/aiAccess";
 
 /** notes 表的一行；软删除由 is_deleted / deleted_at 表示，回收站只是 is_deleted = 1 的视图 */
 export interface Note {
-  id: number;
+  id: string;
   title: string;
   content: string;
   /** 所属分组；null = 未分类 */
-  category_id: number | null;
+  category_id: string | null;
   created_at: string;
   updated_at: string;
   is_deleted: boolean;
@@ -37,7 +37,7 @@ export interface Note {
 
 /** categories 表的一行；note_count 是查询时 LEFT JOIN notes 聚合的结果（已排除软删除） */
 export interface Category {
-  id: number;
+  id: string;
   name: string;
   created_at: string;
   note_count: number;
@@ -76,10 +76,10 @@ export type NoteHistoryKind = "auto" | "session" | "manual" | "pre-rollback";
  */
 export interface NoteHistoryEntry {
   id: number;
-  note_id: number;
+  note_id: string;
   title: string;
   content: string;
-  category_id: number | null;
+  category_id: string | null;
   is_pinned: boolean;
   /** 来源：auto / session / manual / pre-rollback */
   kind: NoteHistoryKind;
@@ -94,8 +94,8 @@ export interface NoteHistoryEntry {
  * 不落库：读取走 read_text_file，保存走 write_text_file。
  */
 export interface ExternalTextFile {
-  /** 伪笔记 id：负数哨兵（从 -1000001 起递减），仅用于让编辑器感知"换了一篇" */
-  id: number;
+  /** 伪笔记 id：不落库的分层预览用 `temp:` / `external:` / `history-preview` 前缀，仅用于让编辑器感知"换了一篇" */
+  id: string;
   /** 文件绝对路径 */
   path: string;
   /** 去掉扩展名的文件名（readme.md → readme），直接用作编辑器标题 */

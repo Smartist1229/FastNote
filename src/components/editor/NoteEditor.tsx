@@ -21,6 +21,9 @@ import { useToast } from "@/components/common/Toast";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
+import { pluginContributions, usePluginContributions, type PluginEditorToolbarEntry } from "@/plugins/contributions";
+import { pluginHost } from "@/plugins/host";
+import type { EditorToolbarContext } from "@/plugins/types";
 
 /** 按需加载：编辑器带解析器与样式，首屏不必打包进来 */
 const MarkdownEditor = lazy(() =>
@@ -91,7 +94,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   useEffect(() => {
     setMode(settings.defaultMode);
   }, [settings.defaultMode]);
-  const lastNoteIdRef = useRef<number | null>(null);
+  const lastNoteIdRef = useRef<string | null>(null);
   /** note 的镜像：命令式动作（如回滚前丢弃草稿）要读当前内容，但不能进 effect 依赖 */
   const noteRef = useRef(note);
   useEffect(() => {
@@ -100,7 +103,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   /** 标题/正文/分组的最新值镜像：saveNow 读 ref，避免闭包拿到上一轮 state */
   const latestTitleRef = useRef("");
   const latestContentRef = useRef("");
-  const latestCategoryIdRef = useRef<number | null>(null);
+  const latestCategoryIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   /** 保存状态机：isSaving 串行化写库；hasPendingSave 表示写入期间又改了，写完要补一轮 */
   const isSavingRef = useRef(false);
@@ -115,11 +118,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
    * 的受控 value 一变，光标就掉回文首。只要快照还没落库，切换与同步都以它为准。
    */
   const pendingWritesRef = useRef(
-    new Map<number, { title: string; content: string; categoryId: number | null }>(),
+    new Map<string, { title: string; content: string; categoryId: string | null }>(),
   );
   /** 防抖计时器 id；切笔记时清掉，防止把旧笔记内容写进新笔记 */
   const saveTimerRef = useRef<number | null>(null);
-  const currentNoteIdRef = useRef<number | null>(null);
+  const currentNoteIdRef = useRef<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   /** 外部文件写回失败标记：顶部提示条显示「保存失败」 */
   const [saveError, setSaveError] = useState(false);
@@ -176,9 +179,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [saveMenuOpen, setSaveMenuOpen] = useState(false);
   const [isSavingToCategory, setIsSavingToCategory] = useState(false);
   const saveMenuRef = useRef<HTMLDivElement>(null);
+  /** 插件工具栏横向滚动容器：滚轮转横向要挂原生非 passive 监听 */
+  const pluginBarRef = useRef<HTMLDivElement>(null);
 
   /** 临时预览 / 电脑文件另存为真实笔记：取编辑器里当前（可能改过）的标题与内容 */
-  const handleSaveToCategory = async (categoryId: number | null) => {
+  const handleSaveToCategory = async (categoryId: string | null) => {
     const saver = isExternal ? onSaveExternalToNote : onSaveToCategory;
     if (!saver || isSavingToCategory) return;
     setIsSavingToCategory(true);
@@ -248,8 +253,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       },
     };
     onRegisterActions?.(actions);
+    // 注意：这里不能把 editorApiRef 置空。
+    // StrictMode / 组件重挂载会执行一次 cleanup 再重新挂载 effect，而 MarkdownEditor 的
+    // onReady 有一次性守卫，不会再次回调，置空会让 api 永久丢失，插件工具栏点插入时
+    // 就会一直判为「编辑器未就绪」。真正的 api 生命周期由 MarkdownEditor 自身管理。
     return () => {
-      editorApiRef.current = null;
       onRegisterActions?.(null);
     };
   }, [onRegisterActions]);
@@ -272,10 +280,10 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
    * 切换笔记前，把防抖窗口里还没落盘的输入补写一次。
    * 不补写的话，最后一次输入后 500ms 内切走会丢掉这几个字（外部文件模式另有 flush 回调，
    * 普通笔记走这里）。写入排在进行中的保存之后，避免"旧内容后写"覆盖这次的新内容。
-   * 只处理真实笔记：临时预览与电脑文件用负 id 哨兵，本来就不落库。
+   * 只处理真实笔记：临时预览与电脑文件用伪 id 前缀（temp:/external:），本来就不落库。
    */
-  const flushPendingSave = (noteId: number | null) => {
-    if (noteId === null || noteId < 0) return;
+  const flushPendingSave = (noteId: string | null) => {
+    if (noteId === null || noteId.startsWith("temp:") || noteId.startsWith("external:")) return;
     if (!hasUnsavedChangesRef.current) return;
     const snapshot = {
       title: latestTitleRef.current,
@@ -307,6 +315,29 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   /**
+   * 保持编辑器在宿主 UI 交互时不失焦：在 mousedown 的默认行为触发 blur 之前，
+   * 用捕获阶段拦截点击——若目标属于宿主自定义 UI（带 data-editor-blur-ignore="true"），
+   * 立即 preventDefault 阻止原生失焦，并同步 refocus，让插件 insertText 依赖的
+   * selection 始终留在 contenteditable 内部。
+   *
+   * 只认 data 属性标记，NoteEditor 不需要知道宿主有哪些 UI——解耦。
+   * 配置 keepFocusOnHostClick = false 时完全不注册，点击宿主 UI 编辑器正常失焦。
+   */
+  const keepFocusOnHostClick = settings.keepFocusOnHostClick !== false;
+  useLayoutEffect(() => {
+    if (!keepFocusOnHostClick) return;
+    const handler = (e: MouseEvent) => {
+      if (!(e.target instanceof Element)) return;
+      if (e.target.closest('[data-editor-blur-ignore="true"]')) {
+        e.preventDefault();
+        editorApiRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", handler, true);
+    return () => document.removeEventListener("mousedown", handler, true);
+  }, [keepFocusOnHostClick]);
+
+  /**
    * 切换笔记：整块重置本地状态、脏标记与防抖计时器，避免串稿；
    * 同一 id 的内容更新不在这里处理，交给下面的同步 effect。
    *
@@ -316,8 +347,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   useLayoutEffect(() => {
     if (note) {
       if (lastNoteIdRef.current !== note.id) {
+        const oldId = lastNoteIdRef.current;
         // 先把上一篇没存完的输入补写掉，再切换（用切换前的 id，不能用 note.id）
         flushPendingSave(lastNoteIdRef.current);
+        // 显式 blur：清掉旧光标，避免切到新笔记后 selection 还残留在旧位置
+        editorApiRef.current?.blur();
         currentNoteIdRef.current = note.id;
         /*
          * 这篇上次切走时还有补写没落库：宿主手里的 note 是补写前的旧值，
@@ -340,9 +374,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           window.clearTimeout(saveTimerRef.current);
           saveTimerRef.current = null;
         }
+        // 内容更新完后 rAF refocus 到新笔记，让 selection 回到文首
+        requestAnimationFrame(() => editorApiRef.current?.focus());
+        void pluginContributions.emitHook("note-switch", { oldNoteId: oldId, newNoteId: note.id });
       }
     } else {
       // 关闭笔记（note 变 null）也要把未落盘的输入补写掉
+      const oldId = lastNoteIdRef.current;
       flushPendingSave(lastNoteIdRef.current);
       currentNoteIdRef.current = null;
       setTitle("");
@@ -351,6 +389,9 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       latestContentRef.current = "";
       latestCategoryIdRef.current = null;
       lastNoteIdRef.current = null;
+      if (oldId !== null) {
+        void pluginContributions.emitHook("note-switch", { oldNoteId: oldId, newNoteId: null });
+      }
     }
   }, [note, t]);
 
@@ -467,7 +508,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         if (!hasPendingSaveRef.current) {
           hasUnsavedChangesRef.current = false;
           pendingWritesRef.current.delete(savingNoteId);
-          setLastSavedAt(new Date().toISOString());
+          const savedAt = new Date().toISOString();
+          setLastSavedAt(savedAt);
+          void pluginContributions.emitHook("note-save", {
+            noteId: savingNoteId,
+            content: savedContent,
+            savedAt,
+          });
         }
       } while (hasPendingSaveRef.current && currentNoteIdRef.current === savingNoteId);
     } catch (error) {
@@ -552,6 +599,67 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     : lastSavedAt
     ? { text: t("已保存 {time}", { time: formatSavedTime(lastSavedAt) }), cls: "text-success" }
     : null;
+
+  /**
+   * 插件工具栏：订阅贡献版本号（number 快照，避免 getSnapshot 每次返回新数组导致无限重渲染）。
+   * 版本或笔记状态变化时重新按 when 过滤；insertText 走编辑器实例 API，
+   * 编辑器懒加载未就绪或只读时返回 false（不改 markdown-editor 模块）。
+   */
+  const contributions = usePluginContributions();
+  const insertIntoEditor = useCallback(
+    (text: string): boolean => {
+      if (isReadOnly) return false;
+      const api = editorApiRef.current;
+      if (!api) return false;
+      api.insertText(text);
+      return true;
+    },
+    [isReadOnly],
+  );
+  const editorToolbarContext = useMemo<EditorToolbarContext>(
+    () => ({
+      noteId: note?.id ?? null,
+      title,
+      content,
+      mode,
+      insertText: insertIntoEditor,
+    }),
+    [note?.id, title, content, mode, insertIntoEditor],
+  );
+  const editorToolbarItems = useMemo(
+    () => contributions.editorToolbar(editorToolbarContext),
+    [editorToolbarContext, contributions],
+  );
+  /**
+   * 插件工具栏横向滚轮：React 的 onWheel 走 passive 监听，preventDefault 无效，只能挂原生。
+   * 没有横向溢出、或已经滚到两端时不拦截，滚轮继续交给外层页面。
+   */
+  useEffect(() => {
+    const el = pluginBarRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      // 触控板横向手势（deltaY 为 0）保持原生行为
+      if (event.deltaY === 0) return;
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 0) return;
+      const next = el.scrollLeft + (event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY);
+      if (next <= 0 || next >= max) return;
+      event.preventDefault();
+      el.scrollLeft = next;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [editorToolbarItems.length]);
+  /** 插件工具栏按钮：同步异常与异步 reject 都只记日志，不影响编辑器 */
+  const runEditorToolbarItem = (item: PluginEditorToolbarEntry): void => {
+    try {
+      void Promise.resolve(item.onClick(pluginHost.createPluginContext(item.pluginId))).catch((e) =>
+        console.error("插件工具栏按钮执行失败：", e),
+      );
+    } catch (e) {
+      console.error("插件工具栏按钮执行失败：", e);
+    }
+  };
 
   if (!note) {
     return (
@@ -656,120 +764,158 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       </div>
 
       {/* 工具栏 */}
-      <div className="px-4 py-1.5 border-b border-line-soft/80 flex-shrink-0 bg-app/50">
-        <div className="flex items-center gap-1 flex-wrap">
-          {/* 保存状态：临时预览 / 电脑文件模式下换成「保存到分组」按钮 */}
-          <div className="flex items-center gap-1.5 mr-2 text-xs text-faint">
-            {isTemporary || isExternal ? (
-              (isExternal ? onSaveExternalToNote : onSaveToCategory) && (
-                <div className="relative" ref={saveMenuRef}>
-                  <button
-                    onClick={() => setSaveMenuOpen((open) => !open)}
-                    disabled={isSavingToCategory}
-                    className={`flex items-center justify-center p-1.5 rounded-md transition-colors disabled:opacity-50 ${
-                      saveMenuOpen
-                        ? "bg-primary-50 text-primary-500"
-                        : "text-muted hover:bg-surface-alt hover:text-body"
-                    }`}
-                    title={isSavingToCategory ? t("保存中...") : t("保存到分组")}
-                  >
-                    <Icon name="editor-save-to-group" className="w-3.5 h-3.5" />
-                  </button>
-                  {saveMenuOpen && (
-                    <div className="absolute left-0 top-full mt-1 z-30 w-44 max-h-60 overflow-y-auto py-1 bg-surface border border-line rounded-lg shadow-lg">
-                      <button
-                        onClick={() => handleSaveToCategory(null)}
-                        className="w-full text-left px-3 py-1.5 text-[12px] text-body hover:bg-app transition-colors"
-                      >
-                        {t("未分组")}
-                      </button>
-                      {categories.map((category) => (
+      <div data-editor-blur-ignore="true" className="px-4 py-1.5 border-b border-line-soft/80 flex-shrink-0 bg-app/50">
+        <div className="flex items-center gap-2 min-w-0">
+          {/* ① 固定左组：保存状态 + AI + 导出 + 复制，永不滚动 */}
+          <div className="flex items-center gap-1 shrink-0">
+            {/* 保存状态：临时预览 / 电脑文件模式下换成「保存到分组」按钮 */}
+            <div className="flex items-center gap-1.5 text-xs text-faint">
+              {isTemporary || isExternal ? (
+                (isExternal ? onSaveExternalToNote : onSaveToCategory) && (
+                  <div className="relative" ref={saveMenuRef}>
+                    <button
+                      onClick={() => setSaveMenuOpen((open) => !open)}
+                      disabled={isSavingToCategory}
+                      className={`flex items-center justify-center p-1.5 rounded-md transition-colors disabled:opacity-50 ${
+                        saveMenuOpen
+                          ? "bg-primary-50 text-primary-500"
+                          : "text-muted hover:bg-surface-alt hover:text-body"
+                      }`}
+                      title={isSavingToCategory ? t("保存中...") : t("保存到分组")}
+                    >
+                      <Icon name="editor-save-to-group" className="w-3.5 h-3.5" />
+                    </button>
+                    {saveMenuOpen && (
+                      <div className="absolute left-0 top-full mt-1 z-30 w-44 max-h-60 overflow-y-auto py-1 bg-surface border border-line rounded-lg shadow-lg">
                         <button
-                          key={category.id}
-                          onClick={() => handleSaveToCategory(category.id)}
-                          className="w-full text-left px-3 py-1.5 text-[12px] text-body hover:bg-app transition-colors truncate"
-                          title={category.name}
+                          onClick={() => handleSaveToCategory(null)}
+                          className="w-full text-left px-3 py-1.5 text-[12px] text-body hover:bg-app transition-colors"
                         >
-                          {category.name}
+                          {t("未分组")}
                         </button>
-                      ))}
-                    </div>
+                        {categories.map((category) => (
+                          <button
+                            key={category.id}
+                            onClick={() => handleSaveToCategory(category.id)}
+                            className="w-full text-left px-3 py-1.5 text-[12px] text-body hover:bg-app transition-colors truncate"
+                            title={category.name}
+                          >
+                            {category.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              ) : hasUnsavedChangesRef.current ? (
+                <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-warning-soft text-warning">
+                  <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse-dot" />
+                  <span className="text-[11px] font-medium">{t("编辑中")}</span>
+                </span>
+              ) : lastSavedAt ? (
+                <span className="flex items-center gap-1.5 px-2 py-1 rounded-md text-faint">
+                  <Icon name="editor-check" className="w-3 h-3 text-success" />
+                  <span className="text-[11px]">{formatSavedTime(lastSavedAt)}</span>
+                </span>
+              ) : null}
+            </div>
+
+            {/* AI 对话：关闭 AI 能力时连同前面的分隔线一起隐藏，避免留下一条多余的竖线 */}
+            {onToggleAiPanel && (
+              <>
+                <div className="divider" />
+                <button
+                  onClick={onToggleAiPanel}
+                  className={`toolbar-btn relative ${isAiPanelOpen ? "bg-primary-50! text-primary-500!" : ""}`}
+                  title={isAiPanelOpen ? t("关闭 AI 对话") : t("打开 AI 对话")}
+                  aria-pressed={isAiPanelOpen}
+                >
+                  <AiSparkleIcon className="w-4 h-4" />
+                  {isAiPanelOpen && (
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary-500" />
                   )}
-                </div>
-              )
-            ) : hasUnsavedChangesRef.current ? (
-              <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-warning-soft text-warning">
-                <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse-dot" />
-                <span className="text-[11px] font-medium">{t("编辑中")}</span>
-              </span>
-            ) : lastSavedAt ? (
-              <span className="flex items-center gap-1.5 px-2 py-1 rounded-md text-faint">
-                <Icon name="editor-check" className="w-3 h-3 text-success" />
-                <span className="text-[11px]">{formatSavedTime(lastSavedAt)}</span>
-              </span>
-            ) : null}
-          </div>
+                </button>
+              </>
+            )}
 
-          {/* AI 对话：关闭 AI 能力时连同前面的分隔线一起隐藏，避免留下一条多余的竖线 */}
-          {onToggleAiPanel && (
-            <>
-              <div className="divider" />
+            <div className="divider" />
+
+            {/* 导出（电脑文件模式下内容本就写回原文件，无需再导出） */}
+            {!isExternal && (
               <button
-                onClick={onToggleAiPanel}
-                className={`toolbar-btn relative ${isAiPanelOpen ? "bg-primary-50! text-primary-500!" : ""}`}
-                title={isAiPanelOpen ? t("关闭 AI 对话") : t("打开 AI 对话")}
-                aria-pressed={isAiPanelOpen}
+                onClick={handleExport}
+                className="toolbar-btn"
+                title={t("导出笔记 (Ctrl+S)")}
               >
-                <AiSparkleIcon className="w-3.5 h-3.5" />
-                {isAiPanelOpen && (
-                  <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary-500" />
-                )}
+                <Icon name="editor-export" className="w-4 h-4" />
               </button>
-            </>
-          )}
+            )}
 
-          <div className="divider" />
-
-          {/* 导出（电脑文件模式下内容本就写回原文件，无需再导出） */}
-          {!isExternal && (
+            {/* 复制 */}
             <button
-              onClick={handleExport}
+              onClick={handleCopyContent}
               className="toolbar-btn"
-              title={t("导出笔记 (Ctrl+S)")}
+              title={t("复制内容")}
             >
-              <Icon name="editor-export" className="w-3.5 h-3.5" />
+              <Icon name="editor-copy" className="w-4 h-4" />
             </button>
-          )}
-
-          {/* 复制 */}
-          <button
-            onClick={handleCopyContent}
-            className="toolbar-btn"
-            title={t("复制内容")}
-          >
-            <Icon name="editor-copy" className="w-3.5 h-3.5" />
-          </button>
-
-          <div className="flex-1" />
-
-          {/* 统计 */}
-          <div className="flex items-center gap-2 text-[11px] text-faint-soft select-none">
-            <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title={t("字数")}>{t(wordCount === 1 ? "1 字" : "{count} 字", { count: wordCount.toLocaleString(locale) })}</span>
-            <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title={t("行数")}>{t(lineCount === 1 ? "1 行" : "{count} 行", { count: lineCount.toLocaleString(locale) })}</span>
           </div>
 
-          {/* 字体大小显示：点击还原为设置里的默认字号 */}
-          <button
-            onClick={() => setFontSizeOverride(null)}
-            className={`shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
-              editorFontSize === defaultFontSize
-                ? "text-faint-soft cursor-default"
-                : "text-faint hover:bg-surface-alt hover:text-body"
-            }`}
-            title={t("点击还原默认字号（{size} px）", { size: defaultFontSize })}
-          >
-            {editorFontSize} px
-          </button>
+          {/* ② 插件滚动区：横向溢出时滚轮转横向，条本身随时可隐藏 */}
+          {editorToolbarItems.length > 0 ? (
+            <div
+              ref={pluginBarRef}
+              className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar"
+            >
+              <div className="divider shrink-0" />
+              {editorToolbarItems.map((item) => (
+                <button
+                  key={`${item.pluginId}:${item.id}`}
+                  type="button"
+                  onClick={() => runEditorToolbarItem(item)}
+                  className={
+                    item.icon
+                      ? "toolbar-btn shrink-0"
+                      : "toolbar-btn shrink-0 w-auto! min-w-8 max-w-[10rem] px-2 whitespace-nowrap"
+                  }
+                  title={item.title}
+                >
+                  {item.icon ? (
+                    <Icon name={item.icon} className="w-4 h-4" />
+                  ) : (
+                    <span className="text-[11px] leading-none whitespace-nowrap truncate">{item.label}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex-1 min-w-0" />
+          )}
+
+          {/* ③ 固定右组：统计 + 字号，永不滚动 */}
+          <div className="flex items-center gap-2 shrink-0 ml-auto">
+            {/* 统计 */}
+            <div
+              data-plugin-hook="editor-stats"
+              className="flex items-center gap-2 text-[11px] text-faint-soft select-none"
+            >
+              <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title={t("字数")}>{t(wordCount === 1 ? "1 字" : "{count} 字", { count: wordCount.toLocaleString(locale) })}</span>
+              <span className="px-2 py-0.5 rounded-md bg-surface-alt/80 text-faint" title={t("行数")}>{t(lineCount === 1 ? "1 行" : "{count} 行", { count: lineCount.toLocaleString(locale) })}</span>
+            </div>
+
+            {/* 字体大小显示：点击还原为设置里的默认字号 */}
+            <button
+              onClick={() => setFontSizeOverride(null)}
+              className={`shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
+                editorFontSize === defaultFontSize
+                  ? "text-faint-soft cursor-default"
+                  : "text-faint hover:bg-surface-alt hover:text-body"
+              }`}
+              title={t("点击还原默认字号（{size} px）", { size: defaultFontSize })}
+            >
+              {editorFontSize} px
+            </button>
+          </div>
         </div>
       </div>
 

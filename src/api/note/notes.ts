@@ -17,7 +17,7 @@ import type { ExternalTextFile, Note, NoteHistoryEntry } from '@/interface/note/
 export const createNote = async (
   title: string,
   content: string,
-  categoryId: number | null,
+  categoryId: string | null,
   aiAccess?: number,
 ): Promise<Note> => {
   return await invoke('create_note', { title, content, categoryId, aiAccess });
@@ -30,7 +30,7 @@ export const createNote = async (
  * AI 读取未打开的笔记依赖它，不能在这里裁掉 content。
  */
 export const getNotes = async (
-  categoryId: number | null,
+  categoryId: string | null,
   sortBy: string,
   sortOrder: string,
 ): Promise<Note[]> => {
@@ -38,17 +38,17 @@ export const getNotes = async (
 };
 
 /** 读取单条笔记（get_note），返回带正文的完整 Note；不存在时 reject */
-export const getNote = async (id: number): Promise<Note> => {
+export const getNote = async (id: string): Promise<Note> => {
   return await invoke('get_note', { id });
 };
 
 /** 更新标题/正文/分组并刷新 updated_at（update_note）；不传 is_pinned，Rust 侧保持原值 */
-export const updateNote = async (id: number, title: string, content: string, categoryId: number | null): Promise<void> => {
+export const updateNote = async (id: string, title: string, content: string, categoryId: string | null): Promise<void> => {
   return await invoke('update_note', { id, title, content, categoryId });
 };
 
 /** 切换收藏/置顶（pin_note）：所在分组内置顶并进入收藏视图；不改变 updated_at */
-export const pinNote = async (id: number, pinned: boolean): Promise<void> => {
+export const pinNote = async (id: string, pinned: boolean): Promise<void> => {
   return await invoke('pin_note', { id, pinned });
 };
 
@@ -56,17 +56,17 @@ export const pinNote = async (id: number, pinned: boolean): Promise<void> => {
  * 设置单篇笔记的 AI 访问档位（set_note_ai_access，0 禁止 / 1 只读 / 2 完全）。
  * 只改档位，不触碰正文；分组档位更严格时以分组为准（两者取小）。
  */
-export const setNoteAiAccess = async (id: number, level: number): Promise<void> => {
+export const setNoteAiAccess = async (id: string, level: number): Promise<void> => {
   return await invoke('set_note_ai_access', { id, level });
 };
 
 /** 移入回收站（move_to_trash）：软删除，写 is_deleted 与 deleted_at，可恢复 */
-export const moveToTrash = async (id: number): Promise<void> => {
+export const moveToTrash = async (id: string): Promise<void> => {
   return await invoke('move_to_trash', { id });
 };
 
 /** 从回收站恢复（restore_note）：清空 is_deleted/deleted_at，原分组保持不变 */
-export const restoreNote = async (id: number): Promise<void> => {
+export const restoreNote = async (id: string): Promise<void> => {
   return await invoke('restore_note', { id });
 };
 
@@ -76,12 +76,12 @@ export const getTrashNotes = async (): Promise<Note[]> => {
 };
 
 /** 永久删除单篇（delete_note_permanently），直接 DELETE，不可恢复 */
-export const deleteNotePermanently = async (id: number): Promise<void> => {
+export const deleteNotePermanently = async (id: string): Promise<void> => {
   return await invoke('delete_note_permanently', { id });
 };
 
 /** 批量永久删除（delete_multiple_notes_permanently）；加密笔记会被跳过，返回跳过条数 */
-export const deleteMultipleNotesPermanently = async (ids: number[]): Promise<number> => {
+export const deleteMultipleNotesPermanently = async (ids: string[]): Promise<number> => {
   return await invoke('delete_multiple_notes_permanently', { ids });
 };
 
@@ -93,7 +93,7 @@ export const cleanupOldTrash = async (): Promise<void> => {
 /* ---------- 历史版本 ---------- */
 
 /** 某篇笔记的历史版本（get_note_history），新的在前；只含标题/正文/分组/置顶 */
-export const getNoteHistory = async (noteId: number): Promise<NoteHistoryEntry[]> => {
+export const getNoteHistory = async (noteId: string): Promise<NoteHistoryEntry[]> => {
   return await invoke('get_note_history', { noteId });
 };
 
@@ -106,12 +106,12 @@ export const rollbackNoteHistory = async (entryId: number): Promise<Note> => {
 };
 
 /** 手动保存当前状态为历史版本（create_note_history_version）；内容与最新一条相同时返回 false */
-export const createNoteHistoryVersion = async (noteId: number): Promise<boolean> => {
+export const createNoteHistoryVersion = async (noteId: string): Promise<boolean> => {
   return await invoke('create_note_history_version', { noteId });
 };
 
 /** 打开笔记时记录会话基线（snapshot_note_session）；还没有历史或与最新历史相同则不写，返回 false */
-export const snapshotNoteSession = async (noteId: number): Promise<boolean> => {
+export const snapshotNoteSession = async (noteId: string): Promise<boolean> => {
   return await invoke('snapshot_note_session', { noteId });
 };
 
@@ -126,7 +126,7 @@ export const deleteNoteHistoryEntry = async (entryId: number): Promise<void> => 
 };
 
 /** 清空某篇笔记的全部历史版本（clear_note_history） */
-export const clearNoteHistory = async (noteId: number): Promise<void> => {
+export const clearNoteHistory = async (noteId: string): Promise<void> => {
   await invoke('clear_note_history', { noteId });
 };
 

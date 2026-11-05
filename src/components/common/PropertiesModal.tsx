@@ -139,7 +139,7 @@ export const PropertiesModal: React.FC<{
   /** 重命名笔记标题 */
   onRenameNote: (note: Note, title: string) => void | Promise<void>;
   /** 移动笔记到指定分组（null = 未分类） */
-  onMoveNote: (note: Note, categoryId: number | null) => void | Promise<void>;
+  onMoveNote: (note: Note, categoryId: string | null) => void | Promise<void>;
   /** 切换收藏状态 */
   onTogglePin: (note: Note) => void | Promise<void>;
   /** 重命名分组 */

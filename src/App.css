@@ -365,6 +365,15 @@ kbd,
   background: var(--color-text-muted);
 }
 
+/* 隐藏滚动条但保留滚动能力：用于横向工具栏这类窄条区域，滚动槽不再压缩按钮 */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* ---------- 文本选中色 ----------
  * 半透明紫底、不覆盖文字颜色：一旦指定 color，深色代码块里的字会变成深紫、几乎看不见。
  *
@@ -426,6 +435,11 @@ select:focus-visible,
 button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--color-accent-light), 0 0 0 4px var(--color-accent);
+}
+
+/* 显式声明 .no-focus-ring 的控件不继承上面的全局焦点环（如命令面板输入框） */
+.no-focus-ring:focus-visible {
+  box-shadow: none;
 }
 
 /* ---------- 惯性滚动（触屏 / 触控板） ---------- */
@@ -1962,4 +1976,37 @@ body.is-dragging-panel * {
 .selection-ai-action:hover {
   color: var(--color-accent);
   background: var(--color-accent-light);
+}
+
+/* ---------- Toast：入场 / 离场 / 倒计时进度条 ---------- */
+@keyframes toastEnter {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toastLeave {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(6px) scale(0.98); }
+}
+/* 进度条按剩余时间收缩：只动 transform，避免逐帧改宽度触发重排；
+   时长与 TS 里的 TOAST_DURATION_MS 对齐 */
+@keyframes toastProgress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+/* 入场用 backwards（结束态即静态样式）；离场必须 forwards，移除前要停在透明态 */
+.toast-enter {
+  animation: toastEnter var(--duration-slow) var(--ease-out-soft) backwards;
+}
+.toast-leave {
+  animation: toastLeave var(--duration-base) var(--ease-out-soft) forwards;
+}
+.toast-progress {
+  animation: toastProgress 3s linear backwards;
+  transform-origin: left center;
+}
+
+/* 悬停暂停时进度条与 JS 计时同步冻结，移出后各自从断点继续 */
+.toast-card:hover .toast-progress {
+  animation-play-state: paused;
 }

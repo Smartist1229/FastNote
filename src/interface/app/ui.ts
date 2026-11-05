@@ -4,6 +4,81 @@ import type * as React from "react";
 
 import type { Category, Note } from "../note/note";
 
+/**
+ * 插件端调用 ui.modal 时的入参。
+ * content 是 string 时渲染纯文本；是函数时调用并把 PluginModalApi 传进去，
+ * 插件可以自己拼 DOM，也可以通过 api.close/ok/cancel 主动控制关闭。
+ */
+export interface PluginModalButton {
+  /** 按钮文案（纯文本，会走宿主 i18n 映射） */
+  label: string;
+  /** 危险操作：红色样式 */
+  danger?: boolean;
+  /** 点击回调。返回 false 表示"阻止关闭"，弹窗继续留着；否则按 ok=true 结算 */
+  onClick?: () => boolean | void;
+}
+
+/** 插件 content 函数会拿到的宿主控制 API */
+export interface PluginModalApi {
+  /** 关闭弹窗，resolve({ok: true/false, value})。ok 由 result 类型推断：false → 取消，其余 → 确认 */
+  close(result?: unknown): void;
+  /** 等同于 close({ ok: true, value })——带 value 地确认 */
+  ok(value?: unknown): void;
+  /** 等同于 close({ ok: false })——取消 */
+  cancel(): void;
+}
+
+/**
+ * 插件侧「Markdown 渲染句柄」：由 ctx.editor.render(markdown) 生成，
+ * 只承载字符串，宿主渲染时才走编辑器的纯渲染组件（MarkdownPreview）。
+ */
+export interface PluginMarkdownHandle {
+  __pluginRender: "markdown";
+  markdown: string;
+}
+
+export interface PluginModalOptions {
+  title?: string;
+  /** 纯文本消息（简单确认框），或接收 PluginModalApi 的自定义渲染回调 */
+  content?: string | ((api: PluginModalApi) => React.ReactNode);
+  /**
+   * 用编辑器纯渲染模式显示 Markdown：
+   * 传 ctx.editor.render(md) 的句柄，或直接传 Markdown 字符串。
+   * 传了 render 时优先于 content。
+   */
+  render?: PluginMarkdownHandle | string;
+  /** 模态（阻塞，默认）| 非模态（浮层，可点外部关闭） */
+  mode?: "modal" | "non-modal";
+  /** 确认按钮文案，默认取宿主 i18n 的「确定」 */
+  confirmText?: string;
+  /** 取消按钮文案，默认取宿主 i18n 的「取消」 */
+  cancelText?: string;
+  /** 危险操作：确认按钮 / 自定义按钮红色样式 */
+  danger?: boolean;
+  /** 是否显示遮罩。modal 默认 true，non-modal 默认 false */
+  showOverlay?: boolean;
+  /** 非模态时点击遮罩 / 弹窗外部是否自动关闭（以 ok=false 结算）；默认 true */
+  closeOnExternalClick?: boolean;
+  /** 自定义按钮数组；传了就替代 confirm/cancel 双按钮 */
+  buttons?: PluginModalButton[];
+  /** 宽度档位（透传给宿主 Modal）；render 模式默认 "2xl"，其余默认 "lg" */
+  size?: "lg" | "xl" | "2xl";
+  /** 固定高度（px 或任意 CSS 长度）；render 模式默认 "min(78vh, 760px)"，内容区变为滚动容器 */
+  height?: number | string;
+}
+
+/** ui.modal 的返回值：ok=true 表示点了确认（或插件主动 close(value)），ok=false 表示取消 */
+export interface PluginModalResult {
+  ok: boolean;
+  value?: unknown;
+}
+
+/** 宿主内部持有的、待渲染的 modal 条目 */
+export interface PluginModalState {
+  id: number;
+  options: PluginModalOptions;
+}
+
 /** Toast 语义：success / error 决定配色与图标，info 为中性提示 */
 export type ToastType = "success" | "error" | "info";
 

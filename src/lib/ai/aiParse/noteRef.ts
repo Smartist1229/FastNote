@@ -35,7 +35,12 @@ export const parseNoteRef = (payload: string): ChatNoteRef | null => {
     if (typeof data.text !== "string") return null;
     if (typeof data.from !== "number" || typeof data.to !== "number") return null;
     return {
-      noteId: typeof data.noteId === "number" ? data.noteId : null,
+      noteId:
+        typeof data.noteId === "string"
+          ? data.noteId
+          : typeof data.noteId === "number"
+            ? String(data.noteId)
+            : null,
       noteTitle: typeof data.noteTitle === "string" ? data.noteTitle : "",
       from: data.from,
       to: data.to,

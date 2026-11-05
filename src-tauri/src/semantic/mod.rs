@@ -464,7 +464,7 @@ pub async fn semantic_search(
     app: AppHandle,
     query: String,
     limit: Option<usize>,
-    note_ids: Option<Vec<i64>>,
+    note_ids: Option<Vec<String>>,
 ) -> Result<Vec<SemanticHit>, String> {
     let query = query.trim().to_string();
     if query.is_empty() {
@@ -489,7 +489,7 @@ pub async fn semantic_search(
         let cache = search::get_or_build_cache(&state.semantic, &conn, &spec.id)?;
         drop(conn);
 
-        let allowed: Option<HashSet<i64>> =
+        let allowed: Option<HashSet<String>> =
             note_ids.map(|ids| ids.into_iter().collect::<HashSet<_>>());
         Ok(search::search(
             &cache,

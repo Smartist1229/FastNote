@@ -1,0 +1,56 @@
+/* 「插件演示」的样式覆盖：全部挂在 body 的 class 上，停用/卸载时由插件移除这些 class，
+   所以这里不需要清理钩子。颜色统一用宿主暴露的 CSS 变量，自动跟随主题。 */
+
+/* 强调色描边：侧栏右缘 + 编辑器外框 */
+.plugin-demo-theme-accent .sidebar-shell {
+  box-shadow: inset -2px 0 0 0 var(--color-accent);
+}
+.plugin-demo-theme-accent .editor-container {
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 1px var(--color-accent-muted);
+}
+
+/* 专注模式：侧栏与统计区降透明度，鼠标移到侧栏时恢复 */
+.plugin-demo-theme-focus .sidebar-shell {
+  opacity: 0.55;
+  transition: opacity var(--duration-base) var(--ease-out-soft);
+}
+.plugin-demo-theme-focus .sidebar-shell:hover {
+  opacity: 1;
+}
+.plugin-demo-theme-focus [data-plugin-hook="editor-stats"] {
+  opacity: 0.35;
+}
+
+/* 隐藏内置控件：宿主给字数/行数统计区标了 data-plugin-hook="editor-stats" */
+.plugin-demo-hide-stats [data-plugin-hook="editor-stats"] {
+  display: none !important;
+}
+
+/* 右上角呼吸光点（纯装饰，不拦截鼠标） */
+.plugin-demo-effect {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  pointer-events: none;
+  z-index: 9999;
+  animation: plugin-demo-breathe 2s ease-in-out infinite;
+}
+
+@keyframes plugin-demo-breathe {
+  0%,
+  100% {
+    transform: scale(0.85);
+    opacity: 0.55;
+    box-shadow: 0 0 0 0 var(--color-accent);
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+    box-shadow: 0 0 14px 4px var(--color-accent);
+  }
+}

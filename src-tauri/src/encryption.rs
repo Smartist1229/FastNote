@@ -69,54 +69,57 @@ pub struct EncryptionState {
     root_kek: Mutex<Option<[u8; 32]>>,
 }
 
-fn map_key(scope: &str, id: i64) -> String {
+fn map_key(scope: &str, id: &str) -> String {
     format!("{scope}:{id}")
 }
 
 impl EncryptionState {
     /// 返回的是一份独立副本，调用方用完就自动清零（`Zeroizing`），
     /// 不会在栈上、临时变量里留下没人管的密钥字节。
-    fn get_key(&self, scope: &str, id: i64) -> Option<Zeroizing<[u8; 32]>> {
+    fn get_key(&self, scope: &str, id: impl ToString) -> Option<Zeroizing<[u8; 32]>> {
         self.keys
             .lock()
             .unwrap()
-            .get(&map_key(scope, id))
+            .get(&map_key(scope, &id.to_string()))
             .map(|k| Zeroizing::new(k.dek))
     }
 
-    fn put_key(&self, scope: &str, id: i64, dek: [u8; 32], unlock: UnlockScope) {
+    fn put_key(&self, scope: &str, id: impl ToString, dek: [u8; 32], unlock: UnlockScope) {
         self.keys
             .lock()
             .unwrap()
-            .insert(map_key(scope, id), UnlockedKey { dek, scope: unlock });
+            .insert(map_key(scope, &id.to_string()), UnlockedKey { dek, scope: unlock });
     }
 
-    pub(crate) fn lock(&self, scope: &str, id: i64, force: bool) {
+    pub(crate) fn lock(&self, scope: &str, id: impl ToString, force: bool) {
         let mut keys = self.keys.lock().unwrap();
-        let key = map_key(scope, id);
+        let key = map_key(scope, &id.to_string());
         if force || keys.get(&key).map(|k| k.scope == UnlockScope::Once).unwrap_or(false) {
             keys.remove(&key);
         }
     }
 
-    fn attempts(&self, scope: &str, id: i64) -> u32 {
+    fn attempts(&self, scope: &str, id: impl ToString) -> u32 {
         self.attempts
             .lock()
             .unwrap()
-            .get(&map_key(scope, id))
+            .get(&map_key(scope, &id.to_string()))
             .copied()
             .unwrap_or(0)
     }
 
-    fn bump_attempts(&self, scope: &str, id: i64) -> u32 {
+    fn bump_attempts(&self, scope: &str, id: impl ToString) -> u32 {
         let mut attempts = self.attempts.lock().unwrap();
-        let value = attempts.entry(map_key(scope, id)).or_insert(0);
+        let value = attempts.entry(map_key(scope, &id.to_string())).or_insert(0);
         *value += 1;
         *value
     }
 
-    fn reset_attempts(&self, scope: &str, id: i64) {
-        self.attempts.lock().unwrap().remove(&map_key(scope, id));
+    fn reset_attempts(&self, scope: &str, id: impl ToString) {
+        self.attempts
+            .lock()
+            .unwrap()
+            .remove(&map_key(scope, &id.to_string()));
     }
 
     fn root_cached(&self) -> bool {
@@ -212,7 +215,7 @@ impl EncMeta {
         password: &str,
         dek: &[u8; 32],
         scope: &str,
-        id: i64,
+        id: &str,
     ) -> Result<(), String> {
         let salt = crypto::random_salt();
         let ik = Zeroizing::new(crypto::derive_argon2id(
@@ -240,7 +243,7 @@ fn new_meta(
     dek: &[u8; 32],
     root_kek: &[u8; 32],
     scope: &str,
-    id: i64,
+    id: &str,
     hint: Option<String>,
 ) -> Result<EncMeta, String> {
     let mut meta = EncMeta {
@@ -341,11 +344,11 @@ fn parse_unlock_scope(scope: &str) -> Result<UnlockScope, String> {
     }
 }
 
-fn note_aad(note_id: i64, field: &str) -> Vec<u8> {
+fn note_aad(note_id: &str, field: &str) -> Vec<u8> {
     format!("fastnote|v1|note|{note_id}|{field}").into_bytes()
 }
 
-fn wrap_aad(kind: &str, scope: &str, id: i64) -> Vec<u8> {
+fn wrap_aad(kind: &str, scope: &str, id: &str) -> Vec<u8> {
     format!("fastnote|v1|wrap|{kind}|{scope}|{id}").into_bytes()
 }
 
@@ -435,7 +438,7 @@ fn upgrade_root_kdf(
 
     conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
     let result: Result<(), String> = (|| {
-        let rows: Vec<(String, i64, String)> = {
+        let rows: Vec<(String, String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT scope, ref_id, meta_json FROM encrypted_keys")
                 .map_err(|e| e.to_string())?;
@@ -443,7 +446,7 @@ fn upgrade_root_kdf(
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                     ))
                 })
@@ -457,13 +460,13 @@ fn upgrade_root_kdf(
             let Some(wrap_root) = item.wrap_root.clone() else {
                 continue;
             };
-            let aad = wrap_aad("root", &scope, ref_id);
+            let aad = wrap_aad("root", &scope, &ref_id);
             let dek = dek_from_bytes(crypto::open(old_kek, &aad, &wrap_root)?)?;
             item.wrap_root = Some(crypto::seal(&new_kek, &aad, &dek[..])?);
             let updated = serde_json::to_string(&item).map_err(|e| e.to_string())?;
             conn.execute(
                 "UPDATE encrypted_keys SET meta_json = ?1 WHERE scope = ?2 AND ref_id = ?3",
-                params![updated, scope, ref_id],
+                params![updated, &scope, &ref_id],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -562,7 +565,7 @@ fn root_kek_for_encrypt(
         .ok_or_else(|| err_code("root_locked"))
 }
 
-fn load_meta(conn: &Connection, scope: &str, id: i64) -> Result<Option<EncMeta>, String> {
+fn load_meta(conn: &Connection, scope: &str, id: &str) -> Result<Option<EncMeta>, String> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT meta_json FROM encrypted_keys WHERE scope = ?1 AND ref_id = ?2",
@@ -579,7 +582,7 @@ fn load_meta(conn: &Connection, scope: &str, id: i64) -> Result<Option<EncMeta>,
     }
 }
 
-fn save_meta(conn: &Connection, scope: &str, id: i64, meta: &EncMeta) -> Result<(), String> {
+fn save_meta(conn: &Connection, scope: &str, id: &str, meta: &EncMeta) -> Result<(), String> {
     let raw = serde_json::to_string(meta).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO encrypted_keys (scope, ref_id, meta_json, created_at) VALUES (?1, ?2, ?3, ?4)
@@ -694,7 +697,7 @@ pub fn set_root_password(password: String, state: State<AppState>) -> Result<Val
 
     // 根密码元数据丢失后重新设置：旧 wrap_root 已无法解开，清掉以免假称可用。
     let mut orphans = 0i64;
-    let rows: Vec<(i64, String, i64, String)> = {
+    let rows: Vec<(i64, String, String, String)> = {
         let mut stmt = tx
             .prepare("SELECT id, scope, ref_id, meta_json FROM encrypted_keys")
             .map_err(|e| e.to_string())?;
@@ -703,7 +706,7 @@ pub fn set_root_password(password: String, state: State<AppState>) -> Result<Val
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                 ))
             })
@@ -764,7 +767,7 @@ pub fn change_root_password(
     let new_verifier = crypto::seal(&new_kek, ROOT_VERIFIER_AAD, crypto::ROOT_VERIFIER_PLAIN)?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let rows: Vec<(String, i64, String)> = {
+    let rows: Vec<(String, String, String)> = {
         let mut stmt = tx
             .prepare("SELECT scope, ref_id, meta_json FROM encrypted_keys")
             .map_err(|e| e.to_string())?;
@@ -772,7 +775,7 @@ pub fn change_root_password(
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                 ))
             })
@@ -793,7 +796,7 @@ pub fn change_root_password(
             skipped += 1;
             continue;
         };
-        let aad = wrap_aad("root", &scope, ref_id);
+        let aad = wrap_aad("root", &scope, &ref_id);
         let dek = dek_from_bytes(
             crypto::open(&old_kek, &aad, &wrap_root)
                 .map_err(|_| "根密码已变化，无法重新绑定该加密项".to_string())?,
@@ -802,7 +805,7 @@ pub fn change_root_password(
         let updated = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
         tx.execute(
             "UPDATE encrypted_keys SET meta_json = ?1 WHERE scope = ?2 AND ref_id = ?3",
-            params![updated, scope, ref_id],
+            params![updated, &scope, &ref_id],
         )
         .map_err(|e| e.to_string())?;
         rewrapped += 1;
@@ -823,10 +826,10 @@ pub fn change_root_password(
 /* ---------------- 行查询 ---------------- */
 
 struct NoteRow {
-    id: i64,
+    id: String,
     title: String,
     content: String,
-    category_id: Option<i64>,
+    category_id: Option<String>,
     created_at: String,
     updated_at: String,
     is_deleted: bool,
@@ -837,7 +840,7 @@ struct NoteRow {
     enc_tags: Option<String>,
 }
 
-fn load_note_row(conn: &Connection, id: i64) -> Result<NoteRow, String> {
+fn load_note_row(conn: &Connection, id: &str) -> Result<NoteRow, String> {
     conn.query_row(
         "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
                 is_pinned, ai_access, COALESCE(enc_mode, 0), enc_tags
@@ -885,9 +888,9 @@ impl NoteRow {
 
 fn note_dek(
     state: &EncryptionState,
-    note_id: i64,
+    note_id: &str,
     enc_mode: i64,
-    category_id: Option<i64>,
+    category_id: Option<&str>,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     if enc_mode == 0 {
         return Err(err_code("not_encrypted"));
@@ -903,7 +906,7 @@ fn note_dek(
 
 /// 标题始终明文存储（方便列表与搜索）；早期版本加密过的标题按密文识别并解回明文。
 /// 解不开时按普通标题处理，避免用户恰好把 "encn:v1:" 写进标题就再也读不出来。
-fn open_title_legacy(dek: &[u8; 32], note_id: i64, title: &str) -> Result<String, String> {
+fn open_title_legacy(dek: &[u8; 32], note_id: &str, title: &str) -> Result<String, String> {
     if crypto::is_encrypted(title) {
         if let Ok(plain) = crypto::open_text(dek, &note_aad(note_id, "title"), title) {
             return Ok(plain);
@@ -916,9 +919,9 @@ fn open_title_legacy(dek: &[u8; 32], note_id: i64, title: &str) -> Result<String
 pub(crate) fn open_note_fields(
     _conn: &Connection,
     state: &EncryptionState,
-    note_id: i64,
+    note_id: &str,
     enc_mode: i64,
-    category_id: Option<i64>,
+    category_id: Option<&str>,
     title: &str,
     content: &str,
 ) -> Result<(String, String), String> {
@@ -935,9 +938,9 @@ pub(crate) fn open_note_fields(
 pub(crate) fn seal_note_fields(
     _conn: &Connection,
     state: &EncryptionState,
-    note_id: i64,
+    note_id: &str,
     enc_mode: i64,
-    category_id: Option<i64>,
+    category_id: Option<&str>,
     title: &str,
     content: &str,
 ) -> Result<(String, String), String> {
@@ -964,23 +967,23 @@ pub(crate) fn apply_lock_state(
             continue;
         }
         let (meta_scope, meta_id) = if note.enc_mode == 2 {
-            match note.category_id {
-                Some(category) => (CAT_SCOPE, category),
-                None => (NOTE_SCOPE, note.id),
+            match &note.category_id {
+                Some(category) => (CAT_SCOPE, category.clone()),
+                None => (NOTE_SCOPE, note.id.clone()),
             }
         } else {
-            (NOTE_SCOPE, note.id)
+            (NOTE_SCOPE, note.id.clone())
         };
-        note.enc_hint = load_meta(conn, meta_scope, meta_id)
+        note.enc_hint = load_meta(conn, meta_scope, &meta_id)
             .ok()
             .flatten()
             .and_then(|m| m.hint);
         match open_note_fields(
             conn,
             state,
-            note.id,
+            &note.id,
             note.enc_mode,
-            note.category_id,
+            note.category_id.as_deref(),
             &note.title,
             &note.content,
         ) {
@@ -1012,15 +1015,15 @@ pub(crate) fn apply_category_lock_state(
             category.enc_hint = None;
             continue;
         }
-        category.enc_hint = load_meta(conn, CAT_SCOPE, category.id)
+        category.enc_hint = load_meta(conn, CAT_SCOPE, &category.id)
             .ok()
             .flatten()
             .and_then(|m| m.hint);
-        category.is_locked = state.get_key(CAT_SCOPE, category.id).is_none();
+        category.is_locked = state.get_key(CAT_SCOPE, &category.id).is_none();
     }
 }
 
-pub(crate) fn note_enc_mode(conn: &Connection, id: i64) -> Result<i64, String> {
+pub(crate) fn note_enc_mode(conn: &Connection, id: &str) -> Result<i64, String> {
     conn.query_row(
         "SELECT COALESCE(enc_mode, 0) FROM notes WHERE id = ?1",
         params![id],
@@ -1029,7 +1032,7 @@ pub(crate) fn note_enc_mode(conn: &Connection, id: i64) -> Result<i64, String> {
     .map_err(|_| "笔记不存在，可能已被删除".to_string())
 }
 
-pub(crate) fn category_is_encrypted(conn: &Connection, id: i64) -> Result<bool, String> {
+pub(crate) fn category_is_encrypted(conn: &Connection, id: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT COALESCE(is_encrypted, 0) FROM categories WHERE id = ?1",
         params![id],
@@ -1038,7 +1041,7 @@ pub(crate) fn category_is_encrypted(conn: &Connection, id: i64) -> Result<bool, 
     .map_err(|_| "分组不存在".to_string())
 }
 
-pub(crate) fn cleanup_note_key(conn: &Connection, note_id: i64) -> Result<(), String> {
+pub(crate) fn cleanup_note_key(conn: &Connection, note_id: &str) -> Result<(), String> {
     conn.execute(
         "DELETE FROM encrypted_keys WHERE scope = 'note' AND ref_id = ?1",
         params![note_id],
@@ -1051,13 +1054,13 @@ pub(crate) fn cleanup_note_key(conn: &Connection, note_id: i64) -> Result<(), St
 pub(crate) fn encrypted_note_tags(
     conn: &Connection,
     state: &EncryptionState,
-    note_id: i64,
+    note_id: &str,
 ) -> Result<Vec<Tag>, String> {
     let row = load_note_row(conn, note_id)?;
     if row.enc_mode == 0 {
         return Err(err_code("not_encrypted"));
     }
-    let dek = match note_dek(state, note_id, row.enc_mode, row.category_id) {
+    let dek = match note_dek(state, note_id, row.enc_mode, row.category_id.as_deref()) {
         Ok(key) => key,
         Err(_) => return Ok(Vec::new()),
     };
@@ -1081,7 +1084,7 @@ pub(crate) fn encrypted_note_tags(
 
 /* ---------------- 标签与历史 ---------------- */
 
-fn snapshot_tags(conn: &Connection, note_id: i64) -> Result<Vec<TagSnap>, String> {
+fn snapshot_tags(conn: &Connection, note_id: &str) -> Result<Vec<TagSnap>, String> {
     let tags = crate::tags_of_note(conn, note_id)?;
     Ok(tags
         .into_iter()
@@ -1093,7 +1096,7 @@ fn snapshot_tags(conn: &Connection, note_id: i64) -> Result<Vec<TagSnap>, String
         .collect())
 }
 
-fn restore_tags(conn: &Connection, note_id: i64, snaps: &[TagSnap]) -> Result<(), String> {
+fn restore_tags(conn: &Connection, note_id: &str, snaps: &[TagSnap]) -> Result<(), String> {
     conn.execute("DELETE FROM note_tags WHERE note_id = ?1", params![note_id])
         .map_err(|e| e.to_string())?;
     for snap in snaps {
@@ -1108,19 +1111,19 @@ fn restore_tags(conn: &Connection, note_id: i64, snaps: &[TagSnap]) -> Result<()
     Ok(())
 }
 
-fn seal_tags(conn: &Connection, note_id: i64, dek: &[u8; 32]) -> Result<String, String> {
+fn seal_tags(conn: &Connection, note_id: &str, dek: &[u8; 32]) -> Result<String, String> {
     let snaps = snapshot_tags(conn, note_id)?;
     let plain = serde_json::to_vec(&snaps).map_err(|e| e.to_string())?;
     crypto::seal(dek, &note_aad(note_id, "tags"), &plain)
 }
 
-fn open_tags(note_id: i64, dek: &[u8; 32], blob: &str) -> Result<Vec<TagSnap>, String> {
+fn open_tags(note_id: &str, dek: &[u8; 32], blob: &str) -> Result<Vec<TagSnap>, String> {
     let plain = crypto::open_text(dek, &note_aad(note_id, "tags"), blob)?;
     serde_json::from_str(&plain).map_err(|_| "标签快照已损坏".to_string())
 }
 
 /// 把一篇笔记的全部历史版本正文从明文加密成密文（标题保持明文）。
-fn seal_history(conn: &Connection, note_id: i64, dek: &[u8; 32]) -> Result<(), String> {
+fn seal_history(conn: &Connection, note_id: &str, dek: &[u8; 32]) -> Result<(), String> {
     let rows: Vec<(i64, String, String)> = {
         let mut stmt = conn
             .prepare("SELECT id, title, content FROM notes_history WHERE note_id = ?1")
@@ -1153,7 +1156,7 @@ fn seal_history(conn: &Connection, note_id: i64, dek: &[u8; 32]) -> Result<(), S
     Ok(())
 }
 
-fn open_history(conn: &Connection, note_id: i64, dek: &[u8; 32]) -> Result<(), String> {
+fn open_history(conn: &Connection, note_id: &str, dek: &[u8; 32]) -> Result<(), String> {
     let rows: Vec<(i64, String, String)> = {
         let mut stmt = conn
             .prepare("SELECT id, title, content FROM notes_history WHERE note_id = ?1")
@@ -1193,9 +1196,9 @@ fn open_history(conn: &Connection, note_id: i64, dek: &[u8; 32]) -> Result<(), S
 
 pub(crate) fn decrypt_history_fields(
     state: &EncryptionState,
-    note_id: i64,
+    note_id: &str,
     enc_mode: i64,
-    category_id: Option<i64>,
+    category_id: Option<&str>,
     title: &str,
     content: &str,
 ) -> Result<(String, String), String> {
@@ -1218,7 +1221,7 @@ fn acquire_dek(
     conn: &Connection,
     state: &EncryptionState,
     scope: &str,
-    id: i64,
+    id: &str,
     meta: &EncMeta,
     password: &str,
     use_root: bool,
@@ -1261,7 +1264,7 @@ fn acquire_dek(
 fn upgrade_item_meta(
     conn: &Connection,
     scope: &str,
-    id: i64,
+    id: &str,
     meta: &EncMeta,
     password: &str,
     dek: &[u8; 32],
@@ -1280,7 +1283,7 @@ fn upgrade_item_meta(
 
 #[tauri::command(async)]
 pub fn encrypt_note(
-    note_id: i64,
+    note_id: String,
     password: String,
     root_password: Option<String>,
     hint: Option<String>,
@@ -1288,7 +1291,7 @@ pub fn encrypt_note(
 ) -> Result<Note, String> {
     validate_password(&password)?;
     let mut conn = state.conn.lock().unwrap();
-    let row = load_note_row(&conn, note_id)?;
+    let row = load_note_row(&conn, &note_id)?;
     // 回收站里的笔记不参与加密：还原后加密状态会和分组/移动守卫纠缠，
     // 而且回收站里根本看不到正文，加密对用户没有任何意义。
     if row.is_deleted {
@@ -1302,7 +1305,7 @@ pub fn encrypt_note(
     if crypto::is_encrypted(&row.content) {
         return Err(err_code("already_sealed"));
     }
-    if let Some(category_id) = row.category_id {
+    if let Some(category_id) = &row.category_id {
         if category_is_encrypted(&conn, category_id)? {
             return Err(err_code("category_encrypted"));
         }
@@ -1311,28 +1314,28 @@ pub fn encrypt_note(
 
     // 随机 DEK 也是一份密钥副本：包进 Zeroizing，出作用域自动清零
     let dek = Zeroizing::new(crypto::random_dek());
-    let meta = new_meta(&password, &dek, &root_kek, NOTE_SCOPE, note_id, hint)?;
+    let meta = new_meta(&password, &dek, &root_kek, NOTE_SCOPE, &note_id, hint)?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let content_cipher = crypto::seal(&dek, &note_aad(note_id, "content"), row.content.as_bytes())?;
-    let tags_cipher = seal_tags(&tx, note_id, &dek)?;
-    seal_history(&tx, note_id, &dek)?;
-    tx.execute("DELETE FROM note_tags WHERE note_id = ?1", params![note_id])
+    let content_cipher = crypto::seal(&dek, &note_aad(&note_id, "content"), row.content.as_bytes())?;
+    let tags_cipher = seal_tags(&tx, &note_id, &dek)?;
+    seal_history(&tx, &note_id, &dek)?;
+    tx.execute("DELETE FROM note_tags WHERE note_id = ?1", params![&note_id])
         .map_err(|e| e.to_string())?;
     // 标签名本身在密文快照里，明文关联删掉后 tags 表里的行就是孤儿了——
     // 不收掉的话「标签名」仍然明文躺在库里，加密等于漏了一半
     crate::prune_tag_links(&tx)?;
     tx.execute(
         "UPDATE notes SET content = ?1, enc_mode = 1, enc_tags = ?2 WHERE id = ?3",
-        params![content_cipher, tags_cipher, note_id],
+        params![content_cipher, tags_cipher, &note_id],
     )
     .map_err(|e| e.to_string())?;
-    save_meta(&tx, NOTE_SCOPE, note_id, &meta)?;
-    tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![note_id])
+    save_meta(&tx, NOTE_SCOPE, &note_id, &meta)?;
+    tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![&note_id])
         .map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM note_index_state WHERE note_id = ?1",
-        params![note_id],
+        params![&note_id],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1361,35 +1364,35 @@ pub fn encrypt_note(
 
 #[tauri::command(async)]
 pub fn unlock_note(
-    note_id: i64,
+    note_id: String,
     password: String,
     use_root: bool,
     scope: String,
     state: State<AppState>,
 ) -> Result<Note, String> {
     let conn = state.conn.lock().unwrap();
-    let row = load_note_row(&conn, note_id)?;
+    let row = load_note_row(&conn, &note_id)?;
     if row.enc_mode == 0 {
         return Err(err_code("not_encrypted"));
     }
     if row.enc_mode == 2 {
         return Err(json!({ "code": "note_encrypted", "reason": "group" }).to_string());
     }
-    let meta = load_meta(&conn, NOTE_SCOPE, note_id)?.ok_or_else(|| err_code("not_encrypted"))?;
-    let dek = acquire_dek(&conn, &state.encryption, NOTE_SCOPE, note_id, &meta, &password, use_root)?;
+    let meta = load_meta(&conn, NOTE_SCOPE, &note_id)?.ok_or_else(|| err_code("not_encrypted"))?;
+    let dek = acquire_dek(&conn, &state.encryption, NOTE_SCOPE, &note_id, &meta, &password, use_root)?;
     state.encryption.put_key(
         NOTE_SCOPE,
-        note_id,
+        &note_id,
         *dek,
         parse_unlock_scope(&scope)?,
     );
-    let title = open_title_legacy(&dek, note_id, &row.title)?;
-    let content = crypto::open_text(&dek, &note_aad(note_id, "content"), &row.content)?;
+    let title = open_title_legacy(&dek, &note_id, &row.title)?;
+    let content = crypto::open_text(&dek, &note_aad(&note_id, "content"), &row.content)?;
     // 旧数据的标题曾经是密文：借这次解锁把明文标题写回库，之后列表搜索都能用
     if title != row.title {
         conn.execute(
             "UPDATE notes SET title = ?1 WHERE id = ?2",
-            params![title, note_id],
+            params![title, &note_id],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1397,8 +1400,8 @@ pub fn unlock_note(
 }
 
 #[tauri::command(async)]
-pub fn lock_note(note_id: i64, force: bool, state: State<AppState>) -> Result<(), String> {
-    state.encryption.lock(NOTE_SCOPE, note_id, force);
+pub fn lock_note(note_id: String, force: bool, state: State<AppState>) -> Result<(), String> {
+    state.encryption.lock(NOTE_SCOPE, &note_id, force);
     Ok(())
 }
 
@@ -1412,51 +1415,51 @@ pub fn lock_all(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command(async)]
 pub fn decrypt_note(
-    note_id: i64,
+    note_id: String,
     password: String,
     use_root: bool,
     state: State<AppState>,
 ) -> Result<Note, String> {
     let mut conn = state.conn.lock().unwrap();
-    let mut row = load_note_row(&conn, note_id)?;
+    let mut row = load_note_row(&conn, &note_id)?;
     if row.enc_mode == 0 {
         return Err(err_code("not_encrypted"));
     }
     if row.enc_mode == 2 {
         return Err(json!({ "code": "note_encrypted", "reason": "group" }).to_string());
     }
-    let meta = load_meta(&conn, NOTE_SCOPE, note_id)?.ok_or_else(|| err_code("not_encrypted"))?;
-    let dek = acquire_dek(&conn, &state.encryption, NOTE_SCOPE, note_id, &meta, &password, use_root)?;
-    let title = open_title_legacy(&dek, note_id, &row.title)?;
-    let content = crypto::open_text(&dek, &note_aad(note_id, "content"), &row.content)?;
+    let meta = load_meta(&conn, NOTE_SCOPE, &note_id)?.ok_or_else(|| err_code("not_encrypted"))?;
+    let dek = acquire_dek(&conn, &state.encryption, NOTE_SCOPE, &note_id, &meta, &password, use_root)?;
+    let title = open_title_legacy(&dek, &note_id, &row.title)?;
+    let content = crypto::open_text(&dek, &note_aad(&note_id, "content"), &row.content)?;
     let snaps = match &row.enc_tags {
-        Some(blob) => open_tags(note_id, &dek, blob)?,
+        Some(blob) => open_tags(&note_id, &dek, blob)?,
         None => Vec::new(),
     };
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    open_history(&tx, note_id, &dek)?;
-    restore_tags(&tx, note_id, &snaps)?;
+    open_history(&tx, &note_id, &dek)?;
+    restore_tags(&tx, &note_id, &snaps)?;
     tx.execute(
         "UPDATE notes SET title = ?1, content = ?2, enc_mode = 0, enc_tags = NULL WHERE id = ?3",
-        params![title, content, note_id],
+        params![title, content, &note_id],
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM encrypted_keys WHERE scope = 'note' AND ref_id = ?1",
-        params![note_id],
+        params![&note_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![note_id])
+    tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![&note_id])
         .map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM note_index_state WHERE note_id = ?1",
-        params![note_id],
+        params![&note_id],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
 
-    state.encryption.lock(NOTE_SCOPE, note_id, true);
+    state.encryption.lock(NOTE_SCOPE, &note_id, true);
     scrub(&conn);
     drop(conn);
     semantic::invalidate(&state.semantic);
@@ -1469,7 +1472,7 @@ pub fn decrypt_note(
 
 /* ---------------- 分组命令 ---------------- */
 
-fn category_note_rows(conn: &Connection, category_id: i64) -> Result<Vec<NoteRow>, String> {
+fn category_note_rows(conn: &Connection, category_id: &str) -> Result<Vec<NoteRow>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
@@ -1501,7 +1504,7 @@ fn category_note_rows(conn: &Connection, category_id: i64) -> Result<Vec<NoteRow
 
 #[tauri::command(async)]
 pub fn encrypt_category(
-    category_id: i64,
+    category_id: String,
     password: String,
     root_password: Option<String>,
     hint: Option<String>,
@@ -1509,19 +1512,19 @@ pub fn encrypt_category(
 ) -> Result<(), String> {
     validate_password(&password)?;
     let mut conn = state.conn.lock().unwrap();
-    if category_is_encrypted(&conn, category_id)? {
+    if category_is_encrypted(&conn, &category_id)? {
         return Err(err_code("already_encrypted"));
     }
     // 只处理组内未删除的笔记：回收站里的笔记可能本来就带自己的密码，
     // 既不能算作「组内有单独加密的笔记」，也不该被组密钥重新封一遍。
-    let rows: Vec<NoteRow> = category_note_rows(&conn, category_id)?
+    let rows: Vec<NoteRow> = category_note_rows(&conn, &category_id)?
         .into_iter()
         .filter(|row| !row.is_deleted)
         .collect();
-    let individually: Vec<i64> = rows
+    let individually: Vec<String> = rows
         .iter()
         .filter(|row| row.enc_mode == 1)
-        .map(|row| row.id)
+        .map(|row| row.id.clone())
         .collect();
     if !individually.is_empty() {
         return Err(json!({
@@ -1531,10 +1534,10 @@ pub fn encrypt_category(
         .to_string());
     }
     // 同上：正文已经是密文却标着未加密，说明状态不一致，先修复再整体加密
-    let sealed: Vec<i64> = rows
+    let sealed: Vec<String> = rows
         .iter()
         .filter(|row| row.enc_mode == 0 && crypto::is_encrypted(&row.content))
-        .map(|row| row.id)
+        .map(|row| row.id.clone())
         .collect();
     if !sealed.is_empty() {
         return Err(json!({ "code": "already_sealed", "note_ids": sealed }).to_string());
@@ -1542,25 +1545,25 @@ pub fn encrypt_category(
     let root_kek = root_kek_for_encrypt(&conn, &state.encryption, root_password.as_deref())?;
 
     let dek = Zeroizing::new(crypto::random_dek());
-    let meta = new_meta(&password, &dek, &root_kek, CAT_SCOPE, category_id, hint)?;
+    let meta = new_meta(&password, &dek, &root_kek, CAT_SCOPE, &category_id, hint)?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     for row in &rows {
-        let content = crypto::seal(&dek, &note_aad(row.id, "content"), row.content.as_bytes())?;
-        let tags = seal_tags(&tx, row.id, &dek)?;
-        seal_history(&tx, row.id, &dek)?;
-        tx.execute("DELETE FROM note_tags WHERE note_id = ?1", params![row.id])
+        let content = crypto::seal(&dek, &note_aad(&row.id, "content"), row.content.as_bytes())?;
+        let tags = seal_tags(&tx, &row.id, &dek)?;
+        seal_history(&tx, &row.id, &dek)?;
+        tx.execute("DELETE FROM note_tags WHERE note_id = ?1", params![&row.id])
             .map_err(|e| e.to_string())?;
         tx.execute(
             "UPDATE notes SET content = ?1, enc_mode = 2, enc_tags = ?2 WHERE id = ?3",
-            params![content, tags, row.id],
+            params![content, tags, &row.id],
         )
         .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![row.id])
+        tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![&row.id])
             .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM note_index_state WHERE note_id = ?1",
-            params![row.id],
+            params![&row.id],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1571,7 +1574,7 @@ pub fn encrypt_category(
         params![category_id],
     )
     .map_err(|e| e.to_string())?;
-    save_meta(&tx, CAT_SCOPE, category_id, &meta)?;
+    save_meta(&tx, CAT_SCOPE, &category_id, &meta)?;
     tx.commit().map_err(|e| e.to_string())?;
 
     // 加密后分组立即锁定：展开分组或打开组内笔记都要重新输密码
@@ -1583,29 +1586,29 @@ pub fn encrypt_category(
 
 #[tauri::command(async)]
 pub fn unlock_category(
-    category_id: i64,
+    category_id: String,
     password: String,
     use_root: bool,
     scope: String,
     state: State<AppState>,
 ) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    if !category_is_encrypted(&conn, category_id)? {
+    if !category_is_encrypted(&conn, &category_id)? {
         return Err(err_code("not_encrypted"));
     }
-    let meta = load_meta(&conn, CAT_SCOPE, category_id)?.ok_or_else(|| err_code("not_encrypted"))?;
+    let meta = load_meta(&conn, CAT_SCOPE, &category_id)?.ok_or_else(|| err_code("not_encrypted"))?;
     let dek = acquire_dek(
         &conn,
         &state.encryption,
         CAT_SCOPE,
-        category_id,
+        &category_id,
         &meta,
         &password,
         use_root,
     )?;
     state.encryption.put_key(
         CAT_SCOPE,
-        category_id,
+        &category_id,
         *dek,
         parse_unlock_scope(&scope)?,
     );
@@ -1613,58 +1616,58 @@ pub fn unlock_category(
 }
 
 #[tauri::command(async)]
-pub fn lock_category(category_id: i64, force: bool, state: State<AppState>) -> Result<(), String> {
-    state.encryption.lock(CAT_SCOPE, category_id, force);
+pub fn lock_category(category_id: String, force: bool, state: State<AppState>) -> Result<(), String> {
+    state.encryption.lock(CAT_SCOPE, &category_id, force);
     Ok(())
 }
 
 #[tauri::command(async)]
 pub fn decrypt_category(
-    category_id: i64,
+    category_id: String,
     password: String,
     use_root: bool,
     state: State<AppState>,
 ) -> Result<(), String> {
     let mut conn = state.conn.lock().unwrap();
-    if !category_is_encrypted(&conn, category_id)? {
+    if !category_is_encrypted(&conn, &category_id)? {
         return Err(err_code("not_encrypted"));
     }
-    let meta = load_meta(&conn, CAT_SCOPE, category_id)?.ok_or_else(|| err_code("not_encrypted"))?;
+    let meta = load_meta(&conn, CAT_SCOPE, &category_id)?.ok_or_else(|| err_code("not_encrypted"))?;
     let dek = acquire_dek(
         &conn,
         &state.encryption,
         CAT_SCOPE,
-        category_id,
+        &category_id,
         &meta,
         &password,
         use_root,
     )?;
     // 这里必须包含回收站里的笔记：组密钥一删，留在回收站的组密文就再也解不开了
-    let rows = category_note_rows(&conn, category_id)?;
+    let rows = category_note_rows(&conn, &category_id)?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     for row in &rows {
         if row.enc_mode != 2 {
             continue;
         }
-        let title = open_title_legacy(&dek, row.id, &row.title)?;
-        let content = crypto::open_text(&dek, &note_aad(row.id, "content"), &row.content)?;
+        let title = open_title_legacy(&dek, &row.id, &row.title)?;
+        let content = crypto::open_text(&dek, &note_aad(&row.id, "content"), &row.content)?;
         let snaps = match &row.enc_tags {
-            Some(blob) => open_tags(row.id, &dek, blob)?,
+            Some(blob) => open_tags(&row.id, &dek, blob)?,
             None => Vec::new(),
         };
-        open_history(&tx, row.id, &dek)?;
-        restore_tags(&tx, row.id, &snaps)?;
+        open_history(&tx, &row.id, &dek)?;
+        restore_tags(&tx, &row.id, &snaps)?;
         tx.execute(
             "UPDATE notes SET title = ?1, content = ?2, enc_mode = 0, enc_tags = NULL WHERE id = ?3",
-            params![title, content, row.id],
+            params![title, content, &row.id],
         )
         .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![row.id])
+        tx.execute("DELETE FROM note_chunks WHERE note_id = ?1", params![&row.id])
             .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM note_index_state WHERE note_id = ?1",
-            params![row.id],
+            params![&row.id],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1675,12 +1678,12 @@ pub fn decrypt_category(
     .map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM encrypted_keys WHERE scope = 'category' AND ref_id = ?1",
-        params![category_id],
+        params![&category_id],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
 
-    state.encryption.lock(CAT_SCOPE, category_id, true);
+    state.encryption.lock(CAT_SCOPE, &category_id, true);
     scrub(&conn);
     drop(conn);
     semantic::invalidate(&state.semantic);
@@ -1690,49 +1693,50 @@ pub fn decrypt_category(
 /* ---------------- 信息查询 ---------------- */
 
 #[tauri::command(async)]
-pub fn encryption_info(scope: String, id: i64, state: State<AppState>) -> Result<Value, String> {
+pub fn encryption_info(scope: String, id: String, state: State<AppState>) -> Result<Value, String> {
     let conn = state.conn.lock().unwrap();
     let (scope_key, meta_scope, meta_id, encrypted, is_locked) = match scope.as_str() {
         CAT_SCOPE => {
-            let encrypted = category_is_encrypted(&conn, id)?;
+            let encrypted = category_is_encrypted(&conn, &id)?;
             (
                 CAT_SCOPE,
                 CAT_SCOPE,
-                id,
+                id.clone(),
                 encrypted,
-                state.encryption.get_key(CAT_SCOPE, id).is_none(),
+                state.encryption.get_key(CAT_SCOPE, &id).is_none(),
             )
         }
         NOTE_SCOPE => {
-            let row = load_note_row(&conn, id)?;
+            let row = load_note_row(&conn, &id)?;
             let encrypted = row.enc_mode != 0;
             let (meta_scope, meta_id) = if row.enc_mode == 2 {
-                match row.category_id {
-                    Some(category) => (CAT_SCOPE, category),
-                    None => (NOTE_SCOPE, id),
+                match &row.category_id {
+                    Some(category) => (CAT_SCOPE, category.clone()),
+                    None => (NOTE_SCOPE, id.clone()),
                 }
             } else {
-                (NOTE_SCOPE, id)
+                (NOTE_SCOPE, id.clone())
             };
-            let locked = note_dek(&state.encryption, id, row.enc_mode, row.category_id).is_err();
+            let locked = note_dek(&state.encryption, &id, row.enc_mode, row.category_id.as_deref()).is_err();
             (NOTE_SCOPE, meta_scope, meta_id, encrypted, locked)
         }
         _ => return Err(err_code("invalid_scope")),
     };
     let meta = if encrypted {
-        load_meta(&conn, meta_scope, meta_id)?
+        load_meta(&conn, meta_scope, &meta_id)?
     } else {
         None
     };
     let root = read_root_meta(&conn)?;
+    let attempt_id = id.clone();
     Ok(json!({
         "scope": scope_key,
         "encrypted": encrypted,
         "is_locked": is_locked,
         "hint": meta.as_ref().and_then(|m| m.hint.clone()),
         "root_wrapped": meta.as_ref().map(|m| m.wrap_root.is_some()).unwrap_or(false),
-        "attempts": state.encryption.attempts(scope_key, id),
-        "root_allowed": state.encryption.attempts(scope_key, id) >= ROOT_FALLBACK_AFTER,
+        "attempts": state.encryption.attempts(scope_key, &attempt_id),
+        "root_allowed": state.encryption.attempts(scope_key, &attempt_id) >= ROOT_FALLBACK_AFTER,
         "root_set": root.is_some(),
         "root_cached": state.encryption.root_cached(),
         "kdf": root.map(|m| m.kdf).unwrap_or_default(),
@@ -1757,7 +1761,7 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
     let mut conn = state.conn.lock().unwrap();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    let candidates: Vec<(i64, Option<i64>, String, bool, bool, bool)> = {
+    let candidates: Vec<(String, Option<String>, String, bool, bool, bool)> = {
         let mut stmt = tx
             .prepare(
                 "SELECT n.id,
@@ -1765,7 +1769,7 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
                         n.content,
                         EXISTS (SELECT 1 FROM encrypted_keys k WHERE k.scope = 'note' AND k.ref_id = n.id),
                         COALESCE((SELECT c.is_encrypted FROM categories c WHERE c.id = n.category_id), 0) <> 0,
-                        EXISTS (SELECT 1 FROM encrypted_keys k WHERE k.scope = 'category' AND k.ref_id = n.category_id)
+                        EXISTS (SELECT 1 FROM encrypted_keys k WHERE k.scope = 'category' AND k.ref_id = CAST(n.category_id AS TEXT))
                  FROM notes n
                  WHERE COALESCE(n.enc_mode, 0) = 0 AND n.content LIKE ?1",
             )
@@ -1773,8 +1777,8 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
         let mapped = stmt
             .query_map(params![format!("{}%", crypto::ENCN_PREFIX)], |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)? != 0,
                     row.get::<_, i64>(4)? != 0,
@@ -1787,8 +1791,8 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
             .map_err(|e| e.to_string())?
     };
 
-    let mut repaired: Vec<i64> = Vec::new();
-    let mut missing_keys: Vec<i64> = Vec::new();
+    let mut repaired: Vec<String> = Vec::new();
+    let mut missing_keys: Vec<String> = Vec::new();
     for (id, category_id, content, has_note_meta, category_encrypted, has_category_meta) in candidates
     {
         if !looks_like_ciphertext(&content) {
@@ -1805,7 +1809,7 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
             Some(mode) => {
                 tx.execute(
                     "UPDATE notes SET enc_mode = ?1 WHERE id = ?2",
-                    params![mode, id],
+                    params![mode, &id],
                 )
                 .map_err(|e| e.to_string())?;
                 repaired.push(id);
@@ -1814,10 +1818,19 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
         }
     }
 
-    let collect_ids = |sql: &str| -> Result<Vec<i64>, String> {
+    let collect_ids = |sql: &str| -> Result<Vec<String>, String> {
         let mut stmt = tx.prepare(sql).map_err(|e| e.to_string())?;
         let mapped = stmt
-            .query_map([], |row| row.get::<_, i64>(0))
+            .query_map([], |row| {
+                // 同一列可能来自 notes.id（TEXT）也可能来自 categories.id（INTEGER）
+                Ok(match row.get_ref(0)? {
+                    rusqlite::types::ValueRef::Text(t) => {
+                        String::from_utf8_lossy(t).into_owned()
+                    }
+                    rusqlite::types::ValueRef::Integer(i) => i.to_string(),
+                    _ => String::new(),
+                })
+            })
             .map_err(|e| e.to_string())?;
         mapped
             .collect::<Result<Vec<_>, _>>()
@@ -1830,7 +1843,7 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
          UNION
          SELECT id FROM notes WHERE COALESCE(enc_mode, 0) = 2
            AND (category_id IS NULL OR NOT EXISTS (
-                 SELECT 1 FROM encrypted_keys k WHERE k.scope = 'category' AND k.ref_id = notes.category_id))",
+                 SELECT 1 FROM encrypted_keys k WHERE k.scope = 'category' AND k.ref_id = CAST(notes.category_id AS TEXT)))",
     )?);
     missing_keys.sort_unstable();
     missing_keys.dedup();
@@ -1844,7 +1857,7 @@ pub fn encryption_self_check(state: State<AppState>) -> Result<Value, String> {
 
     let missing_category_keys = collect_ids(
         "SELECT c.id FROM categories c WHERE COALESCE(c.is_encrypted, 0) <> 0
-           AND NOT EXISTS (SELECT 1 FROM encrypted_keys k WHERE k.scope = 'category' AND k.ref_id = c.id)",
+           AND NOT EXISTS (SELECT 1 FROM encrypted_keys k WHERE k.scope = 'category' AND k.ref_id = CAST(c.id AS TEXT))",
     )?;
 
     // 标了加密但正文不是密文：解密中途被打断或外部工具改过库，同样只报告

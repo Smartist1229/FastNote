@@ -6,14 +6,16 @@
  * API Key 没有独立的校验接口，"Key 是否可用"是通过拉取模型或首次请求失败暴露的。
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as aiApi from "@/api/ai/ai";
 import type { AiProvider, AiProviderType } from "@/interface/ai/ai";
 import type { AiProviderModalProps } from "@/interface/ai/aiProvider";
 import { useToast } from "@/components/common/Toast";
 import { Modal } from "@/components/common/Modal";
 import { Icon } from "@/components/common/Icon";
+import { emitAppEvent } from "@/shared/bus";
 import { t as translate, useI18n } from "@/i18n";
+import { usePluginContributions, type PluginAiProviderEntry } from "@/plugins/contributions";
 
 /**
  * 三种协议的默认名称与地址，新建配置时填入草稿。
@@ -115,6 +117,15 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
   const fetchingRef = useRef(false);
 
   /**
+   * 插件贡献的服务商模板（运行时贡献，不落库）：门面内部订阅注册表版本，
+   * 插件启停时这里自动重读。
+   */
+  const contributions = usePluginContributions();
+  const pluginProviders = useMemo(() => contributions.aiProviders(), [contributions.version]);
+  /** 选中插件模板时的 API Key 获取提示（作为输入框 placeholder） */
+  const [apiKeyHint, setApiKeyHint] = useState("");
+
+  /**
    * 面板自持一份列表：父级传入的 providers 可能滞后于写库结果，
    * 因此每次打开面板、每次写入之后都以数据库重读的结果为准。
    */
@@ -157,6 +168,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     setDraftProvider({ ...provider, enabled_models: checked });
     setModels(checked);
     hasUserPickedModelsRef.current = false;
+    setApiKeyHint("");
     setEditingId(provider.id);
     setShowForm(true);
   };
@@ -166,6 +178,29 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     setDraftProvider(emptyProvider(type));
     setModels([]);
     hasUserPickedModelsRef.current = false;
+    setApiKeyHint("");
+    setEditingId(null);
+    setShowForm(true);
+  };
+
+  /**
+   * 选中插件贡献的服务商模板：按模板预填名称 / 地址 / 预置模型，协议按 OpenAI 兼容处理；
+   * API Key 仍需用户自己填写，保存时走正常 createAiProvider 落库——落库后就是
+   * 用户自己的数据，之后插件卸载也不受影响。
+   */
+  const openFromPlugin = (tpl: PluginAiProviderEntry) => {
+    const presetModels = (tpl.models ?? []).filter((m) => m && m.trim());
+    setDraftProvider({
+      ...emptyProvider("openai"),
+      name: tpl.name,
+      api_base_url: tpl.baseUrl,
+      enabled_models: presetModels,
+      enabled_model: presetModels[0] ?? null,
+    });
+    setModels(presetModels);
+    // 模板自带预置模型：视为"已选过"，重新获取模型时不再自动全选覆盖
+    hasUserPickedModelsRef.current = presetModels.length > 0;
+    setApiKeyHint(tpl.apiKeyHint ?? "");
     setEditingId(null);
     setShowForm(true);
   };
@@ -199,7 +234,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     try {
       await aiApi.updateAiProvider(nextProvider);
       publishProviders(listProviders.map((p) => (p.id === nextProvider.id ? nextProvider : p)));
-      window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
+      emitAppEvent('fastnote-providers-changed');
     } catch {
       showToast(translate("模型保存失败"), "error");
     }
@@ -282,7 +317,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       let saved: AiProvider = { ...draftProvider, id: savedId, enabled_models: checked };
       try {
         const fresh = await reloadProviders();
-        window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
+        emitAppEvent('fastnote-providers-changed');
         saved = fresh?.find((p) => p.id === savedId) ?? saved;
       } catch (refreshError) {
         console.error("保存后刷新配置列表失败:", refreshError);
@@ -338,7 +373,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
           try {
             await aiApi.updateAiProvider(allChecked);
             publishProviders(listProviders.map((p) => (p.id === allChecked.id ? allChecked : p)));
-            window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
+            emitAppEvent('fastnote-providers-changed');
           } catch { /* 忽略：保存时仍会写入 */ }
         }
       }
@@ -379,7 +414,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       publishProviders(
         listProviders.map((p) => (p.id === nextProvider.id ? nextProvider : p)),
       );
-      window.dispatchEvent(new CustomEvent('fastnote-providers-changed'));
+      emitAppEvent('fastnote-providers-changed');
     } catch {
       showToast(translate("模型保存失败"), "error");
     }
@@ -420,7 +455,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     onSelectedProviderChange(id);
     setShowForm(false);
     // 通知 AIChatPanel 更新当前选中的服务商并加载模型
-    window.dispatchEvent(new CustomEvent('fastnote-provider-selected', { detail: { providerId: id } }));
+    emitAppEvent('fastnote-provider-selected', { providerId: id });
   };
 
   const activeProvider = listProviders.find((p) => p.id === selectedProviderId);
@@ -500,6 +535,37 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
               </div>
             )}
 
+            {pluginProviders.length > 0 && (
+              <div className="space-y-1.5">
+                <h4 className="text-xs font-medium text-faint">{t("插件提供的服务商模板")}</h4>
+                {pluginProviders.map((p) => (
+                  <div
+                    key={`${p.pluginId}:${p.id}`}
+                    className="group flex items-center gap-3 px-3.5 py-2.5 rounded-xl cursor-pointer transition-all bg-surface border border-dashed border-line-soft hover:border-line hover:shadow-xs"
+                    onClick={() => openFromPlugin(p)}
+                    title={t("点击后预填为新建表单，填入 API Key 即可保存为自己的配置")}
+                  >
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold text-on-accent flex-shrink-0 bg-primary-500">
+                      {p.name.trim().charAt(0).toUpperCase() || "P"}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-body truncate flex items-center gap-1.5">
+                        <span className="truncate">{p.name}</span>
+                        <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-primary-50 text-primary-600">
+                          {t("插件 · {name}", { name: p.pluginName })}
+                        </span>
+                      </div>
+                      <div className="text-xs text-faint truncate">
+                        {p.baseUrl.replace(/^https?:\/\//, "").split("/")[0]}
+                        {p.models && p.models.length > 0 && t(" · 预置 {count} 个模型", { count: p.models.length })}
+                      </div>
+                    </div>
+                    <Icon name="provider-plus" className="w-3.5 h-3.5 text-faint opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                  </div>
+                ))}
+              </div>
+            )}
+
             {activeProvider && (
               <div className="text-center text-xs text-faint">
                 {t("当前使用：")}<span className="text-primary-500 font-medium">{activeProvider.name}</span>
@@ -563,7 +629,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
               value={draftProvider.api_key}
               type="password"
               onChange={(e) => updateDraft("api_key", e.target.value)}
-              placeholder="API Key"
+              placeholder={apiKeyHint || "API Key"}
               className="w-full px-3 py-2 text-sm input-modern"
             />
 

@@ -39,6 +39,8 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # 分组导出：笔记正文是 Markdown，导出 HTML / EPUB 时渲染成网页
 pulldown-cmark = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
+# 笔记主键改成随机 UUID：v4 足够，版本已在锁文件里（其他依赖间接引入）
+uuid = { version = "1", features = ["v4"] }
 # 语言/时区画像要跟本机时区（含具体城市名）一致；chrono 只给偏移，拿不到 IANA 名字。
 # 版本与锁文件一致（chrono 已依赖它），不新增编译单元。
 iana-time-zone = "0.1.65"

@@ -473,13 +473,6 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
         onChange={onAutoIndexChange}
       />
 
-      {/* 测试功能提示：语义检索依赖模型质量，版本迭代中还可能有行为变化 */}
-      <div className="flex items-start gap-2 rounded-xl border border-warning-line/60 bg-warning-soft px-3 py-2.5">
-        <Icon name="ai-warning" className="w-3.5 h-3.5 text-warning mt-[1px] flex-shrink-0" />
-        <p className="text-[11px] leading-relaxed text-warning">
-          <span className="font-medium">{t("测试功能：")}</span>
-          {t("语义搜索依赖所选模型与本地向量索引，不同模型的语言支持和区分能力不同，结果未必精准；功能与性能仍在调整，建议保留普通文本搜索作为主要查找方式。")}</p>
-      </div>
       {enabled && !selectedInstalled && !downloading && (
         <div className="flex items-start gap-2 rounded-xl border border-warning-line/60 bg-warning-soft px-3 py-2.5">
           <Icon name="ai-warning" className="w-3.5 h-3.5 text-warning mt-[1px] flex-shrink-0" />

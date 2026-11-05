@@ -91,7 +91,7 @@ export interface CommandPaletteProps {
   categories: Category[];
   tags: Tag[];
   commands: PaletteCommand[];
-  currentNoteId?: number | null;
+  currentNoteId?: string | null;
   onClose: () => void;
   onOpenNote: (note: Note) => void;
   /** 按标签取笔记（选中标签后在本面板内列出来） */
@@ -229,7 +229,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const jump = useNoteJump(notes, isTagMode ? "" : q, jumpActive);
 
   const categoryName = useCallback(
-    (id: number | null) => categories.find((c) => c.id === id)?.name ?? t("未分类"),
+    (id: string | null) => categories.find((c) => c.id === id)?.name ?? t("未分类"),
     [categories, t],
   );
 
@@ -485,22 +485,24 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   return (
     <div
+      data-editor-blur-ignore="true"
       className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm flex items-start justify-center p-4 pt-[10vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
       <div
+        data-editor-blur-ignore="true"
         className="w-full max-w-[660px] flex flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
         style={{ maxHeight: "70vh" }}
         onKeyDown={onKeyDown}
         role="dialog"
         aria-label={mode === "jump" ? t("快速跳转") : t("命令面板")}
       >
-        {/* 输入区：整行是一个搜索框，焦点态由外层描边表达；
-            input 自己必须显式清掉全局 focus-visible 光晕，否则边框里会再套一圈蓝框 */}
+        {/* 输入区：整行是一个搜索框，焦点态由背景变深表达；
+            input 自己必须显式清掉全局 focus-visible 光晕 */}
         <div className="px-3 pt-3 pb-2 flex-shrink-0 space-y-2">
-          <div className="flex items-center gap-2.5 h-10 px-3 rounded-xl border border-line bg-app/60 transition-colors focus-within:border-primary-500/60 focus-within:bg-surface">
+          <div className="flex items-center gap-2.5 h-10 px-3 rounded-xl bg-app/60 transition-colors focus-within:bg-surface">
             <Icon
               name={mode === "jump" ? "sidebar-search" : "ai-bolt"}
               className={`w-4 h-4 flex-shrink-0 ${mode === "jump" ? "text-faint" : "text-primary-500"}`}
@@ -516,7 +518,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     : t("搜索笔记标题与正文，输入 # 查标签…")
                   : t("输入命令，如 settings theme 或 create_note 周报…")
               }
-              className="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-body placeholder:text-faint-soft focus:outline-none focus-visible:shadow-none"
+              className="no-focus-ring flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-body placeholder:text-faint-soft focus:outline-none focus-visible:shadow-none"
               spellCheck={false}
             />
             {q && (

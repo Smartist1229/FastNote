@@ -5,8 +5,11 @@
 
 import type { Category, Note } from "@/interface/note/note";
 import type { ContextMenuItem } from "@/interface/app/ui";
+import type { PluginGroupMenuEntry, PluginNoteMenuEntry } from "@/plugins/contributions";
 import { Icon } from "@/components/common/Icon";
 import { translate } from "@/i18n";
+import { pluginHost } from "@/plugins/host";
+import { pluginContributions } from "@/plugins/contributions";
 
 /** 能弹出「分组菜单」的目标类型：真实分组、两个默认分组、搜索视图的四个虚拟分组 */
 export type GroupMenuKind = "category" | "all" | "uncategorized" | "search-all" | "search-title" | "search-content" | "search-semantic";
@@ -17,6 +20,53 @@ export const isSearchGroupKind = (kind: GroupMenuKind) => SEARCH_GROUP_KINDS.inc
 
 /** 菜单项里的分隔线（ContextMenuItem 要求 label/onClick 必填，故给空实现） */
 const divider = (): ContextMenuItem => ({ divider: true, label: "", onClick: () => { } });
+
+/**
+ * 把 registry 返回的 PluginNoteMenuEntry[]（递归）转成宿主 ContextMenuItem[]。
+ * 有 onClick 的项绑好 PluginContext；有 submenu 的项直接嵌套——
+ * ContextMenu 组件本身只渲染一层 submenu，但数据结构保持递归，给未来扩展留余地。
+ */
+const pluginEntriesToContextItems = (
+  entries: PluginNoteMenuEntry[],
+): ContextMenuItem[] =>
+  entries.map<ContextMenuItem>((entry) => {
+    const handler = entry.onClick;
+    return {
+      label: translate(entry.label),
+      icon: entry.icon ? <Icon name={entry.icon} className="w-4 h-4" /> : undefined,
+      danger: entry.danger,
+      onClick: handler
+        ? () => {
+            void Promise.resolve(
+              handler(pluginHost.createPluginContext(entry.pluginId)),
+            ).catch((e) => console.error("插件菜单项执行失败：", e));
+          }
+        : () => {}, // 纯分组项没有 onClick
+      submenu:
+        entry.submenu && entry.submenu.length > 0
+          ? pluginEntriesToContextItems(entry.submenu)
+          : undefined,
+    };
+  });
+
+/** 把分组菜单插件贡献转成宿主 ContextMenuItem[]，递归处理 submenu */
+const groupEntriesToContextItems = (
+  entries: PluginGroupMenuEntry[],
+): ContextMenuItem[] =>
+  entries.map<ContextMenuItem>((entry) => ({
+    label: translate(entry.label),
+    icon: entry.icon ? <Icon name={entry.icon} className="w-4 h-4" /> : undefined,
+    danger: entry.danger,
+    onClick: () => {
+      void Promise.resolve(
+        entry.onClick(pluginHost.createPluginContext(entry.pluginId)),
+      ).catch((e) => console.error("插件分组菜单项执行失败：", e));
+    },
+    submenu:
+      entry.submenu && entry.submenu.length > 0
+        ? groupEntriesToContextItems(entry.submenu)
+        : undefined,
+  }));
 
 /** 分组菜单需要的回调：由调用方按当前分组拼好 */
 export interface GroupMenuHandlers {
@@ -47,7 +97,7 @@ export interface GroupMenuHandlers {
 export interface NoteMenuHandlers {
   onOpenNote: () => void;
   onSaveNote: () => void;
-  onMoveToCategory: (categoryId: number | null) => void;
+  onMoveToCategory: (categoryId: string | null) => void;
   onTogglePin: () => void;
   onDeleteNote: () => void;
   onShowProperties: () => void;
@@ -148,6 +198,19 @@ export const buildGroupMenu = (
     icon: <Icon name="toast-info" className="w-4 h-4" />,
     onClick: handlers.onShowProperties,
   });
+  // 插件贡献的分组菜单项：按插件名分组为二级菜单；没有插件贡献时输出与原来完全一致
+  const pluginGroups = pluginContributions.groupMenuGroups();
+  if (pluginGroups.length > 0) {
+    items.push(divider());
+    for (const g of pluginGroups) {
+      items.push({
+        label: g.pluginName,
+        icon: undefined,
+        onClick: () => {},
+        submenu: groupEntriesToContextItems(g.items),
+      });
+    }
+  }
   return items;
 };
 
@@ -272,5 +335,18 @@ export const buildNoteMenu = (
       onClick: handlers.onShowProperties,
     },
   );
+  // 插件贡献的菜单项：按插件名分组为二级菜单；没有插件贡献时输出与原来完全一致
+  const pluginGroups = pluginContributions.noteMenuGroups(note);
+  if (pluginGroups.length > 0) {
+    items.push(divider());
+    for (const g of pluginGroups) {
+      items.push({
+        label: g.pluginName,
+        icon: undefined,
+        onClick: () => {}, // hover 展开，本身不可点击
+        submenu: pluginEntriesToContextItems(g.items),
+      });
+    }
+  }
   return items;
 };

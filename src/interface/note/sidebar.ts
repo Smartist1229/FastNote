@@ -17,9 +17,9 @@ export interface CategoryDrawerProps {
   isExpanded: boolean;
   /** 是否为「全部笔记」抽屉（标题、图标与计数都不同） */
   isAllNotes: boolean;
-  selectedNoteId: number | null;
+  selectedNoteId: string | null;
   /** 需要高亮并滚动到可视区的笔记（由 AI 打开笔记等操作触发） */
-  focusNoteId: number | null;
+  focusNoteId: string | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
   onDeleteNote: (note: Note) => void;
@@ -36,7 +36,7 @@ export interface CategoryDrawerProps {
    * 搜索视图的命中信息：note.id → 命中区间与上下文片段。
    * 只有搜索视图传；没传时列表按普通笔记渲染（省掉逐条分段的开销）。
    */
-  hits?: Map<number, NoteSearchHit>;
+  hits?: Map<string, NoteSearchHit>;
 }
 
 /** 侧边栏 Props：分组列表 + 收藏视图 + 搜索/排序状态 + 各类右键菜单回调 */
@@ -45,12 +45,12 @@ export interface SidebarProps {
   notes: Note[];
   /** 全部笔记（含未分类）的篇数，显示在「全部笔记」入口 */
   allNotesCount: number;
-  selectedCategoryId: number | null;
-  selectedNoteId: number | null;
+  selectedCategoryId: string | null;
+  selectedNoteId: string | null;
   /** 抽屉展开状态：'all' | 分组ID | 'uncategorized' | null（全部收起） */
-  expandedDrawer: number | "all" | "uncategorized" | null;
+  expandedDrawer: string | "all" | "uncategorized" | null;
   /** 需要聚焦高亮的笔记（AI 打开笔记时触发） */
-  focusNoteId: number | null;
+  focusNoteId: string | null;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
   /**
@@ -88,7 +88,7 @@ export interface SidebarProps {
   /** 侧边栏视图：'groups' 分组视图 / 'favorites' 收藏聚合视图 */
   view: "groups" | "favorites";
   onViewChange: (view: "groups" | "favorites") => void;
-  onToggleDrawer: (key: number | "all" | "uncategorized") => void;
+  onToggleDrawer: (key: string | "all" | "uncategorized") => void;
   /** 折叠侧边栏（折叠后依靠左边缘把手唤出） */
   onToggleCollapse?: () => void;
   isCollapsed?: boolean;
@@ -104,8 +104,8 @@ export interface SidebarProps {
   onCreateCategory: () => void;
   onEditCategory: (category: Category) => void;
   onDeleteCategory: (category: Category) => void;
-  onCreateNote: (categoryId: number | null) => void;
-  onMoveToCategory: (note: Note, categoryId: number | null) => void;
+  onCreateNote: (categoryId: string | null) => void;
+  onMoveToCategory: (note: Note, categoryId: string | null) => void;
   onOpenTrash: () => void;
   /** 右键菜单「笔记属性」：打开只读属性弹窗 */
   onShowNoteProperties: (note: Note) => void;
@@ -115,7 +115,7 @@ export interface SidebarProps {
   onShowGroupProperties: (name: string, noteCount: number) => void;
   onNotesUpdated: () => void;
   /** 系统文件拖拽经过时命中的分组 id（由主进程拖拽事件驱动的高亮） */
-  hoverDropCategoryId?: number | null;
+  hoverDropCategoryId?: string | null;
   /** 是否有系统文件正拖拽在窗口上方 */
   isFileDragActive?: boolean;
   /**

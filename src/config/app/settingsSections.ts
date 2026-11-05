@@ -22,5 +22,6 @@ export const SETTINGS_SECTIONS: readonly SectionMeta[] = [
   { key: "access", label: "AI 访问权限", icon: "ai-shield-check", group: "AI" },
   { key: "reset", label: "恢复默认", icon: "app-restore", group: "数据" },
   { key: "backup", label: "备份与恢复", icon: "app-backup", group: "数据" },
+  { key: "plugins", label: "插件管理", icon: "toolbox", group: "其他" },
   { key: "about", label: "关于", icon: "toast-info", group: "其他" },
 ];

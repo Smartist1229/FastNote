@@ -18,7 +18,7 @@ export interface AiAccessRules {
   /** 总开关；false 时所有笔记工具都不可用，对话退化为普通聊天 */
   enabled: boolean;
   /** 分组档位上限：组内笔记的生效档位不会超过它 */
-  categoryLevels: Map<number, AiAccessLevel>;
+  categoryLevels: Map<string, AiAccessLevel>;
 }
 
 /** 档位的中文名：界面与提示词统一引用，避免各处文案不一致 */
