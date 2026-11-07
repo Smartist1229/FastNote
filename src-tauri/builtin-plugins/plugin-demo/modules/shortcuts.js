@@ -6,9 +6,10 @@
  * 顺手把这个键写进插件私有表（`prefs` 的 `shortcut` 行），所以「数据库里能看到当前快捷键」
  * ——窗口里也是从这张表读出来展示的。
  *
- * 三条约定（宿主实现）：
+ * 四条约定（宿主实现）：
  *   - 组合键写成 "Ctrl+Alt+P" 这种形式，修饰键顺序随便，大小写不敏感；
- *   - 和宿主已有的快捷键（Ctrl+P / Ctrl+Shift+P / Ctrl+F / Ctrl+S …）或别的插件撞了会直接抛错，
+ *   - `scope: "app"` 只在软件窗口有焦点时响应，`"global"` 注册为系统热键（最小化 / 托盘里也能按到）；
+ *   - 和宿主**当前生效**的快捷键（用户可在设置里改）、别的插件、系统里已占用的热键撞了会直接抛错，
  *     插件自己决定是降级提示还是让加载失败——这里选择提示后继续；
  *   - 插件停用 / 卸载时宿主自动注销，不需要手动 remove。
  */
@@ -40,6 +41,9 @@ export const registerShortcuts = async (ctx, config = {}) => {
     ctx.ui.toast(t("shortcut.dbFailed", { error: e && e.message ? e.message : e }), "error");
   }
 
+  // 作用域：默认系统全局，用户可在设置里改成「仅窗口内」
+  const scope = config.shortcutScope === "app" ? "app" : "global";
+
   try {
     // 按下快捷键 → 打开速记窗口（工具本体在 window.html，数据在插件的 drafts 表里）
     ctx.shortcut.register(combo, () => {
@@ -47,7 +51,7 @@ export const registerShortcuts = async (ctx, config = {}) => {
         .bump(ctx, "opens")
         .catch((e) => console.warn("写入打开次数失败：", e))
         .finally(() => openScratchpad(ctx, config, combo));
-    });
+    }, { scope });
   } catch (e) {
     ctx.ui.toast(t("shortcut.conflict", { combo, error: e && e.message ? e.message : e }), "error");
   }

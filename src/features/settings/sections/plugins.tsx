@@ -606,6 +606,15 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
                 </p>
               </div>
 
+              {diag.shortcutFailures.length > 0 && (
+                <div>
+                  <p className="text-[11px] text-muted pb-1">{t("注册失败的全局快捷键")}</p>
+                  <p className="text-[11px] text-danger font-mono break-all">
+                    {diag.shortcutFailures.join(" · ")}
+                  </p>
+                </div>
+              )}
+
               <div>
                 <p className="text-[11px] text-muted pb-1">{t("已授予的权限")}</p>
                 <p className="text-[11px] text-faint font-mono break-all">

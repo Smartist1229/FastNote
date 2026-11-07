@@ -18,6 +18,7 @@ import { FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_EDITOR_SETTINGS } from "@/config/
 import { openExternalLink } from "@/lib/app/externalLink";
 import { saveNoteAsFile } from "@/lib/note/noteFileExport";
 import { useToast } from "@/components/common/Toast";
+import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
@@ -52,6 +53,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onDelete,
   onCursorOffsetChange,
   editorSettings,
+  shortcutBindings,
   onToggleAiPanel,
   isAiPanelOpen = false,
   isTemporary = false,
@@ -157,8 +159,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
    * 设置整对象进依赖：任一改动都会重建配置并即时生效（编辑器内部按 config 深合并）。
    */
   const editorConfig = useMemo(
-    () => buildNoteEditorConfig(settings, themeTokens, resolvedThemeMode, editorFontSize, locale),
-    [settings, themeTokens, resolvedThemeMode, editorFontSize, locale],
+    () =>
+      buildNoteEditorConfig(
+        settings,
+        themeTokens,
+        resolvedThemeMode,
+        editorFontSize,
+        locale,
+        shortcutBindings,
+      ),
+    [settings, themeTokens, resolvedThemeMode, editorFontSize, locale, shortcutBindings],
   );
   /** 用 ref 承载临时标记，避免它进入 saveNow 的依赖链 */
   const isTemporaryRef = useRef(false);
@@ -414,20 +424,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [note?.title, note?.content, note?.id, onCursorOffsetChange]);
 
-  /** 全局快捷键：焦点在编辑器内部时也要生效，所以监听 window 而非容器 */
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      // 外部文件模式：Ctrl+S 立即把内容写回电脑上的原文件
-      if (isExternalRef.current) void saveNowRef.current();
-      else handleExport();
-    }
-  };
-  useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleExport]);
+  /**
+   * 保存：走宿主的 `app.save` 动作（默认 mod+s，可在设置里改）。
+   * 不再自己挂 window keydown —— 那样改键位对它无效，也会和插件抢同一个键。
+   * 外部文件模式立即写回磁盘，普通笔记走导出/保存链路。
+   */
+  useShortcutAction("app.save", () => {
+    if (isExternalRef.current) void saveNowRef.current();
+    else void handleExport();
+  });
 
   /**
    * 立即落盘，两条分支：

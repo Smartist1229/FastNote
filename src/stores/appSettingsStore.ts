@@ -5,6 +5,7 @@ import { EDITOR_SPEC_BY_FIELD } from "@/config/editor/editorSettingSpecs";
 import type { EditorSettingSpec } from "@/config/editor/editorSettingSpecs";
 import { SEMANTIC_MODEL_IDS } from "@/config/ai/semanticModels";
 import { normalizeHex, normalizeHexList } from "@/lib/theme/theme";
+import { splitCombos } from "@/lib/shortcuts/combo";
 
 /**
  * 软件设置的持久化层（模块内无 React 状态）。
@@ -37,7 +38,7 @@ const PREFIX = "app.config.";
 const configKey = (category: string, field: string) => `${PREFIX}${category}.${field}`;
 
 /** 五个分类的遍历顺序：与 AppSettings 的键一致 */
-const CATEGORIES = ["general", "editor", "layout", "view", "webdav"] as const;
+const CATEGORIES = ["general", "shortcuts", "editor", "layout", "view", "webdav"] as const;
 
 /**
  * 非编辑器分类里需要白名单校验的字段。
@@ -74,6 +75,18 @@ const normalizeSemanticModelId = (value: unknown): string | undefined => {
   return SEMANTIC_MODEL_IDS.includes(value as (typeof SEMANTIC_MODEL_IDS)[number])
     ? value
     : undefined;
+};
+
+/**
+ * 键位值归一：库里存的是用户手改/旧版本写下的任意写法（`Ctrl+P`、`ctrl + p`），
+ * 统一折成规范形式再比较——否则运行时的反查表按 `mod+p` 索引，手改的值永远匹配不上。
+ * 空串是「用户关掉了这个动作的键位」，要原样保留，不能当成脏数据回退默认。
+ */
+const normalizeShortcutSetting = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  if (!value.trim()) return "";
+  const combos = splitCombos(value);
+  return combos.length ? combos.join(" / ") : undefined;
 };
 
 /**
@@ -174,11 +187,13 @@ export const loadAppSettings = async (): Promise<AppSettings> => {
           ? EDITOR_SPEC_BY_FIELD[field as keyof EditorSettings]
           : undefined;
       const value =
-        key === "general.semanticModel"
-          ? normalizeSemanticModelId(parsed)
-          : parsed === undefined
-            ? undefined
-            : normalizeValue(parsed, spec, ENUM_BY_KEY[key]);
+        category === "shortcuts"
+          ? normalizeShortcutSetting(parsed)
+          : key === "general.semanticModel"
+            ? normalizeSemanticModelId(parsed)
+            : parsed === undefined
+              ? undefined
+              : normalizeValue(parsed, spec, ENUM_BY_KEY[key]);
       // 数值型字段统一夹到区间：手改库写了 100000 也不会把界面和后端拖垮
       const range = RANGE_BY_KEY[key];
       const bounded =

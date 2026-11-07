@@ -20,6 +20,7 @@ import type { ResolvedThemeMode, ThemeTokens } from "@/interface/settings/theme"
 import type { EditorSettings } from "@/interface/settings/settings";
 import { APP_MONO_FONT_STACK, APP_UI_FONT_STACK, DEFAULT_EDITOR_LOCALE, FONT_SIZE_MAX, FONT_SIZE_MIN } from "@/config/app/appDefaults";
 import type { AppLocale } from "@/i18n/locale";
+import { resolveEditorShortcutOverrides, resolveShortcutBindings } from "@/config/shortcuts";
 
 /** 夹取到 [min, max]：设置里的数值型项在写入前已夹过一次，这里只防脏数据 */
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -162,6 +163,8 @@ export const NOTE_EDITOR_CONFIG: DeepPartial<MarkdownEditorConfig> = {
  * @param tokens   当前主题令牌，换算成编辑器配色
  * @param themeMode 解析后的明暗模式
  * @param fontSize 实际字号：设置里的默认字号，或滚轮临时缩放后的值
+ * @param shortcutBindings 键位覆盖（`app.config.shortcuts` 里 `editor.` 开头的那批）。
+ *   总开关 `settings.shortcuts === false` 时整体不生效；否则逐动作覆盖，缺键用包内默认。
  */
 export const buildNoteEditorConfig = (
   settings: EditorSettings,
@@ -169,6 +172,7 @@ export const buildNoteEditorConfig = (
   themeMode: ResolvedThemeMode,
   fontSize?: number,
   locale: AppLocale = DEFAULT_EDITOR_LOCALE,
+  shortcutBindings?: Record<string, string> | null,
 ): DeepPartial<MarkdownEditorConfig> => {
   const bodyFontSize = clamp(fontSize ?? settings.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX);
 
@@ -330,7 +334,12 @@ export const buildNoteEditorConfig = (
       // 圆角取设置项而不是主题令牌：默认 4px，用户可在「编辑器」里自己调（0 = 直角）
       radius: clamp(settings.radius, 0, 24),
     },
-    shortcuts: settings.shortcuts,
+    /*
+     * 键位：总开关关掉就是 false（编辑器包据此禁用全部快捷键）；
+     * 开着时传「动作 id → 键位」的覆盖表，只放 `editor.` 开头的那批，
+     * 编辑器包自己按动作 id 合并进它的默认表。
+     */
+    shortcuts: settings.shortcuts ? resolveEditorShortcutOverrides(resolveShortcutBindings(shortcutBindings)) : false,
   };
 };
 

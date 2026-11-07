@@ -56,6 +56,11 @@ export interface NoteEditorProps {
    * 字号、滚轮缩放、默认视图、工具栏与行号等开关都从这里读，改动即时生效。
    */
   editorSettings?: EditorSettings;
+  /**
+   * 快捷键覆盖表（`app.config.shortcuts` 全量，含 `app.*`；编辑器只取 `editor.*`）。
+   * 换键位要即时生效，所以必须随设置一起传进来，见 buildNoteEditorConfig 的最后一个参数。
+   */
+  shortcutBindings?: Record<string, string>;
   onToggleAiPanel?: () => void;
   isAiPanelOpen?: boolean;
   /** 临时预览模式（AI 回复）：只在界面上展示，绝不写入数据库 */

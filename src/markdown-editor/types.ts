@@ -626,8 +626,14 @@ export interface MarkdownEditorConfig {
   split: MarkdownSplitConfig;
   search: MarkdownSearchConfig;
   theme: MarkdownThemeConfig;
-  /** 快捷键：false 关闭全部；对象可按动作覆盖，值 false 关闭单个 */
-  shortcuts: boolean | Record<string, string | false>;
+  /**
+   * 快捷键总开关 + 按动作覆盖：
+   *   - `false` 关闭全部；
+   *   - `{ bold: "mod+alt+b" }` 改**某个动作**的键位（动作 id 见 EDITOR_SHORTCUT_SPECS）；
+   *   - 值传数组可绑多个等价键，传 `false` 只关掉这个动作的键位（工具栏按钮照旧可用）；
+   *   - 键名可以用老写法（键位本身）——仍然按「键位 → 动作」解释。
+   */
+  shortcuts: boolean | Record<string, string | string[] | false>;
 }
 
 /** 深可选：允许只写要改的字段 */

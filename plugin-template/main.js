@@ -35,15 +35,20 @@ export default {
     await ctx.ui.mount("body", badge);
 
     // 快捷键：切换宿主 body 上的一个 class（样式写在 style.css）
+    // scope: "app" 只在窗口有焦点时响应；改成 "global" 会注册为系统热键（最小化也能按到）
     let active = false;
     try {
-      await ctx.shortcut.register(combo, async () => {
-        active = !active;
-        await ctx.ui.setBodyClass("my-plugin-active", active);
-        ctx.ui.toast(active ? t("ui.on") : t("ui.off"), "info");
-      });
+      await ctx.shortcut.register(
+        combo,
+        async () => {
+          active = !active;
+          await ctx.ui.setBodyClass("my-plugin-active", active);
+          ctx.ui.toast(active ? t("ui.on") : t("ui.off"), "info");
+        },
+        { scope: "app" },
+      );
     } catch (e) {
-      // 撞宿主键位（Ctrl+F 等）或其它插件占用时这里会抛，别静默吞掉
+      // 撞宿主当前键位、其它插件或系统已占用的热键时这里会抛，别静默吞掉
       ctx.ui.toast(t("toast.shortcutFailed", { combo, error: e?.message ?? e }), "error");
     }
 

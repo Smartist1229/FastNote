@@ -28,7 +28,7 @@ const KEY_LABELS: Record<string, string> = {
   arrowright: "→",
   "`": "`",
   ".": ".",
-  "/": "/",
+  slash: "/",
   "-": "-",
   "=": "=",
 };

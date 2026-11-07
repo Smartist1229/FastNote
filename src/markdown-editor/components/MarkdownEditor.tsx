@@ -24,7 +24,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import "../styles.css";
-import { DEFAULT_SHORTCUTS } from "../shortcuts";
+import { resolveEditorShortcutMap } from "../shortcuts";
 import { ALL_MODES, resolveConfig, resolveLabels } from "../defaults";
 import { buildHighlightRules, buildSyntaxRules, buildThemeVars } from "../theme";
 import { parseMarkdown, parseMarkdownIncremental } from "../parser/block";
@@ -198,6 +198,10 @@ const acceleratorOf = (event: KeyLike): string => {
   else if (code === "Backquote") parts.push("`");
   else if (code === "Period") parts.push(".");
   else if (code === "Slash") parts.push("/");
+  // 放大 / 缩小按物理键归一：主键盘的 Equal 与小键盘的 Add 都算 "="，
+  // 否则 Ctrl+= 和 Ctrl+Shift+= 会得到两个不同签名，改了键位也对不上。
+  else if (code === "Equal" || code === "NumpadAdd") parts.push("=");
+  else if (code === "Minus" || code === "NumpadSubtract") parts.push("-");
   else parts.push(event.key.toLowerCase());
   return parts.join("+");
 };
@@ -1069,56 +1073,52 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   );
 
   /* ---------- 快捷键 ---------- */
+  /**
+   * 生效的「键位 → 动作」映射：默认表 + 调用方覆盖。
+   * 覆盖按**动作 id** 写（`{ bold: "mod+alt+b" }`），也兼容老的「键位 → 动作」写法。
+   */
   const shortcutMap = useMemo(() => {
     if (config.shortcuts === false) return {} as Record<string, string>;
-    const map = { ...DEFAULT_SHORTCUTS };
-    if (typeof config.shortcuts === "object") {
-      for (const [key, action] of Object.entries(config.shortcuts)) {
-        const normalized = key.toLowerCase();
-        if (action === false) delete map[normalized];
-        else map[normalized] = action;
-      }
-    }
-    return map;
+    return resolveEditorShortcutMap(
+      typeof config.shortcuts === "object" ? config.shortcuts : null,
+    );
   }, [config.shortcuts]);
 
   const handleShortcut = useCallback(
     (event: ReactKeyboardEvent<HTMLElement>): boolean => {
       if (event.nativeEvent.isComposing) return false;
-      const accelerator = acceleratorOf(event);
-      if (accelerator === "mod+z") {
-        event.preventDefault();
+      const action = shortcutMap[acceleratorOf(event)];
+      if (!action) return false;
+      /*
+       * 查找 / 缩放由根节点的捕获阶段统一处理：那里必须抢在输入框、宿主原生查找条
+       * 与 WebView2 整页缩放之前 preventDefault。这里再处理会执行两次。
+       */
+      if (
+        action === "find" ||
+        action === "replace" ||
+        action === "findNext" ||
+        action === "findPrev" ||
+        action.startsWith("zoom")
+      ) {
+        return false;
+      }
+      event.preventDefault();
+      if (action === "undo") {
         undo();
         return true;
       }
-      if (accelerator === "mod+shift+z" || accelerator === "mod+y") {
-        event.preventDefault();
+      if (action === "redo") {
         redo();
         return true;
       }
-      if (accelerator === "mod+s") {
-        event.preventDefault();
+      if (action === "save") {
         onSave?.(valueRef.current);
         return true;
       }
-      if (accelerator === "mod+alt+enter") {
-        event.preventDefault();
+      if (action === "fullscreen") {
         toggleFullscreen();
         return true;
       }
-      if (accelerator === "f3") {
-        event.preventDefault();
-        goNextRef.current();
-        return true;
-      }
-      if (accelerator === "shift+f3") {
-        event.preventDefault();
-        goPrevRef.current();
-        return true;
-      }
-      const action = shortcutMap[accelerator];
-      if (!action) return false;
-      event.preventDefault();
       if (action.startsWith("heading")) {
         applyHeadingLevel(Number(action.slice("heading".length)) as 0 | 1 | 2 | 3 | 4 | 5 | 6);
         return true;
@@ -1148,63 +1148,58 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
        * 不拦的话界面整体变大，编辑器字号反而没变。
        * 小键盘的 +/-、以及带 Shift 敲出来的 `+`/`_` 都归到同一组。
        */
-      if (config.editor.zoom.enabled && (event.ctrlKey || event.metaKey) && !event.altKey) {
-        const key = event.key;
-        if (key === "=" || key === "+") {
+      const accelerator = acceleratorOf(event);
+      const action = shortcutMap[accelerator];
+      /* 字号：动作 id 由默认表 + 调用方覆盖决定，物理键已在 acceleratorOf 里归一 */
+      if (config.editor.zoom.enabled) {
+        if (action === "zoomIn") {
           event.preventDefault();
           applyZoom(1);
           return;
         }
-        if (key === "-" || key === "_") {
+        if (action === "zoomOut") {
           event.preventDefault();
           applyZoom(-1);
           return;
         }
-        if (key === "0") {
+        if (action === "zoomReset") {
           event.preventDefault();
           applyZoom(0);
           return;
         }
       }
       if (!config.search.enabled) return;
-      const accelerator = acceleratorOf(event);
       if (accelerator === "escape" && searchOpen) {
         event.preventDefault();
         event.stopPropagation();
         closeSearchRef.current();
         return;
       }
-      if (accelerator === "mod+f") {
-        // 只开查找；替换行留给折叠箭头手动展开（Ctrl/⌘+H 才直接带出来）
+      if (action === "find") {
+        // 只开查找；替换行留给折叠箭头手动展开（替换快捷键才直接带出来）
         event.preventDefault();
         openSearchRef.current(undefined, false);
         return;
       }
-      if (accelerator === "mod+h") {
+      if (action === "replace") {
         /*
          * 阅读视图没有可编辑的正文，「替换」在那儿无处可落——这个键只吃掉，不开查找框
-         * （要查找按 Ctrl/⌘+F，那才是阅读视图支持的那一半）。
+         * （要查找用「查找」，那才是阅读视图支持的那一半）。
          */
         event.preventDefault();
         if (modeRef.current !== "read") openSearchRef.current(undefined, true);
         return;
       }
-      if (accelerator === "mod+g" || accelerator === "mod+shift+g") {
+      if (action === "findNext" || action === "findPrev") {
         // 只在查找框已经打开时才是「找下一个 / 上一个」；没开的时候不做任何事，
-        // 它不该代替 Ctrl/⌘+F 把查找框弹出来。
+        // 它不该代替「查找」把查找框弹出来。
         event.preventDefault();
         if (!searchOpen) return;
-        if (accelerator === "mod+shift+g") goPrevRef.current();
-        else goNextRef.current();
-        return;
-      }
-      if (accelerator === "f3" || accelerator === "shift+f3") {
-        event.preventDefault();
-        if (accelerator === "shift+f3") goPrevRef.current();
+        if (action === "findPrev") goPrevRef.current();
         else goNextRef.current();
       }
     },
-    [applyZoom, config.editor.zoom.enabled, config.search.enabled, searchOpen],
+    [applyZoom, config.editor.zoom.enabled, config.search.enabled, searchOpen, shortcutMap],
   );
 
   useEffect(() => {
@@ -1233,21 +1228,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
       if (event.isComposing) return;
       const root = rootRef.current;
       if (!root || !event.target || !root.contains(event.target as Node)) return;
-      const accelerator = acceleratorOf(event);
+      const action = shortcutMap[acceleratorOf(event)];
       if (
-        accelerator === "mod+f" ||
-        accelerator === "mod+g" ||
-        accelerator === "mod+shift+g" ||
-        accelerator === "mod+h" ||
-        accelerator === "f3" ||
-        accelerator === "shift+f3"
+        action === "find" ||
+        action === "replace" ||
+        action === "findNext" ||
+        action === "findPrev"
       ) {
         event.preventDefault();
       }
     };
     window.addEventListener("keydown", guard, true);
     return () => window.removeEventListener("keydown", guard, true);
-  }, [config.search.blockHostFind, config.search.enabled]);
+  }, [config.search.blockHostFind, config.search.enabled, shortcutMap]);
 
   /**
    * Ctrl/⌘ + 滚轮改字号。

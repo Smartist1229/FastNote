@@ -14,8 +14,11 @@ import type { ThemeSettings } from "@/interface/settings/theme";
 import type { NoteEditorActions } from "@/interface/note/editor";
 import type { PaletteCommand, PaletteMode } from "@/components/common/CommandPalette";
 import { SETTINGS_SECTIONS } from "@/config/app/settingsSections";
+import { resolveShortcutBindings, shortcutKeyText } from "@/config/shortcuts";
+import { keyText } from "@/lib/text/keyLabel";
 import * as tagsApi from "@/api/note/tags";
 import { useI18n } from "@/i18n";
+import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { pluginHost } from "@/plugins/host";
 import { pluginContributions } from "@/plugins/contributions";
 
@@ -30,6 +33,8 @@ export interface UsePaletteParams {
   sortBy: string;
   sortOrder: string;
   theme: ThemeSettings;
+  /** 数据库里的键位覆盖值（`app.config.shortcuts`）：命令面板提示按它实时显示 */
+  shortcutBindings: Record<string, string>;
   aiPanelOpen: boolean;
   isSidebarCollapsed: boolean;
   setIsSidebarCollapsed: Dispatch<SetStateAction<boolean>>;
@@ -64,6 +69,7 @@ export function usePalette({
   sortBy,
   sortOrder,
   theme,
+  shortcutBindings,
   aiPanelOpen,
   isSidebarCollapsed,
   setIsSidebarCollapsed,
@@ -88,6 +94,13 @@ export function usePalette({
 }: UsePaletteParams) {
   const { t } = useI18n();
 
+  /**
+   * 当前生效键位（只读派生）。命令里的 `keys` 与页签提示都从这里取，
+   * 不在 UI 里写死 "Ctrl+S" —— 设置里改完立刻一致。
+   */
+  const bindings = resolveShortcutBindings(shortcutBindings);
+  const keyHintOf = (actionId: string) => keyText(shortcutKeyText(bindings, actionId));
+
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("jump");
   const [paletteNonce, setPaletteNonce] = useState(0);
@@ -101,22 +114,14 @@ export function usePalette({
   }, []);
 
   /**
-   * 全局快捷键：Ctrl/⌘+P 跳转、Ctrl/⌘+Shift+P 命令面板。
+   * 快捷键：默认 Ctrl/⌘+P 跳转、Ctrl/⌘+Shift+P 命令面板。
    *
-   * 挂在 window 捕获阶段是为了抢在编辑器之前——但**只 preventDefault、不 stopPropagation**：
-   * 编辑器自己那套 window 守卫还在，掐断事件会让别的键位一起失灵。
-   * 用 `code === "KeyP"` 而不是 `key`：中文输入法/非英文布局下 `key` 未必是 "p"。
+   * 键位不再写死在这里：动作注册到快捷键运行时（`features/shortcuts`），
+   * 用户在设置里改成什么就按什么，冲突检测也走同一份清单。
+   * 分发改在 window 捕获阶段进行，仍然早于编辑器自己的处理。
    */
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-      if (event.code !== "KeyP" || event.isComposing) return;
-      event.preventDefault();
-      openPalette(event.shiftKey ? "command" : "jump");
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [openPalette]);
+  useShortcutAction("app.jump", () => openPalette("jump"));
+  useShortcutAction("app.command", () => openPalette("command"));
 
   /** 标签列表：只在面板打开时拉一次（标签会随 AI 打标签变化，不值得常驻内存） */
   useEffect(() => {
@@ -175,10 +180,10 @@ export function usePalette({
           id: "note.export",
           token: "export_note",
           title: t("导出当前笔记"),
-          hint: t("另存为 Markdown 文件，与 Ctrl+S 等价"),
+          hint: t("另存为 Markdown 文件"),
           group: t("笔记"),
           icon: "editor-export",
-          keys: "mod+s",
+          keys: shortcutKeyText(bindings, "app.save") || undefined,
           keywords: "export 导出 保存 另存为 save file",
           disabled: !editorNote || editorNote.enc_mode !== 0,
           disabledReason:
@@ -328,7 +333,7 @@ export function usePalette({
           hint: t("隐藏侧边栏与 AI 面板，只留正文"),
           group: t("编辑器"),
           icon: "sidebar-edit-square",
-          keys: "mod+alt+enter",
+          keys: shortcutKeyText(bindings, "editor.fullscreen") || undefined,
           keywords: "fullscreen 全屏 沉浸",
           disabled: !editorNote,
           disabledReason: t("先打开一篇笔记"),
@@ -338,10 +343,12 @@ export function usePalette({
           id: "editor.find",
           token: "find_in_note",
           title: t("在笔记中查找"),
-          hint: t("Ctrl+F 也能打开"),
+          hint: keyHintOf("editor.find")
+            ? t("{key} 也能打开", { key: keyHintOf("editor.find") })
+            : undefined,
           group: t("编辑器"),
           icon: "ai-search",
-          keys: "mod+f",
+          keys: shortcutKeyText(bindings, "editor.find") || undefined,
           keywords: "find search 查找 搜索",
           disabled: !editorNote,
           disabledReason: t("先打开一篇笔记"),
@@ -354,7 +361,7 @@ export function usePalette({
           hint: t("阅读视图下不可用"),
           group: t("编辑器"),
           icon: "ai-replace",
-          keys: "mod+h",
+          keys: shortcutKeyText(bindings, "editor.replace") || undefined,
           keywords: "replace 替换 查找",
           disabled: !editorNote,
           disabledReason: t("先打开一篇笔记"),
@@ -484,6 +491,12 @@ export function usePalette({
       ]
     : [];
 
+  /** 页签提示用当前生效键位；空串交给面板回退到默认文案 */
+  const paletteTabHints: Partial<Record<PaletteMode, string>> = {
+    jump: keyHintOf("app.jump"),
+    command: keyHintOf("app.command"),
+  };
+
   return {
     paletteOpen,
     setPaletteOpen,
@@ -491,6 +504,7 @@ export function usePalette({
     paletteNonce,
     paletteTags,
     paletteCommands,
+    paletteTabHints,
     openPalette,
   };
 }

@@ -7,3 +7,4 @@ pub(crate) mod ai;
 pub(crate) mod settings;
 pub(crate) mod backup;
 pub(crate) mod system;
+pub(crate) mod shortcuts;

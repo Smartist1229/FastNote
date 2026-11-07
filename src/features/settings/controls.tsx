@@ -8,7 +8,7 @@ import { getBadge } from "@/config/app/settingBadges";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 import { normalizeHexList } from "@/lib/theme/theme";
-import { reservedShortcutName } from "@/plugins/reservedShortcuts";
+import { shortcutOwnerLabel, shortcutOwners } from "@/features/shortcuts/runtime";
 
 /** 徽标 tone → 配色：小圆角、半透明浅底、同系前景与描边；purple 暂无主题令牌，先用默认色板 */
 const BADGE_TONE_CLASS: Record<SettingBadgeTone, string> = {
@@ -467,11 +467,15 @@ export const ShortcutInput: React.FC<{
       setReservedBy("");
       return;
     }
-    // 宿主自己占用的键位（Ctrl+F 这类）：写进配置也只会在注册时失败，当场拒绝
-    const reserved = reservedShortcutName(combo);
-    if (reserved) {
+    /*
+     * 宿主占用的键位（Ctrl+F 这类）：写进配置也只会在注册时失败，当场拒绝。
+     * 只查宿主这一侧 —— 插件自己的键位这时还没注册，把「与另一个插件冲突」也拦在这里
+     * 会把用户当前正在生效的旧键位误判成冲突；那一层交给插件注册时的报错。
+     */
+    const owner = shortcutOwners(combo).find((id) => !id.startsWith("plugin:"));
+    if (owner) {
       setInvalid(false);
-      setReservedBy(reserved);
+      setReservedBy(shortcutOwnerLabel(owner));
       return;
     }
     setInvalid(false);

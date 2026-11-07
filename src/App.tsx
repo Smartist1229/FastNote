@@ -39,6 +39,8 @@ import { useEncryptionState } from "@/features/encryption/useEncryptionState";
 import { useExternalFiles } from "@/features/externalFiles/useExternalFiles";
 import { useExportState } from "@/features/export/useExportState";
 import { usePalette } from "@/features/palette/usePalette";
+import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
+import { applyShortcutOverrides } from "@/features/shortcuts/runtime";
 
 /** 编辑器依赖 CodeMirror，体积较大：懒加载让首屏先出侧栏与欢迎页，Suspense 负责占位 */
 const NoteEditor = lazy(() =>
@@ -279,6 +281,7 @@ function AppContent() {
     sortBy: notes.sortBy,
     sortOrder: notes.sortOrder,
     theme: settings.theme,
+    shortcutBindings: settings.appSettings.shortcuts,
     aiPanelOpen: ai.aiPanelOpen,
     isSidebarCollapsed,
     setIsSidebarCollapsed,
@@ -300,6 +303,23 @@ function AppContent() {
     exportNoteRef: exportState.exportNoteRef,
     setPropertiesTarget: properties.setPropertiesTarget,
     editorActionsRef,
+  });
+
+  /**
+   * 快捷键：设置一读回（或用户改键）就把整份覆盖表推给运行时。
+   * 运行时负责重算反查表、重注册系统全局热键，并把失败项（被别的软件占用）记下来。
+   */
+  useEffect(() => {
+    applyShortcutOverrides(settings.appSettings.shortcuts);
+  }, [settings.appSettings.shortcuts]);
+
+  /* 宿主动作：键位在 config/shortcuts 里，这里只关心「按下之后干什么」 */
+  useShortcutAction("app.newNote", () => notes.handleCreateNote());
+  useShortcutAction("app.quickNote", () => notes.handleCreateNote());
+  useShortcutAction("app.settings", () => settings.openSettings("general"));
+  useShortcutAction("app.toggleSidebar", () => setIsSidebarCollapsed((collapsed) => !collapsed));
+  useShortcutAction("app.toggleAi", () => {
+    if (settings.appSettings.general.enableAI) ai.toggleAiPanel();
   });
 
   // 生产环境屏蔽原生右键菜单；开发环境保留，方便审查元素
@@ -437,6 +457,7 @@ function AppContent() {
                     onDelete={notes.handleDeleteNote}
                     onCursorOffsetChange={handleCursorOffsetChange}
                     editorSettings={settings.appSettings.editor}
+                    shortcutBindings={settings.appSettings.shortcuts}
                     onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
                     isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
                     onRegisterExport={exportState.registerExportNote}
@@ -706,6 +727,7 @@ function AppContent() {
             categories={categories.categories}
             tags={palette.paletteTags}
             commands={palette.paletteCommands}
+            tabHints={palette.paletteTabHints}
             currentNoteId={selectedNote?.id ?? null}
             onClose={() => palette.setPaletteOpen(false)}
             onOpenNote={selection.openNote}

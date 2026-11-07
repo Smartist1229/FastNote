@@ -7,8 +7,22 @@
 export { MarkdownEditor } from "./components/MarkdownEditor";
 export { MarkdownPreview } from "./render/MarkdownPreview";
 
-/** 默认键位表：软件层的「设置 → 快捷键」直接读它，避免文档与实际键位漂移 */
-export { DEFAULT_SHORTCUTS, FORMAT_ACTIONS, SHORTCUTS_BY_ACTION, resolveFormatActions } from "./shortcuts";
+/**
+ * 默认键位表：软件层的「设置 → 快捷键」直接读它，避免文档与实际键位漂移。
+ * EDITOR_SHORTCUT_SPECS / EDITOR_DEFAULT_BINDINGS 是「动作 → 键位」的可配置版本，
+ * resolveEditorShortcutMap 负责把调用方的覆盖值折算成组件内部映射。
+ */
+export {
+  DEFAULT_SHORTCUTS,
+  EDITOR_DEFAULT_BINDINGS,
+  EDITOR_SHORTCUT_SPECS,
+  FORMAT_ACTIONS,
+  SHORTCUTS_BY_ACTION,
+  normalizeEditorCombo,
+  resolveEditorShortcutMap,
+  resolveFormatActions,
+} from "./shortcuts";
+export type { EditorShortcutSpec } from "./shortcuts";
 
 export { parseMarkdown } from "./parser/block";
 export { parseCodeMeta, parseLineRanges } from "./render/codeMeta";

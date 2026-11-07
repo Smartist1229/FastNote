@@ -35,7 +35,13 @@ import type { PluginModalOptions, PluginModalResult, ToastType } from "@/interfa
 import type { AiSettings } from "@/interface/ai/ai";
 import { getLocale, subscribeLocale, translate } from "@/i18n";
 import { interpolate } from "@/i18n/locale";
-import { RESERVED_SHORTCUTS } from "./reservedShortcuts";
+import {
+  clearPluginShortcuts,
+  globalShortcutFailures,
+  pluginShortcutCombos,
+  registerPluginShortcut,
+  unregisterPluginShortcut,
+} from "@/features/shortcuts/runtime";
 import { startPluginSandbox, type PluginSandbox } from "./sandbox";
 import { compareVersions } from "./version";
 import * as registry from "./registry";
@@ -106,94 +112,10 @@ const disposeSandbox = (dirName: string): void => {
 };
 
 /* ---------------- 插件快捷键 ----------------
- * 插件注册的组合键挂在 window 的捕获阶段：只 preventDefault、不 stopPropagation
- * （与宿主自己的键位处理同一套规矩，掐断事件会打死编辑器的 Ctrl+F/G/H）。
- * 冲突按归一化后的「修饰键 + 主键」判：撞了直接抛错，静默覆盖会让另一个插件的
- * 功能凭空消失；宿主已占用的键位也不放行。
+ * 键位不分两张表：注册、冲突判定、app / global 两种作用域的分发统一在
+ * `features/shortcuts/runtime.ts`。宿主的键位、其它插件的键位、系统注册失败
+ * 都在那里一次判完 —— 这里只做权限校验与 disposer 登记。
  */
-interface ShortcutBinding {
-  /** 注册它的插件实例（停用 / 重激活时按它清理） */
-  dirName: string;
-  handler: () => void;
-}
-
-/** 归一化签名 → 绑定 */
-const shortcutBindings = new Map<string, ShortcutBinding>();
-let shortcutListenerAttached = false;
-
-/** "Ctrl+Shift+K" → { signature: "ctrl+shift+k", label: "Ctrl+Shift+K" } */
-const parseShortcut = (combo: string): { signature: string; label: string } => {
-  const parts = String(combo ?? "")
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  if (parts.length === 0) throw new Error("快捷键不能为空");
-  const main = parts.pop() ?? "";
-  let ctrl = false;
-  let shift = false;
-  let alt = false;
-  let meta = false;
-  for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (lower === "ctrl" || lower === "control") ctrl = true;
-    else if (lower === "shift") shift = true;
-    else if (lower === "alt" || lower === "option") alt = true;
-    else if (["meta", "cmd", "command", "win", "super"].includes(lower)) meta = true;
-    else throw new Error(`无法识别的修饰键：${part}`);
-  }
-  const key = main.toLowerCase();
-  const signature = `${ctrl ? "ctrl+" : ""}${shift ? "shift+" : ""}${alt ? "alt+" : ""}${
-    meta ? "meta+" : ""
-  }${key}`;
-  const label = `${ctrl ? "Ctrl+" : ""}${shift ? "Shift+" : ""}${alt ? "Alt+" : ""}${
-    meta ? (navigator.userAgent.includes("Mac") ? "Cmd+" : "Win+") : ""
-  }${key.length === 1 ? key.toUpperCase() : main}`;
-  return { signature, label };
-};
-
-/** 从 keydown 事件算签名：字母/数字同时认 key 与 code（中文输入法下 key 可能是 Process） */
-const signatureFromEvent = (event: KeyboardEvent): string => {
-  const raw = event.key;
-  let key = raw === " " ? "space" : raw.toLowerCase();
-  if (key.length === 1) {
-    // 小键盘 / 输入法切走时 key 不可靠，用 code 兜底
-    if (event.code.startsWith("Key") && event.code.length === 4) key = event.code.slice(3).toLowerCase();
-    else if (event.code.startsWith("Digit") && event.code.length === 6) key = event.code.slice(5);
-  }
-  return `${event.ctrlKey ? "ctrl+" : ""}${event.shiftKey ? "shift+" : ""}${event.altKey ? "alt+" : ""}${
-    event.metaKey ? "meta+" : ""
-  }${key}`;
-};
-
-const onShortcutKeydown = (event: KeyboardEvent): void => {
-  /*
-   * 不按 event.defaultPrevented 提前退出：main.tsx 的 BLOCKED_NATIVE_SHORTCUTS 会把
-   * Ctrl+P / Ctrl+F 这类组合统一 preventDefault（挡 WebView2 原生查找条），
-   * 插件注册的 Ctrl+Alt+P 也在它的判定里 —— 一旦这里尊重 defaultPrevented，
-   * 插件快捷键就永远收不到。插件键位已经在 register 时和宿主保留键做过冲突检查，
-   * 这里按精确组合匹配即可，不需要再看别人有没有 preventDefault。
-   */
-  const binding = shortcutBindings.get(signatureFromEvent(event));
-  if (!binding) return;
-  event.preventDefault();
-  try {
-    binding.handler();
-  } catch (e) {
-    console.error("插件快捷键回调失败：", e);
-  }
-};
-
-const attachShortcutListener = (): void => {
-  if (shortcutListenerAttached) return;
-  shortcutListenerAttached = true;
-  window.addEventListener("keydown", onShortcutKeydown, true);
-};
-
-const detachShortcutListenerIfIdle = (): void => {
-  if (!shortcutListenerAttached || shortcutBindings.size > 0) return;
-  shortcutListenerAttached = false;
-  window.removeEventListener("keydown", onShortcutKeydown, true);
-};
 
 /* ---------------- 插件间消息总线 ----------------
  * 只在插件之间转发：topic 不做命名空间强制，但回调会带上发送方 dirName，
@@ -260,14 +182,6 @@ const compatibilityProblem = async (manifest: PluginManifest): Promise<string | 
     }
   }
   return null;
-};
-
-/** 注销某个插件的全部快捷键（停用 / 卸载时兜底，正常路径靠 disposer 逐个摘） */
-const clearPluginShortcuts = (dirName: string): void => {
-  for (const [signature, binding] of [...shortcutBindings]) {
-    if (binding.dirName === dirName) shortcutBindings.delete(signature);
-  }
-  detachShortcutListenerIfIdle();
 };
 
 /* ---------------- store 契约（useSyncExternalStore 直接引用，不依赖 this） ---------------- */
@@ -771,33 +685,26 @@ export const createPluginContext = (
     },
   },
   /**
-   * 全局快捷键：注册即生效，插件停用 / 卸载 / 重激活时自动注销。
-   * 与宿主键位或其它插件撞键会抛错（不静默覆盖）。
+   * 快捷键：注册即生效，插件停用 / 卸载 / 重激活时自动注销。
+   *
+   * `options.scope`：
+   * - `"app"`（默认）窗口有焦点才生效；
+   * - `"global"` 系统级热键，最小化 / 托盘里也能按到。
+   *
+   * 与宿主键位、其它插件、以及系统里已注册的热键冲突时**抛错**（不静默覆盖）：
+   * 覆盖会让另一个功能凭空失效，而插件作者看不到任何反馈。
    */
   shortcut: {
-    register: (combo, handler) => {
+    register: (combo, handler, options) => {
       guardShortcut();
-      const { signature, label } = parseShortcut(combo);
-      const reservedBy = RESERVED_SHORTCUTS[signature];
-      if (reservedBy) throw new Error(`快捷键 ${label} 已用于「${reservedBy}」`);
-      const existing = shortcutBindings.get(signature);
-      if (existing && existing.dirName !== dirName) {
-        throw new Error(`快捷键 ${label} 已被插件「${existing.dirName}」注册`);
-      }
-      shortcutBindings.set(signature, { dirName, handler });
-      attachShortcutListener();
+      const scope = options?.scope === "global" ? "global" : "app";
+      const dispose = registerPluginShortcut(dirName, combo, scope, handler);
       // 注册即登记注销：重激活时 runDisposers 会先把它摘掉，不会越积越多
-      addDisposer(() => {
-        const current = shortcutBindings.get(signature);
-        if (current && current.dirName === dirName) shortcutBindings.delete(signature);
-        detachShortcutListenerIfIdle();
-      });
+      addDisposer(dispose);
+      return dispose;
     },
     unregister: (combo) => {
-      const { signature } = parseShortcut(combo);
-      const current = shortcutBindings.get(signature);
-      if (current && current.dirName === dirName) shortcutBindings.delete(signature);
-      detachShortcutListenerIfIdle();
+      unregisterPluginShortcut(dirName, combo);
     },
   },
   hooks: {
@@ -1300,9 +1207,11 @@ export const pluginDiagnostics = (dirName: string) => {
     error: entry?.error ?? "",
     permissions: entry?.permissions ?? [],
     runtime: installedManifests.get(dirName)?.runtime ?? "inpage",
-    shortcuts: [...shortcutBindings.entries()]
-      .filter(([, binding]) => binding.dirName === dirName)
-      .map(([signature]) => signature),
+    shortcuts: pluginShortcutCombos(dirName),
+    // 系统级热键注册失败（被别的软件占用）：插件自己拿不到这个信息，诊断面板必须显示
+    shortcutFailures: globalShortcutFailures()
+      .filter((failure) => failure.id.startsWith(`plugin:${dirName}:`))
+      .map((failure) => `${failure.combo}：${failure.reason}`),
     contributions: registry.describePlugin(dirName),
   };
 };

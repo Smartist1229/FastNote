@@ -7,6 +7,8 @@ import type {
   WebdavSettings,
 } from "@/interface/settings/settings";
 import { DEFAULT_SEMANTIC_MODEL_ID } from "@/config/ai/semanticModels";
+// 键位默认值的真源在快捷键注册表（默认值随动作表增删自动跟着变）
+import { DEFAULT_SHORTCUT_SETTINGS } from "@/config/shortcuts";
 
 /**
  * 软件设置的「默认配置文件」：所有分类的默认值与字号区间。
@@ -376,6 +378,8 @@ export const DEFAULT_WEBDAV_SETTINGS: WebdavSettings = {
 /** 四个分类的完整默认值：App 初始化 state 与各 store 缺键回退都以它为准 */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   general: DEFAULT_GENERAL_SETTINGS,
+  /** 键位默认值来自快捷键注册表，不在这里重复写一遍 */
+  shortcuts: DEFAULT_SHORTCUT_SETTINGS,
   editor: DEFAULT_EDITOR_SETTINGS,
   layout: DEFAULT_LAYOUT_SETTINGS,
   view: DEFAULT_VIEW_SETTINGS,

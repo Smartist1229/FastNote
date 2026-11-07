@@ -208,12 +208,23 @@ export interface PluginContext {
   };
   /**
    * 快捷键：注册即生效，插件停用 / 卸载 / 重激活时自动注销。
-   * 与宿主键位（Ctrl+P / Ctrl+F …）或其它插件撞键会抛错，不静默覆盖。
-   * 监听的是软件窗口的 keydown（窗口有焦点时才触发），不是系统级全局热键。
-   * 需要声明 shortcut.register 权限。
+   *
+   * 与宿主键位（可在「设置 → 快捷键」里改，所以按**当前生效值**比）、其它插件、
+   * 以及系统里已被占用的热键冲突时抛错，不静默覆盖。
+   *
+   * `options.scope`：
+   * - `"app"`（默认）只在软件窗口有焦点时触发；
+   * - `"global"` 注册为系统级热键，窗口最小化 / 藏在托盘里同样生效
+   *   （被别的软件占用时注册失败，插件诊断里能看到原因）。
+   *
+   * 沙箱运行时里这些调用是异步的（`await`）；需要声明 shortcut.register 权限。
    */
   shortcut: {
-    register(combo: string, handler: () => void): void;
+    register(
+      combo: string,
+      handler: () => void,
+      options?: { scope?: "app" | "global" },
+    ): void | (() => void);
     unregister(combo: string): void;
   };
   notes: {

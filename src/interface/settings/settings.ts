@@ -444,9 +444,19 @@ export interface WebdavSettings {
   autoMaxLocal: number;
 }
 
+/**
+ * 快捷键：`动作 id → 键位`（如 `app.jump → "mod+p"`）。
+ *
+ * 值用 ` / ` 分隔多个等价键，空字符串表示用户关掉了这个动作的键位。
+ * 动作清单与默认键位在 `config/shortcuts/index.ts`，这里只表达「可以被覆盖」。
+ */
+export type ShortcutSettings = Record<string, string>;
+
 /** 软件设置总集合；分类名即 app.config.<分类> 中的一段 */
 export interface AppSettings {
   general: GeneralSettings;
+  /** 键位覆盖：缺键表示用默认值（新增动作不需要迁移） */
+  shortcuts: ShortcutSettings;
   editor: EditorSettings;
   layout: LayoutSettings;
   view: ViewSettings;

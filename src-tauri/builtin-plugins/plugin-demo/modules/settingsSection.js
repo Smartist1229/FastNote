@@ -31,7 +31,7 @@ export const registerSettingsSection = (ctx, config) => {
   const t = (key, vars) => ctx.i18n.t(key, vars);
 
   try {
-    // ── 分区一：主分区（字段按功能分类，覆盖 23 个 config 键） ──
+    // ── 分区一：主分区（字段按功能分类，覆盖全部 config 键；新增 config 项记得同步这里和语言包） ──
     ctx.settings.section({
       id: "main",
       title: t("settings.sectionTitle"),
@@ -105,6 +105,14 @@ export const registerSettingsSection = (ctx, config) => {
             makeField(t, "shortcutEnabled", "boolean", { default: true }),
             // kind = shortcut：宿主渲染成「点一下按键」的捕获框，不再让人手写 "Ctrl+Alt+P"
             makeField(t, "shortcutCombo", "shortcut", { default: "Ctrl+Alt+P" }),
+            // 作用域：窗口内 / 系统全局（全局会注册成系统热键，最小化也能按到）
+            makeField(t, "shortcutScope", "select", {
+              default: "global",
+              options: [
+                { value: "app", label: t("settings.options.shortcutScopeApp") },
+                { value: "global", label: t("settings.options.shortcutScopeGlobal") },
+              ],
+            }),
             makeField(t, "windowEnabled", "boolean", { default: true }),
             makeField(t, "windowWidth", "number", {
               default: 560,

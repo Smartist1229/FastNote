@@ -340,12 +340,21 @@ export const startPluginSandbox = async (options: SandboxOptions): Promise<Plugi
       }
       if (op === "shortcut.register") {
         const combo = String(args[0] ?? "");
-        ctx.shortcut.register(combo, () => {
-          frame.contentWindow?.postMessage(
-            { __fastnoteEvent: `shortcut:${combo}`, payload: null },
-            origin,
-          );
-        });
+        /*
+         * 作用域由插件声明：`app` 只在窗口有焦点时触发，`global` 交系统注册。
+         * 宿主侧按「当前生效的宿主键位 + 其它插件」判冲突，冲突直接抛错回给插件。
+         */
+        const options = (args[1] ?? {}) as { scope?: "app" | "global" };
+        ctx.shortcut.register(
+          combo,
+          () => {
+            frame.contentWindow?.postMessage(
+              { __fastnoteEvent: `shortcut:${combo}`, payload: null },
+              origin,
+            );
+          },
+          { scope: options.scope === "global" ? "global" : "app" },
+        );
         reply(id, { result: null });
         return;
       }

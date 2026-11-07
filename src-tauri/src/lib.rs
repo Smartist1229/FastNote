@@ -35,6 +35,7 @@ pub(crate) use commands::ai::*;
 pub(crate) use commands::settings::*;
 pub(crate) use commands::backup::*;
 pub(crate) use commands::system::*;
+pub(crate) use commands::shortcuts::*;
 pub(crate) use plugins::*;
 
 struct AppState {
@@ -325,6 +326,8 @@ pub fn run() {
         // 自动更新：检查 / 下载 / 安装由 updater 负责，安装后重启由 process 负责
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // 全局热键：注册表由前端整体下发（见 commands/shortcuts.rs），按下后回传动作 id
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // 插件模块自定义协议：插件 entry 以真实 URL 动态 import，
         // 浏览器原生解析模块内的相对路径 import（插件可拆多文件）
         .register_uri_scheme_protocol(plugins::PLUGIN_SCHEME, |_ctx, request| {
@@ -488,6 +491,7 @@ pub fn run() {
             plugin_create_note,
             plugin_update_note,
             plugin_delete_note,
+            sync_global_shortcuts,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件

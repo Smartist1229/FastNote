@@ -227,7 +227,18 @@ export interface FastNoteContext {
     close(label: string): Promise<void>;
   };
   shortcut: {
-    register(combo: string, handler: () => void): void | Promise<void>;
+    /**
+     * 注册一条快捷键，返回注销函数（停用 / 卸载时宿主也会自动注销）。
+     *
+     * 冲突（宿主当前生效的键位、其它插件、系统里已被占用的热键）会抛错，不静默覆盖。
+     * `scope`：`"app"` 只在软件窗口有焦点时触发；`"global"` 注册为系统热键
+     * （最小化 / 托盘里同样生效）。沙箱运行时里返回 Promise，需要 `await`。
+     */
+    register(
+      combo: string,
+      handler: () => void,
+      options?: { scope?: "app" | "global" },
+    ): void | (() => void) | Promise<void>;
     unregister(combo: string): void | Promise<void>;
   };
   ui: {

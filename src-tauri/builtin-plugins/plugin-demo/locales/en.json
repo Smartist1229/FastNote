@@ -247,6 +247,8 @@
       "shortcutEnabled": "Global shortcut",
       "shortcutEnabledDesc": "Registers a global shortcut that opens the plugin window tool.",
       "shortcutCombo": "Shortcut",
+      "shortcutScope": "Scope",
+      "shortcutScopeDesc": "Window: only while FastNote is focused. Global: works minimized or in the tray (registered as a system hotkey; fails if another app owns it).",
       "shortcutComboDesc": "Click the box and press the combination you want (no typing, needs at least one of Ctrl / Alt / Shift). It applies immediately and the old key is released.",
       "windowEnabled": "Plugin window",
       "windowEnabledDesc": "Allow opening the plugin's own window; turning this off disables the shortcut and menu entry.",
@@ -261,6 +263,8 @@
       "themeNone": "No change",
       "themeAccent": "Accent outline",
       "themeFocus": "Focus mode",
+      "shortcutScopeApp": "Window only",
+      "shortcutScopeGlobal": "System-wide",
       "demoSimple": "Simple",
       "demoAdvanced": "Advanced"
     }

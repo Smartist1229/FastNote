@@ -91,6 +91,8 @@ export interface CommandPaletteProps {
   categories: Category[];
   tags: Tag[];
   commands: PaletteCommand[];
+  /** 页签快捷键提示（来自当前键位配置）；缺省时用内置默认文案 */
+  tabHints?: Partial<Record<PaletteMode, string>>;
   currentNoteId?: string | null;
   onClose: () => void;
   onOpenNote: (note: Note) => void;
@@ -164,6 +166,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   categories,
   tags,
   commands: sourceCommands,
+  tabHints,
   currentNoteId,
   onClose,
   onOpenNote,
@@ -561,8 +564,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-app/60 border border-line-soft">
               {(
                 [
-                  { key: "jump" as const, label: t("跳转"), hint: "Ctrl+P" },
-                  { key: "command" as const, label: t("命令"), hint: "Ctrl+Shift+P" },
+                  { key: "jump" as const, label: t("跳转"), hint: tabHints?.jump || "Ctrl+P" },
+                  { key: "command" as const, label: t("命令"), hint: tabHints?.command || "Ctrl+Shift+P" },
                 ]
               ).map((tab) => (
                 <button
