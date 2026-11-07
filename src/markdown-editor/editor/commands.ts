@@ -890,8 +890,9 @@ export const continueMarkdownOnEnter = (
 
   const quote = /^(\s*>[ \t]?)(.*)$/.exec(line);
   if (quote && quote[2].trim() === "") {
-    const nextText = text.slice(0, from) + quote[1].trimEnd() + text.slice(to);
-    return { text: nextText, caret: from + Math.max(0, quote[1].length - 1) };
+    // `>` 后面没有内容：回车时直接把这个引用标记去掉，留一个普通空行，不参与配对
+    const indent = /^\s*/.exec(quote[1])?.[0] ?? "";
+    return { text: text.slice(0, from) + indent + text.slice(to), caret: from + indent.length };
   }
   if (quote) {
     const insertion = `\n${quote[1]}`;
