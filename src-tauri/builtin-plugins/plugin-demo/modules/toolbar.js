@@ -22,13 +22,13 @@ export const registerToolbar = (ctx, config) => {
     id: "plugin-demo.insert-time",
     title: t("toolbar.insertTime"),
     icon: "sidebar-clock",
-    onClick: (editor, c) => {
+    onClick: async (editor, c) => {
       const tr = c.i18n.t;
-      if (typeof editor.insertText !== "function") {
+      if (typeof c.editor.insertText !== "function") {
         c.ui.toast(tr("toolbar.insertUnsupported"), "error");
         return;
       }
-      if (!editor.insertText("\n" + new Date().toLocaleString() + "\n")) {
+      if (!(await c.editor.insertText("\n" + new Date().toLocaleString() + "\n"))) {
         c.ui.toast(tr("toolbar.editorNotReady"), "error");
         return;
       }
@@ -41,7 +41,7 @@ export const registerToolbar = (ctx, config) => {
     id: "plugin-demo.word-count",
     title: t("toolbar.count"),
     icon: "ai-file-text",
-    onClick: (editor, c) => {
+    onClick: async (editor, c) => {
       const { chars, words } = countText(editor.content);
       c.ui.toast(c.i18n.t("toolbar.statsToast", { chars, words }), "info");
     },
@@ -68,7 +68,7 @@ export const registerToolbar = (ctx, config) => {
     id: "plugin-demo.export",
     title: t("toolbar.exportDemo"),
     icon: "editor-export",
-    onClick: (editor, c) => {
+    onClick: async (editor, c) => {
       const { chars, words } = countText(editor.content);
       c.ui.toast(c.i18n.t("toolbar.exportToast", { chars, words }), "info");
     },
@@ -79,7 +79,7 @@ export const registerToolbar = (ctx, config) => {
     id: "plugin-demo.insert-quote",
     title: t("toolbar.insertQuote"),
     label: t("toolbar.insertQuoteLabel"),
-    onClick: (editor, c) => {
+    onClick: async (editor, c) => {
       const tr = c.i18n.t;
       if (!editor.insertText?.(tr("toolbar.quoteText"))) {
         c.ui.toast(tr("toolbar.editorNotReady"), "error");
@@ -94,7 +94,7 @@ export const registerToolbar = (ctx, config) => {
     id: "plugin-demo.label-only",
     title: t("toolbar.labelOnly"),
     label: t("toolbar.labelOnlyLabel"),
-    onClick: (_editor, c) => {
+    onClick: async (_editor, c) => {
       c.ui.toast(c.i18n.t("toolbar.labelOnlyToast"), "info");
     },
   });

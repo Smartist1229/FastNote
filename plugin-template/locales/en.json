@@ -1,0 +1,13 @@
+{
+  "menu": { "stats": "Show open count" },
+  "dialog": {
+    "line": "\"{title}\" opened {total}×",
+    "untitled": "Untitled note",
+    "close": "Close"
+  },
+  "toast": {
+    "ready": "{greeting}Plugin loaded ({count} runs)",
+    "shortcutFailed": "Could not register {combo}: {error}"
+  },
+  "ui": { "on": "On", "off": "Off" }
+}

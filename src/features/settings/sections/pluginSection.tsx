@@ -1,4 +1,6 @@
 /* 插件设置分区：按贡献的 fields schema 渲染控件（复用设置控件，与设置弹窗其余分区同一套映射）。
+ * 控件种类：boolean → 开关、number → 数字框、select → 下拉、string → 文本框、
+ * shortcut → 组合键捕获框（点一下按键即写入 "Ctrl+Alt+P"）。
  *
  * 这里是插件配置的唯一入口：manifest.config 非空且插件没有主动贡献分区时，宿主会自动生成一个分区。
  * 值存到该插件自己的 config.json：打开时走 plugin_read_config 读盘（不读宿主激活缓存），
@@ -16,7 +18,8 @@ import { useI18n } from "@/i18n";
 import type { PluginConfigField } from "@/interface/system/plugins";
 import { pluginHost } from "@/plugins/host";
 import type { PluginSettingsSectionEntry } from "@/plugins/contributions";
-import { NumberInput, SelectInput, Switch } from "../controls";
+import type { PluginSectionField } from "@/plugins/registry";
+import { NumberInput, SelectInput, ShortcutInput, Switch } from "../controls";
 
 /** 分组标题样式：与设置弹窗里数据行的分组小标题保持同一套（见 sectionRows.tsx） */
 const GROUP_TITLE_CLASS = "pt-3 pb-1 text-[11px] font-semibold text-muted";
@@ -93,6 +96,14 @@ export const PluginSectionView: React.FC<{ entry: PluginSettingsSectionEntry }> 
             onChange={(next) => update(field.key, next)}
           />
         );
+      case "shortcut":
+        // 组合键：点一下捕获，按什么就是什么（不用手写 "Ctrl+Alt+P"）
+        return (
+          <ShortcutInput
+            value={typeof value === "string" ? value : ""}
+            onChange={(next) => update(field.key, next)}
+          />
+        );
       case "string":
       default:
         return (
@@ -115,12 +126,37 @@ export const PluginSectionView: React.FC<{ entry: PluginSettingsSectionEntry }> 
    * 空组跳过，但保留原始分组对象以便继续展示标题 / 说明——字段为空时整组不出现。
    */
   const seen = new Set<string>();
-  const takeFields = (fields: PluginConfigField[] | undefined): PluginConfigField[] => {
+
+  /**
+   * 字段归一化：分区里**只写 key 就够**——kind / default / options / min / max / step 从
+   * manifest.config 继承（唯一事实源）。以前两处各写一份，kind 不一致时后端按 schema
+   * 过滤会把写入静默丢掉，表现为「改了没反应」。
+   * key 不在 manifest 里且自己没写 kind 的（拼错 / 已删除）直接跳过，别渲染一个写不进去的控件。
+   */
+  const normalizeField = (field: PluginSectionField): PluginConfigField | null => {
+    const schema = entry.config.find((item) => item.key === field.key);
+    if (!schema && !field.kind) return null;
+    return {
+      key: field.key,
+      kind: field.kind ?? schema?.kind ?? "string",
+      label: field.label ?? schema?.label ?? field.key,
+      description: field.description ?? schema?.description,
+      default: field.default ?? schema?.default,
+      options: field.options ?? schema?.options,
+      min: field.min ?? schema?.min,
+      max: field.max ?? schema?.max,
+      step: field.step ?? schema?.step,
+    };
+  };
+
+  const takeFields = (fields: PluginSectionField[] | undefined): PluginConfigField[] => {
     const out: PluginConfigField[] = [];
     for (const field of fields ?? []) {
       if (seen.has(field.key)) continue;
+      const normalized = normalizeField(field);
+      if (!normalized) continue;
       seen.add(field.key);
-      out.push(field);
+      out.push(normalized);
     }
     return out;
   };

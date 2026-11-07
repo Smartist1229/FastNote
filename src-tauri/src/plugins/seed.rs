@@ -16,6 +16,7 @@ const SEED_PLUGIN_DEMO_MANIFEST: &str =
 const SEED_PLUGIN_DEMO_MAIN: &str = include_str!("../../builtin-plugins/plugin-demo/main.js");
 const SEED_PLUGIN_DEMO_STYLE: &str = include_str!("../../builtin-plugins/plugin-demo/style.css");
 const SEED_PLUGIN_DEMO_ICON: &str = include_str!("../../builtin-plugins/plugin-demo/icon.svg");
+const SEED_PLUGIN_DEMO_WINDOW: &str = include_str!("../../builtin-plugins/plugin-demo/window.html");
 /// 演示插件的模块与语言包文件（多文件 ESM + 插件 i18n 演示）：(插件内相对路径, 文件内容)
 const SEED_PLUGIN_DEMO_MODULES: &[(&str, &str)] = &[
     (
@@ -58,6 +59,27 @@ const SEED_PLUGIN_DEMO_MODULES: &[(&str, &str)] = &[
         "modules/utils.js",
         include_str!("../../builtin-plugins/plugin-demo/modules/utils.js"),
     ),
+    // 新扩展点的演示：自绘弹窗 / 插件私有表 / 快捷键 / 新窗口
+    (
+        "modules/sourceView.js",
+        include_str!("../../builtin-plugins/plugin-demo/modules/sourceView.js"),
+    ),
+    (
+        "modules/prefs.js",
+        include_str!("../../builtin-plugins/plugin-demo/modules/prefs.js"),
+    ),
+    (
+        "modules/storage.js",
+        include_str!("../../builtin-plugins/plugin-demo/modules/storage.js"),
+    ),
+    (
+        "modules/shortcuts.js",
+        include_str!("../../builtin-plugins/plugin-demo/modules/shortcuts.js"),
+    ),
+    (
+        "modules/windows.js",
+        include_str!("../../builtin-plugins/plugin-demo/modules/windows.js"),
+    ),
     // 语言包：写盘时由循环统一 create_dir_all 创建 locales/ 子目录，
     // 保证种子注入路径与安装校验同样能读到真实文件（否则只会回退空对象、英文失效）
     (
@@ -77,11 +99,11 @@ const SEED_PLUGIN_DEMO_MODULES: &[(&str, &str)] = &[
  *
  * 标记文件 `plugin-seeded-v2` 写在数据目录：用户卸载内置插件后标记仍在，
  * 下次启动不会重新种回——内置插件和普通插件一样，卸载就是真的卸载。
+ * 想装回来走设置页的「安装演示插件」（[`install_demo_plugin`]）。
  * 写入失败时不写标记，下次启动重试；启动流程由 lib.rs 调用，失败只打日志。
  *
  * 开发测试：设置环境变量 `FASTNOTE_FORCE_PLUGIN_SEED=1`（或 `true` / `yes`）
- * 可跳过标记检查，每次启动都把内置插件重写到 plugin/ 目录（目录已存在则覆盖），
- * 但仍会写标记文件，保证非强制模式下不再重种。
+ * 可跳过标记检查，每次启动都把内置插件重写到 plugin/ 目录（目录已存在则覆盖）。
  *
  * 迁移：旧版本种下的「字数统计」只在内置原件精确匹配时删除（避免误删用户自己的
  * 同 id 插件），旧标记 `plugin-seeded-v1` 一并清理。
@@ -128,22 +150,7 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
     let _ = std::fs::remove_file(data_dir.join(LEGACY_SEED_MARKER));
 
     if force || !target.is_dir() || needs_upgrade {
-        let write = || -> std::io::Result<()> {
-            std::fs::create_dir_all(&target)?;
-            std::fs::write(target.join(MANIFEST_NAME), SEED_PLUGIN_DEMO_MANIFEST)?;
-            std::fs::write(target.join("main.js"), SEED_PLUGIN_DEMO_MAIN)?;
-            std::fs::write(target.join("style.css"), SEED_PLUGIN_DEMO_STYLE)?;
-            std::fs::write(target.join("icon.svg"), SEED_PLUGIN_DEMO_ICON)?;
-            for (rel, content) in SEED_PLUGIN_DEMO_MODULES {
-                let path = target.join(rel);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(path, content)?;
-            }
-            Ok(())
-        };
-        if let Err(e) = write() {
+        if let Err(e) = write_demo_plugin(&target) {
             eprintln!("写入内置插件失败：{e}");
             if !force {
                 return; // 非强制模式：不写标记，下次启动重试
@@ -154,6 +161,42 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
     if let Err(e) = std::fs::write(&marker, b"seeded") {
         eprintln!("写入内置插件标记失败：{e}");
     }
+}
+
+/// 手工安装内置演示插件（设置页「刷新」/「安装演示插件」按钮）：
+/// 无条件覆盖写一份最新的，config.json 保留；同时补上标记，语义与「已经释放过一次」一致。
+///
+/// 与启动种子分开：启动种子是「第一次开软件才给」，用户删了就不该再冒出来；
+/// 这里是用户明确要求的安装动作，所以永远执行。
+pub fn install_demo_plugin(app: &AppHandle) -> Result<(), String> {
+    let root = plugins_root()?;
+    std::fs::create_dir_all(&root).map_err(|e| format!("创建插件目录失败：{e}"))?;
+    let target = root.join("plugin-demo");
+    write_demo_plugin(&target).map_err(|e| format!("写入演示插件失败：{e}"))?;
+
+    let data_dir = crate::resolve_data_dir(app.path().app_data_dir().ok());
+    let _ = std::fs::create_dir_all(&data_dir);
+    std::fs::write(data_dir.join(SEED_MARKER), b"seeded")
+        .map_err(|e| format!("写入演示插件标记失败：{e}"))?;
+    Ok(())
+}
+
+/// 把内置演示插件的全部文件写到目标目录（覆盖已有文件，config.json 不在清单里所以不动）
+fn write_demo_plugin(target: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(target)?;
+    std::fs::write(target.join(MANIFEST_NAME), SEED_PLUGIN_DEMO_MANIFEST)?;
+    std::fs::write(target.join("main.js"), SEED_PLUGIN_DEMO_MAIN)?;
+    std::fs::write(target.join("style.css"), SEED_PLUGIN_DEMO_STYLE)?;
+    std::fs::write(target.join("icon.svg"), SEED_PLUGIN_DEMO_ICON)?;
+    std::fs::write(target.join("window.html"), SEED_PLUGIN_DEMO_WINDOW)?;
+    for (rel, content) in SEED_PLUGIN_DEMO_MODULES {
+        let path = target.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+    }
+    Ok(())
 }
 
 /// 内置演示插件在编译产物里的版本号（从 plugin.json 解析）

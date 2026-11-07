@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<!--
+  插件窗口外壳（宿主提供）。
+
+  为什么不是一个窗口直接加载插件的 html：
+  1) 插件页面不在应用源（fastnote-plugin://），拿不到 __TAURI_INTERNALS__，
+     既打不开/关不掉窗口，也读不了自己的数据表；
+  2) 空白窗口十有八九是 WebView2 的 user data folder 跟 additionalBrowserArgs 打架。
+  所以这里由宿主出一个「应用源」的外壳：标题栏 + 关闭按钮 + iframe，
+  插件页面放进 iframe，需要宿主能力时通过 postMessage 找外壳代理（见 plugin-window.js）。
+
+  参数（query）：
+    dir   —— 插件目录名（实例键），外壳只代理这个插件的能力
+    file  —— 插件目录内的页面路径
+    title —— 窗口标题
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plugin window</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --pg-bg: #f6f7f9;
+        --pg-surface: #ffffff;
+        --pg-border: #e6e9ef;
+        --pg-text: #0f172a;
+        --pg-faint: #6b7688;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --pg-bg: #14171c;
+          --pg-surface: #1b1f26;
+          --pg-border: #2a303a;
+          --pg-text: #eef2f7;
+          --pg-faint: #9aa5b6;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--pg-bg);
+        color: var(--pg-text);
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        overflow: hidden;
+      }
+      header {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 38px;
+        padding: 0 6px 0 14px;
+        background: var(--pg-surface);
+        border-bottom: 1px solid var(--pg-border);
+        user-select: none;
+      }
+      #title {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #close {
+        flex: 0 0 auto;
+        width: 28px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--pg-faint);
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      #close:hover { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+      iframe {
+        flex: 1 1 auto;
+        width: 100%;
+        border: 0;
+        background: var(--pg-bg);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span id="title">插件窗口</span>
+      <button id="close" type="button" aria-label="关闭">✕</button>
+    </header>
+    <iframe id="content" src="about:blank" title="plugin content"></iframe>
+    <script src="plugin-window.js"></script>
+  </body>
+</html>

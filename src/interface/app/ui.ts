@@ -39,8 +39,17 @@ export interface PluginMarkdownHandle {
 
 export interface PluginModalOptions {
   title?: string;
-  /** 纯文本消息（简单确认框），或接收 PluginModalApi 的自定义渲染回调 */
-  content?: string | ((api: PluginModalApi) => React.ReactNode);
+  /**
+   * 一段 HTML（沙箱插件只能用这种）：宿主消毒后插入内容区。
+   * 沙箱里拿不到宿主 DOM，content 函数 / render 句柄都传不过去，所以单开这个字段。
+   */
+  html?: string;
+  /**
+   * 纯文本消息（简单确认框），或接收 PluginModalApi 的自定义渲染回调。
+   * 回调可以返回 React 节点，也可以返回原生 DOM 节点（插件自己 createElement 拼的弹窗）——
+   * 宿主会把 DOM 节点挂进内容区容器（React 不认把原生节点当 child）。
+   */
+  content?: string | ((api: PluginModalApi) => React.ReactNode | Node);
   /**
    * 用编辑器纯渲染模式显示 Markdown：
    * 传 ctx.editor.render(md) 的句柄，或直接传 Markdown 字符串。

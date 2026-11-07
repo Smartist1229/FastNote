@@ -12,6 +12,16 @@ pub const ALLOWED_PERMISSIONS: &[&str] = &[
     "ai.provider",
     "ai.settings",
     "settings.section",
+    // 插件私有表（只能碰 plugin_<目录名>__ 前缀的表）
+    "db.read_write",
+    // 用插件目录里的文件开独立窗口
+    "window.open",
+    // 注册全局快捷键
+    "shortcut.register",
+    // 插件数据目录内的文件读写（<数据目录>/plugin-data/<目录名>/）
+    "fs.read_write",
+    // 通过宿主代理联网（还要在 plugin.json 的 netDomains 里声明主机白名单）
+    "net.fetch",
 ];
 
 /// 权限白名单校验：每个权限标识符都必须在 ALLOWED_PERMISSIONS 里。

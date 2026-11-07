@@ -54,3 +54,411 @@
     box-shadow: 0 0 14px 4px var(--color-accent);
   }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   自绘弹窗（modules/sourceView.js）：对齐「笔记历史版本对比」的观感
+   —— 等宽 12px、左侧行号槽、上下留白克制、边框只描一圈。
+   颜色全部走宿主暴露的 --color-* 变量，主题一换这里跟着变。
+   ───────────────────────────────────────────────────────────── */
+.plugin-demo-source {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.plugin-demo-source-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.plugin-demo-source-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.plugin-demo-source-tag {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-light);
+  color: var(--color-text-muted);
+}
+
+.plugin-demo-source-meta {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-demo-source-body {
+  max-height: min(58vh, 560px);
+  overflow: auto;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md, 10px);
+  padding: 6px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 20px;
+  scrollbar-width: thin;
+  background: var(--color-surface);
+}
+
+.plugin-demo-source-row {
+  display: flex;
+  align-items: flex-start;
+}
+
+.plugin-demo-source-no {
+  flex: 0 0 40px;
+  width: 40px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--color-text-muted);
+  opacity: 0.65;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-demo-source-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text-body);
+}
+
+.plugin-demo-source-more {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   插件窗口里的工具页（window.html → 速记）：这个页面跑在插件源里，
+   拿不到宿主主题变量，所以带一套自带的深浅色（跟随系统）。
+   ───────────────────────────────────────────────────────────── */
+body.plugin-demo-tool {
+  margin: 0;
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+  background: #f6f7f9;
+  color: #334155;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.plugin-demo-tool-card {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px 14px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #e6e9ef;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
+}
+
+.plugin-demo-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-demo-tool-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #4f7cff;
+  box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.15);
+}
+
+.plugin-demo-tool-head h1 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.plugin-demo-tool-kbd {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 7px;
+  background: #f1f4f9;
+  border: 1px solid #dfe4ee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: #475569;
+}
+
+.plugin-demo-tool-lead {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: #6b7688;
+}
+
+.plugin-demo-tool-pad {
+  width: 100%;
+  min-height: 148px;
+  max-height: 46vh;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #dfe4ee;
+  background: #fbfcfe;
+  color: #1f2937;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  resize: vertical;
+  outline: none;
+}
+
+.plugin-demo-tool-pad:focus {
+  border-color: #4f7cff;
+  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.14);
+  background: #ffffff;
+}
+
+.plugin-demo-tool-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: #7b8698;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-demo-tool-opens {
+  margin-left: auto;
+}
+
+.plugin-demo-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-demo-tool-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6b7688;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-demo-tool-status[data-tone="ok"] {
+  color: #2f7a56;
+}
+
+.plugin-demo-tool-status[data-tone="warn"] {
+  color: #a4700f;
+}
+
+.plugin-demo-tool-status[data-tone="error"] {
+  color: #c0392b;
+}
+
+.plugin-demo-tool-btn {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-radius: 9px;
+  border: 1px solid #dfe4ee;
+  background: #f7f9fc;
+  color: #33415a;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.plugin-demo-tool-btn:hover {
+  background: #eef2f9;
+}
+
+.plugin-demo-tool-btn.is-primary {
+  border-color: #3f6bd8;
+  background: #3f6bd8;
+  color: #ffffff;
+}
+
+.plugin-demo-tool-btn.is-primary:hover {
+  background: #3560c9;
+}
+
+.plugin-demo-tool-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  padding-top: 8px;
+  border-top: 1px solid #eef1f6;
+}
+
+.plugin-demo-tool-recent-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #7b8698;
+}
+
+.plugin-demo-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 26vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.plugin-demo-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plugin-demo-tool-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-demo-tool-item-main:hover {
+  border-color: #dfe4ee;
+  background: #f7f9fc;
+}
+
+.plugin-demo-tool-item-text {
+  font-size: 12px;
+  color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-demo-tool-item-meta {
+  font-size: 10.5px;
+  color: #8a94a6;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-demo-tool-item-remove {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #99a2b3;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.plugin-demo-tool-item-remove:hover {
+  border-color: rgba(192, 57, 43, 0.35);
+  background: rgba(192, 57, 43, 0.08);
+  color: #c0392b;
+}
+
+.plugin-demo-tool-empty {
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: #99a2b3;
+}
+
+@media (prefers-color-scheme: dark) {
+  body.plugin-demo-tool {
+    background: #14171c;
+    color: #c3ccda;
+  }
+  .plugin-demo-tool-card {
+    background: #1b1f26;
+    border-color: #2a303a;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  }
+  .plugin-demo-tool-head h1 {
+    color: #eef2f7;
+  }
+  .plugin-demo-tool-kbd {
+    background: #232932;
+    border-color: #333b47;
+    color: #c9d3e0;
+  }
+  .plugin-demo-tool-lead,
+  .plugin-demo-tool-meta,
+  .plugin-demo-tool-recent-title {
+    color: #8b96a8;
+  }
+  .plugin-demo-tool-pad {
+    background: #161a20;
+    border-color: #333b47;
+    color: #e6ecf5;
+  }
+  .plugin-demo-tool-pad:focus {
+    background: #12161b;
+  }
+  .plugin-demo-tool-status {
+    color: #8b96a8;
+  }
+  .plugin-demo-tool-status[data-tone="ok"] {
+    color: #6ec39a;
+  }
+  .plugin-demo-tool-status[data-tone="warn"] {
+    color: #d8ac5a;
+  }
+  .plugin-demo-tool-status[data-tone="error"] {
+    color: #e8817a;
+  }
+  .plugin-demo-tool-btn {
+    background: #232932;
+    border-color: #333b47;
+    color: #d3dbe6;
+  }
+  .plugin-demo-tool-btn:hover {
+    background: #2b323c;
+  }
+  .plugin-demo-tool-btn.is-primary {
+    background: #3f6bd8;
+    border-color: #3f6bd8;
+    color: #ffffff;
+  }
+  .plugin-demo-tool-recent {
+    border-top-color: #262c35;
+  }
+  .plugin-demo-tool-item-main:hover {
+    border-color: #333b47;
+    background: #232932;
+  }
+  .plugin-demo-tool-item-text {
+    color: #e6ecf5;
+  }
+  .plugin-demo-tool-item-meta,
+  .plugin-demo-tool-empty {
+    color: #7d8797;
+  }
+  .plugin-demo-tool-item-remove {
+    color: #7d8797;
+  }
+}

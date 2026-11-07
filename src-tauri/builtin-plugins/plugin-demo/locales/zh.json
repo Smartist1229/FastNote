@@ -27,7 +27,9 @@
     "close": "关闭",
     "readFailed": "读取失败：{error}",
     "unsupportedRemove": "当前宿主不支持 notes.remove",
-    "unsupportedRead": "当前宿主不支持 notes.getContent"
+    "unsupportedRead": "当前宿主不支持 notes.getContent",
+    "dbDemo": "插件表 · 记录一次访问",
+    "toolWindow": "插件工具 · 速记"
   },
   "command": {
     "info": "插件演示 · 显示插件信息",
@@ -171,7 +173,11 @@
       "theme": "界面主题",
       "effect": "呼吸光点特效",
       "hideStats": "隐藏字数统计",
-      "notes": "写笔记 API（source_plugin 沙箱）"
+      "notes": "写笔记 API（source_plugin 沙箱）",
+      "sourceModal": "自绘弹窗",
+      "db": "私有数据表",
+      "shortcut": "全局快捷键",
+      "window": "插件窗口（速记工具）"
     }
   },
   "settings": {
@@ -187,7 +193,11 @@
       "ai": "AI 能力",
       "aiDesc": "AI tool、系统提示词、服务商模板与 AI 设置读写的演示开关。",
       "style": "样式与特效",
-      "styleDesc": "界面主题、呼吸光点特效、隐藏字数统计与问候语。"
+      "styleDesc": "界面主题、呼吸光点特效、隐藏字数统计与问候语。",
+      "sourceDb": "自绘弹窗与私有表",
+      "sourceDbDesc": "读取正文弹窗、插件数据表以及表名。",
+      "shortcutWindow": "快捷键与窗口",
+      "shortcutWindowDesc": "全局快捷键、插件窗口开关与尺寸。"
     },
     "fields": {
       "menuEnabled": "笔记右键菜单项",
@@ -225,7 +235,27 @@
       "demoMode": "设置分区 · 演示模式",
       "demoModeDesc": "供设置分区演示 select 控件。",
       "demoCount": "设置分区 · 演示次数",
-      "demoCountDesc": "供设置分区演示 number 控件（失焦收敛到 1–10）。"
+      "demoCountDesc": "供设置分区演示 number 控件（失焦收敛到 1–10）。",
+      "sourceModalEnabled": "自绘弹窗（读取正文）",
+      "sourceModalEnabledDesc": "笔记右键「读取笔记正文」：弹窗由插件自己拼 DOM，外观对齐历史版本对比。",
+      "dbDemoEnabled": "插件私有表演示",
+      "dbDemoEnabledDesc": "笔记右键「插件表」：往自己的表里记一次访问并读回来。",
+      "dbVisitsTable": "访问统计表名",
+      "dbVisitsTableDesc": "只写裸名（小写字母/数字/下划线），宿主会加 plugin_plugin_demo__ 前缀。",
+      "dbPrefsTable": "配置表名",
+      "dbPrefsTableDesc": "存插件键值配置（当前快捷键、打开次数）的表名。",
+      "shortcutEnabled": "全局快捷键",
+      "shortcutEnabledDesc": "注册全局快捷键，按下打开插件窗口里的工具。",
+      "shortcutCombo": "快捷键",
+      "shortcutComboDesc": "点一下这个框，然后按下想要的组合键即可（不用手写，至少带一个 Ctrl / Alt / Shift）。改完立刻生效，旧键自动注销。",
+      "windowEnabled": "插件窗口",
+      "windowEnabledDesc": "允许打开插件自己的窗口；关闭后快捷键与菜单项都不再开窗。",
+      "windowWidth": "窗口宽度",
+      "windowWidthDesc": "插件窗口的初始宽度（逻辑像素）。",
+      "windowHeight": "窗口高度",
+      "windowHeightDesc": "插件窗口的初始高度（逻辑像素）。",
+      "dbDraftsTable": "草稿表名",
+      "dbDraftsTableDesc": "速记窗口存草稿的表名，只写裸名。"
     },
     "options": {
       "themeNone": "不修改",
@@ -234,5 +264,59 @@
       "demoSimple": "简单",
       "demoAdvanced": "高级"
     }
+  },
+  "source": {
+    "heading": "笔记原文",
+    "readOnly": "只读",
+    "stats": "{lines} 行 · {chars} 字",
+    "truncated": "内容过长，仅显示前 3000 行（共 {total} 行）",
+    "close": "关闭",
+    "empty": "这篇笔记还没有正文"
+  },
+  "db": {
+    "title": "插件私有表 · {table}",
+    "heading": "插件私有表",
+    "tables": "本插件的表：{tables}",
+    "noTables": "（还没有）",
+    "empty": "还没有记录，先点一次「记录一次访问」",
+    "recent": "最近 {count} 条（新的在前）：",
+    "row": "#{id}「{title}」 访问 {visits} 次 · {time}",
+    "untitled": "未命名笔记",
+    "failed": "插件表操作失败：{error}"
+  },
+  "window": {
+    "title": "插件演示 · 速记",
+    "failed": "打开插件窗口失败：{error}",
+    "disabled": "插件窗口已在设置里关闭"
+  },
+  "shortcut": {
+    "conflict": "快捷键 {combo} 注册失败：{error}",
+    "dbFailed": "读写插件表失败（快捷键仍用默认值）：{error}"
+  },
+  "scratch": {
+    "heading": "速记",
+    "lead": "按 {combo} 随时叫出这个窗口。写点什么，存进插件自己的数据表，下次还翻得出来。",
+    "hotkeyHint": "按下 {combo} 就能打开这个窗口（在设置 → 插件里可以改）",
+    "placeholder": "在这里写…（草稿只存在插件自己的表里，不碰你的笔记）",
+    "lines": "行",
+    "chars": "字符",
+    "words": "词",
+    "opensLabel": "已打开 {count} 次",
+    "save": "保存草稿",
+    "saved": "已存入插件表（第 {id} 条）",
+    "clear": "清空",
+    "cleared": "输入框已清空",
+    "close": "关闭窗口",
+    "recent": "最近草稿",
+    "empty": "还没有草稿，写完点「保存草稿」",
+    "untitled": "（空白草稿）",
+    "load": "载入",
+    "remove": "删除",
+    "loaded": "已载入草稿 #{id}",
+    "removed": "已删除草稿 #{id}",
+    "noContent": "先写点内容再保存",
+    "saveFailed": "操作失败：{error}",
+    "loadFailed": "读取草稿失败：{error}",
+    "unsupported": "宿主没有响应，数据库能力不可用：{error}"
   }
 }

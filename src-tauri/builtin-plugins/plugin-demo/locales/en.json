@@ -27,7 +27,9 @@
     "close": "Close",
     "readFailed": "Read failed: {error}",
     "unsupportedRemove": "This host does not support notes.remove",
-    "unsupportedRead": "This host does not support notes.getContent"
+    "unsupportedRead": "This host does not support notes.getContent",
+    "dbDemo": "Plugin table · record a visit",
+    "toolWindow": "Plugin tool · Scratchpad"
   },
   "command": {
     "info": "Plugin Demo · Show plugin info",
@@ -171,7 +173,11 @@
       "theme": "interface theme",
       "effect": "breathing dot effect",
       "hideStats": "hidden word count",
-      "notes": "notes API (source_plugin sandbox)"
+      "notes": "notes API (source_plugin sandbox)",
+      "sourceModal": "self-drawn dialog",
+      "db": "plugin-owned tables",
+      "shortcut": "global shortcut",
+      "window": "plugin window (scratchpad)"
     }
   },
   "settings": {
@@ -187,7 +193,11 @@
       "ai": "AI capabilities",
       "aiDesc": "Toggles for the AI tool, system prompt, provider template and AI settings demos.",
       "style": "Style & effects",
-      "styleDesc": "Interface theme, breathing dot effect, hidden word count and greeting text."
+      "styleDesc": "Interface theme, breathing dot effect, hidden word count and greeting text.",
+      "sourceDb": "Dialog & tables",
+      "sourceDbDesc": "The read-note dialog, plugin tables and their names.",
+      "shortcutWindow": "Shortcut & window",
+      "shortcutWindowDesc": "Global shortcut, plugin window toggle and size."
     },
     "fields": {
       "menuEnabled": "Note context menu items",
@@ -225,7 +235,27 @@
       "demoMode": "Section demo · mode",
       "demoModeDesc": "Select control for the settings section.",
       "demoCount": "Section demo · count",
-      "demoCountDesc": "Number control for the settings section (clamped to 1–10 on blur)."
+      "demoCountDesc": "Number control for the settings section (clamped to 1–10 on blur).",
+      "sourceModalEnabled": "Self-drawn dialog (read note)",
+      "sourceModalEnabledDesc": "The \"Read note\" menu item renders a dialog the plugin builds itself, matching the version-comparison look.",
+      "dbDemoEnabled": "Plugin-owned table demo",
+      "dbDemoEnabledDesc": "The \"Plugin table\" menu item records a visit in the plugin's own table and reads it back.",
+      "dbVisitsTable": "Visits table name",
+      "dbVisitsTableDesc": "Bare name only (lowercase letters, digits, underscore); the host prefixes plugin_plugin_demo__.",
+      "dbPrefsTable": "Prefs table name",
+      "dbPrefsTableDesc": "Table that stores the plugin's key/value data (current shortcut, open count).",
+      "shortcutEnabled": "Global shortcut",
+      "shortcutEnabledDesc": "Registers a global shortcut that opens the plugin window tool.",
+      "shortcutCombo": "Shortcut",
+      "shortcutComboDesc": "Click the box and press the combination you want (no typing, needs at least one of Ctrl / Alt / Shift). It applies immediately and the old key is released.",
+      "windowEnabled": "Plugin window",
+      "windowEnabledDesc": "Allow opening the plugin's own window; turning this off disables the shortcut and menu entry.",
+      "windowWidth": "Window width",
+      "windowWidthDesc": "Initial width of the plugin window (logical pixels).",
+      "windowHeight": "Window height",
+      "windowHeightDesc": "Initial height of the plugin window (logical pixels).",
+      "dbDraftsTable": "Drafts table name",
+      "dbDraftsTableDesc": "Table the scratchpad stores drafts in (bare name only)."
     },
     "options": {
       "themeNone": "No change",
@@ -234,5 +264,59 @@
       "demoSimple": "Simple",
       "demoAdvanced": "Advanced"
     }
+  },
+  "source": {
+    "heading": "Note source",
+    "readOnly": "Read-only",
+    "stats": "{lines} lines · {chars} chars",
+    "truncated": "Too long — showing the first 3000 lines (of {total})",
+    "close": "Close",
+    "empty": "This note has no content yet"
+  },
+  "db": {
+    "title": "Plugin-owned table · {table}",
+    "heading": "Plugin-owned table",
+    "tables": "Tables owned by this plugin: {tables}",
+    "noTables": "(none yet)",
+    "empty": "No rows yet — click \"record a visit\" once",
+    "recent": "Latest {count} rows (newest first):",
+    "row": "#{id} \"{title}\" visited {visits}× · {time}",
+    "untitled": "Untitled note",
+    "failed": "Plugin table operation failed: {error}"
+  },
+  "window": {
+    "title": "Plugin Demo · Scratchpad",
+    "failed": "Could not open the plugin window: {error}",
+    "disabled": "Plugin windows are disabled in settings"
+  },
+  "shortcut": {
+    "conflict": "Could not register {combo}: {error}",
+    "dbFailed": "Plugin table I/O failed (the shortcut falls back to the default): {error}"
+  },
+  "scratch": {
+    "heading": "Scratchpad",
+    "lead": "Press {combo} to summon this window. Write something down — it is stored in the plugin's own table.",
+    "hotkeyHint": "{combo} opens this window (change it in Settings → Plugins)",
+    "placeholder": "Type here… (drafts live in the plugin's own table, your notes are untouched)",
+    "lines": "lines",
+    "chars": "chars",
+    "words": "words",
+    "opensLabel": "opened {count}×",
+    "save": "Save draft",
+    "saved": "Saved to the plugin table (row {id})",
+    "clear": "Clear",
+    "cleared": "Input cleared",
+    "close": "Close window",
+    "recent": "Recent drafts",
+    "empty": "No drafts yet — write something and hit Save draft",
+    "untitled": "(empty draft)",
+    "load": "Load",
+    "remove": "Delete",
+    "loaded": "Loaded draft #{id}",
+    "removed": "Deleted draft #{id}",
+    "noContent": "Write something before saving",
+    "saveFailed": "Operation failed: {error}",
+    "loadFailed": "Could not read drafts: {error}",
+    "unsupported": "The host did not answer — database access is unavailable: {error}"
   }
 }

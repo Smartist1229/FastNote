@@ -650,6 +650,13 @@ fn create_browser_window(
         WebviewUrl::External(start_url),
     )
     .data_directory(data_dir.join(BROWSER_PROFILE_DIR))
+    /*
+     * 打开网页侧控制台：F12 / Ctrl+Shift+I 与右键菜单里的「检查」都由内核自己提供，
+     * 页面脚本 preventDefault 也拦不住（快捷键在内核进程里处理）。
+     * release 包默认是关的（wry 只在 debug 下默认开），这里显式开一次，
+     * 免得以后有人改 Cargo.toml 的 devtools feature 时又静默丢掉。
+     */
+    .devtools(true)
     // 每个窗口都注入：不依赖指纹是否传入，否则 target="_blank" 链接会打不开
     .initialization_script(LINK_SCRIPT)
     /*

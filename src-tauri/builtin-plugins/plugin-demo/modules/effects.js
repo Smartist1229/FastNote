@@ -1,39 +1,32 @@
 /**
  * 界面效果模块：主题 class、隐藏字数统计、呼吸光点。
- * 样式本体在 ../style.css，这里只负责按配置加/清 body class 与装饰 DOM；
- * 自造的 DOM / class 全部登记 ctx.onDispose，停用时由宿主 LIFO 清理。
+ * 样式本体在 ../style.css；class 通过 ctx.ui.setBodyClass 交给**宿主**去加——
+ * 沙箱插件自己的 document 是 iframe 的，直接改 document.body 不会影响软件界面。
+ * 宿主会在插件停用时自动把这些 class 去掉，这里不用自己登记清理。
  */
 
-/** body.classList 上本插件可能加的所有 class，onDispose 时统一清理 */
 const THEME_ACCENT = "plugin-demo-theme-accent";
 const THEME_FOCUS = "plugin-demo-theme-focus";
-const THEME_CLASSES = [THEME_ACCENT, THEME_FOCUS];
 const HIDE_STATS_CLASS = "plugin-demo-hide-stats";
 const EFFECT_CLASS = "plugin-demo-effect";
 
-/** 主题：none 时只清掉旧 class，其余按名字加类；停用时移除 */
+/** 主题：none 时两个类都关掉，其余按名字打开 */
 const applyTheme = (theme, ctx) => {
-  const body = document.body;
-  THEME_CLASSES.forEach((name) => body.classList.remove(name));
-  if (theme === "accent") body.classList.add(THEME_ACCENT);
-  else if (theme === "focus") body.classList.add(THEME_FOCUS);
-  ctx.onDispose(() => THEME_CLASSES.forEach((name) => body.classList.remove(name)));
+  void ctx.ui.setBodyClass(THEME_ACCENT, theme === "accent");
+  void ctx.ui.setBodyClass(THEME_FOCUS, theme === "focus");
 };
 
 /** 隐藏内置的字数/行数统计区 */
 const applyHideStats = (hidden, ctx) => {
-  const body = document.body;
-  body.classList.toggle(HIDE_STATS_CLASS, hidden);
-  ctx.onDispose(() => body.classList.remove(HIDE_STATS_CLASS));
+  void ctx.ui.setBodyClass(HIDE_STATS_CLASS, hidden === true);
 };
 
-/** 呼吸光点：右上角一个纯装饰元素 */
+/** 呼吸光点：右上角一个纯装饰元素（走 ctx.ui.mount，宿主代插、停用自动摘掉） */
 const attachEffect = (ctx) => {
   const dot = document.createElement("div");
   dot.className = EFFECT_CLASS;
   dot.setAttribute("aria-hidden", "true");
-  document.body.appendChild(dot);
-  ctx.onDispose(() => dot.remove());
+  ctx.ui.mount("body", dot);
 };
 
 /** 按配置应用全部界面效果（main.js 编排入口） */

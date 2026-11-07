@@ -22,6 +22,10 @@
  *  ⑩ 设置分区（settings.section，覆盖全部 18 个配置项）   → modules/settingsSection.js
  *  ⑪ 插件 i18n（locales/zh.json + locales/en.json）        → 所有模块的 ctx.i18n.t
  *  ⑫ 清理契约（ctx.onDispose，见 effects.js）
+ *  ⑬ 自绘弹窗（插件自己拼 DOM，外观对齐历史版本对比）      → modules/sourceView.js
+ *  ⑭ 插件私有表（ctx.db，只能碰 plugin_<目录名>__ 前缀）    → modules/storage.js / prefs.js
+ *  ⑮ 插件窗口（ctx.window.open：宿主外壳 + 插件页面 iframe）  → modules/windows.js + window.html
+ *  ⑯ 全局快捷键（ctx.shortcut.register，按下打开速记窗口）    → modules/shortcuts.js + modules/prefs.js
  *
  * ═══════════════════════════════════════════════════════════════════
  * 权限映射（plugin.json 的 permissions 声明）
@@ -52,9 +56,11 @@ import { registerHooks } from "./modules/hooks.js";
 import { registerNotes } from "./modules/notes.js";
 import { registerAi } from "./modules/ai.js";
 import { registerSettingsSection } from "./modules/settingsSection.js";
+import { registerShortcuts } from "./modules/shortcuts.js";
 
 export default {
-  activate(ctx) {
+  // activate 允许 async：宿主会 await 它，读表注册快捷键这类异步动作不会漏
+  async activate(ctx) {
     const config = (ctx.config && ctx.config.values) || {};
 
     // ① 界面效果（主题 / 隐藏统计 / 呼吸光点）
@@ -75,5 +81,7 @@ export default {
     registerAi(ctx, config);
     // ⑨ 设置分区（覆盖全部配置项）
     registerSettingsSection(ctx, config);
+    // ⑩ 全局快捷键：按下打开速记窗口；键位来自配置项，生效值记在插件私有表里
+    await registerShortcuts(ctx, config);
   },
 };

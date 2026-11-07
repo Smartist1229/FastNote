@@ -69,6 +69,13 @@ export interface PluginAiProvider {
  * 设置分区内的字段分类：把 fields 收进一个带小标题的组。
  * 与分区顶层 fields 可同时存在，渲染时先按 groups 顺序、再渲染顶层 fields。
  */
+/**
+ * 分区里的一个字段：**只写 key 就够**——kind / default / options / min / max / step
+ * 由宿主动从 manifest.config 里继承（唯一事实源），插件只在这里覆盖 label / description。
+ * 这样就不会出现「分区声明的 kind 与 manifest 不一致 → 后端按 schema 过滤后写入被静默丢弃」。
+ */
+export type PluginSectionField = { key: string } & Partial<Omit<PluginConfigField, "key">>;
+
 export interface PluginSettingsGroup {
   /** 分区内唯一 */
   id: string;
@@ -76,8 +83,8 @@ export interface PluginSettingsGroup {
   title: string;
   /** 可选说明，渲染在组标题下方 */
   description?: string;
-  /** 组内配置项 schema，与 plugin.json 的 config 字段同构 */
-  fields: PluginConfigField[];
+  /** 组内字段（可只写 key，其余继承 manifest.config） */
+  fields: PluginSectionField[];
 }
 
 /**
@@ -96,7 +103,7 @@ export interface PluginSettingsSection {
   /** 可选：把字段分成若干类，按顺序渲染 */
   groups?: PluginSettingsGroup[];
   /** 不分类的字段（或作为「通用」部分渲染在分组之后） */
-  fields?: PluginConfigField[];
+  fields?: PluginSectionField[];
   /** 宿主按 manifest.config 自动生成的分区（不是插件通过 ctx.settings.section 主动声明） */
   auto?: boolean;
 }
@@ -167,6 +174,8 @@ const hooks = new Map<PluginHook, Map<string, PluginHookHandler>>();
 const styles = new Map<string, string>();
 /** dirName → manifest.name（插件显示名）；由 host 在激活成功后写入 */
 const pluginNames = new Map<string, string>();
+/** dirName → manifest.config：插件设置分区字段的类型 / 默认值都从这里继承 */
+const pluginSchemas = new Map<string, PluginConfigField[]>();
 
 /* ---------------- 写入端（PluginContext 背后就是这些） ---------------- */
 
@@ -294,6 +303,45 @@ export const setPluginName = (pluginId: string, name: string): void => {
   pluginNames.set(pluginId, name);
 };
 
+/** 写入该插件的配置 schema（激活成功后由 host 调用）；分区渲染时用它补全字段定义 */
+export const setPluginSchema = (pluginId: string, config: PluginConfigField[]): void => {
+  pluginSchemas.set(pluginId, config);
+};
+
+/** 某个插件当前的贡献统计（诊断面板用）：只数不返回细节，避免把注册表结构漏给 UI */
+export interface PluginContributionSummary {
+  noteMenus: number;
+  groupMenus: number;
+  commands: number;
+  toolbars: number;
+  aiTools: number;
+  aiPrompts: number;
+  aiProviders: number;
+  settingsSections: number;
+  hooks: number;
+}
+
+const countFor = <T>(bucket: Map<string, T[]> | undefined, pluginId: string): number =>
+  bucket?.get(pluginId)?.length ?? 0;
+
+export const describePlugin = (pluginId: string): PluginContributionSummary => {
+  let hookCount = 0;
+  for (const bucket of hooks.values()) {
+    if (bucket.has(pluginId)) hookCount += 1;
+  }
+  return {
+    noteMenus: countFor(noteMenus, pluginId),
+    groupMenus: countFor(groupMenus, pluginId),
+    commands: countFor(commands, pluginId),
+    toolbars: countFor(editorToolbars, pluginId),
+    aiTools: countFor(aiTools, pluginId),
+    aiPrompts: countFor(aiPrompts, pluginId),
+    aiProviders: countFor(aiProviders, pluginId),
+    settingsSections: countFor(settingsSections, pluginId),
+    hooks: hookCount,
+  };
+};
+
 /* ---------------- 贡献变更订阅 ---------------- */
 
 const contributionListeners = new Set<() => void>();
@@ -363,11 +411,48 @@ export interface PluginEditorToolbarEntry {
 }
 
 /**
+ * 菜单 / 工具栏项的显示条件。
+ *   - 函数：inpage 插件用，每次渲染同步求值；
+ *   - 对象：**沙箱插件必须用这种**（跨 iframe 不能同步调用函数）——
+ *     `{ field: "is_locked", is: "falsy" }`，is 支持 truthy / falsy / equals / notEquals。
+ */
+export const evaluateWhen = (when: unknown, subject: unknown): boolean => {
+  if (!when) return true;
+  if (typeof when === "function") {
+    try {
+      return Boolean((when as (arg: unknown) => boolean)(subject));
+    } catch (e) {
+      console.error("插件条件（when）求值失败：", e);
+      return false;
+    }
+  }
+  if (typeof when === "object") {
+    const rule = when as { field?: string; is?: string; value?: unknown };
+    const field = String(rule.field ?? "");
+    if (!field) return true;
+    const actual = (subject as Record<string, unknown> | null | undefined)?.[field];
+    switch (rule.is) {
+      case "truthy":
+        return Boolean(actual);
+      case "falsy":
+        return !actual;
+      case "equals":
+        return actual === rule.value;
+      case "notEquals":
+        return actual !== rule.value;
+      default:
+        return Boolean(actual);
+    }
+  }
+  return true;
+};
+
+/**
  * 递归把 PluginMenuItem 转成 PluginNoteMenuEntry：note 绑定进 onClick，
  * 子项也按各自的 when 过滤；叶子项没有 onClick 时（比如只做分组的子菜单项）onClick 保持 undefined。
  */
 const buildNoteMenuEntry = (pluginId: string, item: PluginMenuItem, note: Note): PluginNoteMenuEntry | null => {
-  if (item.when && !item.when(note)) return null;
+  if (!evaluateWhen(item.when, note)) return null;
   let submenu: PluginNoteMenuEntry[] | undefined;
   if (item.submenu && item.submenu.length > 0) {
     const kids = item.submenu
@@ -446,7 +531,7 @@ export const getEditorToolbarItems = (
   const out: PluginEditorToolbarEntry[] = [];
   for (const bucket of editorToolbars.values()) {
     for (const { pluginId, item } of bucket) {
-      if (item.when && !item.when(ctx)) continue;
+      if (!evaluateWhen(item.when, ctx)) continue;
       out.push({
         pluginId,
         id: item.id,
@@ -603,6 +688,8 @@ export interface PluginSettingsSectionEntry {
   pluginId: string;
   pluginName: string;
   section: PluginSettingsSection;
+  /** 该插件 manifest.config：分区字段缺省值 / 类型的唯一事实源 */
+  config: PluginConfigField[];
 }
 
 /** 全部插件贡献的设置分区：按注册顺序返回（先按插件、再按插件内注册顺序） */
@@ -610,8 +697,9 @@ export const getSettingsSections = (): PluginSettingsSectionEntry[] => {
   const out: PluginSettingsSectionEntry[] = [];
   for (const [pluginId, bucket] of settingsSections) {
     const pluginName = pluginNames.get(pluginId) ?? pluginId;
+    const config = pluginSchemas.get(pluginId) ?? [];
     for (const { item } of bucket) {
-      out.push({ pluginId, pluginName, section: item });
+      out.push({ pluginId, pluginName, section: item, config });
     }
   }
   return out;

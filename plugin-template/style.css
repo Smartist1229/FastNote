@@ -1,0 +1,37 @@
+/*
+ * 插件样式：由宿主注入主页面（沙箱插件也一样，CSS 不是代码）。
+ * 颜色只用宿主的语义变量（--color-*），主题一换这里跟着变。
+ */
+
+/* 挂在 body 上的角标（ctx.ui.mount，停用自动摘掉） */
+.my-plugin-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 60;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent-light);
+  color: var(--color-accent-strong);
+  font-size: 11px;
+  line-height: 1.6;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 快捷键切换的开关式效果：类加在 body 上，这里可以顺势改宿主界面 */
+body.my-plugin-active .sidebar-shell {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+/* 弹窗内容（ctx.ui.modal 的 html 字段，宿主消毒后插入） */
+.my-plugin-dialog {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--color-text-body);
+}
+
+.my-plugin-dialog p {
+  margin: 0;
+}

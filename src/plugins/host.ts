@@ -24,6 +24,8 @@
 
 import { isTauri } from "@tauri-apps/api/core";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 
 import * as pluginsApi from "@/api/system/plugins";
 import type { PluginConfigField, PluginManifest } from "@/interface/system/plugins";
@@ -33,6 +35,9 @@ import type { PluginModalOptions, PluginModalResult, ToastType } from "@/interfa
 import type { AiSettings } from "@/interface/ai/ai";
 import { getLocale, subscribeLocale, translate } from "@/i18n";
 import { interpolate } from "@/i18n/locale";
+import { RESERVED_SHORTCUTS } from "./reservedShortcuts";
+import { startPluginSandbox, type PluginSandbox } from "./sandbox";
+import { compareVersions } from "./version";
 import * as registry from "./registry";
 import type { PluginSettingsSection } from "./registry";
 import type { PluginContext, PluginCurrentNote, PluginHook } from "./types";
@@ -84,6 +89,186 @@ const configCache = new Map<string, Record<string, unknown>>();
 const disposers = new Map<string, Set<() => void>>();
 /** 各插件实例激活时加载的语言包：语言切换会重新激活并覆盖 */
 const i18nCache = new Map<string, Record<string, unknown>>();
+
+/** 运行在沙箱里的插件：dirName → 隐藏 iframe 句柄（停用 / 重激活 / 卸载时销毁） */
+const sandboxes = new Map<string, PluginSandbox>();
+
+/** 拆掉沙箱：移除 iframe 与消息监听（宿主侧注册的资源由 disposers 统一清） */
+const disposeSandbox = (dirName: string): void => {
+  const sandbox = sandboxes.get(dirName);
+  if (!sandbox) return;
+  sandboxes.delete(dirName);
+  try {
+    sandbox.dispose();
+  } catch (e) {
+    console.error(`销毁插件沙箱「${dirName}」失败：`, e);
+  }
+};
+
+/* ---------------- 插件快捷键 ----------------
+ * 插件注册的组合键挂在 window 的捕获阶段：只 preventDefault、不 stopPropagation
+ * （与宿主自己的键位处理同一套规矩，掐断事件会打死编辑器的 Ctrl+F/G/H）。
+ * 冲突按归一化后的「修饰键 + 主键」判：撞了直接抛错，静默覆盖会让另一个插件的
+ * 功能凭空消失；宿主已占用的键位也不放行。
+ */
+interface ShortcutBinding {
+  /** 注册它的插件实例（停用 / 重激活时按它清理） */
+  dirName: string;
+  handler: () => void;
+}
+
+/** 归一化签名 → 绑定 */
+const shortcutBindings = new Map<string, ShortcutBinding>();
+let shortcutListenerAttached = false;
+
+/** "Ctrl+Shift+K" → { signature: "ctrl+shift+k", label: "Ctrl+Shift+K" } */
+const parseShortcut = (combo: string): { signature: string; label: string } => {
+  const parts = String(combo ?? "")
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) throw new Error("快捷键不能为空");
+  const main = parts.pop() ?? "";
+  let ctrl = false;
+  let shift = false;
+  let alt = false;
+  let meta = false;
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === "ctrl" || lower === "control") ctrl = true;
+    else if (lower === "shift") shift = true;
+    else if (lower === "alt" || lower === "option") alt = true;
+    else if (["meta", "cmd", "command", "win", "super"].includes(lower)) meta = true;
+    else throw new Error(`无法识别的修饰键：${part}`);
+  }
+  const key = main.toLowerCase();
+  const signature = `${ctrl ? "ctrl+" : ""}${shift ? "shift+" : ""}${alt ? "alt+" : ""}${
+    meta ? "meta+" : ""
+  }${key}`;
+  const label = `${ctrl ? "Ctrl+" : ""}${shift ? "Shift+" : ""}${alt ? "Alt+" : ""}${
+    meta ? (navigator.userAgent.includes("Mac") ? "Cmd+" : "Win+") : ""
+  }${key.length === 1 ? key.toUpperCase() : main}`;
+  return { signature, label };
+};
+
+/** 从 keydown 事件算签名：字母/数字同时认 key 与 code（中文输入法下 key 可能是 Process） */
+const signatureFromEvent = (event: KeyboardEvent): string => {
+  const raw = event.key;
+  let key = raw === " " ? "space" : raw.toLowerCase();
+  if (key.length === 1) {
+    // 小键盘 / 输入法切走时 key 不可靠，用 code 兜底
+    if (event.code.startsWith("Key") && event.code.length === 4) key = event.code.slice(3).toLowerCase();
+    else if (event.code.startsWith("Digit") && event.code.length === 6) key = event.code.slice(5);
+  }
+  return `${event.ctrlKey ? "ctrl+" : ""}${event.shiftKey ? "shift+" : ""}${event.altKey ? "alt+" : ""}${
+    event.metaKey ? "meta+" : ""
+  }${key}`;
+};
+
+const onShortcutKeydown = (event: KeyboardEvent): void => {
+  /*
+   * 不按 event.defaultPrevented 提前退出：main.tsx 的 BLOCKED_NATIVE_SHORTCUTS 会把
+   * Ctrl+P / Ctrl+F 这类组合统一 preventDefault（挡 WebView2 原生查找条），
+   * 插件注册的 Ctrl+Alt+P 也在它的判定里 —— 一旦这里尊重 defaultPrevented，
+   * 插件快捷键就永远收不到。插件键位已经在 register 时和宿主保留键做过冲突检查，
+   * 这里按精确组合匹配即可，不需要再看别人有没有 preventDefault。
+   */
+  const binding = shortcutBindings.get(signatureFromEvent(event));
+  if (!binding) return;
+  event.preventDefault();
+  try {
+    binding.handler();
+  } catch (e) {
+    console.error("插件快捷键回调失败：", e);
+  }
+};
+
+const attachShortcutListener = (): void => {
+  if (shortcutListenerAttached) return;
+  shortcutListenerAttached = true;
+  window.addEventListener("keydown", onShortcutKeydown, true);
+};
+
+const detachShortcutListenerIfIdle = (): void => {
+  if (!shortcutListenerAttached || shortcutBindings.size > 0) return;
+  shortcutListenerAttached = false;
+  window.removeEventListener("keydown", onShortcutKeydown, true);
+};
+
+/* ---------------- 插件间消息总线 ----------------
+ * 只在插件之间转发：topic 不做命名空间强制，但回调会带上发送方 dirName，
+ * 方便插件自己过滤（也方便排查「谁把消息发出来的」）。
+ */
+interface BusSubscriber {
+  dirName: string;
+  handler: (payload: unknown, from: string) => void;
+}
+
+const busTopics = new Map<string, Set<BusSubscriber>>();
+
+/** 注销某个插件的全部总线订阅（停用 / 卸载 / 重激活时调用） */
+const clearPluginBus = (dirName: string): void => {
+  for (const [topic, set] of [...busTopics]) {
+    for (const sub of [...set]) {
+      if (sub.dirName === dirName) set.delete(sub);
+    }
+    if (set.size === 0) busTopics.delete(topic);
+  }
+};
+
+const dispatchBus = (topic: string, payload: unknown, from: string): void => {
+  const set = busTopics.get(topic);
+  if (!set) return;
+  for (const sub of [...set]) {
+    // 异步派发：handler 里再同步 emit 另一个 topic 也不会递归爆栈
+    queueMicrotask(() => {
+      try {
+        sub.handler(payload, from);
+      } catch (e) {
+        console.error(`插件总线「${topic}」回调失败：`, e);
+      }
+    });
+  }
+};
+
+/* ---------------- 应用版本（兼容性校验用） ---------------- */
+let appVersionPromise: Promise<string> | null = null;
+const getAppVersion = (): Promise<string> => {
+  if (!appVersionPromise) {
+    appVersionPromise = getVersion().catch(() => "0.0.0");
+  }
+  return appVersionPromise;
+};
+
+/** 本地化文本取值：完整 locale → 基础语言 → 原文 */
+const localizedText = (plain: string | undefined, map?: Record<string, string>): string => {
+  const fallback = plain ?? "";
+  if (!map) return fallback;
+  const locale = getLocale();
+  return map[locale] ?? map[locale.split("-")[0]] ?? fallback;
+};
+
+/** 插件声明的最低软件版本与当前不兼容时返回原因，否则 null */
+const compatibilityProblem = async (manifest: PluginManifest): Promise<string | null> => {
+  if (manifest.minAppVersion && manifest.minAppVersion.trim()) {
+    const current = await getAppVersion();
+    if (compareVersions(current, manifest.minAppVersion.trim()) < 0) {
+      return translate("需要 FastNote ≥ {value1}，当前是 {value2}", {
+        value1: manifest.minAppVersion.trim(),
+        value2: current,
+      });
+    }
+  }
+  return null;
+};
+
+/** 注销某个插件的全部快捷键（停用 / 卸载时兜底，正常路径靠 disposer 逐个摘） */
+const clearPluginShortcuts = (dirName: string): void => {
+  for (const [signature, binding] of [...shortcutBindings]) {
+    if (binding.dirName === dirName) shortcutBindings.delete(signature);
+  }
+  detachShortcutListenerIfIdle();
+};
 
 /* ---------------- store 契约（useSyncExternalStore 直接引用，不依赖 this） ---------------- */
 
@@ -297,6 +482,11 @@ export const createPluginContext = (
   const hasAiProvider = perms.includes("ai.provider");
   const hasAiSettings = perms.includes("ai.settings");
   const hasSettingsSection = perms.includes("settings.section");
+  const hasDb = perms.includes("db.read_write");
+  const hasFs = perms.includes("fs.read_write");
+  const hasNet = perms.includes("net.fetch");
+  const hasPluginWindow = perms.includes("window.open");
+  const hasShortcut = perms.includes("shortcut.register");
 
   /** 写 API 前置校验：没声明 notes.write 时统一抛中文错误 */
   const guardWrite = (): void => {
@@ -326,6 +516,38 @@ export const createPluginContext = (
   /** 设置分区权限守卫：未声明 settings.section 时拒绝注册设置分区 */
   const guardSettingsSection = (): void => {
     if (!hasSettingsSection) throw new Error(`插件未声明 settings.section 权限`);
+  };
+
+  /** 插件私有表权限守卫 */
+  const guardDb = (): void => {
+    if (!hasDb) throw new Error(`插件未声明 db.read_write 权限`);
+  };
+
+  /** 文件存储权限守卫 */
+  const guardFs = (): void => {
+    if (!hasFs) throw new Error(`插件未声明 fs.read_write 权限`);
+  };
+
+  /** 联网权限守卫 */
+  const guardNet = (): void => {
+    if (!hasNet) throw new Error(`插件未声明 net.fetch 权限`);
+  };
+
+  /** 插件窗口权限守卫 */
+  const guardWindow = (): void => {
+    if (!hasPluginWindow) throw new Error(`插件未声明 window.open 权限`);
+  };
+
+  /** 快捷键权限守卫 */
+  const guardShortcut = (): void => {
+    if (!hasShortcut) throw new Error(`插件未声明 shortcut.register 权限`);
+  };
+
+  /** 登记清理回调：ctx.onDispose 与新扩展点内部共用同一份登记表（LIFO 执行） */
+  const addDisposer = (fn: () => void): void => {
+    const set = disposers.get(dirName);
+    if (set) set.add(fn);
+    else disposers.set(dirName, new Set([fn]));
   };
 
   /** 设置分区内容校验：groups 与顶层 fields 至少要有一个配置项，空分区在目录里没有意义 */
@@ -360,6 +582,44 @@ export const createPluginContext = (
   ui: {
     toast: (message, type) => dispatchToast(message, type),
     modal: (options) => showPluginModal(options),
+    /**
+     * 给宿主 <body> / <html> 加 / 去一个 class。
+     * 沙箱插件的 document 是 iframe 自己的，改不到宿主页面，主题、隐藏统计这类效果走这里；
+     * 停用 / 卸载时宿主自动移除（不用自己清）。
+     */
+    setBodyClass: (name, on) => {
+      const cls = String(name ?? "").trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(cls)) {
+        throw new Error(`非法的 class 名：「${cls}」`);
+      }
+      document.body.classList.toggle(cls, on !== false);
+      addDisposer(() => document.body.classList.remove(cls));
+    },
+    /** 同 setBodyClass，作用在 <html> 上（主题类常挂这里） */
+    setHtmlClass: (name, on) => {
+      const cls = String(name ?? "").trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(cls)) {
+        throw new Error(`非法的 class 名：「${cls}」`);
+      }
+      document.documentElement.classList.toggle(cls, on !== false);
+      addDisposer(() => document.documentElement.classList.remove(cls));
+    },
+    /**
+     * 往宿主界面的某个元素里挂一个节点（装饰、状态块、工具条都靠它）。
+     * target 传选择器或元素；返回移除函数，并自动登记到 onDispose——
+     * 插件停用 / 卸载时宿主会摘掉，界面恢复原样。
+     */
+    mount: (target, node) => {
+      const host =
+        typeof target === "string" ? document.querySelector(target) : (target as Element | null);
+      if (!host) throw new Error(`挂载点不存在：${String(target)}`);
+      host.appendChild(node);
+      const remove = (): void => {
+        node.parentNode?.removeChild(node);
+      };
+      addDisposer(remove);
+      return remove;
+    },
   },
   notes: {
     getContent: async (noteId) => (await getNote(noteId)).content,
@@ -386,6 +646,158 @@ export const createPluginContext = (
     remove: async (id) => {
       guardWrite();
       await invoke("plugin_delete_note", { noteId: id, pluginId: dirName });
+    },
+  },
+  /**
+   * 插件私有数据表：表名由宿主强制加 `plugin_<目录名>__` 前缀，插件只写裸名。
+   * 宿主的表、其它插件的表都碰不到；update / remove 必须带过滤条件，防止手滑清表。
+   */
+  db: {
+    createTable: async (table, columns) => {
+      guardDb();
+      await pluginsApi.pluginDbCreateTable(dirName, table, columns);
+    },
+    dropTable: async (table) => {
+      guardDb();
+      await pluginsApi.pluginDbDropTable(dirName, table);
+    },
+    tables: async () => {
+      guardDb();
+      return await pluginsApi.pluginDbTables(dirName);
+    },
+    insert: async (table, values) => {
+      guardDb();
+      return await pluginsApi.pluginDbInsert(dirName, table, values);
+    },
+    query: async (table, options) => {
+      guardDb();
+      return await pluginsApi.pluginDbQuery(dirName, table, options);
+    },
+    update: async (table, filter, values) => {
+      guardDb();
+      return await pluginsApi.pluginDbUpdate(dirName, table, filter, values);
+    },
+    remove: async (table, filter) => {
+      guardDb();
+      return await pluginsApi.pluginDbDelete(dirName, table, filter);
+    },
+    count: async (table, filter) => {
+      guardDb();
+      return await pluginsApi.pluginDbCount(dirName, table, filter);
+    },
+    addColumn: async (table, column) => {
+      guardDb();
+      return await pluginsApi.pluginDbAddColumn(dirName, table, column);
+    },
+    createIndex: async (table, name, columns, unique) => {
+      guardDb();
+      await pluginsApi.pluginDbCreateIndex(dirName, table, name, columns, unique);
+    },
+  },
+  /**
+   * 插件文件存储：只能碰自己的数据目录（插件目录会被升级整体覆盖，不适合放数据）。
+   * 需要 fs.read_write 权限。
+   */
+  fs: {
+    root: async () => {
+      guardFs();
+      return await pluginsApi.pluginFsRoot(dirName);
+    },
+    list: async (relDir) => {
+      guardFs();
+      return await pluginsApi.pluginFsList(dirName, relDir);
+    },
+    read: async (relPath) => {
+      guardFs();
+      return await pluginsApi.pluginFsRead(dirName, relPath);
+    },
+    write: async (relPath, content) => {
+      guardFs();
+      return await pluginsApi.pluginFsWrite(dirName, relPath, content);
+    },
+    remove: async (relPath) => {
+      guardFs();
+      await pluginsApi.pluginFsRemove(dirName, relPath);
+    },
+  },
+  /**
+   * 联网：宿主代发，只允许 manifest.netDomains 里声明的主机。
+   * 前端 CSP 的 connect-src 不放宽，插件自己也 fetch 不到外网——想联网只能走这里。
+   */
+  net: {
+    fetch: async (url, options) => {
+      guardNet();
+      return await pluginsApi.pluginNetFetch(dirName, url, options);
+    },
+  },
+  /**
+   * 插件间消息总线：无需权限，停用 / 卸载 / 重激活时宿主自动退订。
+   */
+  bus: {
+    on: (topic, handler) => {
+      const key = String(topic ?? "");
+      if (!key) throw new Error("总线 topic 不能为空");
+      const subscriber: BusSubscriber = { dirName, handler };
+      const set = busTopics.get(key) ?? new Set<BusSubscriber>();
+      set.add(subscriber);
+      busTopics.set(key, set);
+      const off = (): void => {
+        const current = busTopics.get(key);
+        current?.delete(subscriber);
+        if (current && current.size === 0) busTopics.delete(key);
+      };
+      addDisposer(off);
+      return off;
+    },
+    emit: (topic, payload) => {
+      const key = String(topic ?? "");
+      if (!key) throw new Error("总线 topic 不能为空");
+      dispatchBus(key, payload, dirName);
+    },
+  },
+  /**
+   * 插件自己的窗口：加载插件目录里的 html（走 fastnote-plugin 协议），
+   * 页面 / 样式 / 脚本全归插件。插件停用 / 卸载时宿主把它开的窗口全部关掉。
+   */
+  window: {
+    open: async (relPath, options) => {
+      guardWindow();
+      return await pluginsApi.openPluginWindow(dirName, relPath, options);
+    },
+    /** 关掉指定标签的插件窗口（标签由 ctx.window.open 返回） */
+    close: async (label) => {
+      guardWindow();
+      await pluginsApi.closePluginWindow(dirName, label);
+    },
+  },
+  /**
+   * 全局快捷键：注册即生效，插件停用 / 卸载 / 重激活时自动注销。
+   * 与宿主键位或其它插件撞键会抛错（不静默覆盖）。
+   */
+  shortcut: {
+    register: (combo, handler) => {
+      guardShortcut();
+      const { signature, label } = parseShortcut(combo);
+      const reservedBy = RESERVED_SHORTCUTS[signature];
+      if (reservedBy) throw new Error(`快捷键 ${label} 已用于「${reservedBy}」`);
+      const existing = shortcutBindings.get(signature);
+      if (existing && existing.dirName !== dirName) {
+        throw new Error(`快捷键 ${label} 已被插件「${existing.dirName}」注册`);
+      }
+      shortcutBindings.set(signature, { dirName, handler });
+      attachShortcutListener();
+      // 注册即登记注销：重激活时 runDisposers 会先把它摘掉，不会越积越多
+      addDisposer(() => {
+        const current = shortcutBindings.get(signature);
+        if (current && current.dirName === dirName) shortcutBindings.delete(signature);
+        detachShortcutListenerIfIdle();
+      });
+    },
+    unregister: (combo) => {
+      const { signature } = parseShortcut(combo);
+      const current = shortcutBindings.get(signature);
+      if (current && current.dirName === dirName) shortcutBindings.delete(signature);
+      detachShortcutListenerIfIdle();
     },
   },
   hooks: {
@@ -445,11 +857,7 @@ export const createPluginContext = (
     set: (patch) => setConfig(dirName, patch),
   },
   i18n: createPluginI18n(dirName),
-  onDispose: (fn) => {
-    const set = disposers.get(dirName);
-    if (set) set.add(fn);
-    else disposers.set(dirName, new Set([fn]));
-  },
+  onDispose: addDisposer,
   };
 };
 
@@ -461,8 +869,42 @@ const removeStyleTag = (dirName: string): void => {
     .forEach((el) => el.remove());
 };
 
-const injectStyleTag = (dirName: string, css: string): void => {
+/** 每个插件实例当前生效的样式表（Constructable Stylesheet，卸载时从 adoptedStyleSheets 摘掉） */
+const pluginSheets = new Map<string, CSSStyleSheet>();
+
+const removePluginStyle = (dirName: string): void => {
   removeStyleTag(dirName);
+  const sheet = pluginSheets.get(dirName);
+  if (!sheet) return;
+  pluginSheets.delete(dirName);
+  document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+};
+
+/**
+ * 写插件样式：优先用 Constructable Stylesheet，退路才是 <style> 元素。
+ *
+ * 生产包里必须走前者：`index.html` 的启动页内联 <style> 在打包时被 Tauri 打上了
+ * nonce 并写进 CSP 的 style-src，按 CSP3「源列表里出现 nonce/hash 时 'unsafe-inline'
+ * 失效」的规则，运行时新建的 <style> 会被整段拒绝（控制台报 CSP 违规），
+ * 开发模式没有这条 CSP 所以看不出来——插件菜单（JS 贡献）照常，只有样式类效果
+ * （主题 class、隐藏统计、装饰元素）静默失效。adoptedStyleSheets 不经过内联样式检查，
+ * 也不依赖 CSP 放行，两种模式表现一致。
+ *
+ * `replaceSync` 会丢掉 @import，插件样式表不支持 @import（拆文件用 manifest.style 单文件）；
+ * 老引擎或解析失败时退回 <style> 元素。
+ */
+const injectPluginStyle = (dirName: string, css: string): void => {
+  removePluginStyle(dirName);
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    pluginSheets.set(dirName, sheet);
+    // 赋值而非 push：adoptedStyleSheets 是只读的 FrozenArray，且顺序在文档样式表之后
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    return;
+  } catch (e) {
+    console.warn(`插件「${dirName}」样式表解析失败，退回 <style> 注入：`, e);
+  }
   const style = document.createElement("style");
   style.dataset.pluginId = dirName;
   style.textContent = css;
@@ -508,8 +950,12 @@ const activate = async (dirName: string): Promise<void> => {
   // 设置分区在激活期间保留旧定义（设置窗口不闪、输入框不失焦），激活完成后再清理
   const sectionEpoch = registry.beginSettingsSectionRefresh(dirName);
   runDisposers(dirName);
+  // 重激活前先把旧快捷键 / 总线订阅摘干净：disposer 正常会处理，这里再兜一次
+  disposeSandbox(dirName);
+  clearPluginShortcuts(dirName);
+  clearPluginBus(dirName);
   registry.removePlugin(dirName, { keepSettingsSections: true });
-  removeStyleTag(dirName);
+  removePluginStyle(dirName);
   const entry = entries.find((e) => e.dirName === dirName);
   if (!entry) {
     registry.removePlugin(dirName);
@@ -517,6 +963,11 @@ const activate = async (dirName: string): Promise<void> => {
   }
   const manifest = installedManifests.get(dirName);
   try {
+    // 手工拷进目录的插件没过安装期校验，这里再挡一次：不兼容就别激活，把原因挂在列表上
+    if (manifest) {
+      const problem = await compatibilityProblem(manifest);
+      if (problem) throw new Error(problem);
+    }
     // 语言包读取失败只记日志并回退空对象，不能让插件整体加载失败
     i18nCache.set(dirName, await loadPluginI18n(dirName, manifest));
     // 配置读取失败只回退 schema 默认值，不能让插件整体加载失败
@@ -525,22 +976,52 @@ const activate = async (dirName: string): Promise<void> => {
       .catch(() => configDefaults(manifest?.config));
     configCache.set(dirName, configValues);
     if (manifest?.entry) {
-      // 自定义协议 URL：浏览器原生解析模块内的相对 import（插件可拆多文件）；
-      // ?v= 递增 bust 入口模块缓存，保证重新激活拿到新代码。
-      // 子模块在 webview 模块图里按 URL 缓存，磁盘上改了子模块需重启应用才生效
-      // （handler 已发 Cache-Control: no-store，重启后必然拿到最新内容）。
-      const base = await pluginsApi.pluginModuleUrl(dirName, manifest.entry);
+      const ctx = createPluginContext(dirName, configValues);
+      // 每次激活递增：入口 URL（含沙箱运行时）都带上它，保证拿到磁盘上的新代码
       entry.activations = (entry.activations ?? 0) + 1;
-      const mod = await import(/* @vite-ignore */ `${base}?v=${entry.activations}`);
-      await mod.default?.activate?.(createPluginContext(dirName, configValues));
+
+      if (manifest.runtime === "sandbox") {
+        // 沙箱模式：插件代码跑在独立源的隐藏 iframe 里，拿不到 IPC / 父页面；
+        // 所有能力走 postMessage RPC，由 sandbox.ts 用上面这份 ctx 复核执行。
+        disposeSandbox(dirName);
+        const sandbox = await startPluginSandbox({
+          dirName,
+          manifest,
+          entry: manifest.entry,
+          version: entry.activations,
+          ctx,
+          messages: i18nCache.get(dirName) ?? {},
+          onFail: (message) => {
+            entry.failed = true;
+            entry.error = message;
+            emit();
+          },
+          // 沙箱插件的弹窗 content 回调里调 api.close/ok/cancel 时，落到宿主结束当前弹窗
+          resolveModal: (ok, value) => resolvePluginModal(ok, value),
+        });
+        sandboxes.set(dirName, sandbox);
+      } else {
+        // 自定义协议 URL：浏览器原生解析模块内的相对 import（插件可拆多文件）。
+        // 版本号进 URL 的路径段（/<dir>/v<N>/main.js），不是加在 query 上——
+        // 子模块的相对 import 会解析成 /<dir>/v<N>/modules/x.js，整张模块图跟着换 URL，
+        // 重新激活（含设置页「刷新」装新版）就能拿到磁盘上的新代码，不用重启软件。
+        const base = await pluginsApi.pluginModuleUrl(
+          dirName,
+          manifest.entry,
+          entry.activations,
+        );
+        const mod = await import(/* @vite-ignore */ base);
+        await mod.default?.activate?.(ctx);
+      }
     }
     if (manifest?.style) {
       const css = await pluginsApi.readPluginResource(dirName, manifest.style);
       registry.setPluginStyle(dirName, css);
-      injectStyleTag(dirName, css);
+      injectPluginStyle(dirName, css);
     }
-    // 记录插件显示名，供 registry 在 getNoteMenuGroups / getPluginCommands 里做分组标题
+    // 记录插件显示名与配置 schema：前者供菜单分组标题，后者给设置分区补全字段定义
     registry.setPluginName(dirName, entry.name);
+    registry.setPluginSchema(dirName, manifest?.config ?? []);
     // 本次没重新注册的旧分区先清掉，再决定要不要补自动配置分区
     registry.pruneSettingsSections(dirName, sectionEpoch);
     // 有 config schema 但没主动贡献设置分区时，宿主补一个「配置」分区（无需 settings.section 权限）
@@ -551,7 +1032,7 @@ const activate = async (dirName: string): Promise<void> => {
     entry.failed = true;
     entry.error = errorText(e);
     registry.removePlugin(dirName);
-    removeStyleTag(dirName);
+    removePluginStyle(dirName);
     runDisposers(dirName);
     dispatchToast(
       translate("插件「{name}」加载失败：{value1}", { name: entry.name, value1: entry.error }),
@@ -564,8 +1045,13 @@ const activate = async (dirName: string): Promise<void> => {
 const deactivate = (dirName: string): void => {
   cancelConfigActivation(dirName);
   runDisposers(dirName);
+  // 快捷键兜底清理（正常路径由 disposer 逐个摘掉），窗口整批关掉：
+  // 「关掉插件就恢复原样」包括它开的窗口与占用的键位
+  clearPluginShortcuts(dirName);
+  clearPluginBus(dirName);
+  void pluginsApi.closePluginWindows(dirName).catch(() => {});
   registry.removePlugin(dirName);
-  removeStyleTag(dirName);
+  removePluginStyle(dirName);
   configCache.delete(dirName);
   i18nCache.delete(dirName);
 };
@@ -575,10 +1061,10 @@ const deactivate = (dirName: string): void => {
 const makeEntry = (manifest: PluginManifest): PluginEntry => ({
   id: manifest.id,
   dirName: manifest.dirName,
-  name: manifest.name,
+  name: localizedText(manifest.name, manifest.nameI18n),
   version: manifest.version,
   author: manifest.author || undefined,
-  description: manifest.description || undefined,
+  description: localizedText(manifest.description, manifest.descriptionI18n) || undefined,
   iconUrl: manifest.iconUrl,
   tags: manifest.tags,
   homepage: manifest.homepage || undefined,
@@ -600,10 +1086,11 @@ const syncInstalled = async (): Promise<void> => {
     const existing = entries.find((e) => e.dirName === manifest.dirName);
     if (existing) {
       existing.id = manifest.id;
-      existing.name = manifest.name;
+      existing.name = localizedText(manifest.name, manifest.nameI18n);
       existing.version = manifest.version;
       existing.author = manifest.author || undefined;
-      existing.description = manifest.description || undefined;
+      existing.description =
+        localizedText(manifest.description, manifest.descriptionI18n) || undefined;
       existing.iconUrl = manifest.iconUrl;
       existing.tags = manifest.tags;
       existing.homepage = manifest.homepage || undefined;
@@ -618,9 +1105,10 @@ const syncInstalled = async (): Promise<void> => {
 
 /** 重新激活所有启用的插件（activate 内部会先清旧贡献，重复激活安全） */
 const activateEnabled = async (): Promise<void> => {
-  for (const entry of [...entries]) {
-    if (entry.enabled) await activate(entry.dirName);
-  }
+  // 并行激活：插件之间没有依赖，串行会让启动时间随插件数线性增长。
+  // 单个插件失败已在 activate 内部捕获（记 entry.error），不会影响其他插件。
+  const targets = [...entries].filter((entry) => entry.enabled);
+  await Promise.allSettled(targets.map((entry) => activate(entry.dirName)));
   emit();
 };
 
@@ -643,6 +1131,26 @@ const startLocaleSubscription = (): void => {
   if (localeSubscriptionStarted) return;
   localeSubscriptionStarted = true;
   subscribeLocale(scheduleLocaleReactivation);
+};
+
+/**
+ * 插件自己发起的「请求重新激活」事件名 —— 与 Rust 侧 plugin_reactivate 的 emit 一致。
+ * 典型场景：插件在自己的窗口里改了数据（例如把快捷键存进私有表），
+ * 要让主窗口重跑一遍 activate，注册类副作用（快捷键 / 菜单…）才会用上新值。
+ */
+const REACTIVATE_EVENT = "plugin:reactivate";
+
+let reactivateSubscriptionStarted = false;
+const startReactivateSubscription = (): void => {
+  if (reactivateSubscriptionStarted || !isTauri()) return;
+  reactivateSubscriptionStarted = true;
+  void listen<string>(REACTIVATE_EVENT, (event) => {
+    const dirName = event.payload;
+    const entry = entries.find((e) => e.dirName === dirName);
+    // 停用中的插件不重激活：请求来自它自己的窗口，窗口一旦关掉也没必要再跑
+    if (!entry || !entry.enabled) return;
+    void activate(dirName).catch((e) => console.error(`重新激活插件「${dirName}」失败：`, e));
+  }).catch((e) => console.error("订阅插件重激活事件失败：", e));
 };
 
 /** 拉取安装目录后同步并激活（installZip / refresh / uninstall 之后调用） */
@@ -683,6 +1191,7 @@ export const init = async (): Promise<void> => {
   await activateEnabled();
   hostReady = true;
   startLocaleSubscription();
+  startReactivateSubscription();
 };
 
 /** 切换启用状态：持久化后启用（重新 activate）或禁用（清贡献 + 移除样式标签） */
@@ -740,6 +1249,23 @@ const cancelConfigActivation = (dirName: string): void => {
  * 让 activate 时应用的副作用（主题 class、隐藏统计、贡献注册等）立刻生效，
  * 不整表 reload，避免其他插件的贡献与样式闪烁。
  */
+/**
+ * 查某个插件的私有表清单（卸载前问用户「要不要删表」用）。
+ * 走不带权限校验的版本：老版本插件建过表、新版本又去掉了 db 权限时也要列得出来。
+ */
+export const pluginTables = async (dirName: string): Promise<string[]> => {
+  try {
+    return await pluginsApi.pluginDbListAllTables(dirName);
+  } catch {
+    return [];
+  }
+};
+
+/** 删除某个插件的全部私有表（卸载时用户选择「删除」），返回删掉的表数 */
+export const dropPluginTables = async (dirName: string): Promise<number> => {
+  return await pluginsApi.pluginDbDropAll(dirName);
+};
+
 export const setConfig = async (dirName: string, patch: Record<string, unknown>): Promise<void> => {
   await pluginsApi.writePluginConfig(dirName, patch);
   const cached = configCache.get(dirName);
@@ -754,6 +1280,31 @@ export const installZip = async (zipPath: string): Promise<PluginManifest> => {
   const manifest = await pluginsApi.installPluginZip(zipPath);
   await reload();
   return manifest;
+};
+
+/** 重新加载单个插件（不重启软件）：等价于停用后再启用，副作用全部重跑 */
+export const reloadPlugin = async (dirName: string): Promise<void> => {
+  await activate(dirName);
+  emit();
+};
+
+/** 诊断快照：贡献统计 + 占用的快捷键 + 权限（排查「是不是没注册上」用） */
+export const pluginDiagnostics = (dirName: string) => {
+  const entry = entries.find((e) => e.dirName === dirName);
+  return {
+    name: entry?.name ?? dirName,
+    dirName,
+    version: entry?.version ?? "",
+    enabled: entry?.enabled ?? false,
+    failed: entry?.failed ?? false,
+    error: entry?.error ?? "",
+    permissions: entry?.permissions ?? [],
+    runtime: installedManifests.get(dirName)?.runtime ?? "inpage",
+    shortcuts: [...shortcutBindings.entries()]
+      .filter(([, binding]) => binding.dirName === dirName)
+      .map(([signature]) => signature),
+    contributions: registry.describePlugin(dirName),
+  };
 };
 
 /** 重新扫描插件目录（用户直接在文件夹里增删插件后手动刷新） */
@@ -784,6 +1335,10 @@ export const pluginHost = {
   setCurrentNoteProvider,
   setPluginEnabled,
   setConfig,
+  pluginTables,
+  dropPluginTables,
+  reloadPlugin,
+  pluginDiagnostics,
   installZip,
   refresh,
   uninstall,

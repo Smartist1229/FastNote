@@ -1,0 +1,13 @@
+{
+  "menu": { "stats": "统计打开次数" },
+  "dialog": {
+    "line": "「{title}」已打开 {total} 次",
+    "untitled": "未命名笔记",
+    "close": "关闭"
+  },
+  "toast": {
+    "ready": "{greeting}插件已加载（累计 {count} 次）",
+    "shortcutFailed": "快捷键 {combo} 注册失败：{error}"
+  },
+  "ui": { "on": "已开启", "off": "已关闭" }
+}

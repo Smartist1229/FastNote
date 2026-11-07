@@ -1,34 +1,273 @@
 {
   "id": "plugin-demo",
-  "name": "插件演示/Plugin Demo",
-  "version": "0.7.0",
+  "name": "插件演示",
+  "nameI18n": {
+    "en": "Plugin Demo"
+  },
+  "apiVersion": 1,
+  "version": "0.15.1",
   "author": "FastNote",
-  "description": "全面演示插件能力：笔记右键菜单（多层 submenu + danger + when）、分组右键菜单、命令面板、编辑器工具栏（4 图标 + 2 纯文字 + 光标插入）、Modal 全部扩展（模态/非模态/自定义内容/自定义按钮/PluginModalApi）、Toast 三种 type、写笔记 API（source_plugin 沙箱）、生命周期钩子（note-create/save/delete/switch）、AI 能力（tool + 系统提示词 + 服务商模板 + 设置读写）、设置分区（覆盖全部配置项）、插件 i18n 与多文件 ESM。",
+  "description": "全面演示插件能力：笔记/分组右键菜单、命令面板、编辑器工具栏、Modal（含插件自绘弹窗）、样式覆盖、Toast、写笔记 API、生命周期钩子、AI 能力、设置分区、插件 i18n 与多文件 ESM，以及插件私有数据表、插件自己的窗口与全局快捷键。",
   "entry": "main.js",
   "style": "style.css",
   "defaultEnabled": false,
-  "tags": ["示例", "演示"],
+  "tags": [
+    "示例",
+    "演示"
+  ],
   "homepage": "",
-  "permissions": ["notes.read", "notes.write", "config.read_write", "editor.insert", "ai.tool", "ai.prompt", "ai.provider", "ai.settings", "settings.section"],
-  "i18n": { "zh": "locales/zh.json", "en": "locales/en.json" },
+  "permissions": [
+    "notes.read",
+    "notes.write",
+    "config.read_write",
+    "editor.insert",
+    "ai.tool",
+    "ai.prompt",
+    "ai.provider",
+    "ai.settings",
+    "settings.section",
+    "db.read_write",
+    "window.open",
+    "shortcut.register",
+    "fs.read_write"
+  ],
+  "i18n": {
+    "zh": "locales/zh.json",
+    "en": "locales/en.json"
+  },
   "config": [
-    { "key": "menuEnabled", "label": "笔记右键菜单项", "kind": "boolean", "default": true, "description": "在笔记右键菜单添加演示项。" },
-    { "key": "groupMenuEnabled", "label": "分组右键菜单项", "kind": "boolean", "default": true, "description": "在分组右键菜单添加「插件演示」入口。" },
-    { "key": "commandEnabled", "label": "命令面板命令", "kind": "boolean", "default": true, "description": "在命令面板添加演示命令。" },
-    { "key": "toolbarEnabled", "label": "编辑器工具栏按钮", "kind": "boolean", "default": true, "description": "在编辑器工具栏添加三个按钮（插入时间/插入引用块/显示字数）。" },
-    { "key": "modalEnabled", "label": "Modal 演示", "kind": "boolean", "default": true, "description": "在右键菜单/命令面板里演示宿主统一风格的 Modal。" },
-    { "key": "notesEnabled", "label": "写笔记 API 演示", "kind": "boolean", "default": true, "description": "命令面板中演示 source_plugin 沙箱的 create/update/remove/getContent。" },
-    { "key": "hooksEnabled", "label": "生命周期钩子", "kind": "boolean", "default": true, "description": "订阅 onNoteCreate/Save/Delete/Switch，触发时 toast 提示（每种 hook 最多 3 次防刷屏）。" },
-    { "key": "aiToolEnabled", "label": "AI tool 注册", "kind": "boolean", "default": true, "description": "注册一个只读 AI tool「plugin-demo.count-chars」统计笔记字数。需要 ai.tool 权限。" },
-    { "key": "aiDemoEnabled", "label": "AI 能力演示", "kind": "boolean", "default": true, "description": "演示 ai.systemPrompt / ai.provider / ai.getSettings：注入系统提示词、注册演示服务商模板、命令面板读取 AI 设置。" },
-    { "key": "settingsSectionEnabled", "label": "设置分区演示", "kind": "boolean", "default": true, "description": "在设置窗口的「插件」分组下注册一个「插件演示」分区，复用 config schema 渲染，值存 config.json。需要 settings.section 权限。" },
-    { "key": "greeting", "label": "问候语", "kind": "string", "default": "你好！", "description": "右键菜单点击时显示的文字。" },
-    { "key": "theme", "label": "界面主题", "kind": "select", "default": "none", "options": [ { "value": "none", "label": "不修改" }, { "value": "accent", "label": "强调色描边" }, { "value": "focus", "label": "专注模式" } ], "description": "演示插件修改界面样式。" },
-    { "key": "effectEnabled", "label": "软件特效", "kind": "boolean", "default": false, "description": "右上角显示一个呼吸光点特效。" },
-    { "key": "hideStats", "label": "隐藏字数/行数统计", "kind": "boolean", "default": false, "description": "演示插件隐藏内置控件，关闭后恢复原样。" },
-    { "key": "demoBool", "label": "设置分区 · 演示开关", "kind": "boolean", "default": true, "description": "供「插件演示」设置分区演示 boolean 控件；与设置分区共用同一份 config.json。" },
-    { "key": "demoText", "label": "设置分区 · 演示文本", "kind": "string", "default": "hello", "description": "供「插件演示」设置分区演示 string 控件。" },
-    { "key": "demoMode", "label": "设置分区 · 演示模式", "kind": "select", "default": "simple", "options": [ { "value": "simple", "label": "简单" }, { "value": "advanced", "label": "高级" } ], "description": "供「插件演示」设置分区演示 select 控件。" },
-    { "key": "demoCount", "label": "设置分区 · 演示次数", "kind": "number", "default": 3, "min": 1, "max": 10, "step": 1, "description": "供「插件演示」设置分区演示 number 控件。" }
-  ]
+    {
+      "key": "menuEnabled",
+      "label": "笔记右键菜单项",
+      "kind": "boolean",
+      "default": true,
+      "description": "在笔记右键菜单添加演示项。"
+    },
+    {
+      "key": "groupMenuEnabled",
+      "label": "分组右键菜单项",
+      "kind": "boolean",
+      "default": true,
+      "description": "在分组右键菜单添加「插件演示」入口。"
+    },
+    {
+      "key": "commandEnabled",
+      "label": "命令面板命令",
+      "kind": "boolean",
+      "default": true,
+      "description": "在命令面板添加演示命令。"
+    },
+    {
+      "key": "toolbarEnabled",
+      "label": "编辑器工具栏按钮",
+      "kind": "boolean",
+      "default": true,
+      "description": "在编辑器工具栏添加三个按钮（插入时间/插入引用块/显示字数）。"
+    },
+    {
+      "key": "modalEnabled",
+      "label": "Modal 演示",
+      "kind": "boolean",
+      "default": true,
+      "description": "在右键菜单/命令面板里演示宿主统一风格的 Modal。"
+    },
+    {
+      "key": "notesEnabled",
+      "label": "写笔记 API 演示",
+      "kind": "boolean",
+      "default": true,
+      "description": "命令面板中演示 source_plugin 沙箱的 create/update/remove/getContent。"
+    },
+    {
+      "key": "hooksEnabled",
+      "label": "生命周期钩子",
+      "kind": "boolean",
+      "default": true,
+      "description": "订阅 onNoteCreate/Save/Delete/Switch，触发时 toast 提示（每种 hook 最多 3 次防刷屏）。"
+    },
+    {
+      "key": "aiToolEnabled",
+      "label": "AI tool 注册",
+      "kind": "boolean",
+      "default": true,
+      "description": "注册一个只读 AI tool「plugin-demo.count-chars」统计笔记字数。需要 ai.tool 权限。"
+    },
+    {
+      "key": "aiDemoEnabled",
+      "label": "AI 能力演示",
+      "kind": "boolean",
+      "default": true,
+      "description": "演示 ai.systemPrompt / ai.provider / ai.getSettings：注入系统提示词、注册演示服务商模板、命令面板读取 AI 设置。"
+    },
+    {
+      "key": "settingsSectionEnabled",
+      "label": "设置分区演示",
+      "kind": "boolean",
+      "default": true,
+      "description": "在设置窗口的「插件」分组下注册一个「插件演示」分区，复用 config schema 渲染，值存 config.json。需要 settings.section 权限。"
+    },
+    {
+      "key": "greeting",
+      "label": "问候语",
+      "kind": "string",
+      "default": "你好！",
+      "description": "右键菜单点击时显示的文字。"
+    },
+    {
+      "key": "theme",
+      "label": "界面主题",
+      "kind": "select",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "不修改"
+        },
+        {
+          "value": "accent",
+          "label": "强调色描边"
+        },
+        {
+          "value": "focus",
+          "label": "专注模式"
+        }
+      ],
+      "description": "演示插件修改界面样式。"
+    },
+    {
+      "key": "effectEnabled",
+      "label": "软件特效",
+      "kind": "boolean",
+      "default": false,
+      "description": "右上角显示一个呼吸光点特效。"
+    },
+    {
+      "key": "hideStats",
+      "label": "隐藏字数/行数统计",
+      "kind": "boolean",
+      "default": false,
+      "description": "演示插件隐藏内置控件，关闭后恢复原样。"
+    },
+    {
+      "key": "sourceModalEnabled",
+      "label": "自绘弹窗（读取正文）",
+      "kind": "boolean",
+      "default": true,
+      "description": "笔记右键「读取笔记正文」：插件自己拼 DOM 的逐行源码弹窗，外观对齐历史版本对比。"
+    },
+    {
+      "key": "dbDemoEnabled",
+      "label": "插件私有表演示",
+      "kind": "boolean",
+      "default": true,
+      "description": "笔记右键「插件表」：往自己的表里记一次访问并读回来。"
+    },
+    {
+      "key": "dbVisitsTable",
+      "label": "访问统计表名",
+      "kind": "string",
+      "default": "visits",
+      "description": "插件私有表的裸名（只允许小写字母、数字、下划线），宿主会加 plugin_plugin_demo__ 前缀；改名相当于换一张表。"
+    },
+    {
+      "key": "dbPrefsTable",
+      "label": "配置表名",
+      "kind": "string",
+      "default": "prefs",
+      "description": "存插件键值配置（当前快捷键、打开次数）的表名，同样只写裸名。"
+    },
+    {
+      "key": "dbDraftsTable",
+      "label": "草稿表名",
+      "kind": "string",
+      "default": "drafts",
+      "description": "速记窗口存草稿的表名，只写裸名。"
+    },
+    {
+      "key": "shortcutEnabled",
+      "label": "全局快捷键",
+      "kind": "boolean",
+      "default": true,
+      "description": "注册全局快捷键，按下打开插件窗口里的速记工具。"
+    },
+    {
+      "key": "shortcutCombo",
+      "label": "快捷键",
+      "kind": "shortcut",
+      "default": "Ctrl+Alt+P",
+      "description": "点一下这个框，然后按下想要的组合键即可（不用手写，至少带一个 Ctrl / Alt / Shift）。改完立刻生效，旧键自动注销。"
+    },
+    {
+      "key": "windowEnabled",
+      "label": "插件窗口",
+      "kind": "boolean",
+      "default": true,
+      "description": "允许打开插件自己的窗口（速记）；关闭后快捷键与菜单项都不再开窗。"
+    },
+    {
+      "key": "windowWidth",
+      "label": "窗口宽度",
+      "kind": "number",
+      "default": 560,
+      "min": 320,
+      "max": 1600,
+      "step": 20,
+      "description": "插件窗口的初始宽度（逻辑像素）。"
+    },
+    {
+      "key": "windowHeight",
+      "label": "窗口高度",
+      "kind": "number",
+      "default": 480,
+      "min": 260,
+      "max": 1200,
+      "step": 20,
+      "description": "插件窗口的初始高度（逻辑像素）。"
+    },
+    {
+      "key": "demoBool",
+      "label": "设置分区 · 演示开关",
+      "kind": "boolean",
+      "default": true,
+      "description": "供「插件演示」设置分区演示 boolean 控件；与设置分区共用同一份 config.json。"
+    },
+    {
+      "key": "demoText",
+      "label": "设置分区 · 演示文本",
+      "kind": "string",
+      "default": "hello",
+      "description": "供「插件演示」设置分区演示 string 控件。"
+    },
+    {
+      "key": "demoMode",
+      "label": "设置分区 · 演示模式",
+      "kind": "select",
+      "default": "simple",
+      "options": [
+        {
+          "value": "simple",
+          "label": "简单"
+        },
+        {
+          "value": "advanced",
+          "label": "高级"
+        }
+      ],
+      "description": "供「插件演示」设置分区演示 select 控件。"
+    },
+    {
+      "key": "demoCount",
+      "label": "设置分区 · 演示次数",
+      "kind": "number",
+      "default": 3,
+      "min": 1,
+      "max": 10,
+      "step": 1,
+      "description": "供「插件演示」设置分区演示 number 控件。"
+    }
+  ],
+  "descriptionI18n": {
+    "en": "Demonstrates the whole plugin surface: note/category menus, command palette, editor toolbar, modals (incl. plugin-drawn ones), style overrides, toasts, the note write API, lifecycle hooks, AI tools, settings section, plugin i18n and multi-file ESM, plus plugin-owned tables, plugin windows, global shortcuts and the plugin data folder."
+  },
+  "runtime": "sandbox"
 }

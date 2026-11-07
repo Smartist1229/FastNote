@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 
+/// 宿主当前支持的插件 API 版本（ctx 契约版本）。加字段不用动它，改语义 / 删字段才 +1
+pub(super) const PLUGIN_API_VERSION: u32 = 1;
 /// 配置项 schema 的数量上限
 const CONFIG_MAX_FIELDS: usize = 32;
 /// 配置项 key 的长度上限
@@ -38,6 +40,22 @@ pub struct PluginManifest {
     pub default_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_app_version: Option<String>,
+    /// 插件 API 版本：插件声明自己按哪一版 ctx 契约编写，宿主只接受 <= 自身支持版本
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<u32>,
+    /// 允许联网的主机名白名单（ctx.net.fetch）：按主机名或后缀匹配，空表示不允许联网
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub net_domains: Vec<String>,
+    /// 运行方式：缺省 "inpage"（跑在主页面，能力全开但要信任插件）；
+    /// "sandbox" = 跑在独立源的隐藏 iframe 里，只能通过 RPC 申请能力（安全边界真实）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    /// 插件名的本地化文本：语言标识 → 文本（缺省回落 name）
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub name_i18n: HashMap<String, String>,
+    /// 插件简介的本地化文本（缺省回落 description）
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub description_i18n: HashMap<String, String>,
     /// 标签，仅用于展示
     #[serde(default)]
     pub tags: Vec<String>,
@@ -64,7 +82,8 @@ pub struct PluginManifest {
 pub struct PluginConfigField {
     pub key: String,
     pub label: String,
-    /// "boolean" | "string" | "number" | "select"
+    /// "boolean" | "string" | "number" | "select" | "shortcut"
+    /// （shortcut 的值与 string 同构，都是 "Ctrl+Alt+P" 这样的组合键字符串，只是宿主用捕获框渲染）
     pub kind: String,
     #[serde(default)]
     pub default: Option<Value>,
@@ -184,12 +203,13 @@ fn validate_config_key(key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 值是否与配置项的 kind 对应：boolean=bool、number=数字、string/select=字符串
+/// 值是否与配置项的 kind 对应：boolean=bool、number=数字、string/select/shortcut=字符串
+/// （shortcut 只是换了个控件渲染，值仍是组合键字符串）
 pub(super) fn value_matches_kind(value: &Value, kind: &str) -> bool {
     match kind {
         "boolean" => value.is_boolean(),
         "number" => value.is_number(),
-        "string" | "select" => value.is_string(),
+        "string" | "select" | "shortcut" => value.is_string(),
         _ => false,
     }
 }
@@ -201,6 +221,7 @@ pub(super) fn kind_label(kind: &str) -> &'static str {
         "number" => "数字",
         "string" => "字符串",
         "select" => "字符串（选项值）",
+        "shortcut" => "组合键字符串（如 Ctrl+Alt+P）",
         _ => "合法值",
     }
 }
@@ -220,7 +241,7 @@ fn validate_config_schema(fields: &[PluginConfigField]) -> Result<(), String> {
             return Err(format!("配置项 key 重复：「{}」", field.key));
         }
         match field.kind.as_str() {
-            "boolean" | "number" | "string" => {}
+            "boolean" | "number" | "string" | "shortcut" => {}
             "select" => {
                 if field.options.is_empty() {
                     return Err(format!(
@@ -231,7 +252,7 @@ fn validate_config_schema(fields: &[PluginConfigField]) -> Result<(), String> {
             }
             other => {
                 return Err(format!(
-                        "配置项「{}」的 kind 不合法：「{other}」（只支持 boolean / string / number / select）",
+                        "配置项「{}」的 kind 不合法：「{other}」（只支持 boolean / string / number / select / shortcut）",
                         field.key
                     ))
             }
@@ -401,4 +422,46 @@ mod tests {
         m.config = vec![bool_field("menuEnabled", true), select, number];
         assert!(validate_manifest(&m).is_ok());
     }
+}
+
+/// 极简版本比较：按 `.` 切分，数字段按数值比，非数字段按字典序。
+/// 只用于「装得上吗」这种粗判断，不追求 semver 预发布规则。
+pub(super) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let pa: Vec<&str> = a.trim().split('.').collect();
+    let pb: Vec<&str> = b.trim().split('.').collect();
+    for i in 0..pa.len().max(pb.len()) {
+        let x = pa.get(i).copied().unwrap_or("0");
+        let y = pb.get(i).copied().unwrap_or("0");
+        let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+            (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+            _ => x.cmp(y),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    Ordering::Equal
+}
+
+/// 安装前的兼容性校验：插件 API 版本不能高于宿主，minAppVersion 不能高于当前软件版本。
+/// 手工拷进插件目录的插件不过这一关，宿主激活时还会再查一次（见 host.ts）。
+pub(super) fn validate_compatibility(manifest: &PluginManifest, app_version: &str) -> Result<(), String> {
+    if let Some(api) = manifest.api_version {
+        if api > PLUGIN_API_VERSION {
+            return Err(format!(
+                "这个插件要求插件 API v{api}，当前软件只支持 v{PLUGIN_API_VERSION}，请先升级 FastNote"
+            ));
+        }
+    }
+    if let Some(required) = manifest.min_app_version.as_deref() {
+        if !required.trim().is_empty()
+            && compare_versions(app_version, required.trim()) == std::cmp::Ordering::Less
+        {
+            return Err(format!(
+                "这个插件要求 FastNote ≥ {required}，当前是 {app_version}，请先升级软件"
+            ));
+        }
+    }
+    Ok(())
 }

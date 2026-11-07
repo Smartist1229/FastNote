@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<!--
+  插件沙箱运行时（宿主内置，通过 fastnote-plugin://<目录名>/__runtime.html 提供）。
+
+  插件的 main.js 跑在这里，而不是主页面：这个源没有 __TAURI_INTERNALS__、碰不到父页面，
+  所有宿主能力只能 postMessage RPC 申请，由宿主按「这个 iframe 属于哪个插件」复核。
+
+  函数怎么过去：贡献点里的回调（菜单 onClick、命令 run、工具栏 onClick、钩子、AI tool.execute）
+  不能跨 iframe 传函数，这里给每个函数生成一个 id（{ __fn: "f12" }），宿主拿回 id 后
+  在点击时反向 invoke 回来。约定：**宿主只传可克隆的数据参数，ctx 由这里附在最后一个参数**。
+
+  加载完成 / 失败都会告诉宿主；停用或重激活时宿主直接销毁 iframe。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>FastNote Plugin Sandbox</title>
+    <style>
+      /* 隐藏但保持正常渲染：display:none 的 iframe 在部分内核里会被降频，影响定时器精度 */
+      html,
+      body {
+        margin: 0;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      const params = new URLSearchParams(location.search);
+      const DIR = params.get("dir") || "";
+      const ENTRY = params.get("entry") || "";
+      const VERSION = params.get("v") || "";
+
+      /* ---------------- RPC ---------------- */
+      let seq = 0;
+      const pending = new Map();
+
+      const rpc = (op, args) =>
+        new Promise((resolve, reject) => {
+          const id = `r${++seq}`;
+          pending.set(id, { resolve, reject });
+          parent.postMessage({ __fastnotePluginCall: id, op, args: args ?? [] }, "*");
+          setTimeout(() => {
+            if (!pending.has(id)) return;
+            pending.delete(id);
+            reject(new Error(`宿主没有响应：${op}`));
+          }, 15000);
+        });
+
+      /* ---------------- 函数桥：函数 → id ---------------- */
+      const handlers = new Map();
+      const fnId = (fn) => {
+        const id = `f${++seq}`;
+        handlers.set(id, fn);
+        return { __fn: id };
+      };
+
+      /** 深度把函数换成 { __fn }；DOM 节点换成 HTML 字符串（宿主消毒后再插入） */
+      const wrap = (value) => {
+        if (typeof value === "function") return fnId(value);
+        if (typeof Node !== "undefined" && value instanceof Node) return value.outerHTML ?? "";
+        if (Array.isArray(value)) return value.map(wrap);
+        if (value && typeof value === "object") {
+          const out = {};
+          for (const [key, inner] of Object.entries(value)) out[key] = wrap(inner);
+          return out;
+        }
+        return value;
+      };
+
+      /** 宿主事件 / 反向调用 */
+      const eventHandlers = new Map();
+      const onHostEvent = (name, handler) => {
+        const set = eventHandlers.get(name) ?? new Set();
+        set.add(handler);
+        eventHandlers.set(name, set);
+        return () => {
+          set.delete(handler);
+          if (set.size === 0) eventHandlers.delete(name);
+        };
+      };
+
+      window.addEventListener("message", async (event) => {
+        const data = event.data;
+        if (!data || typeof data !== "object") return;
+
+        if (typeof data.__fastnotePluginReply === "string") {
+          const entry = pending.get(data.__fastnotePluginReply);
+          if (!entry) return;
+          pending.delete(data.__fastnotePluginReply);
+          if (data.error) entry.reject(new Error(data.error));
+          else entry.resolve(data.result);
+          return;
+        }
+
+        // 宿主反向调用某个贡献回调：ctx 附在最后一个参数
+        if (typeof data.__fastnoteInvoke === "string") {
+          const reply = (payload) =>
+            parent.postMessage({ __fastnoteInvokeReply: data.__fastnoteInvoke, ...payload }, "*");
+          const handler = handlers.get(String(data.id ?? ""));
+          if (!handler) {
+            reply({ error: `回调不存在或已失效：${data.id}` });
+            return;
+          }
+          try {
+            const args = Array.isArray(data.args) ? data.args : [];
+            const result = await handler(...args, ctx);
+            reply({ result: result ?? null });
+          } catch (e) {
+            reply({ error: e && e.message ? e.message : String(e) });
+          }
+          return;
+        }
+
+        if (typeof data.__fastnoteEvent === "string") {
+          const set = eventHandlers.get(data.__fastnoteEvent);
+          if (!set) return;
+          for (const handler of [...set]) {
+            try {
+              handler(data.payload);
+            } catch (e) {
+              console.error(`插件事件 ${data.__fastnoteEvent} 回调失败：`, e);
+            }
+          }
+        }
+      });
+
+      /* ---------------- 初始化 ---------------- */
+      const fail = (message) => {
+        void rpc("__fail", [message]).catch(() => {});
+      };
+
+      let init;
+      try {
+        init = await rpc("__init", []);
+      } catch (e) {
+        fail(`沙箱初始化失败：${e && e.message ? e.message : e}`);
+        throw e;
+      }
+
+      /* ---------------- i18n（本地实现，与宿主同口径） ---------------- */
+      const messages = init.messages || {};
+      const lookup = (key) => {
+        let current = messages;
+        for (const part of String(key).split(".")) {
+          if (!current || typeof current !== "object" || !(part in current)) return undefined;
+          current = current[part];
+        }
+        return current;
+      };
+      const interpolate = (text, vars) =>
+        typeof text === "string"
+          ? text.replace(/\{(\w+)\}/g, (match, name) =>
+              vars && vars[name] != null ? String(vars[name]) : match,
+            )
+          : "";
+
+      /* ---------------- 清理栈 ---------------- */
+      const disposers = [];
+      const onDispose = (fn) => {
+        if (typeof fn === "function") disposers.push(fn);
+      };
+      window.addEventListener("beforeunload", () => {
+        for (const fn of disposers.reverse()) {
+          try {
+            fn();
+          } catch (e) {
+            console.error("插件清理回调失败：", e);
+          }
+        }
+      });
+
+      /* ---------------- ctx ---------------- */
+      /** 通用能力组：ctx.db.insert(...) → rpc("db.insert", [wrap(args)...]) */
+      const group = (name) => {
+        const target = {};
+        return new Proxy(target, {
+          get: (_target, method) => {
+            if (typeof method !== "string") return undefined;
+            return (...args) => rpc(`${name}.${method}`, args.map(wrap));
+          },
+        });
+      };
+
+      /** 单函数注册点（菜单 / 命令 / 钩子 …）：spec 里的函数换成 id 再发过去 */
+      const register = (op) => (spec) => rpc(op, [wrap(spec)]);
+
+      const shortcutOffs = new Map();
+
+      /** modal 选项：content 允许函数或 DOM，统一压成 HTML 字符串 */
+      const wrapModalOptions = (options) => {
+        const out = { ...(options || {}) };
+        const content = out.content;
+        if (typeof content === "function") {
+          // 插件自绘弹窗：给个只有三种收尾动作的 api，返回值当 HTML
+          const produced = content({
+            // 真实收尾：宿主收到后关闭当前弹窗，插件的 modal() Promise 随之 resolve
+            close: (value) => void rpc("ui.modal.action", ["close", value]),
+            ok: (value) => void rpc("ui.modal.action", ["ok", value]),
+            cancel: () => void rpc("ui.modal.action", ["cancel", null]),
+          });
+          out.content =
+            typeof Node !== "undefined" && produced instanceof Node
+              ? produced.outerHTML
+              : String(produced ?? "");
+        } else if (typeof Node !== "undefined" && content instanceof Node) {
+          out.content = content.outerHTML;
+        }
+        if (typeof Node !== "undefined" && out.render instanceof Node) {
+          out.render = out.render.outerHTML;
+        }
+        return wrap(out);
+      };
+
+      const ctx = {
+        dirName: DIR,
+        config: {
+          values: init.config || {},
+          set: (patch) => rpc("config.set", [patch]),
+        },
+        db: group("db"),
+        fs: group("fs"),
+        net: group("net"),
+        notes: group("notes"),
+        editor: group("editor"),
+        window: group("window"),
+        menu: {
+          note: register("menu.note"),
+          group: register("menu.group"),
+        },
+        command: register("command.register"),
+        toolbar: register("editor.toolbar"),
+        hooks: {
+          onNoteCreate: (fn) => rpc("hooks.subscribe", ["note-create", wrap(fn)]),
+          onNoteSave: (fn) => rpc("hooks.subscribe", ["note-save", wrap(fn)]),
+          onNoteDelete: (fn) => rpc("hooks.subscribe", ["note-delete", wrap(fn)]),
+          onNoteSwitch: (fn) => rpc("hooks.subscribe", ["note-switch", wrap(fn)]),
+        },
+        ai: {
+          tool: register("ai.tool"),
+          systemPrompt: (text) => rpc("ai.systemPrompt", [text]),
+          provider: register("ai.provider"),
+          getSettings: () => rpc("ai.getSettings", []),
+          updateSettings: (patch) => rpc("ai.updateSettings", [patch]),
+        },
+        settings: { section: register("settings.section") },
+        ui: {
+          toast: (message, type) => rpc("ui.toast", [message, type]),
+          /** 宿主 body / html 的 class：沙箱改不到宿主页面，只能让宿主代改 */
+          setBodyClass: (name, on) => rpc("ui.setBodyClass", [String(name), on !== false]),
+          setHtmlClass: (name, on) => rpc("ui.setHtmlClass", [String(name), on !== false]),
+          modal: (options) => rpc("ui.modal", [wrapModalOptions(options)]),
+          /** 往宿主某个元素里插一段 HTML（宿主代插），返回移除函数 */
+          mount: async (target, node) => {
+            const html =
+              typeof node === "string" ? node : typeof Node !== "undefined" && node instanceof Node ? node.outerHTML : "";
+            const token = await rpc("ui.mount", [target, html]);
+            const off = () => void rpc("ui.unmount", [token]).catch(() => {});
+            onDispose(off);
+            return off;
+          },
+        },
+        shortcut: {
+          register: async (combo, handler) => {
+            const key = `shortcut:${combo}`;
+            const off = onHostEvent(key, handler);
+            try {
+              await rpc("shortcut.register", [combo]);
+            } catch (e) {
+              off();
+              throw e;
+            }
+            shortcutOffs.set(combo, off);
+            onDispose(() => {
+              shortcutOffs.delete(combo);
+              off();
+            });
+          },
+          unregister: async (combo) => {
+            shortcutOffs.get(combo)?.();
+            shortcutOffs.delete(combo);
+            await rpc("shortcut.unregister", [combo]);
+          },
+        },
+        bus: {
+          on: async (topic, handler) => {
+            const off = onHostEvent(`bus:${topic}`, handler);
+            await rpc("bus.subscribe", [topic]);
+            onDispose(off);
+            return off;
+          },
+          emit: (topic, payload) => void rpc("bus.emit", [topic, payload]).catch(() => {}),
+        },
+        i18n: {
+          locale: init.locale || "zh-CN",
+          t: (key, vars) => {
+            const value = lookup(key);
+            return typeof value === "string" ? interpolate(value, vars) : key;
+          },
+          has: (key) => typeof lookup(key) === "string",
+        },
+        onDispose,
+        /** 渲染 Markdown 句柄：沙箱里退化成原样字符串（宿主预览时按 Markdown 处理） */
+        render: (markdown) => ({ __pluginRender: "markdown", markdown: String(markdown ?? "") }),
+      };
+
+      /* ---------------- 加载插件入口 ---------------- */
+      try {
+        const base = new URL(".", location.href);
+        const entryUrl = new URL(ENTRY, base).toString();
+        const url = VERSION ? `${entryUrl}?v=${VERSION}` : entryUrl;
+        const mod = await import(/* @vite-ignore */ url);
+        await mod.default?.activate?.(ctx);
+        parent.postMessage({ __fastnotePluginReady: DIR }, "*");
+      } catch (e) {
+        console.error("[插件沙箱] 加载失败：", e);
+        fail(e && e.message ? e.message : String(e));
+      }
+    </script>
+  </body>
+</html>

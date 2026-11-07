@@ -3,7 +3,7 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { openPluginFolder, uninstallPlugin } from "@/api/system/plugins";
+import { installDemoPlugin, openPluginFolder, uninstallPlugin } from "@/api/system/plugins";
 import { Icon } from "@/components/common/Icon";
 import { Modal } from "@/components/common/Modal";
 import { useConfirm } from "@/components/common/ConfirmDialog";
@@ -11,6 +11,7 @@ import { useToast } from "@/components/common/Toast";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { useI18n } from "@/i18n";
 import { PERMISSION_INFO } from "@/interface/system/plugins";
+import { compareVersions } from "@/plugins/version";
 import { openExternalLink } from "@/lib/app/externalLink";
 import { PluginIcon } from "../PluginIcon";
 import { pluginHost, type PluginEntry } from "@/plugins/host";
@@ -39,8 +40,14 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
   const plugins = useSyncExternalStore(pluginHost.subscribe, pluginHost.snapshot);
   const [zipBusy, setZipBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
+  /** 「安装演示插件」按钮的忙碌态（与刷新分开，两个按钮的文案各自独立） */
+  const [demoBusy, setDemoBusy] = useState(false);
   /** 正在查看权限的插件；非空时打开权限弹窗 */
   const [permTarget, setPermTarget] = useState<PluginEntry | null>(null);
+  /** 正在重载的插件（按钮忙碌态） */
+  const [reloadBusy, setReloadBusy] = useState<string | null>(null);
+  /** 诊断弹窗目标 */
+  const [diagTarget, setDiagTarget] = useState<PluginEntry | null>(null);
   /** 插件介绍展开状态（按 dirName），不持久化 */
   const [expandedDesc, setExpandedDesc] = useState<Record<string, boolean>>({});
 
@@ -66,6 +73,8 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
       filters: [{ name: t("插件包"), extensions: ["zip"] }],
     });
     if (!selected || typeof selected !== "string") return;
+    // 装之前先记一份现状：装完要能对比「新增了哪些权限」「是不是降级」
+    const beforeById = new Map(plugins.map((plugin) => [plugin.id, plugin]));
     setZipBusy(true);
     let installedManifest: Awaited<ReturnType<typeof pluginHost.installZip>> | null =
       null;
@@ -82,6 +91,16 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
     // 第二步：权限确认弹窗（即使没有权限也要弹，保持一致的安全仪式感）
     const manifest = installedManifest;
     const perms = manifest.permissions ?? [];
+    const previous = beforeById.get(manifest.id);
+    // 升级时新增的权限单独列出来：静默全授予是对用户不诚实
+    const addedPerms = previous
+      ? perms.filter((p) => !(previous.permissions ?? []).includes(p))
+      : [];
+    // 降级安装：不阻止（有时就是为了回滚），但要在弹窗里说清楚
+    const downgrade =
+      previous != null && compareVersions(manifest.version, previous.version) < 0
+        ? { from: previous.version, to: manifest.version }
+        : null;
     const permListHtml =
       perms.length === 0
         ? `<div class="text-sm text-faint">${t("无特殊权限")}</div>`
@@ -118,9 +137,9 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
                         {p}
                       </span>
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm text-body">{info?.label ?? p}</div>
+                        <div className="text-sm text-body">{info ? t(info.label) : p}</div>
                         {info?.desc && (
-                          <div className="text-[11px] text-faint mt-0.5">{info.desc}</div>
+                          <div className="text-[11px] text-faint mt-0.5">{t(info.desc)}</div>
                         )}
                       </div>
                     </div>
@@ -129,6 +148,19 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
               </div>
             )}
           </div>
+          {addedPerms.length > 0 && (
+            <p className="text-[11px] text-warning leading-relaxed">
+              {t("本次升级新增权限：{value1}", { value1: addedPerms.join("、") })}
+            </p>
+          )}
+          {downgrade && (
+            <p className="text-[11px] text-warning leading-relaxed">
+              {t("这是降级安装：已装 v{value1}，即将装 v{value2}", {
+                value1: downgrade.from,
+                value2: downgrade.to,
+              })}
+            </p>
+          )}
           <p className="text-[11px] text-faint leading-relaxed">
             {t("安装后可在设置中变更。")}
           </p>
@@ -155,16 +187,38 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
     void permListHtml;
   };
 
-  /** 重新扫描插件目录：用户直接在文件夹里增删插件后手动刷新 */
+  /**
+   * 刷新 = 装一份最新的内置演示插件再重扫目录。
+   * 开发期改完演示插件点一下就能看到效果（存在就覆盖，config.json 保留），
+   * 顺带把用户手工丢进插件文件夹里的插件也扫进来。
+   */
   const handleRefresh = async () => {
     setRefreshBusy(true);
     try {
+      await installDemoPlugin();
       await pluginHost.refresh();
-      showToast(t("已重新扫描插件文件夹"), "success");
+      showToast(t("已重新扫描插件文件夹，并更新了演示插件"), "success");
     } catch (e) {
       showToast(t("刷新失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
       setRefreshBusy(false);
+    }
+  };
+
+  /**
+   * 单独安装 / 重装演示插件。
+   * 打包版只在首次启动释放一次，用户删掉后不会再自动出现——想装回来点这里。
+   */
+  const handleInstallDemo = async () => {
+    setDemoBusy(true);
+    try {
+      await installDemoPlugin();
+      await pluginHost.refresh();
+      showToast(t("已安装演示插件（最新版本）"), "success");
+    } catch (e) {
+      showToast(t("安装演示插件失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setDemoBusy(false);
     }
   };
 
@@ -185,16 +239,65 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
     }
   };
 
+  /**
+   * 卸载插件：先查它建过哪些私有表——有的话问一句要不要一起删。
+   * 表名前缀带插件目录名，卸载后不会有人再用它们，留着就是孤儿；
+   * 但数据可能对用户有价值（重新装回插件还能读到），所以交给用户决定。
+   */
   const handleUninstall = async (plugin: PluginEntry) => {
     try {
+      const tables = await pluginHost.pluginTables(plugin.dirName);
+      let dropped = 0;
+      if (tables.length > 0) {
+        const wipe = await confirm({
+          title: t("卸载 {name}", { name: plugin.name }),
+          message: (
+            <div className="space-y-2">
+              <p className="text-sm text-body leading-relaxed">
+                {t("这个插件创建了 {count} 张数据表：", { count: tables.length })}
+              </p>
+              <p className="font-mono text-[12px] text-faint break-all">{tables.join(" · ")}</p>
+              <p className="text-[11px] text-faint leading-relaxed">
+                {t(
+                  "删除后无法恢复；保留则只卸载插件，表留在数据库里，重新安装该插件后仍能读到。",
+                )}
+              </p>
+            </div>
+          ),
+          confirmText: t("删除数据表并卸载"),
+          cancelText: t("保留数据表并卸载"),
+          danger: true,
+        });
+        if (wipe) {
+          dropped = await pluginHost.dropPluginTables(plugin.dirName);
+        }
+      }
       await pluginHost.uninstall(plugin.dirName);
-      showToast(t("已卸载：{name}", { name: plugin.name }), "success");
+      showToast(
+        dropped > 0
+          ? t("已卸载：{name}（删除 {count} 张数据表）", { name: plugin.name, count: dropped })
+          : t("已卸载：{name}", { name: plugin.name }),
+        "success",
+      );
     } catch (e) {
       showToast(t("卸载失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
-  const busy = zipBusy || refreshBusy;
+  /** 重新加载单个插件：不用关开关、不用重启软件，排查「改完没生效」时最快 */
+  const handleReload = async (plugin: PluginEntry) => {
+    setReloadBusy(plugin.dirName);
+    try {
+      await pluginHost.reloadPlugin(plugin.dirName);
+      showToast(t("已重新加载：{name}", { name: plugin.name }), "success");
+    } catch (e) {
+      showToast(t("重新加载失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setReloadBusy(null);
+    }
+  };
+
+  const busy = zipBusy || refreshBusy || demoBusy;
 
   /** 「配置」按钮：该插件在 registry 里有设置分区时显示，点击跳到对应分区 */
   const renderConfigButton = (plugin: PluginEntry) => {
@@ -239,9 +342,9 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
             {permId}
           </span>
           <div className="flex-1 min-w-0">
-            <div className="text-sm text-body">{info.label}</div>
+            <div className="text-sm text-body">{t(info.label)}</div>
             {info.desc && (
-              <div className="text-[11px] text-faint mt-0.5">{info.desc}</div>
+              <div className="text-[11px] text-faint mt-0.5">{t(info.desc)}</div>
             )}
           </div>
         </div>
@@ -277,9 +380,18 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
         <button
           onClick={() => void guard(handleRefresh)}
           disabled={busy}
+          title={t("刷新会先安装最新版本的演示插件，再重新扫描插件文件夹")}
           className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt border border-line rounded-xl hover:bg-surface transition-colors flex-shrink-0 disabled:opacity-50"
         >
           {refreshBusy ? t("刷新中...") : t("刷新")}
+        </button>
+        <button
+          onClick={() => void guard(handleInstallDemo)}
+          disabled={busy}
+          title={t("把内置的演示插件装回来（会覆盖为最新版本，配置保留）")}
+          className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt border border-line rounded-xl hover:bg-surface transition-colors flex-shrink-0 disabled:opacity-50"
+        >
+          {demoBusy ? t("安装中...") : t("安装演示插件")}
         </button>
         <button
           onClick={() => void guard(handleOpenFolder)}
@@ -373,6 +485,24 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
                 )}
                 {renderConfigButton(plugin)}
                 <button
+                  onClick={() => void handleReload(plugin)}
+                  disabled={busy || reloadBusy === plugin.dirName}
+                  className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                  title={t("重新加载这个插件（等价于停用再启用）")}
+                >
+                  <Icon name="sidebar-refresh" className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="leading-none">{t("重载")}</span>
+                </button>
+                <button
+                  onClick={() => setDiagTarget(plugin)}
+                  disabled={busy}
+                  className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                  title={t("查看这个插件注册了哪些东西")}
+                >
+                  <Icon name="sidebar-list" className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="leading-none">{t("诊断")}</span>
+                </button>
+                <button
                   onClick={() => void handleUninstall(plugin)}
                   disabled={busy}
                   className="inline-flex h-7 items-center px-2 rounded-lg text-[11px] font-medium leading-none text-danger-strong hover:bg-danger-soft transition-colors disabled:opacity-50"
@@ -417,6 +547,90 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
           </div>
         </Modal>
       )}
+
+      {/* 诊断弹窗：这个插件到底注册上了什么，一眼看清 */}
+      {diagTarget && (() => {
+        const diag = pluginHost.pluginDiagnostics(diagTarget.dirName);
+        const rows: { label: string; value: number }[] = [
+          { label: t("笔记右键菜单"), value: diag.contributions.noteMenus },
+          { label: t("分组右键菜单"), value: diag.contributions.groupMenus },
+          { label: t("命令面板命令"), value: diag.contributions.commands },
+          { label: t("编辑器工具栏"), value: diag.contributions.toolbars },
+          { label: t("AI 工具"), value: diag.contributions.aiTools },
+          { label: t("AI 提示词"), value: diag.contributions.aiPrompts },
+          { label: t("AI 服务商模板"), value: diag.contributions.aiProviders },
+          { label: t("设置分区"), value: diag.contributions.settingsSections },
+          { label: t("生命周期钩子"), value: diag.contributions.hooks },
+        ];
+        return (
+          <Modal
+            isOpen
+            onClose={() => setDiagTarget(null)}
+            title={t("{name} 的诊断", { name: diagTarget.name })}
+            zIndex={100}
+          >
+            <div className="space-y-3">
+              <div className="bg-surface-alt border border-line rounded-xl px-3 py-2 text-[11px] text-faint leading-relaxed break-all">
+                <div>
+                  {t("目录名：{value1}", { value1: diag.dirName })} · v{diag.version}
+                </div>
+                <div>
+                  {diag.enabled ? t("已启用") : t("已停用")}
+                  {diag.failed ? ` · ${t("加载失败")}` : ""}
+                </div>
+                {diag.error && <div className="text-danger-strong mt-1">{diag.error}</div>}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {rows.map((row) => (
+                  <div
+                    key={row.label}
+                    className="flex items-center justify-between px-3 py-2 rounded-xl bg-app border border-line-soft"
+                  >
+                    <span className="text-[11px] text-body">{row.label}</span>
+                    <span
+                      className={`text-[11px] font-mono tabular-nums ${
+                        row.value > 0 ? "text-primary-500" : "text-faint"
+                      }`}
+                    >
+                      {row.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <p className="text-[11px] text-muted pb-1">{t("占用的快捷键")}</p>
+                <p className="text-[11px] text-faint font-mono break-all">
+                  {diag.shortcuts.length > 0 ? diag.shortcuts.join(" · ") : t("（没有）")}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] text-muted pb-1">{t("已授予的权限")}</p>
+                <p className="text-[11px] text-faint font-mono break-all">
+                  {diag.permissions.length > 0 ? diag.permissions.join(" · ") : t("（无）")}
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    void handleReload(diagTarget);
+                    setDiagTarget(null);
+                  }}
+                  className="btn-ghost px-4 py-2 text-sm"
+                >
+                  {t("重新加载")}
+                </button>
+                <button onClick={() => setDiagTarget(null)} className="btn-ghost px-4 py-2 text-sm">
+                  {t("关闭")}
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {/* useConfirm 的 portal 必须渲染在 JSX 里 */}
       {confirmDialog}

@@ -8,6 +8,7 @@ import { getBadge } from "@/config/app/settingBadges";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 import { normalizeHexList } from "@/lib/theme/theme";
+import { reservedShortcutName } from "@/plugins/reservedShortcuts";
 
 /** 徽标 tone → 配色：小圆角、半透明浅底、同系前景与描边；purple 暂无主题令牌，先用默认色板 */
 const BADGE_TONE_CLASS: Record<SettingBadgeTone, string> = {
@@ -388,5 +389,126 @@ export const SelectInput: React.FC<{
           document.body,
         )}
     </>
+  );
+};
+
+/* ---------------- 组合键输入（插件配置项 kind = "shortcut" 用） ---------------- */
+
+/** 单键名归一化：字母取 code（中文输入法下 key 不可靠），字母键 → "P"，空格 → "Space"，F1 原样 */
+const shortcutKeyName = (event: KeyboardEvent): string => {
+  const code = event.code ?? "";
+  if (code.startsWith("Key") && code.length === 4) return code.slice(3);
+  if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
+  if (code === "Space") return "Space";
+  if (/^F\d{1,2}$/.test(event.key)) return event.key.toUpperCase();
+  if (event.key.length === 1) return event.key.toUpperCase();
+  return event.key;
+};
+
+/**
+ * keydown → "Ctrl+Shift+P"。
+ * 只按修饰键时返回 null（继续等主键）；顺序固定 Ctrl → Shift → Alt → Meta，
+ * 与宿主 parseShortcut 拼 label 的顺序一致，避免同一个键位写出两种字符串。
+ */
+const shortcutComboOf = (event: KeyboardEvent): string | null => {
+  const key = shortcutKeyName(event);
+  if (["Control", "Shift", "Alt", "Meta", ""].includes(key)) return null;
+  const parts: string[] = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.altKey) parts.push("Alt");
+  if (event.metaKey) parts.push("Meta");
+  parts.push(key);
+  return parts.join("+");
+};
+
+/** 至少带一个修饰键：裸字母做全局快捷键会把正常打字全吃掉 */
+const shortcutHasModifier = (combo: string): boolean => /^(Ctrl|Shift|Alt|Meta)\+/.test(combo);
+
+/**
+ * 组合键设置项：点一下进入捕获态，按下的组合键直接变成 "Ctrl+Alt+P" 这种字符串。
+ *
+ * 为什么不用输入框：手写 "Ctrl+Alt+P" 要背格式（大小写、分隔符、修饰键顺序），
+ * 写错了只会在插件注册快捷键时抛错，用户根本不知道错在哪。
+ *
+ * 捕获期间 `stopPropagation` 只能挡住 React 树里的监听；宿主与插件挂在 window **捕获阶段**
+ * 的监听（Ctrl+P 跳转、插件自己的快捷键）已经先跑过了——所以按到「当前生效的那个键」时，
+ * 它可能顺手把原功能也触发一次。这不影响设置结果，属于已知的轻微副作用。
+ */
+export const ShortcutInput: React.FC<{
+  value: string;
+  onChange: (combo: string) => void;
+}> = ({ value, onChange }) => {
+  const { t } = useI18n();
+  const [capturing, setCapturing] = useState(false);
+  /** 捕获态下的提示：没有修饰键 / 撞上宿主已占用的键位（两者文案不同） */
+  const [invalid, setInvalid] = useState(false);
+  const [reservedBy, setReservedBy] = useState("");
+
+  const stop = () => {
+    setCapturing(false);
+    setInvalid(false);
+    setReservedBy("");
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (!capturing) return;
+    // 捕获态下所有按键都归这里：既不让页面滚动 / 焦点跑掉，也不让外部再处理一遍
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      stop();
+      return;
+    }
+    const combo = shortcutComboOf(event.nativeEvent);
+    if (!combo) return;
+    if (!shortcutHasModifier(combo)) {
+      setInvalid(true);
+      setReservedBy("");
+      return;
+    }
+    // 宿主自己占用的键位（Ctrl+F 这类）：写进配置也只会在注册时失败，当场拒绝
+    const reserved = reservedShortcutName(combo);
+    if (reserved) {
+      setInvalid(false);
+      setReservedBy(reserved);
+      return;
+    }
+    setInvalid(false);
+    setReservedBy("");
+    setCapturing(false);
+    onChange(combo);
+  };
+
+  const label = !capturing
+    ? value || t("点击后按下组合键")
+    : reservedBy
+      ? t("这个组合键已被「{name}」占用，换一个", { name: t(reservedBy) })
+      : invalid
+        ? t("组合键至少要有一个 Ctrl / Alt / Shift")
+        : t("按下组合键…");
+
+  /** 提示态（不接受当前按键）时文字用危险色，正常捕获 / 已设值时用常规色 */
+  const warning = capturing && (invalid || reservedBy !== "");
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setInvalid(false);
+        setReservedBy("");
+        setCapturing(true);
+      }}
+      onKeyDown={handleKeyDown}
+      onBlur={stop}
+      title={t("点一下，然后按下要用的组合键（Esc 取消）")}
+      className={`min-w-[168px] px-2.5 py-1.5 text-xs rounded-lg border text-left font-mono transition-colors ${
+        capturing
+          ? "border-primary-400 bg-surface ring-1 ring-primary-400/30"
+          : "border-line bg-app/60 hover:bg-surface"
+      } ${warning ? "text-danger" : capturing || !value ? "text-faint" : "text-body"}`}
+    >
+      {label}
+    </button>
   );
 };

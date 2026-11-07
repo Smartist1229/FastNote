@@ -20,7 +20,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # tray-icon：托盘图标必须在 Rust 侧编译进来，否则前端的 tray 命令运行时不存在
 # unstable：内置浏览器用多 WebView（同一窗口里工具栏 + 网页各一个 WebView）
-tauri = { version = "2", features = ["tray-icon", "unstable"] }
+# devtools：内置浏览器要能开控制台。wry 在 release 下默认关闭 devtools，
+#   不加这个 feature 连 F12 与右键「检查」都不会有（它同时是 open_devtools 的门限）
+tauri = { version = "2", features = ["tray-icon", "unstable", "devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"

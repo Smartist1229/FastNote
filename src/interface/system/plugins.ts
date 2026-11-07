@@ -42,13 +42,38 @@ export const PERMISSION_INFO: Record<
     label: "添加设置分区",
     desc: "在设置窗口中添加该插件自己的设置分区（值保存在插件配置里）",
   },
+  "db.read_write": {
+    label: "插件私有数据表",
+    desc: "创建、删除并读写该插件自己的数据表（表名带插件前缀，碰不到宿主与其它插件的数据）",
+  },
+  "window.open": {
+    label: "打开插件窗口",
+    desc: "用插件目录里的页面单独开一个窗口（插件停用时会一起关掉）",
+  },
+  "shortcut.register": {
+    label: "注册快捷键",
+    desc: "注册全局快捷键并接管对应的按键组合（插件停用时自动注销）",
+  },
+  "fs.read_write": {
+    label: "插件文件存储",
+    desc: "在该插件自己的数据目录里读写文件（<数据目录>/plugin-data/<插件>/，单文件 4MB 上限）",
+  },
+  "net.fetch": {
+    label: "联网（宿主代理）",
+    desc: "通过宿主代理访问 plugin.json 里 netDomains 声明的主机（不支持任意域名）",
+  },
 };
 
 /** 已知权限标识符集合（运行时用，避免硬编码） */
 export const KNOWN_PERMISSIONS = Object.freeze(Object.keys(PERMISSION_INFO));
 
 /** 插件配置字段类型：决定设置弹窗里渲染哪种控件 */
-export type PluginConfigFieldKind = "boolean" | "string" | "number" | "select";
+/**
+ * 配置项控件种类：
+ *   boolean → 开关；string → 文本框；number → 数字框；select → 下拉；
+ *   shortcut → 组合键捕获框（值仍是 "Ctrl+Alt+P" 这样的字符串）
+ */
+export type PluginConfigFieldKind = "boolean" | "string" | "number" | "select" | "shortcut";
 
 /** select 字段的可选项 */
 export interface PluginConfigOption {
@@ -94,6 +119,20 @@ export interface PluginManifest {
   /** 未持久化过启用状态时的默认开关 */
   defaultEnabled: boolean;
   minAppVersion?: string;
+  /**
+   * 运行方式：
+   *   - "inpage"（默认）：跑在主页面里，能力全开，但插件要自己可信；
+   *   - "sandbox"：跑在独立源的隐藏 iframe 里，只能通过 RPC 申请能力（安全边界真实）。
+   */
+  runtime?: "inpage" | "sandbox";
+  /** 插件 API 版本：插件按哪一版 ctx 契约编写（宿主只接受 <= 自身支持版本） */
+  apiVersion?: number;
+  /** 联网白名单（ctx.net.fetch 用）：主机名或后缀，如 "api.example.com"；空表示不允许联网 */
+  netDomains?: string[];
+  /** 插件名的本地化文本：语言标识 → 文本（缺省回落 name） */
+  nameI18n?: Record<string, string>;
+  /** 插件简介的本地化文本（缺省回落 description） */
+  descriptionI18n?: Record<string, string>;
   /** 展示用标签 */
   tags?: string[];
   /** 项目主页（空串表示没有） */

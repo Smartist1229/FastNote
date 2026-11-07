@@ -42,6 +42,10 @@ export const enabledCapabilities = (config, t) => {
   if (config.effectEnabled === true) list.push(t("ui.capabilitiesList.effect"));
   if (config.hideStats === true) list.push(t("ui.capabilitiesList.hideStats"));
   if (config.notesEnabled !== false) list.push(t("ui.capabilitiesList.notes"));
+  if (config.sourceModalEnabled !== false) list.push(t("ui.capabilitiesList.sourceModal"));
+  if (config.dbDemoEnabled !== false) list.push(t("ui.capabilitiesList.db"));
+  if (config.shortcutEnabled !== false) list.push(t("ui.capabilitiesList.shortcut"));
+  if (config.windowEnabled !== false) list.push(t("ui.capabilitiesList.window"));
   return list;
 };
 

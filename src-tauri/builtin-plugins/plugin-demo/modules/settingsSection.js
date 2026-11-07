@@ -6,10 +6,12 @@
  * 同一插件注册多个分区时，宿主设置导航会以插件名为父级、分区为二级菜单；
  * 只有一个分区时不显示父级（与旧行为一致）。这是本插件配置的唯一 UI
  * （宿主不会为主动贡献分区的插件再自动生成配置分区），所以两个分区合计必须
- * 覆盖 plugin.json 的 config 全部 18 个键，否则删除配置弹窗后这些项没有入口。
+ * 覆盖 plugin.json 的 config 全部 28 个键，否则删除配置弹窗后这些项没有入口。
  *
  * fields 与 plugin.json 的 config schema 同构，kind / default / options / min / max / step
  * 必须与 manifest.config 完全一致（后端按 manifest schema 过滤写入，不一致会被丢弃）。
+ * kind 可选 boolean / number / select / string / shortcut（shortcut = 组合键捕获框，
+ * 值仍是 "Ctrl+Alt+P" 这样的字符串，由宿主负责渲染与校验）。
  * 分区里改一项立即写进 config.json；group title / description、label / description、
  * select 选项文案全部跟随软件语言（ctx.i18n）。
  */
@@ -29,7 +31,7 @@ export const registerSettingsSection = (ctx, config) => {
   const t = (key, vars) => ctx.i18n.t(key, vars);
 
   try {
-    // ── 分区一：主分区（字段按功能分类，覆盖 13 个 config 键） ──
+    // ── 分区一：主分区（字段按功能分类，覆盖 23 个 config 键） ──
     ctx.settings.section({
       id: "main",
       title: t("settings.sectionTitle"),
@@ -81,6 +83,41 @@ export const registerSettingsSection = (ctx, config) => {
             makeField(t, "effectEnabled", "boolean", { default: false }),
             makeField(t, "hideStats", "boolean", { default: false }),
             makeField(t, "greeting", "string", { default: "你好！" }),
+          ],
+        },
+        {
+          id: "sourceDb",
+          title: t("settings.groups.sourceDb"),
+          description: t("settings.groups.sourceDbDesc"),
+          fields: [
+            makeField(t, "sourceModalEnabled", "boolean", { default: true }),
+            makeField(t, "dbDemoEnabled", "boolean", { default: true }),
+            makeField(t, "dbVisitsTable", "string", { default: "visits" }),
+            makeField(t, "dbPrefsTable", "string", { default: "prefs" }),
+            makeField(t, "dbDraftsTable", "string", { default: "drafts" }),
+          ],
+        },
+        {
+          id: "shortcutWindow",
+          title: t("settings.groups.shortcutWindow"),
+          description: t("settings.groups.shortcutWindowDesc"),
+          fields: [
+            makeField(t, "shortcutEnabled", "boolean", { default: true }),
+            // kind = shortcut：宿主渲染成「点一下按键」的捕获框，不再让人手写 "Ctrl+Alt+P"
+            makeField(t, "shortcutCombo", "shortcut", { default: "Ctrl+Alt+P" }),
+            makeField(t, "windowEnabled", "boolean", { default: true }),
+            makeField(t, "windowWidth", "number", {
+              default: 560,
+              min: 320,
+              max: 1600,
+              step: 20,
+            }),
+            makeField(t, "windowHeight", "number", {
+              default: 480,
+              min: 260,
+              max: 1200,
+              step: 20,
+            }),
           ],
         },
       ],

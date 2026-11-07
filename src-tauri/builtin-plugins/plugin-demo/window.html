@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<!--
+  插件自己的窗口页面：一个「速记」小工具（演示 ctx.window + ctx.db 的组合用法）。
+
+  这个页面跑在插件的 iframe 里（fastnote-plugin 源），拿不到宿主 IPC；
+  读写数据 / 关闭窗口都靠 postMessage 找宿主外壳代理（public/plugin-window.js），
+  外壳只代理「本窗口对应的那个插件」的能力，页面改不了 dirName。
+
+  数据落在插件自己的表里：
+    <dbDraftsTable>（默认 drafts）  —— 每条草稿一行：content / chars
+    <dbPrefsTable>（默认 prefs）    —— key/value：shortcut（当前键位）、opens（打开次数）
+  表名、语言、当前键位都由插件的 modules/windows.js 通过 query 传进来。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plugin Tool</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="plugin-demo-tool">
+    <main class="plugin-demo-tool-card">
+      <header class="plugin-demo-tool-head">
+        <span class="plugin-demo-tool-dot" aria-hidden="true"></span>
+        <h1 id="heading"></h1>
+        <kbd id="hotkey" class="plugin-demo-tool-kbd" title="">—</kbd>
+      </header>
+
+      <p id="lead" class="plugin-demo-tool-lead"></p>
+
+      <textarea id="pad" class="plugin-demo-tool-pad" spellcheck="false"></textarea>
+
+      <div class="plugin-demo-tool-meta">
+        <span id="statLines"></span>
+        <span id="statChars"></span>
+        <span id="statWords"></span>
+        <span id="opens" class="plugin-demo-tool-opens"></span>
+      </div>
+
+      <footer class="plugin-demo-tool-actions">
+        <button id="save" type="button" class="plugin-demo-tool-btn is-primary"></button>
+        <button id="clear" type="button" class="plugin-demo-tool-btn"></button>
+        <span id="status" class="plugin-demo-tool-status" role="status"></span>
+        <button id="close" type="button" class="plugin-demo-tool-btn"></button>
+      </footer>
+
+      <section class="plugin-demo-tool-recent">
+        <p id="recentTitle" class="plugin-demo-tool-recent-title"></p>
+        <ul id="list" class="plugin-demo-tool-list"></ul>
+      </section>
+    </main>
+
+    <script type="module">
+      /* ── 由宿主转交的参数（这个页面没有 ctx，读不到插件配置） ── */
+      const params = new URLSearchParams(location.search);
+      const LANG = params.get("lang") || "zh";
+      const PREFS_TABLE = params.get("prefs") || "prefs";
+      const DRAFTS_TABLE = params.get("drafts") || "drafts";
+      const COMBO = params.get("combo") || "Ctrl+Alt+P";
+
+      /* ── 与宿主外壳的约定：postMessage 请求 → 外壳代调宿主命令 → 回包 ── */
+      const pending = new Map();
+      let seq = 0;
+      const callHost = (op, payload) =>
+        new Promise((resolve, reject) => {
+          const id = `c${++seq}`;
+          pending.set(id, { resolve, reject });
+          parent.postMessage({ __fastnoteCall: id, op, payload: payload ?? {} }, "*");
+          setTimeout(() => {
+            if (!pending.has(id)) return;
+            pending.delete(id);
+            reject(new Error("host did not answer"));
+          }, 8000);
+        });
+
+      window.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || typeof data.__fastnoteReply !== "string") return;
+        const entry = pending.get(data.__fastnoteReply);
+        if (!entry) return;
+        pending.delete(data.__fastnoteReply);
+        if (data.error) entry.reject(new Error(data.error));
+        else entry.resolve(data.result);
+      });
+
+      /* ── 文案：直接读插件自己的语言包（协议服务 .json），跟随软件语言 ── */
+      // 先试基础语言（zh / en，语言包就是这个粒度），再试完整 locale
+      const DICT_CANDIDATES = [...new Set([LANG.split("-")[0], LANG, "zh", "en"])];
+      const loadDict = async () => {
+        for (const lang of DICT_CANDIDATES) {
+          try {
+            const response = await fetch(`./locales/${lang}.json`);
+            if (!response.ok) continue;
+            const parsed = await response.json();
+            if (parsed && typeof parsed === "object") return parsed;
+          } catch {
+            // 换下一个候选语言
+          }
+        }
+        return {};
+      };
+
+      const dict = await loadDict();
+      /** t("scratch.save", { id })：点号取 key + {占位符} 替换，缺 key 时回退成 key 本身 */
+      const t = (key, vars) => {
+        let current = dict;
+        for (const part of key.split(".")) {
+          if (!current || typeof current !== "object" || !(part in current)) return key;
+          current = current[part];
+        }
+        if (typeof current !== "string") return key;
+        return current.replace(/\{(\w+)\}/g, (match, name) =>
+          vars && vars[name] != null ? String(vars[name]) : match,
+        );
+      };
+
+      const el = (id) => document.getElementById(id);
+      const pad = el("pad");
+      const statusEl = el("status");
+
+      const setStatus = (text, tone) => {
+        statusEl.textContent = text || "";
+        statusEl.dataset.tone = tone || "";
+      };
+
+      /* ── 静态文案 ── */
+      document.title = t("scratch.heading");
+      el("heading").textContent = t("scratch.heading");
+      el("lead").textContent = t("scratch.lead", { combo: COMBO });
+      pad.placeholder = t("scratch.placeholder");
+      el("save").textContent = t("scratch.save");
+      el("clear").textContent = t("scratch.clear");
+      el("close").textContent = t("scratch.close");
+      el("recentTitle").textContent = t("scratch.recent");
+      el("hotkey").textContent = COMBO;
+      el("hotkey").title = t("scratch.hotkeyHint", { combo: COMBO });
+
+      /* ── 统计 ── */
+      const countWords = (text) => {
+        const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) || []).length;
+        const latin = (text.match(/[A-Za-z0-9_'’-]+/g) || []).length;
+        return cjk + latin;
+      };
+
+      const paintStats = () => {
+        const text = pad.value;
+        const lines = text ? text.split("\n").length : 0;
+        const chars = [...text].length;
+        el("statLines").textContent = `${lines} ${t("scratch.lines")}`;
+        el("statChars").textContent = `${chars} ${t("scratch.chars")}`;
+        el("statWords").textContent = `${countWords(text)} ${t("scratch.words")}`;
+      };
+
+      /* ── 建表（幂等）：表可能还没建过，先确保一次 ── */
+      const ensureTables = async () => {
+        await callHost("db.createTable", {
+          table: PREFS_TABLE,
+          columns: [
+            { name: "key", kind: "text" },
+            { name: "value", kind: "text" },
+          ],
+        });
+        await callHost("db.createTable", {
+          table: DRAFTS_TABLE,
+          columns: [
+            { name: "content", kind: "text" },
+            { name: "chars", kind: "integer" },
+          ],
+        });
+      };
+
+      const readPref = async (key) => {
+        const rows = await callHost("db.query", {
+          table: PREFS_TABLE,
+          filter: { key },
+          limit: 1,
+        });
+        const value = Array.isArray(rows) && rows[0] ? rows[0].value : null;
+        return typeof value === "string" ? value : null;
+      };
+
+      /* ── 草稿列表 ── */
+      const fmtTime = (raw) => {
+        const text = typeof raw === "string" ? raw : "";
+        // sqlite 的 datetime('now') 是 "YYYY-MM-DD HH:MM:SS"（UTC），只留 MM-DD HH:MM 够看
+        const match = text.match(/^\d{4}-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+        return match ? `${match[1]}-${match[2]} ${match[3]}:${match[4]}` : text;
+      };
+
+      const previewOf = (content) => {
+        const firstLine =
+          String(content || "")
+            .split("\n")
+            .map((line) => line.trim())
+            .find(Boolean) || "";
+        return firstLine.length > 46 ? `${firstLine.slice(0, 46)}…` : firstLine;
+      };
+
+      const renderList = (rows) => {
+        const list = el("list");
+        list.replaceChildren();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "plugin-demo-tool-empty";
+          empty.textContent = t("scratch.empty");
+          list.append(empty);
+          return;
+        }
+        for (const row of rows) {
+          const item = document.createElement("li");
+          item.className = "plugin-demo-tool-item";
+          item.dataset.id = String(row.id);
+
+          const main = document.createElement("button");
+          main.type = "button";
+          main.className = "plugin-demo-tool-item-main";
+          main.dataset.action = "load";
+
+          const text = document.createElement("span");
+          text.className = "plugin-demo-tool-item-text";
+          text.textContent = previewOf(row.content) || t("scratch.untitled");
+
+          const meta = document.createElement("span");
+          meta.className = "plugin-demo-tool-item-meta";
+          meta.textContent = `#${row.id} · ${row.chars ?? 0} ${t("scratch.chars")} · ${fmtTime(row.created_at)}`;
+
+          main.append(text, meta);
+
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "plugin-demo-tool-item-remove";
+          remove.dataset.action = "remove";
+          remove.textContent = t("scratch.remove");
+
+          item.append(main, remove);
+          list.append(item);
+        }
+      };
+
+      const refreshList = async () => {
+        const rows = await callHost("db.query", {
+          table: DRAFTS_TABLE,
+          limit: 8,
+        });
+        renderList(rows);
+      };
+
+      const refreshOpens = async () => {
+        const raw = await readPref("opens");
+        const count = Number.parseInt(raw ?? "0", 10) || 0;
+        el("opens").textContent = t("scratch.opensLabel", { count });
+      };
+
+      /* ── 交互 ── */
+      pad.addEventListener("input", paintStats);
+
+      el("save").addEventListener("click", async () => {
+        const content = pad.value;
+        if (!content.trim()) {
+          setStatus(t("scratch.noContent"), "warn");
+          pad.focus();
+          return;
+        }
+        try {
+          const id = await callHost("db.insert", {
+            table: DRAFTS_TABLE,
+            values: { content, chars: [...content].length },
+          });
+          await refreshList();
+          // 顺手在插件数据目录留一份最新草稿（ctx.fs 的窗口侧用法），失败不影响保存结果
+          void callHost("fs.write", { relPath: "latest.txt", content }).catch(() => {});
+          setStatus(t("scratch.saved", { id }), "ok");
+        } catch (e) {
+          setStatus(t("scratch.saveFailed", { error: e.message || e }), "error");
+        }
+      });
+
+      el("clear").addEventListener("click", () => {
+        pad.value = "";
+        paintStats();
+        setStatus(t("scratch.cleared"), "");
+        pad.focus();
+      });
+
+      el("close").addEventListener("click", () => {
+        void callHost("window.close").catch(() => window.close());
+      });
+
+      el("list").addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-action]");
+        if (!button) return;
+        const item = button.closest(".plugin-demo-tool-item");
+        if (!item) return;
+        const id = Number(item.dataset.id);
+        if (button.dataset.action === "remove") {
+          try {
+            await callHost("db.remove", { table: DRAFTS_TABLE, filter: { id } });
+            await refreshList();
+            setStatus(t("scratch.removed", { id }), "");
+          } catch (e) {
+            setStatus(t("scratch.saveFailed", { error: e.message || e }), "error");
+          }
+          return;
+        }
+        try {
+          const rows = await callHost("db.query", {
+            table: DRAFTS_TABLE,
+            filter: { id },
+            limit: 1,
+          });
+          const content = Array.isArray(rows) && rows[0] ? rows[0].content : "";
+          pad.value = typeof content === "string" ? content : "";
+          paintStats();
+          pad.focus();
+          setStatus(t("scratch.loaded", { id }), "ok");
+        } catch (e) {
+          setStatus(t("scratch.loadFailed", { error: e.message || e }), "error");
+        }
+      });
+
+      /* ── 启动 ── */
+      paintStats();
+      try {
+        await ensureTables();
+        await refreshList();
+        await refreshOpens();
+        const effective = await readPref("shortcut");
+        if (effective) {
+          el("hotkey").textContent = effective;
+          el("hotkey").title = t("scratch.hotkeyHint", { combo: effective });
+        }
+        // 统计里那行「已打开 N 次」只在拿到数据后才有意义
+        el("opens").hidden = false;
+      } catch (e) {
+        setStatus(t("scratch.unsupported", { error: e.message || e }), "error");
+      }
+
+      pad.focus();
+    </script>
+  </body>
+</html>
