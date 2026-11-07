@@ -71,8 +71,10 @@ export const buildEditorColors = (
   quoteBg: tokens.surfaceAlt,
   quoteText: tokens.textMuted,
   tableBorder: tokens.border,
-  tableHeaderBg: tokens.surfaceAlt,
-  tableStripeBg: tokens.appBg,
+  // 表格底色掺一点强调色：不与预览背景、引用块背景同色，任何主题下都能独立出来；
+  // 表头仍用 surfaceStrong 压深一档，保证层次。
+  tableBg: `color-mix(in srgb, ${tokens.accent} 14%, ${tokens.surface})`,
+  tableHeaderBg: tokens.surfaceStrong,
   markBg: hexToRgba(tokens.warning, 0.35),
   markText: tokens.textInk,
   noteColor: tokens.info,
@@ -256,7 +258,6 @@ export const buildNoteEditorConfig = (
         max: clamp(settings.imageZoomMax, 2, 20),
       },
       tables: {
-        striped: settings.tableStriped,
         bordered: settings.tableBordered,
         compact: settings.tableCompact,
         fullWidth: settings.tableFullWidth,

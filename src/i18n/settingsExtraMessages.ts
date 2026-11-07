@@ -126,8 +126,6 @@ export const settingsExtraMessages: Record<string, string> = {
   "把 Markdown 顶部的 front matter 渲染成一张属性卡。": "Render Markdown front matter as a properties card.",
   "显示脚注区": "Show footnotes",
   "在文末汇总所有脚注，正文里的脚注标号可点回正文。": "Collect footnotes at the end of the document with links back to their references.",
-  "表格斑马纹": "Striped tables",
-  "表格隔行换底色，长表格更好读。": "Alternate row backgrounds to make long tables easier to read.",
   "表格边框": "Table borders",
   "给每个单元格加边框。": "Add borders to every table cell.",
   "表格紧凑": "Compact tables",

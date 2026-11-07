@@ -170,7 +170,6 @@ export const Demo = () => {
 | `math` | `boolean` | `true` | KaTeX 公式 |
 | `mermaid` | `boolean` | `true` | Mermaid 图表 |
 | `mermaidTheme` | `"default" \| "dark" \| "forest" \| "neutral" \| "base"` | `"default"` | |
-| `tables.striped` | `boolean` | `true` | 斑马纹 |
 | `tables.bordered` | `boolean` | `false` | 全边框 |
 | `tables.compact` | `boolean` | `false` | 紧凑 |
 | `tables.fullWidth` | `boolean` | `true` | 撑满宽度 |
@@ -355,7 +354,7 @@ accent accentHover accentSoft onAccent link selection
 codeBg codeText codeHeaderBg codeBorder codeHighlight codeToolHover
 inlineCodeBg inlineCodeText
 // 引用 / 表格 / 标记 / 提示块
-quoteBorder quoteBg quoteText tableBorder tableHeaderBg tableStripeBg
+quoteBorder quoteBg quoteText tableBorder tableBg tableHeaderBg
 markBg markText noteColor tipColor warningColor cautionColor danger
 // 结构性颜色
 shadow chipShadow overlay divider

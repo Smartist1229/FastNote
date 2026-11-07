@@ -204,8 +204,6 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   showFrontmatter: true,
   /** 显示脚注区 */
   showFootnotes: true,
-  /** 表格斑马纹 */
-  tableStriped: true,
   /** 表格边框 */
   tableBordered: false,
   /** 表格紧凑 */

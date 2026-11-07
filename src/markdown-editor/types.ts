@@ -158,10 +158,10 @@ export interface MarkdownThemeColors {
   quoteText: string;
   /** 表格边框 */
   tableBorder: string;
+  /** 表格整体底色（让表格从正文背景里独立出来） */
+  tableBg: string;
   /** 表头底色 */
   tableHeaderBg: string;
-  /** 表格斑马纹底色 */
-  tableStripeBg: string;
   /** 高亮标记底色 */
   markBg: string;
   /** 高亮标记文字 */
@@ -412,7 +412,6 @@ export interface MarkdownPreviewConfig {
   mermaidTheme: "default" | "dark" | "forest" | "neutral" | "base";
   /** 表格样式 */
   tables: {
-    striped: boolean;
     bordered: boolean;
     compact: boolean;
     /** 撑满内容宽度（否则按内容自适应） */

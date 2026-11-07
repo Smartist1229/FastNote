@@ -250,8 +250,6 @@ export interface EditorSettings {
   showFrontmatter: boolean;
   /** 显示脚注区 */
   showFootnotes: boolean;
-  /** 表格斑马纹 */
-  tableStriped: boolean;
   /** 表格边框 */
   tableBordered: boolean;
   /** 表格紧凑（缩小单元格内边距） */

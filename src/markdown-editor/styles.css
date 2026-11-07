@@ -41,8 +41,8 @@
   --mde-quote-bg: #f8fafc;
   --mde-quote-text: #475569;
   --mde-table-border: #e2e8f0;
+  --mde-table-bg: #e2eafb;
   --mde-table-header-bg: #f8fafc;
-  --mde-table-stripe-bg: #fafafa;
   --mde-mark-bg: #fef08a;
   --mde-mark-text: #713f12;
   --mde-note-color: #3b82f6;
@@ -1749,10 +1749,13 @@
   border-top: 1px solid var(--mde-border);
 }
 
-/* 表格 */
+/* 表格：整块独立底色 + 边框 + 圆角，和正文背景拉开层次 */
 .mde-root .mde-table-wrap {
   margin: 0 0 var(--mde-preview-para);
   overflow-x: auto;
+  background: var(--mde-table-bg);
+  border: 1px solid var(--mde-table-border);
+  border-radius: 8px;
 }
 
 .mde-root .mde-table {
@@ -1785,8 +1788,9 @@
   border: 1px solid var(--mde-table-border);
 }
 
-.mde-root .mde-table.is-striped tbody tr:nth-child(even) {
-  background: var(--mde-table-stripe-bg);
+/* 外框已经有一条边线，最后一行去掉重复的底边（全边框模式保留单元格框线） */
+.mde-root .mde-table:not(.is-bordered) tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .mde-root .mde-table.is-compact th,

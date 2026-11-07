@@ -453,11 +453,11 @@ const BlockViewBase: React.FC<BlockViewProps> = ({ node, topLevel = false }) => 
       );
     }
     case "table": {
-      const { striped, bordered, compact, fullWidth } = config.preview.tables;
+      const { bordered, compact, fullWidth } = config.preview.tables;
       return (
         <div {...attrs} className="mde-table-wrap">
           <table
-            className={`mde-table${striped ? " is-striped" : ""}${bordered ? " is-bordered" : ""}${
+            className={`mde-table${bordered ? " is-bordered" : ""}${
               compact ? " is-compact" : ""
             }${fullWidth ? " is-full" : ""}`}
           >

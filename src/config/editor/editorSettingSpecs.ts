@@ -561,14 +561,6 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     keywords: "脚注 footnote 注释 引用",
   },
   {
-    field: "tableStriped",
-    group: "预览",
-    kind: "toggle",
-    title: "表格斑马纹",
-    desc: "表格隔行换底色，长表格更好读。",
-    keywords: "表格 斑马纹 隔行 底色 table striped",
-  },
-  {
     field: "tableBordered",
     group: "预览",
     kind: "toggle",
