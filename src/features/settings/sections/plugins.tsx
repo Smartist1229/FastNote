@@ -22,6 +22,9 @@ import { Switch } from "../controls";
 const errorText = (e: unknown) =>
   typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 
+/** 开发预览（vite dev）下刷新才同步演示插件；打包版刷新只重扫目录，不重装 */
+const IS_DEV = import.meta.env.DEV;
+
 /** 插件分区在设置弹窗里的合成 key，与 SettingsModal 的 pluginSectionKey 保持一致 */
 const pluginSectionKey = (entry: PluginSettingsSectionEntry): string =>
   `plugin:${entry.pluginId}:${entry.section.id}`;
@@ -188,16 +191,16 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
   };
 
   /**
-   * 刷新 = 装一份最新的内置演示插件再重扫目录。
-   * 开发期改完演示插件点一下就能看到效果（存在就覆盖，config.json 保留），
-   * 顺带把用户手工丢进插件文件夹里的插件也扫进来。
+   * 刷新 = 重新扫描插件目录。
+   * 只有开发预览下才顺带覆盖写一份最新的演示插件，方便改完立刻看效果；
+   * 打包版刷新不重装演示插件（它只在首次启动种一次，之后想装回来点「安装演示插件」）。
    */
   const handleRefresh = async () => {
     setRefreshBusy(true);
     try {
-      await installDemoPlugin();
+      if (IS_DEV) await installDemoPlugin();
       await pluginHost.refresh();
-      showToast(t("已重新扫描插件文件夹，并更新了演示插件"), "success");
+      showToast(t(IS_DEV ? "已重新扫描插件文件夹，并更新了演示插件" : "已重新扫描插件文件夹"), "success");
     } catch (e) {
       showToast(t("刷新失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
@@ -380,7 +383,7 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
         <button
           onClick={() => void guard(handleRefresh)}
           disabled={busy}
-          title={t("刷新会先安装最新版本的演示插件，再重新扫描插件文件夹")}
+          title={t("重新扫描插件文件夹（开发预览下会同步更新演示插件）")}
           className="px-3 py-1.5 text-xs font-medium text-body bg-surface-alt border border-line rounded-xl hover:bg-surface transition-colors flex-shrink-0 disabled:opacity-50"
         >
           {refreshBusy ? t("刷新中...") : t("刷新")}

@@ -181,8 +181,9 @@ pub fn plugin_icon_url(dir_name: String) -> Option<String> {
 /* ---------------- 演示插件安装 ---------------- */
 
 /// 安装 / 覆盖内置演示插件（plugin_install_demo）。
-/// 设置页的「刷新」与「安装演示插件」都走它：每次都写最新一份，config.json 保留，
-/// 这样开发期改完演示插件点一下刷新就能看到，不用重装安装包。
+/// 设置页的「安装演示插件」按钮走它（开发预览下「刷新」也会调用）：
+/// 每次都写最新一份，config.json 保留，这样开发期改完演示插件点一下刷新就能看到。
+/// 打包版刷新只重扫目录，不会触发这里的覆盖安装。
 #[tauri::command]
 pub fn plugin_install_demo(app: AppHandle) -> Result<(), String> {
     seed::install_demo_plugin(&app)

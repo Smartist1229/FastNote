@@ -671,7 +671,7 @@ export const settingsMessages: Record<string, string> = {
   "安装演示插件失败：{value1}": "Failed to install the demo plugin: {value1}",
   "已重新扫描插件文件夹，并更新了演示插件": "Plugin folder rescanned; demo plugin updated",
   "演示插件已安装，可在列表里启用": "Demo plugin installed — enable it in the list",
-  "刷新会先安装最新版本的演示插件，再重新扫描插件文件夹": "Refresh installs the latest demo plugin, then rescans the plugin folder",
+  "重新扫描插件文件夹": "Rescan the plugin folder",
   "把内置的演示插件装回来（会覆盖为最新版本，配置保留）": "Install the bundled demo plugin again (overwrites with the latest version, keeps its config)",
   "打开插件文件夹": "Open plugin folder",
   "插件文件夹路径获取失败：{value1}": "Could not get the plugin folder path: {value1}",

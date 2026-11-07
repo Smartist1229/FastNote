@@ -84,7 +84,8 @@ export const openPluginFolder = async (): Promise<void> => {
 
 /**
  * 安装 / 覆盖内置演示插件（plugin_install_demo）。
- * 设置页的「刷新」和「安装演示插件」都走它：无条件写一份最新的，插件自己的 config.json 保留。
+ * 设置页的「安装演示插件」按钮走它；开发预览下「刷新」也会调用来同步演示插件。
+ * 无条件写一份最新的，插件自己的 config.json 保留。
  */
 export const installDemoPlugin = async (): Promise<void> => {
   await invoke('plugin_install_demo');

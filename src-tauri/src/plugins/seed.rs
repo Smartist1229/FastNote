@@ -97,9 +97,9 @@ const SEED_PLUGIN_DEMO_MODULES: &[(&str, &str)] = &[
 /**
  * 把内置插件（插件演示）种到 plugin/ 下，只在首次运行时做一次。
  *
- * 标记文件 `plugin-seeded-v2` 写在数据目录：用户卸载内置插件后标记仍在，
- * 下次启动不会重新种回——内置插件和普通插件一样，卸载就是真的卸载。
- * 想装回来走设置页的「安装演示插件」（[`install_demo_plugin`]）。
+ * 标记文件 `plugin-seeded-v2` 写在数据目录：标记一旦存在，之后启动、刷新、
+ * 版本升级都不再自动写入——内置插件和普通插件一样，卸载就是真的卸载。
+ * 想装回来或更新到最新版，走设置页的「安装演示插件」（[`install_demo_plugin`]）。
  * 写入失败时不写标记，下次启动重试；启动流程由 lib.rs 调用，失败只打日志。
  *
  * 开发测试：设置环境变量 `FASTNOTE_FORCE_PLUGIN_SEED=1`（或 `true` / `yes`）
@@ -128,28 +128,19 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
     };
 
     let target = root.join("plugin-demo");
-    // force 模式下每次都重写全部文件（目录已存在则覆盖，不存在则创建），
-    // 这样改了 main.js / plugin.json / style.css / modules/*.js / locales/*.json 后重启就能看到效果。
-    // 非 force 模式：内置版本与已安装版本不同（升级 / 回退）时同样重写，
-    // 保证内置插件更新后用户能拿到新代码；config.json 不在重写清单里，用户配置不会丢。
-    let bundled_version = seed_manifest_version();
-    let installed_version = installed_demo_version(&target);
-    let needs_upgrade = match (&bundled_version, &installed_version) {
-        (Some(b), Some(i)) => b != i,
-        (Some(_), None) => true,
-        _ => false,
-    };
 
-    // 已经种过一次（标记存在）：用户主动删掉演示插件后不再自动恢复，
-    // 只有磁盘上仍是旧版本时才按版本差异覆盖升级。
-    if !force && marker.exists() && (installed_version.is_none() || !needs_upgrade) {
+    // 已经种过一次（标记存在）：用户删掉后不恢复，打包版后续启动 / 升级也不自动重装。
+    // 需要最新版或重新安装，只能由用户点设置页的「安装演示插件」。
+    if !force && marker.exists() {
         return;
     }
 
     remove_legacy_word_count(&root);
     let _ = std::fs::remove_file(data_dir.join(LEGACY_SEED_MARKER));
 
-    if force || !target.is_dir() || needs_upgrade {
+    // force 模式每次都重写全部文件（目录已存在则覆盖），方便开发期改完演示插件重启即见。
+    // 首次启动只在目录不存在时创建；目录已存在但不含标记时保留用户内容，只补标记。
+    if force || !target.is_dir() {
         if let Err(e) = write_demo_plugin(&target) {
             eprintln!("写入内置插件失败：{e}");
             if !force {
@@ -163,7 +154,7 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
     }
 }
 
-/// 手工安装内置演示插件（设置页「刷新」/「安装演示插件」按钮）：
+/// 手工安装内置演示插件（设置页「安装演示插件」按钮；开发预览下「刷新」也会调用）：
 /// 无条件覆盖写一份最新的，config.json 保留；同时补上标记，语义与「已经释放过一次」一致。
 ///
 /// 与启动种子分开：启动种子是「第一次开软件才给」，用户删了就不该再冒出来；
@@ -197,25 +188,6 @@ fn write_demo_plugin(target: &Path) -> std::io::Result<()> {
         std::fs::write(path, content)?;
     }
     Ok(())
-}
-
-/// 内置演示插件在编译产物里的版本号（从 plugin.json 解析）
-fn seed_manifest_version() -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(SEED_PLUGIN_DEMO_MANIFEST)
-        .ok()?
-        .get("version")?
-        .as_str()
-        .map(|s| s.to_string())
-}
-
-/// 已安装演示插件的版本号；读不到返回 None（按“需要写入”处理）
-fn installed_demo_version(target: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(target.join(MANIFEST_NAME)).ok()?;
-    serde_json::from_str::<serde_json::Value>(&raw)
-        .ok()?
-        .get("version")?
-        .as_str()
-        .map(|s| s.to_string())
 }
 
 /// 删除旧版内置「字数统计」：只有当目录里的 plugin.json 精确匹配旧内置清单
