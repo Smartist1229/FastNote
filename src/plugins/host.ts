@@ -1195,8 +1195,8 @@ export const reloadPlugin = async (dirName: string): Promise<void> => {
   emit();
 };
 
-/** 诊断快照：贡献统计 + 占用的快捷键 + 权限（排查「是不是没注册上」用） */
-export const pluginDiagnostics = (dirName: string) => {
+/** 诊断快照的原始读取：只读内存里的注册表与 manifest，不跑插件代码（同步、便宜） */
+const readDiagnostics = (dirName: string) => {
   const entry = entries.find((e) => e.dirName === dirName);
   return {
     name: entry?.name ?? dirName,
@@ -1214,6 +1214,40 @@ export const pluginDiagnostics = (dirName: string) => {
       .map((failure) => `${failure.combo}：${failure.reason}`),
     contributions: registry.describePlugin(dirName),
   };
+};
+
+/** 诊断快照：注册表读数 + 采集方式标记 */
+export type PluginDiagnostics = ReturnType<typeof readDiagnostics> & {
+  /** true = 插件当时停用，数字是临时激活一次采集来的（采集完已停回去） */
+  probed: boolean;
+};
+
+/**
+ * 诊断快照：贡献统计 + 占用的快捷键 + 权限（排查「是不是没注册上」用）。
+ *
+ * 贡献统计来自内存里的注册表，而注册表只有插件跑过一次 activate 才有内容：
+ * 停用中的插件，贡献早在 deactivate 里被清空了，直接读必然是清一色 0
+ * ——这就是「未启用时要先点重新加载才看得到数字」的原因。
+ *
+ * 所以默认 probe：停用中的插件临时 activate 一次采集，取完立刻 deactivate 回去。
+ * 对用户来说点「诊断」就能看到「它一旦启用会注册什么」，不用先重载再重看；
+ * 对状态来说没有任何副作用——启用状态、持久化都不动，插件仍然是停用的。
+ */
+export const pluginDiagnostics = async (
+  dirName: string,
+  options?: { probe?: boolean },
+): Promise<PluginDiagnostics> => {
+  const entry = entries.find((e) => e.dirName === dirName);
+  const probe = (options?.probe ?? true) && !entry?.enabled;
+  if (!probe) return { ...readDiagnostics(dirName), probed: false };
+  try {
+    await activate(dirName);
+    return { ...readDiagnostics(dirName), probed: true };
+  } finally {
+    // 诊断不能顺手把插件打开：不管激活成功还是失败，采集完都恢复成停用状态
+    if (!entries.find((e) => e.dirName === dirName)?.enabled) deactivate(dirName);
+    emit();
+  }
 };
 
 /** 重新扫描插件目录（用户直接在文件夹里增删插件后手动刷新） */

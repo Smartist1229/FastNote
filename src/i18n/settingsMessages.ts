@@ -774,4 +774,10 @@ export const settingsMessages: Record<string, string> = {
   "在该插件自己的数据目录里读写文件（<数据目录>/plugin-data/<插件>/，单文件 4MB 上限）": "Read and write files in the plugin's own data folder (<data>/plugin-data/<plugin>/, 4MB per file)",
   "联网（宿主代理）": "Network (proxied by the host)",
   "通过宿主代理访问 plugin.json 里 netDomains 声明的主机（不支持任意域名）": "Reach hosts declared in plugin.json's netDomains through the host proxy (no arbitrary domains)",
+  /* 诊断：停用插件也直接出数字（临时加载采集） */
+  "诊断读取失败：{value1}": "Failed to read diagnostics: {value1}",
+  "正在读取插件注册信息…": "Reading what this plugin registered…",
+  "没有读到诊断信息": "No diagnostics available",
+  "插件当前为停用状态：下面的数字由「临时加载一次」采集，采集后已恢复停用，这些能力目前不会生效。":
+    "This plugin is disabled. The numbers below were collected by loading it once temporarily; it was switched back off afterwards, so none of these capabilities are active.",
 };

@@ -14,7 +14,7 @@ import { PERMISSION_INFO } from "@/interface/system/plugins";
 import { compareVersions } from "@/plugins/version";
 import { openExternalLink } from "@/lib/app/externalLink";
 import { PluginIcon } from "../PluginIcon";
-import { pluginHost, type PluginEntry } from "@/plugins/host";
+import { pluginHost, type PluginDiagnostics, type PluginEntry } from "@/plugins/host";
 import { usePluginContributions, type PluginSettingsSectionEntry } from "@/plugins/contributions";
 import { Switch } from "../controls";
 
@@ -51,6 +51,10 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
   const [reloadBusy, setReloadBusy] = useState<string | null>(null);
   /** 诊断弹窗目标 */
   const [diagTarget, setDiagTarget] = useState<PluginEntry | null>(null);
+  /** 诊断快照：停用中的插件要临时激活一次才采得到贡献，所以是异步取回来的 */
+  const [diag, setDiag] = useState<PluginDiagnostics | null>(null);
+  /** 诊断读取中（首次打开 / 弹窗里重新读取） */
+  const [diagBusy, setDiagBusy] = useState(false);
   /** 插件介绍展开状态（按 dirName），不持久化 */
   const [expandedDesc, setExpandedDesc] = useState<Record<string, boolean>>({});
 
@@ -300,6 +304,42 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
     }
   };
 
+  /**
+   * 打开诊断：直接带着数字打开，不等用户再点一次「重新加载」。
+   * 贡献统计只存在于内存注册表里，停用中的插件早就被清空了，所以宿主会临时
+   * activate 一次采集（probed），采完立刻停回去——这里只要 await 结果即可。
+   */
+  const openDiagnostics = async (plugin: PluginEntry) => {
+    setDiagTarget(plugin);
+    setDiag(null);
+    setDiagBusy(true);
+    try {
+      setDiag(await pluginHost.pluginDiagnostics(plugin.dirName));
+    } catch (e) {
+      showToast(t("诊断读取失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setDiagBusy(false);
+    }
+  };
+
+  /**
+   * 弹窗里的「重新加载」：原地刷新数字，不再关掉弹窗让人重开一遍。
+   * 启用中的插件走真正的重载（副作用重跑）；停用中的插件仍由 probe 临时采集，读完全停回去。
+   */
+  const handleDiagReload = async () => {
+    const target = diagTarget;
+    if (!target) return;
+    if (target.enabled) await handleReload(target);
+    setDiagBusy(true);
+    try {
+      setDiag(await pluginHost.pluginDiagnostics(target.dirName));
+    } catch (e) {
+      showToast(t("诊断读取失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setDiagBusy(false);
+    }
+  };
+
   const busy = zipBusy || refreshBusy || demoBusy;
 
   /** 「配置」按钮：该插件在 registry 里有设置分区时显示，点击跳到对应分区 */
@@ -415,106 +455,126 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
       ) : (
         <div className="space-y-2">
           {plugins.map((plugin) => (
-            <div
-              key={plugin.dirName}
-              className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft"
-            >
-              <div className="flex items-start gap-2 min-w-0 flex-1">
-                <PluginIcon url={plugin.iconUrl} size={20} className="mt-0.5" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-medium text-body">{plugin.name}</span>
-                    <span className="text-[10px] text-faint">v{plugin.version}</span>
-                    {plugin.author ? <span className="text-[10px] text-faint">{plugin.author}</span> : null}
-                    {plugin.tags?.map((tag) => (
-                      <span
-                        key={tag}
-                        className="px-1.5 py-[1px] rounded bg-surface-alt text-[10px] text-faint border border-line"
-                      >
-                        {t(tag)}
+            <div key={plugin.dirName} className="px-3 py-2.5 rounded-xl bg-app border border-line-soft">
+              {/* 顶部一行：左边标题块、右边操作按钮 */}
+              <div className="flex items-start justify-between gap-6">
+                <div className="flex items-start gap-2 min-w-0 flex-1">
+                  <PluginIcon url={plugin.iconUrl} size={20} className="mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    {/* 标题行只放名称 / 版本 / 作者：标签已挪到下一行的目录名旁边。
+                        原因：启用后会多出一个「配置」按钮，右侧操作区变宽、左栏变窄，
+                        标签留在这一行就会被挤到第二行（未启用时恰好放得下）。 */}
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-xs font-medium text-body truncate min-w-0">{plugin.name}</span>
+                      <span className="text-[10px] text-faint flex-shrink-0">v{plugin.version}</span>
+                      {plugin.author ? (
+                        <span className="text-[10px] text-faint truncate min-w-0">{plugin.author}</span>
+                      ) : null}
+                    </div>
+                    {/* 目录名 + 标签同一行：这一行左侧空间富余（不跟操作按钮抢宽度），
+                        标签跟着目录名走，插件启停时行数不变，视觉上也不再被按钮挤来挤去。 */}
+                    <div className="mt-0.5 flex items-center gap-2 min-w-0">
+                      <span className="text-[10px] text-faint truncate min-w-0" title={plugin.dirName}>
+                        {plugin.dirName}
                       </span>
-                    ))}
+                      {plugin.tags && plugin.tags.length > 0 && (
+                        <span className="flex items-center gap-1 flex-shrink-0">
+                          {plugin.tags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="px-1.5 py-[1px] rounded bg-surface-alt text-[10px] text-faint border border-line whitespace-nowrap"
+                            >
+                              {t(tag)}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-[10px] text-faint mt-0.5 break-all">{plugin.dirName}</p>
-                  {plugin.homepage && (
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {plugin.permissions && plugin.permissions.length > 0 && (
                     <button
-                      onClick={() => void openExternalLink(plugin.homepage!)}
-                      className="text-[10px] text-primary-500 hover:underline break-all text-left mt-0.5"
-                      title={plugin.homepage}
+                      onClick={() => setPermTarget(plugin)}
+                      disabled={busy}
+                      className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                      title={t("申请权限")}
                     >
-                      {plugin.homepage}
+                      <Icon name="ai-shield-check" className="w-3.5 h-3.5 flex-shrink-0" />
+                      <span className="leading-none">{t("权限")}</span>
                     </button>
                   )}
-                  {plugin.description && (
-                    <div className="mt-1 flex items-start gap-1.5">
-                      <p
-                        className={`flex-1 min-w-0 text-[11px] text-faint leading-relaxed ${
-                          expandedDesc[plugin.dirName] ? "whitespace-pre-wrap break-words" : "truncate"
-                        }`}
-                      >
-                        {plugin.description}
-                      </p>
-                      <button
-                        onClick={() =>
-                          setExpandedDesc((prev) => ({
-                            ...prev,
-                            [plugin.dirName]: !prev[plugin.dirName],
-                          }))
-                        }
-                        className="flex-shrink-0 text-[10px] text-primary-500 hover:underline leading-relaxed"
-                      >
-                        {expandedDesc[plugin.dirName] ? t("收起") : t("展开")}
-                      </button>
-                    </div>
-                  )}
-                  {plugin.failed && (
-                    <p className="text-[11px] text-danger-strong mt-1">
-                      {t("加载失败：{value1}", { value1: plugin.error ?? "" })}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                {plugin.permissions && plugin.permissions.length > 0 && (
+                  {renderConfigButton(plugin)}
                   <button
-                    onClick={() => setPermTarget(plugin)}
+                    onClick={() => void handleReload(plugin)}
+                    disabled={busy || reloadBusy === plugin.dirName}
+                    className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                    title={t("重新加载这个插件（等价于停用再启用）")}
+                  >
+                    <Icon name="sidebar-refresh" className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="leading-none">{t("重载")}</span>
+                  </button>
+                  <button
+                    onClick={() => void openDiagnostics(plugin)}
                     disabled={busy}
                     className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
-                    title={t("申请权限")}
+                    title={t("查看这个插件注册了哪些东西")}
                   >
-                    <Icon name="ai-shield-check" className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span className="leading-none">{t("权限")}</span>
+                    <Icon name="sidebar-list" className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="leading-none">{t("诊断")}</span>
+                  </button>
+                  <button
+                    onClick={() => void handleUninstall(plugin)}
+                    disabled={busy}
+                    className="inline-flex h-7 items-center px-2 rounded-lg text-[11px] font-medium leading-none text-danger-strong hover:bg-danger-soft transition-colors disabled:opacity-50"
+                  >
+                    {t("卸载")}
+                  </button>
+                  <div className="flex h-7 items-center pl-1">
+                    <Switch value={plugin.enabled} onChange={(v) => void handleToggle(plugin, v)} />
+                  </div>
+                </div>
+              </div>
+
+              {/* 简介 / 主页 / 错误横跨整张卡片：右栏只有顶部那一行按钮，
+                  下面那片空白正好留给正文——之前描述被关在左栏里，右边明明空着一大片却只能窄着换行 */}
+              <div className="mt-1.5 min-w-0 pl-7">
+                {plugin.description && (
+                  <div className="flex items-start gap-1.5">
+                    <p
+                      className={`flex-1 min-w-0 text-[11px] text-faint leading-relaxed ${
+                        expandedDesc[plugin.dirName] ? "whitespace-pre-wrap break-words" : "truncate"
+                      }`}
+                    >
+                      {plugin.description}
+                    </p>
+                    <button
+                      onClick={() =>
+                        setExpandedDesc((prev) => ({
+                          ...prev,
+                          [plugin.dirName]: !prev[plugin.dirName],
+                        }))
+                      }
+                      className="flex-shrink-0 text-[10px] text-primary-500 hover:underline leading-relaxed"
+                    >
+                      {expandedDesc[plugin.dirName] ? t("收起") : t("展开")}
+                    </button>
+                  </div>
+                )}
+                {plugin.homepage && (
+                  <button
+                    onClick={() => void openExternalLink(plugin.homepage!)}
+                    className="mt-0.5 text-[10px] text-primary-500 hover:underline break-all text-left"
+                    title={plugin.homepage}
+                  >
+                    {plugin.homepage}
                   </button>
                 )}
-                {renderConfigButton(plugin)}
-                <button
-                  onClick={() => void handleReload(plugin)}
-                  disabled={busy || reloadBusy === plugin.dirName}
-                  className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
-                  title={t("重新加载这个插件（等价于停用再启用）")}
-                >
-                  <Icon name="sidebar-refresh" className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span className="leading-none">{t("重载")}</span>
-                </button>
-                <button
-                  onClick={() => setDiagTarget(plugin)}
-                  disabled={busy}
-                  className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
-                  title={t("查看这个插件注册了哪些东西")}
-                >
-                  <Icon name="sidebar-list" className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span className="leading-none">{t("诊断")}</span>
-                </button>
-                <button
-                  onClick={() => void handleUninstall(plugin)}
-                  disabled={busy}
-                  className="inline-flex h-7 items-center px-2 rounded-lg text-[11px] font-medium leading-none text-danger-strong hover:bg-danger-soft transition-colors disabled:opacity-50"
-                >
-                  {t("卸载")}
-                </button>
-                <div className="flex h-7 items-center pl-1">
-                  <Switch value={plugin.enabled} onChange={(v) => void handleToggle(plugin, v)} />
-                </div>
+                {plugin.failed && (
+                  <p className="mt-1 text-[11px] text-danger-strong">
+                    {t("加载失败：{value1}", { value1: plugin.error ?? "" })}
+                  </p>
+                )}
               </div>
             </div>
           ))}
@@ -551,98 +611,112 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
         </Modal>
       )}
 
-      {/* 诊断弹窗：这个插件到底注册上了什么，一眼看清 */}
-      {diagTarget && (() => {
-        const diag = pluginHost.pluginDiagnostics(diagTarget.dirName);
-        const rows: { label: string; value: number }[] = [
-          { label: t("笔记右键菜单"), value: diag.contributions.noteMenus },
-          { label: t("分组右键菜单"), value: diag.contributions.groupMenus },
-          { label: t("命令面板命令"), value: diag.contributions.commands },
-          { label: t("编辑器工具栏"), value: diag.contributions.toolbars },
-          { label: t("AI 工具"), value: diag.contributions.aiTools },
-          { label: t("AI 提示词"), value: diag.contributions.aiPrompts },
-          { label: t("AI 服务商模板"), value: diag.contributions.aiProviders },
-          { label: t("设置分区"), value: diag.contributions.settingsSections },
-          { label: t("生命周期钩子"), value: diag.contributions.hooks },
-        ];
-        return (
-          <Modal
-            isOpen
-            onClose={() => setDiagTarget(null)}
-            title={t("{name} 的诊断", { name: diagTarget.name })}
-            zIndex={100}
-          >
-            <div className="space-y-3">
-              <div className="bg-surface-alt border border-line rounded-xl px-3 py-2 text-[11px] text-faint leading-relaxed break-all">
-                <div>
-                  {t("目录名：{value1}", { value1: diag.dirName })} · v{diag.version}
-                </div>
-                <div>
-                  {diag.enabled ? t("已启用") : t("已停用")}
-                  {diag.failed ? ` · ${t("加载失败")}` : ""}
-                </div>
-                {diag.error && <div className="text-danger-strong mt-1">{diag.error}</div>}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                {rows.map((row) => (
-                  <div
-                    key={row.label}
-                    className="flex items-center justify-between px-3 py-2 rounded-xl bg-app border border-line-soft"
-                  >
-                    <span className="text-[11px] text-body">{row.label}</span>
-                    <span
-                      className={`text-[11px] font-mono tabular-nums ${
-                        row.value > 0 ? "text-primary-500" : "text-faint"
-                      }`}
-                    >
-                      {row.value}
-                    </span>
+      {/* 诊断弹窗：这个插件到底注册上了什么，一眼看清。
+          数字在「点开」时就已经取好（停用中的插件由宿主临时加载一次采集），
+          不再需要先点「重新加载」、再重开弹窗看第二遍。 */}
+      {diagTarget && (
+        <Modal
+          isOpen
+          onClose={() => setDiagTarget(null)}
+          title={t("{name} 的诊断", { name: diagTarget.name })}
+          zIndex={100}
+        >
+          <div className="space-y-3">
+            {diag ? (
+              <>
+                <div className="bg-surface-alt border border-line rounded-xl px-3 py-2 text-[11px] text-faint leading-relaxed break-all">
+                  <div>
+                    {t("目录名：{value1}", { value1: diag.dirName })} · v{diag.version}
                   </div>
-                ))}
-              </div>
+                  <div>
+                    {diag.enabled ? t("已启用") : t("已停用")}
+                    {diag.failed ? ` · ${t("加载失败")}` : ""}
+                  </div>
+                  {diag.error && <div className="text-danger-strong mt-1">{diag.error}</div>}
+                </div>
 
-              <div>
-                <p className="text-[11px] text-muted pb-1">{t("占用的快捷键")}</p>
-                <p className="text-[11px] text-faint font-mono break-all">
-                  {diag.shortcuts.length > 0 ? diag.shortcuts.join(" · ") : t("（没有）")}
-                </p>
-              </div>
+                {/* 停用中的插件没有任何真实贡献，这里的数字是临时加载采回来的，必须说清楚 */}
+                {diag.probed && (
+                  <p className="px-1 text-[11px] text-muted leading-relaxed">
+                    {t(
+                      "插件当前为停用状态：下面的数字由「临时加载一次」采集，采集后已恢复停用，这些能力目前不会生效。",
+                    )}
+                  </p>
+                )}
 
-              {diag.shortcutFailures.length > 0 && (
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: t("笔记右键菜单"), value: diag.contributions.noteMenus },
+                    { label: t("分组右键菜单"), value: diag.contributions.groupMenus },
+                    { label: t("命令面板命令"), value: diag.contributions.commands },
+                    { label: t("编辑器工具栏"), value: diag.contributions.toolbars },
+                    { label: t("AI 工具"), value: diag.contributions.aiTools },
+                    { label: t("AI 提示词"), value: diag.contributions.aiPrompts },
+                    { label: t("AI 服务商模板"), value: diag.contributions.aiProviders },
+                    { label: t("设置分区"), value: diag.contributions.settingsSections },
+                    { label: t("生命周期钩子"), value: diag.contributions.hooks },
+                  ].map((row) => (
+                    <div
+                      key={row.label}
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-app border border-line-soft"
+                    >
+                      <span className="text-[11px] text-body">{row.label}</span>
+                      <span
+                        className={`text-[11px] font-mono tabular-nums ${
+                          row.value > 0 ? "text-primary-500" : "text-faint"
+                        }`}
+                      >
+                        {row.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
                 <div>
-                  <p className="text-[11px] text-muted pb-1">{t("注册失败的全局快捷键")}</p>
-                  <p className="text-[11px] text-danger font-mono break-all">
-                    {diag.shortcutFailures.join(" · ")}
+                  <p className="text-[11px] text-muted pb-1">{t("占用的快捷键")}</p>
+                  <p className="text-[11px] text-faint font-mono break-all">
+                    {diag.shortcuts.length > 0 ? diag.shortcuts.join(" · ") : t("（没有）")}
                   </p>
                 </div>
-              )}
 
-              <div>
-                <p className="text-[11px] text-muted pb-1">{t("已授予的权限")}</p>
-                <p className="text-[11px] text-faint font-mono break-all">
-                  {diag.permissions.length > 0 ? diag.permissions.join(" · ") : t("（无）")}
-                </p>
-              </div>
+                {diag.shortcutFailures.length > 0 && (
+                  <div>
+                    <p className="text-[11px] text-muted pb-1">{t("注册失败的全局快捷键")}</p>
+                    <p className="text-[11px] text-danger font-mono break-all">
+                      {diag.shortcutFailures.join(" · ")}
+                    </p>
+                  </div>
+                )}
 
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  onClick={() => {
-                    void handleReload(diagTarget);
-                    setDiagTarget(null);
-                  }}
-                  className="btn-ghost px-4 py-2 text-sm"
-                >
-                  {t("重新加载")}
-                </button>
-                <button onClick={() => setDiagTarget(null)} className="btn-ghost px-4 py-2 text-sm">
-                  {t("关闭")}
-                </button>
-              </div>
+                <div>
+                  <p className="text-[11px] text-muted pb-1">{t("已授予的权限")}</p>
+                  <p className="text-[11px] text-faint font-mono break-all">
+                    {diag.permissions.length > 0 ? diag.permissions.join(" · ") : t("（无）")}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <p className="py-8 text-center text-[11px] text-faint">
+                {diagBusy ? t("正在读取插件注册信息…") : t("没有读到诊断信息")}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              {/* 原地重读：不关弹窗，停用中的插件仍是「临时加载 → 采集 → 停回去」 */}
+              <button
+                onClick={() => void handleDiagReload()}
+                disabled={diagBusy}
+                className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+              >
+                {diagBusy ? t("读取中…") : t("重新加载")}
+              </button>
+              <button onClick={() => setDiagTarget(null)} className="btn-ghost px-4 py-2 text-sm">
+                {t("关闭")}
+              </button>
             </div>
-          </Modal>
-        );
-      })()}
+          </div>
+        </Modal>
+      )}
 
       {/* useConfirm 的 portal 必须渲染在 JSX 里 */}
       {confirmDialog}
