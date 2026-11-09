@@ -429,12 +429,23 @@ body.is-dragging-scrollbar * {
   -webkit-user-select: none !important;
 }
 
-/* ---------- 焦点环：双层 box-shadow 模拟描边+光晕，不占布局 ---------- */
+/* ---------- 焦点环：单层柔光 + 输入框细描边，不占布局 ---------- */
+/*
+ * 原来是「2px 浅色 + 4px 主色」的双层硬描边，在圆角输入框上会变成一圈很重的双线，
+ * 视觉上像画歪了的表格框。改成一层淡主色光晕；输入类控件再补一条 1px 描边保证边界清晰。
+ */
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 button:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--color-accent-light), 0 0 0 4px var(--color-accent);
+  box-shadow: 0 0 0 3px rgb(var(--c-primary-500) / 0.16);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: var(--color-accent);
 }
 
 /* 显式声明 .no-focus-ring 的控件不继承上面的全局焦点环（如命令面板输入框） */

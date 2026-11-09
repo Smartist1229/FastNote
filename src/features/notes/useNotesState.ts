@@ -225,15 +225,14 @@ export function useNotesState({
   /** 删除当前笔记：软删除进回收站，刷新列表后清空选中 */
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
-    // 加密笔记不能进回收站；临时解锁也不放行，必须先永久解密（后端同样会拒绝）
-    if (selectedNote.enc_mode !== 0) {
-      showToast(t("加密笔记需先永久解密才能删除"), "info");
-      return;
-    }
     const noteId = selectedNote.id;
+    // 加密笔记也能删除：删除不碰明文，密钥原样保留，还原后仍可解密
     const confirmed = await confirm({
       title: t("删除笔记"),
-      message: t("确定要将这条笔记移入回收站吗？"),
+      message:
+        selectedNote.enc_mode !== 0
+          ? t("这是加密笔记，删除会把它移入回收站（密钥一并保留，还原后仍可解密）。确定继续吗？")
+          : t("确定要将这条笔记移入回收站吗？"),
       confirmText: t("移入回收站"),
       danger: true,
     });
@@ -252,13 +251,13 @@ export function useNotesState({
 
   /** 侧边栏右键删除：软删除进回收站，删的是当前打开的笔记时清空选中 */
   const handleDeleteNoteFromSidebar = async (note: Note) => {
-    if (note.enc_mode !== 0) {
-      showToast(t("加密笔记需先永久解密才能删除"), "info");
-      return;
-    }
+    // 加密笔记同样可以进回收站：删除不碰明文，还原后密钥还在，照样能解
     const confirmed = await confirm({
       title: t("删除笔记"),
-      message: t("确定要将这条笔记移入回收站吗？"),
+      message:
+        note.enc_mode !== 0
+          ? t("这是加密笔记，删除会把它移入回收站（密钥一并保留，还原后仍可解密）。确定继续吗？")
+          : t("确定要将这条笔记移入回收站吗？"),
       confirmText: t("移入回收站"),
       danger: true,
     });

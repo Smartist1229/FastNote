@@ -412,6 +412,134 @@ fn root_kek_from_password(conn: &Connection, password: &str) -> Result<Zeroizing
     Ok(kek)
 }
 
+
+
+/// 把一次已验证的根 KEK 放进会话缓存。
+///
+/// 用于「采纳备份的根密码材料」之后：库里已经是新的一套 KDF 参数，
+/// 内存里如果还留着旧 KEK，本次会话解 `wrap_root` 会一直失败（重启才好）。
+pub(crate) fn adopt_root_kek(state: &EncryptionState, kek: Zeroizing<[u8; 32]>) {
+    state.set_root_cache(*kek);
+}
+
+/// 把一批 `wrap_root` 从旧根 KEK 重新包裹到新根 KEK。
+///
+/// 用于「恢复别人的备份」：备份里的 `wrap_root` 是**原设备根密码**包的，
+/// 而本机根密码已经换过，直接用新密码解不开。这里用旧密码解开 DEK、
+/// 再用本机 KEK 包回去，之后这批笔记就归本机根密码管了。
+///
+/// 注意只动 `wrap_root`：`wrap_item`（单元自己的密码）与正文密文都不碰，
+/// 所以即使迁移中途失败，用笔记自己的密码仍然能打开。
+pub(crate) fn migrate_wrap_root(
+    conn: &Connection,
+    old_kek: &[u8; 32],
+    new_kek: &[u8; 32],
+) -> Result<usize, String> {
+    let items: Vec<(String, String, EncMeta)> = {
+        let mut stmt = conn
+            .prepare("SELECT scope, ref_id, meta_json FROM encrypted_keys")
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in mapped.flatten() {
+            let Ok(meta) = serde_json::from_str::<EncMeta>(&row.2) else {
+                continue;
+            };
+            out.push((row.0, row.1, meta));
+        }
+        out
+    };
+
+    let mut migrated = 0usize;
+    for (scope, id, mut meta) in items {
+        let Some(wrap_root) = meta.wrap_root.clone() else {
+            // 没有 wrap_root：这条只认单元密码，根密码本来就不管它
+            continue;
+        };
+        let aad = wrap_aad("root", &scope, &id);
+        let Ok(dek) = crypto::open(old_kek, &aad, &wrap_root) else {
+            // 这条不是用这个旧密码包的（可能是别的来源），跳过而不是整体失败
+            continue;
+        };
+        meta.wrap_root = Some(crypto::seal(new_kek, &aad, &dek)?);
+        save_meta(conn, &scope, &id, &meta)?;
+        migrated += 1;
+    }
+    Ok(migrated)
+}
+
+/// 用「原设备根密码 + 本机根密码」完成一次迁移，返回迁移条数。
+pub(crate) fn migrate_root_from_backup(
+    conn: &Connection,
+    state: &EncryptionState,
+    backup_params: &std::collections::HashMap<String, String>,
+    old_password: &str,
+    new_password: &str,
+) -> Result<usize, String> {
+    // 先验旧密码（只算不写）：错的密码绝不能让任何一行被改写
+    let old_kek = verify_root_params(backup_params, old_password)?;
+    // 本机 KEK：用户现输一次，同时把会话缓存点亮，后面打开笔记不用再输
+    let new_kek = verify_root(conn, state, new_password)?;
+    let migrated = migrate_wrap_root(conn, &old_kek, &new_kek)?;
+    scrub(conn);
+    Ok(migrated)
+}
+
+/// 用一份**外部**的根密码参数（来自备份文件，不是本机库）校验密码。
+///
+/// 换机恢复时要先证明用户知道原设备根密码，才谈得上采纳 keyring。
+/// 这里刻意不碰本机库：算出来对不上就直接返回 root_bad_password，
+/// 不会因为「拿别人的备份试密码」把本机的根密码状态搅乱。
+pub(crate) fn verify_root_params(
+    params: &std::collections::HashMap<String, String>,
+    password: &str,
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    let salt_hex = params
+        .get(ROOT_SALT_KEY)
+        .cloned()
+        .ok_or_else(|| err_code("root_not_set"))?;
+    let verifier = params
+        .get(ROOT_VERIFIER_KEY)
+        .cloned()
+        .ok_or_else(|| err_code("root_not_set"))?;
+    let read_u32 = |key: &str| {
+        params
+            .get(key)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    let meta = RootMeta {
+        kdf: params
+            .get(ROOT_KDF_KEY)
+            .cloned()
+            .unwrap_or_else(|| crypto::KDF_PBKDF2.to_string()),
+        salt: crypto::hex_decode(&salt_hex)?,
+        iterations: params
+            .get(ROOT_ITER_KEY)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(ITERATIONS),
+        m_cost: read_u32(ROOT_M_COST_KEY),
+        t_cost: read_u32(ROOT_T_COST_KEY),
+        p_cost: read_u32(ROOT_P_COST_KEY),
+        verifier,
+    };
+    let kek = meta.derive(password)?;
+    let plain = crypto::open(&kek, ROOT_VERIFIER_AAD, &meta.verifier)
+        .map_err(|_| err_code("root_bad_password"))?;
+    if plain != crypto::ROOT_VERIFIER_PLAIN {
+        return Err(err_code("root_bad_password"));
+    }
+    Ok(kek)
+}
+
 /// 把根密码的派生参数升级到当前推荐值。
 /// 根 KEK 变了，所有 `wrap_root` 都要用旧 KEK 解开、用新 KEK 重新包一遍；
 /// 这一步只需要 wrap_root 本身，不需要用户逐篇解锁。任一项失败就整体回滚，保持旧参数可用。

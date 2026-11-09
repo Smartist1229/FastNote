@@ -92,7 +92,11 @@ export function useCategoriesState({
 
   const handleDeleteCategory = (category: Category) => {
     setDeletingCategory(category);
-    setDeleteCategoryNotes(false);
+    /*
+     * 加密分组只能连组内笔记一起删：组密钥一删，留下的密文永久解不开。
+     * 这里默认勾上，弹窗里也把勾选锁死（不允许改成「只删分组」）。
+     */
+    setDeleteCategoryNotes(!!category.is_encrypted);
     setShowDeleteCategoryModal(true);
   };
 
@@ -135,7 +139,14 @@ export function useCategoriesState({
       showToast(t("删除成功"), "success");
     } catch (error) {
       console.error("Failed to delete category:", error);
-      showToast(t("删除失败：{error}", { error: String(error) }), "error");
+      // 加密分组不允许「只删分组」：后端会回带 code，转成人话
+      const raw = String(error);
+      showToast(
+        raw.includes("category_encrypted_keep")
+          ? t("加密分组不能只删分组：请先「解密分组」，或在删除时选择同时删除组内笔记")
+          : t("删除失败：{error}", { error: raw }),
+        "error",
+      );
     }
   };
 

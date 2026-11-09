@@ -100,28 +100,68 @@ pub fn update_category(id: String, name: String, state: State<AppState>) -> Resu
 }
 
 #[tauri::command]
-pub fn delete_category(id: String, delete_notes: bool, state: State<AppState>) -> Result<(), String> {
+pub fn delete_category(
+    app: tauri::AppHandle,
+    id: String,
+    delete_notes: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
 
-    // 加密分组删掉后组密钥里的 DEK 就再也对不上了；要求先永久解密（前端也隐藏删除项）
-    if encryption::category_is_encrypted(&conn, &id)? {
-        return Err(json!({ "code": "category_encrypted" }).to_string());
+    let encrypted = encryption::category_is_encrypted(&conn, &id)?;
+    /*
+     * 删除不需要明文，但加密分组有个绕不开的物理约束：
+     * 组内笔记的 DEK 是被**分组密钥**包裹的，分组一删这份密钥就没人能解开。
+     * 所以「只删分组、留下笔记」对加密分组是假操作——留下的只是一堆打不开的密文。
+     * 想保留笔记，请先「解密分组」。
+     */
+    if encrypted && !delete_notes {
+        return Err(json!({ "code": "category_encrypted_keep" }).to_string());
     }
 
     if delete_notes {
         let now = Local::now().to_rfc3339();
-        // 加密笔记受「必须先永久解密才能删除」约束，连带删除分组也不能绕过：
-        // 只把普通笔记移入回收站，单独加密的笔记改为移出分组，保留在原地与密钥。
-        conn.execute(
-            "UPDATE notes SET is_deleted = 1, deleted_at = ?1, category_id = NULL
-             WHERE category_id = ?2 AND COALESCE(enc_mode, 0) = 0",
-            params![now, id],
-        ).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE notes SET category_id = NULL
-             WHERE category_id = ?1 AND COALESCE(enc_mode, 0) <> 0",
-            params![id],
-        ).map_err(|e| e.to_string())?;
+        if encrypted {
+            /*
+             * 加密分组：组内笔记直接彻底删除，不进回收站。
+             * 理由同上——分组密钥随分组一起消失后，回收站里那几条只是占地方打不开。
+             * 删除过程完全不碰明文：密文行照删即可。
+             */
+            let ids: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM notes WHERE category_id = ?1")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![&id], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            };
+            if !ids.is_empty() {
+                let candidates =
+                    crate::attachments::collect_notes_attachment_paths(&conn, &ids);
+                for note_id in &ids {
+                    conn.execute("DELETE FROM notes WHERE id = ?1", params![note_id])
+                        .map_err(|e| e.to_string())?;
+                    super::history::purge_note_history(&conn, note_id)?;
+                    super::trash::drop_note_side_rows(&conn, note_id)?;
+                    state.encryption.lock(encryption::NOTE_SCOPE, note_id, true);
+                }
+                crate::attachments::purge_unreferenced_attachments(&app, &conn, &candidates)?;
+                super::tags::prune_tag_links(&conn)?;
+            }
+        } else {
+            conn.execute(
+                "UPDATE notes SET is_deleted = 1, deleted_at = ?1, category_id = NULL
+                 WHERE category_id = ?2 AND COALESCE(enc_mode, 0) = 0",
+                params![now, id],
+            ).map_err(|e| e.to_string())?;
+            // 普通分组里若混着加密笔记（历史遗留），它们随分组进来时也一并处理掉
+            conn.execute(
+                "UPDATE notes SET is_deleted = 1, deleted_at = ?1, category_id = NULL
+                 WHERE category_id = ?2 AND COALESCE(enc_mode, 0) <> 0",
+                params![now, id],
+            ).map_err(|e| e.to_string())?;
+        }
     } else {
         conn.execute(
             "UPDATE notes SET category_id = NULL WHERE category_id = ?1",
@@ -129,6 +169,14 @@ pub fn delete_category(id: String, delete_notes: bool, state: State<AppState>) -
         )
         .map_err(|e| e.to_string())?;
     }
+
+    // 分组密钥与内存里的解锁态一起清掉（组没了，密钥留着就是孤儿）
+    conn.execute(
+        "DELETE FROM encrypted_keys WHERE scope = 'category' AND ref_id = ?1",
+        params![&id],
+    )
+    .map_err(|e| e.to_string())?;
+    state.encryption.lock("category", &id, true);
 
     conn.execute("DELETE FROM categories WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;

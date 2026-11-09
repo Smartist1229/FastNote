@@ -73,9 +73,21 @@ export function useTrashState({ loadData, requestUnlockRef, confirm }: UseTrashS
   };
 
   const handleDeletePermanent = async (id: string) => {
-    if (trashNotes.find((n) => n.id === id)?.enc_mode !== 0) {
-      showToast(t("加密笔记需先永久解密才能删除"), "info");
-      return;
+    const note = trashNotes.find((n) => n.id === id);
+    /*
+     * 加密笔记删除不需要解密：密文本身是可删除的数据。
+     * 但它没有明文副本，删了就是真没了，所以额外给一次确认。
+     */
+    if (note && note.enc_mode !== 0) {
+      const confirmed = await confirm({
+        title: t("永久删除加密笔记"),
+        message: t("「{name}」是加密笔记，永久删除后没有任何明文副本可以恢复。确定继续吗？", {
+          name: note.title || t("无标题"),
+        }),
+        confirmText: t("永久删除"),
+        danger: true,
+      });
+      if (!confirmed) return;
     }
     try {
       await notesApi.deleteNotePermanently(id);
@@ -89,32 +101,27 @@ export function useTrashState({ loadData, requestUnlockRef, confirm }: UseTrashS
 
   const handleEmptyTrash = async () => {
     if (trashNotes.length === 0) return;
-    // 加密笔记不参与清空：它们留在回收站里，等用户先永久解密
-    const removableIds = trashNotes.filter((n) => n.enc_mode === 0).map((n) => n.id);
-    if (removableIds.length === 0) {
-      showToast(t("加密笔记需先永久解密才能删除"), "info");
-      return;
-    }
+    // 加密笔记同样清掉：删除只看 id，不需要明文
+    const removableIds = trashNotes.map((n) => n.id);
+    const encryptedCount = trashNotes.filter((n) => n.enc_mode !== 0).length;
     const confirmed = await confirm({
       title: t("清空回收站"),
-      message: t("确定要清空回收站吗？此操作不可恢复。"),
+      message:
+        encryptedCount > 0
+          ? t("确定要清空回收站吗？其中 {count} 篇加密笔记没有明文副本，删除后无法恢复。", {
+              count: encryptedCount,
+            })
+          : t("确定要清空回收站吗？此操作不可恢复。"),
       confirmText: t("清空回收站"),
       danger: true,
     });
     if (!confirmed) return;
     try {
-      const skipped = await notesApi.deleteMultipleNotesPermanently(removableIds);
-      // 加密笔记不会提交给后端，所以后端 skipped 常为 0；剩余条数要靠本地列表算
-      const remaining = trashNotes.length - removableIds.length + skipped;
+      await notesApi.deleteMultipleNotesPermanently(removableIds);
       setSelectedTrashIds(new Set());
       setTrashNotes(await notesApi.getTrashNotes());
       await loadData();
-      showToast(
-        remaining > 0
-          ? t("已跳过 {count} 篇加密笔记，请先永久解密", { count: remaining })
-          : t("回收站已清空"),
-        "success",
-      );
+      showToast(t("回收站已清空"), "success");
     } catch {
       showToast(t("清空回收站失败"), "error");
     }
@@ -128,33 +135,28 @@ export function useTrashState({ loadData, requestUnlockRef, confirm }: UseTrashS
   const handleDeleteSelected = async () => {
     if (selectedTrashIds.size === 0) return;
     const ids = Array.from(selectedTrashIds);
-    const removableIds = trashNotes
-      .filter((n) => ids.includes(n.id) && n.enc_mode === 0)
-      .map((n) => n.id);
-    const encryptedCount = ids.length - removableIds.length;
-    if (removableIds.length === 0) {
-      showToast(t("加密笔记需先永久解密才能删除"), "info");
-      return;
-    }
+    const removableIds = ids;
+    const encryptedCount = trashNotes.filter(
+      (n) => ids.includes(n.id) && n.enc_mode !== 0,
+    ).length;
     const confirmed = await confirm({
       title: t("永久删除"),
-      message: t("确定要永久删除选中的笔记吗？此操作不可恢复。"),
+      message:
+        encryptedCount > 0
+          ? t("确定要永久删除选中的笔记吗？其中 {count} 篇加密笔记没有明文副本，删除后无法恢复。", {
+              count: encryptedCount,
+            })
+          : t("确定要永久删除选中的笔记吗？此操作不可恢复。"),
       confirmText: t("永久删除"),
       danger: true,
     });
     if (!confirmed) return;
     try {
-      const skipped = await notesApi.deleteMultipleNotesPermanently(removableIds);
+      await notesApi.deleteMultipleNotesPermanently(removableIds);
       setSelectedTrashIds(new Set());
       setTrashNotes(await notesApi.getTrashNotes());
       await loadData();
-      const total = skipped + encryptedCount;
-      showToast(
-        total > 0
-          ? t("已跳过 {count} 篇加密笔记，请先永久解密", { count: total })
-          : t("已永久删除"),
-        "success",
-      );
+      showToast(t("已永久删除"), "success");
     } catch {
       showToast(t("删除失败"), "error");
     }

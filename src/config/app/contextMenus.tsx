@@ -185,9 +185,10 @@ export const buildGroupMenu = (
       onClick: handlers.onCreateCategory,
     });
   }
-  if (isCategory && !encrypted) {
+  if (isCategory) {
     items.push(divider(), {
-      label: translate("删除分组"),
+      // 加密分组只能连组内笔记一起删（分组密钥一删，留下的密文就打不开了）
+      label: translate(encrypted ? "删除分组及组内笔记" : "删除分组"),
       icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
       onClick: handlers.onDelete,
       danger: true,
@@ -311,22 +312,16 @@ export const buildNoteMenu = (
       onClick: handlers.onTogglePin,
     },
   );
-  // 加密笔记不能删除（临时解锁也不允许）：只放一条说明，删除必须先永久解密
-  if (encrypted) {
-    items.push({
-      label: translate("加密笔记需先永久解密才能删除"),
-      icon: <Icon name="security-lock" className="w-4 h-4" />,
-      onClick: () => { },
-      disabled: true,
-    });
-  } else {
-    items.push({
-      label: translate("删除笔记"),
-      icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
-      onClick: handlers.onDeleteNote,
-      danger: true,
-    });
-  }
+  /*
+   * 加密笔记也能删：进回收站 → 彻底删除全程只看 id，不需要明文。
+   * 真正会丢东西的是「永久删除」，那一步在回收站里单独确认。
+   */
+  items.push({
+    label: translate(encrypted ? "删除笔记（加密）" : "删除笔记"),
+    icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
+    onClick: handlers.onDeleteNote,
+    danger: true,
+  });
   items.push(
     divider(),
     {

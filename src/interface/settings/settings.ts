@@ -445,6 +445,10 @@ export interface WebdavSettings {
   autoTarget: AutoBackupTarget;
   /** 本地自动备份最多保留份数（云端不限） */
   autoMaxLocal: number;
+  /** 备份是否内联图片（关掉可显著减小体积，图片不会丢，只是不进备份包） */
+  includeAttachments: boolean;
+  /** 备份是否携带根密码材料（关掉后包内没有可爆破的 verifier，但只能在本机恢复） */
+  includeRootKey: boolean;
 }
 
 /**

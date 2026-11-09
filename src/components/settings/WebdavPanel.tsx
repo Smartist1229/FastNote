@@ -366,8 +366,8 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
       const formatLabel = source === "remote" ? t("云端备份") : t("本地备份");
       const ok = await confirm({
         title: t("从备份恢复"),
-        message: t("恢复会用{formatLabel}「{name}」覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。", { formatLabel: formatLabel, name: name }),
-        confirmText: t("覆盖并恢复"),
+        message: t("恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容会保留。\n\n若备份里的加密笔记需要原设备根密码才能打开，请先用「另存为本地副本」把它存到本地，再到备份设置里用「选择文件」恢复——那里可以填原设备根密码并迁移密钥。", { formatLabel: formatLabel, name: name }),
+        confirmText: t("合并并恢复"),
         danger: true,
       });
       if (!ok) return;
@@ -591,6 +591,43 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
           {status?.last_error && (
             <p className="break-all rounded-lg bg-danger-soft px-2 py-1.5 text-[10px] leading-relaxed text-danger">{t("上次自动备份失败：{last_error}", { last_error: status.last_error })}</p>
           )}
+        </div>
+      </div>
+
+      {/* 备份内容：体积与安全两个开关，手动与自动备份同时生效 */}
+      <div className="overflow-hidden rounded-xl border border-line">
+        <div className="px-3.5 py-2.5">
+          <p className="text-xs font-medium text-body">{t("备份内容")}</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+            {t("下面两项对「手动备份到云端」和「自动备份」同时生效。")}
+          </p>
+        </div>
+        <div className="space-y-2.5 border-t border-line-soft px-3.5 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs text-body">{t("包含图片")}</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
+                {t("图片会以 base64 内联进 JSON，体积约是原图的 1.4 倍。关掉后备份明显变小、上传更快，代价是恢复后正文里的图片不会回来。")}
+              </p>
+            </div>
+            <Toggle
+              value={settings.includeAttachments !== false}
+              onChange={(v) => onAppSettingChange("webdav", "includeAttachments", v)}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs text-body">{t("包含根密码材料")}</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
+                {t("带上后换机输入原根密码即可解锁加密笔记；但它同时是一份可离线试密码的校验块。关掉后这份备份只能在本机恢复。")}
+              </p>
+            </div>
+            <Toggle
+              value={settings.includeRootKey !== false}
+              onChange={(v) => onAppSettingChange("webdav", "includeRootKey", v)}
+            />
+          </div>
         </div>
       </div>
 

@@ -120,6 +120,8 @@ export const settingsMessages: Record<string, string> = {
   "恢复会用{formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：{value2}": "Restoring this {formatLabel} backup replaces **all** current notes, groups, trash, AI chat history, and settings. Current data will be erased. This cannot be undone. Export a backup first.\n\nBackup file: {value2}",
   "覆盖并恢复": "Replace and restore",
   "恢复完成：{notes} 篇笔记，界面即将刷新": "Restored {notes} notes. The app will refresh shortly.",
+  "恢复完成：{notes} 篇笔记，并保留了本地 {count} 项内容，界面即将刷新":
+    "Restored {notes} notes and kept {count} local item(s) that were not in the backup. The app will refresh shortly.",
   "恢复失败：{value1}": "Restore failed: {value1}",
   "设置": "Settings",
   "更改已自动保存": "Changes saved automatically",
@@ -163,7 +165,7 @@ export const settingsMessages: Record<string, string> = {
   "通用、编辑器、笔记列表、界面布局与主题回到默认值，不影响 AI 设置。": "Reset general, editor, note list, layout, and theme settings. AI settings are unaffected.",
   "恢复 AI 默认设置": "Reset AI settings",
   "对话行为、上下文等 AI 参数回到默认值，不影响服务商与记忆条目。": "Reset chat behavior, context, and other AI parameters. Providers and memory entries are unaffected.",
-  "备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。": "Backups include notes, groups, trash, tags, history, AI chats, and all settings, including the editor and theme. JSON, SQLite, and encrypted backups are supported. API keys and WebDAV settings are excluded unless selected below. Semantic indexes and local models are not included; download or import models again and rebuild the index after restoring. Configure WebDAV below to automatically upload JSON backups and restore them as needed.",
+  "备份内容包含笔记、分组（含加密项，以密文原样保存）、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。": "Backups include notes, groups (including encrypted items, kept as ciphertext), trash, tags, history, AI chats, and all settings, including the editor and theme. JSON, SQLite, and encrypted backups are supported. API keys and WebDAV settings are excluded unless selected below. Semantic indexes and local models are not included; download or import models again and rebuild the index after restoring. Configure WebDAV below to automatically upload JSON backups and restore them as needed.",
   "备份格式": "Backup format",
   "SQLite 是整库快照（.db），恢复更快，适合本机定期备份。": "SQLite is a full database snapshot (.db), ideal for fast, regular backups on this device.",
   "加密备份": "Encrypted",
@@ -184,7 +186,7 @@ export const settingsMessages: Record<string, string> = {
   "已导出：{value1} · {notes} 篇笔记 · {messages} 条对话消息": "Exported: {value1} · {notes} notes · {messages} chat messages",
   "导出中...": "Exporting…",
   "导出": "Export",
-  "支持 .json、.db 与 .fnbak 加密备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key，加密备份还需输入备份口令。": "Select a .json, .db, or .fnbak encrypted backup to replace current data and refresh the app. Included API keys are re-encrypted on import; restoring on the same device preserves existing keys, and encrypted backups also require the backup passphrase.",
+  "支持 .json、.db 与 .fnbak 加密备份。JSON 与 SQLite 都会先列出备份内容供你勾选（分区、分组、单篇笔记），按合并方式恢复，本地已有内容不会被删除；只有加密容器（.fnbak）仍是整库覆盖并需要备份口令。带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。要连图片一起完整备份（包括加密笔记里的图片），请用 SQLite 或加密备份——JSON 只会带上正文里出现过路径的图片。": "Supports .json, .db and .fnbak encrypted backups. For .json and .db you first see what the backup contains and tick what to restore (sections, groups, individual notes) in merge mode — existing local content is never deleted; only the encrypted container (.fnbak) still replaces the whole database and asks for a passphrase. Included API keys are re-encrypted on import, and restoring on the same device preserves existing keys. To back up images as well (including those inside encrypted notes), use SQLite or an encrypted backup — JSON only carries images whose paths appear in the note body.",
   "恢复中...": "Restoring…",
   "选择文件": "Choose file",
   "本次导出时间：{value1}": "Exported at: {value1}",
@@ -780,4 +782,179 @@ export const settingsMessages: Record<string, string> = {
   "没有读到诊断信息": "No diagnostics available",
   "插件当前为停用状态：下面的数字由「临时加载一次」采集，采集后已恢复停用，这些能力目前不会生效。":
     "This plugin is disabled. The numbers below were collected by loading it once temporarily; it was switched back off afterwards, so none of these capabilities are active.",
+  "选择要恢复的内容":
+    "Choose what to restore",
+  "正在读取备份清单…":
+    "Reading the backup contents…",
+  "读取备份失败：{value1}":
+    "Could not read the backup: {value1}",
+  "备份导出于 {value1}":
+    "Backed up at {value1}",
+  "未知时间":
+    "unknown time",
+  "格式 v{value1}":
+    "format v{value1}",
+  "与本地重复 {count} 篇":
+    "{count} already exist locally",
+  "分组":
+    "Groups",
+  "历史版本":
+    "History",
+  "标签":
+    "Tags",
+  "图片":
+    "Images",
+  "AI 对话":
+    "AI chats",
+  "恢复哪些内容":
+    "What to restore",
+  "正文、标题、分组归属与回收站状态":
+    "Content, title, group and trash state",
+  "分组名称与 AI 访问设置":
+    "Group names and AI access settings",
+  "标签本体与笔记上的标记":
+    "Tags and the labels attached to notes",
+  "每篇笔记的自动与手动快照":
+    "Automatic and manual snapshots of each note",
+  "正文引用的附件（按内容去重）":
+    "Attachments referenced by notes (deduplicated by content)",
+  "模型配置；Key 默认不外带":
+    "Model settings; API keys are not included by default",
+  "会话与消息记录":
+    "Sessions and messages",
+  "编辑器、主题等偏好（不含根密码）":
+    "Editor and theme preferences (no root password)",
+  "未分组":
+    "Ungrouped",
+  "{count} 篇":
+    "{count} notes",
+  "全部分组":
+    "All groups",
+  "已选 {count} / {total} 个分组":
+    "{count} of {total} groups selected",
+  "全选":
+    "Select all",
+  "分组范围":
+    "Group scope",
+  "本地已有同名内容时":
+    "When an item already exists locally",
+  "用备份覆盖":
+    "Overwrite with backup",
+  "同一条内容换成备份里的版本":
+    "Replace the local copy with the backup version",
+  "保留本地版本":
+    "Keep local version",
+  "已存在的跳过，只补本地没有的":
+    "Skip existing items, add only what is missing",
+  "无论选哪个，本地独有的内容都不会被删除。":
+    "Either way, content that exists only locally is never deleted.",
+  "备份含 {count} 篇加密笔记":
+    "The backup contains {count} encrypted notes",
+  "本机已有根密码，这些笔记需要原设备根密码才能查看。输入后会把本机根密码换成备份里那份。":
+    "This device already has a root password. These notes need the original device's root password; entering it will replace the local root password with the one from the backup.",
+  "输入原设备根密码即可在恢复后直接查看；留空则先以锁定状态入库，之后随时可解锁。":
+    "Enter the original device's root password to read them right after restoring. Leave it empty to import them locked and unlock later.",
+  "原设备根密码（可留空）":
+    "Original root password (optional)",
+  "替换本机根密码（本机原有的加密笔记会因此打不开）":
+    "Replace the local root password (encrypted notes created on this device will no longer open)",
+  "将恢复 {count} 篇笔记":
+    "{count} notes will be restored",
+  "没有勾选任何内容":
+    "Nothing is selected",
+  "开始恢复":
+    "Start restoring",
+  "原设备根密码不正确":
+    "The original root password is incorrect",
+  "本机已有根密码，需要勾选「替换本机根密码」才能采纳备份的密钥":
+    "This device already has a root password. Tick “Replace the local root password” to adopt the keyring from the backup.",
+  "恢复完成：{notes} 篇笔记，并已用备份的根密码解锁加密笔记，界面即将刷新":
+    "Restored {notes} notes and unlocked the encrypted ones with the backup's root password. The app will refresh shortly.",
+  "恢复完成：已按选择更新内容，界面即将刷新":
+    "Restore finished with your selection. The app will refresh shortly.",
+
+  "删除分组及组内笔记":
+    "Delete group and its notes",
+  "永久删除加密笔记":
+    "Permanently delete encrypted note",
+  "「{name}」是加密笔记，永久删除后没有任何明文副本可以恢复。确定继续吗？":
+    "“{name}” is an encrypted note. Once permanently deleted there is no plaintext copy to restore. Continue?",
+  "确定要清空回收站吗？其中 {count} 篇加密笔记没有明文副本，删除后无法恢复。":
+    "Empty the trash? {count} of these are encrypted notes with no plaintext copy — they cannot be recovered after deletion.",
+  "确定要永久删除选中的笔记吗？其中 {count} 篇加密笔记没有明文副本，删除后无法恢复。":
+    "Permanently delete the selected notes? {count} of them are encrypted with no plaintext copy and cannot be recovered.",
+  "该分组已加密：组内笔记会一并永久删除（不进回收站、无法恢复）。加密分组的密钥跟随分组，只删分组会留下一堆打不开的密文，所以不能单独保留笔记；想保留请先「解密分组」。":
+    "This group is encrypted: its notes will be permanently deleted as well (not moved to the trash, not recoverable). The group key lives with the group, so keeping the notes without the group would leave unreadable ciphertext. To keep them, decrypt the group first.",
+  "删除组内全部笔记（加密分组必选）":
+    "Delete all notes in the group (required for encrypted groups)",
+  "删除笔记（加密）":
+    "Delete note (encrypted)",
+  "这是加密笔记，删除会把它移入回收站（密钥一并保留，还原后仍可解密）。确定继续吗？":
+    "This is an encrypted note. It will be moved to the trash with its key kept, so it can still be decrypted if restored. Continue?",
+  "加密分组不能只删分组：请先「解密分组」，或在删除时选择同时删除组内笔记":
+    "An encrypted group cannot be deleted on its own. Decrypt it first, or delete its notes together with the group.",
+
+  "备份加密内容":
+    "Back up encrypted content",
+  "勾选后快照会带上加密笔记、分组密钥与根密码材料（都只有密文，不含明文）：同机可直接恢复，换机需要原设备根密码。不勾选则快照里完全没有加密内容，恢复后这些笔记不会出现。":
+    "When enabled, the snapshot includes encrypted notes, group keys and root-password material (ciphertext only, never plaintext): they restore directly on the same device and need the original root password on another. When disabled the snapshot contains no encrypted content at all, and those notes will not appear after restoring.",
+
+  "只恢复指定的笔记":
+    "Restore only selected notes",
+  "已选 {count} / {total} 篇":
+    "{count} of {total} notes selected",
+  "未启用（按上方分组范围）":
+    "off (follows the group scope above)",
+  "逐篇挑选":
+    "Pick notes one by one",
+  "搜索标题或 id":
+    "Search title or id",
+  "清空":
+    "Clear",
+  "显示 {shown} / {total} 篇":
+    "Showing {shown} of {total} notes",
+  "没有匹配的笔记":
+    "No matching notes",
+  "备份里的笔记太多，这里只列出了前 {count} 篇；要恢复更多请用分组范围。":
+    "This backup holds too many notes, so only the first {count} are listed here. Use the group scope to restore more.",
+  "已存在":
+    "exists",
+  "本地已有同一条":
+    "The same item already exists locally",
+  "已开启逐篇挑选，但一篇都没选中":
+    "Note-by-note picking is on, but nothing is selected",
+
+  "把备份的加密密钥迁移到本机根密码（推荐，之后一把根密码就能全开）":
+    "Re-wrap the backup's encryption keys with this device's root password (recommended — afterwards one root password opens everything)",
+  "本机当前的根密码":
+    "This device's current root password",
+  "改为直接替换本机根密码（本机原有的加密笔记会因此打不开）":
+    "Instead, replace the local root password (encrypted notes created on this device will stop opening)",
+  "要迁移密钥，请填写本机当前的根密码":
+    "To migrate the keys, enter this device's current root password",
+  "本机根密码不正确，密钥未迁移（数据已恢复，仍可用各笔记自己的密码打开）":
+    "The local root password is incorrect, so the keys were not migrated. The data is restored and each note still opens with its own password.",
+
+  "备份内容":
+    "Backup contents",
+  "下面两项对「手动备份到云端」和「自动备份」同时生效。":
+    "Both options apply to manual cloud backups and automatic backups.",
+  "包含图片":
+    "Include images",
+  "图片会以 base64 内联进 JSON，体积约是原图的 1.4 倍。关掉后备份明显变小、上传更快，代价是恢复后正文里的图片不会回来。":
+    "Images are inlined into the JSON as base64, roughly 1.4x the original size. Turning this off makes backups much smaller and faster to upload, but the images will not come back after restoring.",
+  "包含根密码材料":
+    "Include root-password material",
+  "带上后换机输入原根密码即可解锁加密笔记；但它同时是一份可离线试密码的校验块。关掉后这份备份只能在本机恢复。":
+    "Including it lets another device unlock encrypted notes with the original root password, but it is also a verifier that can be brute-forced offline. Without it, this backup can only be restored on this device.",
+  "合并并恢复":
+    "Merge and restore",
+  "恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容会保留。\n\n若备份里的加密笔记需要原设备根密码才能打开，请先用「另存为本地副本」把它存到本地，再到备份设置里用「选择文件」恢复——那里可以填原设备根密码并迁移密钥。":
+    "Restoring merges {formatLabel} \"{name}\" into the current data: matching items take the backup version and content that exists only locally is kept.\n\nIf the backup's encrypted notes need the original device root password, first use \"Save a local copy\" and then restore that file from the backup settings via \"Choose file\" - there you can enter the original root password and migrate the keys.",
+
+  "图片以明文存放在数据目录，不随笔记加密":
+    "Images are stored as plain files in the data folder; they are not encrypted together with the note.",
+  "图片保存失败：{value1}":
+    "Could not save the image: {value1}",
+
 };

@@ -13,10 +13,11 @@ use super::history::purge_note_history;
 #[tauri::command]
 pub fn move_to_trash(id: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    // 加密笔记一律不能进回收站：临时解锁也不放行，必须先永久解密
-    if encryption::note_enc_mode(&conn, &id)? != 0 {
-        return Err(json!({ "code": "encrypted_note" }).to_string());
-    }
+    /*
+     * 加密笔记也能进回收站：删除只需要 id，不需要明文。
+     * 密文与它的密钥行（note 级在 encrypted_keys，分组级挂在分组上）都原样留着，
+     * 所以从回收站还原后照样能解——「能不能解密」只影响读取，不该拦着删除。
+     */
     let now = Local::now().to_rfc3339();
 
     conn.execute(
@@ -105,10 +106,6 @@ pub fn delete_note_permanently(
     state: State<AppState>,
 ) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    // 加密笔记不可永久删除（解密会删 encrypted_keys，直接删只会留下无法恢复的密文）
-    if encryption::note_enc_mode(&conn, &id)? != 0 {
-        return Err(json!({ "code": "encrypted_note" }).to_string());
-    }
 
     // 正文一删就找不到图片路径了，先把这份笔记（含历史快照）用到的图记下来
     let candidates = crate::attachments::collect_notes_attachment_paths(&conn, std::slice::from_ref(&id));
@@ -141,12 +138,12 @@ pub fn delete_multiple_notes_permanently(
 
     // 删除前先收齐这批笔记用到的图片；删完后再统一判断还有没有人引用
     let mut candidates: Vec<String> = Vec::new();
-    let mut skipped = 0usize;
     for id in ids {
-        if encryption::note_enc_mode(&conn, &id).unwrap_or(0) != 0 {
-            skipped += 1;
-            continue;
-        }
+        /*
+         * 加密笔记同样删除：`drop_note_side_rows` 里的 cleanup_note_key 会
+         * 一并清掉它的 note 级密钥。分组加密（enc_mode=2）的密钥挂在分组上，
+         * 删单篇不碰分组密钥，同组其他笔记不受影响。
+         */
         candidates.extend(crate::attachments::collect_notes_attachment_paths(
             &conn,
             std::slice::from_ref(&id),
@@ -164,7 +161,8 @@ pub fn delete_multiple_notes_permanently(
     drop(conn);
     semantic::invalidate(&state.semantic);
 
-    Ok(skipped)
+    // 加密笔记不再跳过，返回 0 表示「一条都没漏」
+    Ok(0)
 }
 
 #[tauri::command]

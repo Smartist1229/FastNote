@@ -372,6 +372,10 @@ export const DEFAULT_WEBDAV_SETTINGS: WebdavSettings = {
   autoTarget: "both",
   /** 本地自动备份最多保留 10 份（云端不限制） */
   autoMaxLocal: 10,
+  /** 默认带图片：备份完整优先，嫌大可以关 */
+  includeAttachments: true,
+  /** 默认带根密码材料：换机恢复要靠它解锁，同时它也是可离线验证的靶子 */
+  includeRootKey: true,
 };
 
 /* ---------- 合并后的完整默认值 ---------- */

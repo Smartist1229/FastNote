@@ -568,14 +568,30 @@ function AppContent() {
           <p className="text-sm text-body">
             {t("确定要删除分类「{name}」吗？", { name: categories.deletingCategory?.name ?? "" })}
           </p>
-          <label className="flex items-center gap-2.5 cursor-pointer group">
+          {categories.deletingCategory?.is_encrypted && (
+            <div className="rounded-xl bg-danger-soft border border-line px-3 py-2 text-[11px] text-danger-strong leading-relaxed">
+              {t("该分组已加密：组内笔记会一并永久删除（不进回收站、无法恢复）。加密分组的密钥跟随分组，只删分组会留下一堆打不开的密文，所以不能单独保留笔记；想保留请先「解密分组」。")}
+            </div>
+          )}
+          <label
+            className={
+              categories.deletingCategory?.is_encrypted
+                ? "flex items-center gap-2.5 cursor-not-allowed"
+                : "flex items-center gap-2.5 cursor-pointer group"
+            }
+          >
             <input
               type="checkbox"
               checked={categories.deleteCategoryNotes}
               onChange={(e) => categories.setDeleteCategoryNotes(e.target.checked)}
-              className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
+              disabled={!!categories.deletingCategory?.is_encrypted}
+              className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20 disabled:opacity-50"
             />
-            <span className="text-sm text-muted group-hover:text-body transition-colors">{t("同时删除该分类下的所有笔记")}</span>
+            <span className={`text-sm transition-colors ${categories.deletingCategory?.is_encrypted ? "text-faint" : "text-muted group-hover:text-body"}`}>
+              {categories.deletingCategory?.is_encrypted
+                ? t("删除组内全部笔记（加密分组必选）")
+                : t("同时删除该分类下的所有笔记")}
+            </span>
           </label>
           <div className="flex gap-2 justify-end pt-1">
             <button onClick={() => categories.setShowDeleteCategoryModal(false)} className="btn-ghost px-4 py-2 text-sm">
@@ -626,13 +642,12 @@ function AppContent() {
             ) : (
               trash.trashNotes.map((note) => (
                 <div key={note.id} className="flex items-center gap-2.5 p-2.5 rounded-xl hover:bg-app transition-colors group">
+                  {/* 加密笔记也能勾选删除：删除只看 id，不需要明文 */}
                   <input
                     type="checkbox"
                     checked={trash.selectedTrashIds.has(note.id)}
                     onChange={() => trash.toggleTrashSelect(note.id)}
-                    disabled={note.enc_mode !== 0}
-                    title={note.enc_mode !== 0 ? t("加密笔记需先永久解密才能删除") : undefined}
-                    className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20 disabled:opacity-40"
+                    className="w-4 h-4 rounded border-line-strong text-primary-500 focus:ring-primary-500/20"
                   />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-body truncate">
@@ -650,11 +665,7 @@ function AppContent() {
                     <button onClick={() => trash.handleRestoreNote(note.id)} className="toolbar-btn hover:bg-success-soft! hover:text-success!" title={t("还原")}>
                       <Icon name="app-restore" className="w-3.5 h-3.5" />
                     </button>
-                    {note.enc_mode === 0 ? (
-                      <button onClick={() => trash.handleDeletePermanent(note.id)} className="toolbar-btn hover:bg-danger-soft! hover:text-danger!" title={t("永久删除")}>
-                        <Icon name="app-trash" className="w-3.5 h-3.5" />
-                      </button>
-                    ) : (
+                    {note.enc_mode !== 0 && (
                       <button
                         onClick={() => trash.handleDecryptTrashNote(note)}
                         className="toolbar-btn hover:bg-primary-50! hover:text-primary-600!"
@@ -663,6 +674,9 @@ function AppContent() {
                         <Icon name="security-unlock" className="w-3.5 h-3.5" />
                       </button>
                     )}
+                    <button onClick={() => trash.handleDeletePermanent(note.id)} className="toolbar-btn hover:bg-danger-soft! hover:text-danger!" title={t("永久删除")}>
+                      <Icon name="app-trash" className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               ))

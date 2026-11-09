@@ -9,9 +9,7 @@ import {
   exportBackup,
   exportEncryptedBackup,
   exportSqliteBackup,
-  importBackup,
   importEncryptedBackup,
-  importSqliteBackup,
 } from "@/api/note/backup";
 import { BackupPassphraseDialog } from "@/components/common/EncryptionDialogs";
 import { useToast } from "@/components/common/Toast";
@@ -19,6 +17,7 @@ import { useConfirm } from "@/components/common/ConfirmDialog";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { flushThemeSettings } from "@/stores/themeStore";
 import { WebdavPanel } from "@/components/settings/WebdavPanel";
+import { RestoreDialog } from "@/features/settings/RestoreDialog";
 import { Icon } from "@/components/common/Icon";
 import { SegmentedInput, Switch } from "../controls";
 import type { SettingsSectionContext } from "../context";
@@ -57,11 +56,18 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
 
   /* 备份操作的进行中状态：非 null 时禁用导出/导入按钮，防止并发 */
   const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(null);
+  /** 勾选式恢复的目标：JSON 与 SQLite 都走这条通道 */
+  const [restoreTarget, setRestoreTarget] = useState<{
+    path: string;
+    format: "json" | "sqlite";
+  } | null>(null);
   const [lastExport, setLastExport] = useState<{ summary: BackupSummary; path: string } | null>(null);
   /** 导出备份时是否一并写入 AI 服务商 API Key（JSON 为明文，SQLite 为本机加密值） */
   const [backupIncludeApiKey, setBackupIncludeApiKey] = useState(false);
   /** 导出备份时是否一并写入 WebDAV 配置（JSON 含明文密码，SQLite 保留本机密文） */
   const [backupIncludeWebdav, setBackupIncludeWebdav] = useState(false);
+  /** SQLite 快照是否带加密内容（密文 + 密钥 + 根密码材料）；默认带上，备份要完整 */
+  const [backupIncludeEncrypted, setBackupIncludeEncrypted] = useState(true);
   /**
  * 备份格式：JSON 适合换机迁移，SQLite 是整库快照、适合本机快速备份，
  * 加密备份（.fnbak）在整库快照外再套一层独立备份口令，连加密笔记一起带走。
@@ -98,7 +104,12 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
       await flushThemeSettings();
       setBackupBusy("export");
       const summary = isSqlite
-        ? await exportSqliteBackup(path, backupIncludeApiKey, backupIncludeWebdav)
+        ? await exportSqliteBackup(
+            path,
+            backupIncludeApiKey,
+            backupIncludeWebdav,
+            backupIncludeEncrypted,
+          )
         : await exportBackup(path, backupIncludeApiKey, backupIncludeWebdav);
       setLastExport({ summary, path });
       const extras = [
@@ -107,9 +118,6 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
       ].filter(Boolean);
       const keyNote = extras.length ? t("（含{value1}）", { value1: extras.join(getLocale() === "zh-CN" ? "、" : ", ") }) : "";
       showToast(t("已导出 {notes} 篇笔记{keyNote}", { notes: summary.notes, keyNote: keyNote }), "success");
-      if (summary.skipped_encrypted > 0) {
-        showToast(t("备份已跳过 {count} 篇加密笔记", { count: summary.skipped_encrypted }), "info");
-      }
     } catch (e) {
       showToast(t("导出失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
@@ -154,43 +162,32 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
       const lower = selected.toLowerCase();
       const isEncrypted = lower.endsWith(".fnbak");
       const isSqlite = lower.endsWith(".db") || lower.endsWith(".sqlite");
-      const formatLabel = isEncrypted
-        ? t("加密容器")
-        : isSqlite
-          ? t("SQLite 数据库")
-          : "JSON";
+
+      /*
+       * JSON 与 SQLite 都走「先预检、再勾选」的合并恢复：不会清库、不会删本地独有内容，
+       * 所以这里不做「覆盖当前全部数据」的二次确认，确认交给恢复弹窗里的结果预览。
+       * 主题有防抖写入，先冲掉旧改动，免得恢复完又被内存里的旧值回写。
+       */
+      if (!isEncrypted) {
+        await flushThemeSettings();
+        setRestoreTarget({ path: selected, format: isSqlite ? "sqlite" : "json" });
+        return;
+      }
+
+      // 加密容器（.fnbak）仍是整库替换：它是密文包，必须先有口令才能读
       const ok = await confirm({
         title: t("从备份恢复"),
-        message: t("恢复会用{formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：{value2}", { formatLabel: formatLabel, value2: baseName(selected) }),
+        message: t("恢复会用{formatLabel}备份覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。\n\n备份文件：{value2}", { formatLabel: t("加密容器"), value2: baseName(selected) }),
         confirmText: t("覆盖并恢复"),
         danger: true,
       });
       if (!ok) return;
 
       // 加密备份覆盖前先问口令：口令错就原地重试，不会碰到现有数据
-      if (isEncrypted) {
-        setBackupPassphrase({ mode: "import", path: selected });
-        return;
-      }
-
-      // 主题有防抖写入：先冲掉旧改动，导入后再由备份内容覆盖，避免旧主题回写
-      await flushThemeSettings();
-      setBackupBusy("import");
-      const summary = isSqlite
-        ? await importSqliteBackup(selected)
-        : await importBackup(selected);
-      showToast(t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes }), "success");
-      setTimeout(() => window.location.reload(), 800);
+      setBackupPassphrase({ mode: "import", path: selected });
     } catch (e) {
       setBackupBusy(null);
-      // 加密相关的拒绝是带 code 的 JSON 字符串，直接展示会让用户看到 {"code":...}
-      const raw = errorText(e);
-      const friendly = raw.includes("local_has_encrypted")
-        ? t("当前库存在加密内容，恢复会丢失密钥，已取消")
-        : raw.includes("backup_contains_encrypted")
-          ? t("备份包含加密内容，无法恢复")
-          : raw;
-      showToast(t("恢复失败：{value1}", { value1: friendly }), "error");
+      showToast(t("恢复失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -212,7 +209,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
   return (
     <>
       <div className="space-y-3">
-        <p className="text-[11px] text-faint leading-relaxed">{t("备份内容包含笔记、分组、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。")}</p>
+        <p className="text-[11px] text-faint leading-relaxed">{t("备份内容包含笔记、分组（含加密项，以密文原样保存）、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。")}</p>
 
         {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照，加密备份再套一层口令 */}
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
@@ -263,6 +260,19 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
           </div>
         </div>
 
+        {/* SQLite 快照默认带上加密内容：不带的话换机恢复会发现加密笔记整批消失 */}
+        {backupFormat === "sqlite" && (
+          <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
+            <div className="min-w-0">
+              <span className="text-xs font-medium text-body">{t("备份加密内容")}</span>
+              <p className="text-[11px] text-faint leading-relaxed mt-1">{t("勾选后快照会带上加密笔记、分组密钥与根密码材料（都只有密文，不含明文）：同机可直接恢复，换机需要原设备根密码。不勾选则快照里完全没有加密内容，恢复后这些笔记不会出现。")}</p>
+            </div>
+            <div className="max-w-full pt-0.5">
+              <Switch value={backupIncludeEncrypted} onChange={setBackupIncludeEncrypted} />
+            </div>
+          </div>
+        )}
+
         {/* WebDAV 配置默认同样不进备份：里面含云端账号与密码 */}
         <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
           <div className="min-w-0">
@@ -308,7 +318,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-body">{t("从备份恢复")}</p>
-            <p className="text-[11px] text-faint mt-0.5">{t("支持 .json、.db 与 .fnbak 加密备份，选择后覆盖当前数据并自动刷新；带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key，加密备份还需输入备份口令。")}</p>
+            <p className="text-[11px] text-faint mt-0.5">{t("支持 .json、.db 与 .fnbak 加密备份。JSON 与 SQLite 都会先列出备份内容供你勾选（分区、分组、单篇笔记），按合并方式恢复，本地已有内容不会被删除；只有加密容器（.fnbak）仍是整库覆盖并需要备份口令。带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。要连图片一起完整备份（包括加密笔记里的图片），请用 SQLite 或加密备份——JSON 只会带上正文里出现过路径的图片。")}</p>
           </div>
           <button
             onClick={() => void guard(handleImport)}
@@ -332,6 +342,28 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
       </div>
 
       {confirmDialog}
+
+      {/* 恢复选项：预检清单 → 勾选分区/分组 → 合并写入；JSON 备份的唯一入口 */}
+      <RestoreDialog
+        isOpen={restoreTarget !== null}
+        path={restoreTarget?.path ?? null}
+        format={restoreTarget?.format ?? "json"}
+        onClose={() => setRestoreTarget(null)}
+        onDone={(summary, rootAdopted) => {
+          setRestoreTarget(null);
+          showToast(
+            rootAdopted
+              ? t("恢复完成：{notes} 篇笔记，并已用备份的根密码解锁加密笔记，界面即将刷新", {
+                  notes: summary.notes,
+                })
+              : summary.notes > 0
+                ? t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes })
+                : t("恢复完成：已按选择更新内容，界面即将刷新"),
+            "success",
+          );
+          setTimeout(() => window.location.reload(), 800);
+        }}
+      />
 
       {/* 加密备份口令：导出/恢复共用，口令只活在这个弹窗里；挂到 body，避免被可拖动浮窗的 transform 与滚动容器裁切 */}
       {createPortal(

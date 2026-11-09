@@ -21,6 +21,9 @@ import { saveAttachment } from "@/api/system/attachments";
 import { cacheImageSize } from "@/lib/markdown/imageSrc";
 import { useAttachmentImages } from "@/hooks/useAttachmentImages";
 import { useToast } from "@/components/common/Toast";
+
+/** 加密笔记首次插图时提示「图片是明文」的一次性标记（localStorage） */
+const ATTACHMENT_PLAINTEXT_NOTICE = "fastnote.notice.attachmentPlaintext";
 import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
@@ -341,10 +344,22 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (!keepFocusOnHostClick) return;
     const handler = (e: MouseEvent) => {
       if (!(e.target instanceof Element)) return;
-      if (e.target.closest('[data-editor-blur-ignore="true"]')) {
-        e.preventDefault();
-        editorApiRef.current?.focus();
+      if (!e.target.closest('[data-editor-blur-ignore="true"]')) return;
+      /*
+       * 可聚焦控件必须放行：在 mousedown 上 preventDefault 会**取消浏览器默认的聚焦动作**，
+       * input / textarea / select / contenteditable 于是永远拿不到焦点，
+       * 表现就是「弹窗里的输入框点不动，只能 Tab 进去」。
+       * 这里只拦按钮、菜单项这类「点了不该把编辑器焦点抢走」的元素。
+       */
+      if (
+        e.target.closest(
+          'input, textarea, select, option, label, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
+        )
+      ) {
+        return;
       }
+      e.preventDefault();
+      editorApiRef.current?.focus();
     };
     document.addEventListener("mousedown", handler, true);
     return () => document.removeEventListener("mousedown", handler, true);
@@ -601,6 +616,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       try {
         const meta = await saveAttachment(file);
         cacheImageSize(meta.path, meta.width, meta.height);
+        /*
+         * 图片字节是**明文**落盘的，不随笔记加密（加密只覆盖标题与正文）。
+         * 加密笔记第一次插图时说明一次，避免每次粘贴都弹提示；
+         * 用 localStorage 记，跨笔记也只提示一次。
+         */
+        if (note && note.enc_mode !== 0 && !window.localStorage.getItem(ATTACHMENT_PLAINTEXT_NOTICE)) {
+          window.localStorage.setItem(ATTACHMENT_PLAINTEXT_NOTICE, "1");
+          showToast(t("图片以明文存放在数据目录，不随笔记加密"), "info");
+        }
         return meta.path;
       } catch (e) {
         showToast(
@@ -610,7 +634,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         return null;
       }
     },
-    [isReadOnly, showToast, t],
+    [isReadOnly, showToast, t, note],
   );
 
   /** 预览/阅读态把 attachments/… 换成 fastnote-asset://…，并按已知宽高提前占位 */

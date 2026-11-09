@@ -70,6 +70,10 @@ struct Config {
     interval_hours: u64,
     target: String,
     max_local: u64,
+    /// 备份是否内联图片（关掉可以显著减小体积）
+    include_attachments: bool,
+    /// 备份是否携带根密码材料（关掉后这份备份只能在本机恢复）
+    include_root_key: bool,
 }
 
 fn setting_raw(conn: &rusqlite::Connection, key: &str) -> Option<String> {
@@ -135,6 +139,8 @@ fn load_config(app: &AppHandle) -> Result<Config, String> {
         interval_hours: setting_u64(&conn, "app.config.webdav.autoIntervalHours", 1).clamp(1, 720),
         target: setting_string(&conn, "app.config.webdav.autoTarget", "both"),
         max_local: setting_u64(&conn, "app.config.webdav.autoMaxLocal", 10).clamp(1, 200),
+        include_attachments: setting_bool(&conn, "app.config.webdav.includeAttachments", true),
+        include_root_key: setting_bool(&conn, "app.config.webdav.includeRootKey", true),
     })
 }
 
@@ -206,6 +212,31 @@ fn request(client: &Client, method: Method, url: reqwest::Url, cfg: &Config) -> 
         .basic_auth(cfg.username.clone(), Some(cfg.password.clone()))
 }
 
+/// 把 reqwest 的错误连同底层原因压成一行人话。
+///
+/// `{e}` 只会给出顶层那句话（`error sending request for url (...)`），
+/// 真正的原因——DNS 解析失败、TLS 证书、连接被拒——藏在 `source` 链里。
+/// 不把它们打出来，用户看到的就永远是一句没法排查的英文。
+fn net_error(action: &str, err: &reqwest::Error) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(item) = current {
+        let text = item.to_string();
+        if !text.is_empty() && !parts.iter().any(|part| part == &text) {
+            parts.push(text);
+        }
+        current = item.source();
+    }
+    let detail = parts.join(" ← ");
+    if err.is_timeout() {
+        format!("{action}失败：连接超时，可能是网络不通或需要代理（{detail}）")
+    } else if err.is_connect() {
+        format!("{action}失败：连不上服务器，检查地址与网络（{detail}）")
+    } else {
+        format!("{action}失败：{detail}")
+    }
+}
+
 fn status_error(action: &str, status: StatusCode) -> String {
     match status.as_u16() {
         401 => format!("{action}失败：账号或密码不正确"),
@@ -262,7 +293,7 @@ async fn ensure_folder(client: &Client, cfg: &Config) -> Result<reqwest::Url, St
     let response = request(client, mkcol_method(), url.clone(), cfg)
         .send()
         .await
-        .map_err(|e| format!("连接 WebDAV 失败：{e}"))?;
+        .map_err(|e| net_error("连接 WebDAV", &e))?;
     match response.status().as_u16() {
         200 | 201 | 204 | 405 => {}
         status => return Err(status_error("创建云端文件夹", StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST))),
@@ -274,7 +305,7 @@ async fn ensure_folder(client: &Client, cfg: &Config) -> Result<reqwest::Url, St
         .body(PROPFIND_BODY)
         .send()
         .await
-        .map_err(|e| format!("连接 WebDAV 失败：{e}"))?;
+        .map_err(|e| net_error("连接 WebDAV", &e))?;
     match response.status().as_u16() {
         200 | 207 => Ok(url),
         status => Err(status_error(
@@ -298,7 +329,7 @@ async fn put_file(
         .body(body)
         .send()
         .await
-        .map_err(|e| format!("上传备份失败：{e}"))?;
+        .map_err(|e| net_error("上传备份", &e))?;
     match response.status().as_u16() {
         200 | 201 | 204 => Ok(()),
         status => Err(status_error(
@@ -316,7 +347,12 @@ pub struct CloudBackupResult {
     pub summary: BackupSummary,
 }
 
-fn new_local_backup(app: &AppHandle, prefix: &str) -> Result<(PathBuf, BackupSummary), String> {
+fn new_local_backup(
+    app: &AppHandle,
+    prefix: &str,
+    include_attachments: bool,
+    include_root_key: bool,
+) -> Result<(PathBuf, BackupSummary), String> {
     let dir = backup_dir(app)?;
     let path = dir.join(format!(
         "{prefix}{}.json",
@@ -327,6 +363,8 @@ fn new_local_backup(app: &AppHandle, prefix: &str) -> Result<(PathBuf, BackupSum
         path.to_string_lossy().to_string(),
         false,
         false,
+        include_attachments,
+        include_root_key,
         app.clone(),
     )?;
     Ok((path, summary))
@@ -353,6 +391,8 @@ async fn cloud_backup(
         temp.to_string_lossy().to_string(),
         include_api_keys,
         include_webdav,
+        cfg.include_attachments,
+        cfg.include_root_key,
         app.clone(),
     );
 
@@ -489,14 +529,14 @@ pub async fn webdav_list_remote(app: AppHandle) -> Result<Vec<RemoteBackupFile>,
         .body(PROPFIND_BODY)
         .send()
         .await
-        .map_err(|e| format!("读取云端备份列表失败：{e}"))?;
+        .map_err(|e| net_error("读取云端备份列表", &e))?;
     if response.status().as_u16() != 207 {
         return Err(status_error("读取云端备份列表", response.status()));
     }
     let xml = response
         .text()
         .await
-        .map_err(|e| format!("读取云端备份列表失败：{e}"))?;
+        .map_err(|e| net_error("读取云端备份列表", &e))?;
 
     let mut out = Vec::new();
     for block in response_blocks(&xml) {
@@ -541,14 +581,14 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
         let response = request(&client, Method::GET, url, &cfg)
             .send()
             .await
-            .map_err(|e| format!("下载云端备份失败：{e}"))?;
+            .map_err(|e| net_error("下载云端备份", &e))?;
         if !response.status().is_success() {
             return Err(status_error("下载云端备份", response.status()));
         }
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| format!("下载云端备份失败：{e}"))?;
+            .map_err(|e| net_error("下载云端备份", &e))?;
 
         let temp = std::env::temp_dir().join(format!(
             "fastnote-restore-{}-{}.json",
@@ -558,7 +598,7 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
         tokio::fs::write(&temp, &bytes)
             .await
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
-        let outcome = crate::backup_import_for_webdav(app.clone(), app.state::<AppState>(), temp.to_string_lossy().to_string());
+        let outcome = crate::backup_restore_merge_for_webdav(app.clone(), app.state::<AppState>(), temp.to_string_lossy().to_string());
         let _ = tokio::fs::remove_file(&temp).await;
         outcome
     }
@@ -613,7 +653,7 @@ pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummar
     }
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".json") {
-        crate::backup_import_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
+        crate::backup_restore_merge_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else if lower.ends_with(".db") || lower.ends_with(".sqlite") {
         crate::backup_import_sqlite_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else {
@@ -659,7 +699,8 @@ pub fn webdav_local_state(app: AppHandle) -> Result<LocalDataState, String> {
 pub fn webdav_snapshot_local(app: AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
     begin(&state.webdav)?;
-    let outcome = new_local_backup(&app, "fastnote-safety-");
+    // 覆盖前的安全快照是兜底，永远带全量内容（图片 + 根密码材料）
+    let outcome = new_local_backup(&app, "fastnote-safety-", true, true);
     end(&state.webdav);
     let (path, _) = outcome?;
     Ok(path
@@ -700,14 +741,14 @@ pub async fn webdav_save_copy(
             let response = request(&client, Method::GET, url, &cfg)
                 .send()
                 .await
-                .map_err(|e| format!("下载云端备份失败：{e}"))?;
+                .map_err(|e| net_error("下载云端备份", &e))?;
             if !response.status().is_success() {
                 return Err(status_error("下载云端备份", response.status()));
             }
             let bytes = response
                 .bytes()
                 .await
-                .map_err(|e| format!("下载云端备份失败：{e}"))?;
+                .map_err(|e| net_error("下载云端备份", &e))?;
             tokio::fs::write(&target, &bytes)
                 .await
                 .map_err(|e| format!("写入副本失败：{e}"))
@@ -802,7 +843,8 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
     let result = async {
         let mut done: Vec<String> = Vec::new();
         if cfg.target == "local" || cfg.target == "both" {
-            let (path, _) = new_local_backup(app, AUTO_PREFIX)?;
+            let (path, _) =
+                new_local_backup(app, AUTO_PREFIX, cfg.include_attachments, cfg.include_root_key)?;
             prune_local(&backup_dir(app)?, cfg.max_local);
             done.push(
                 path.file_name()
@@ -824,6 +866,8 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
                 temp.to_string_lossy().to_string(),
                 false,
                 false,
+                cfg.include_attachments,
+                cfg.include_root_key,
                 app.clone(),
             );
             let upload = match exported {
