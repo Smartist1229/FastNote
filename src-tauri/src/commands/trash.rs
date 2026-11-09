@@ -2,7 +2,7 @@ use crate::models::*;
 use chrono::{Duration, Local};
 use rusqlite::{params, Connection};
 use serde_json::json;
-use tauri::State;
+use tauri::{AppHandle, State};
 use crate::AppState;
 use crate::semantic;
 use crate::encryption;
@@ -99,18 +99,28 @@ pub(crate) fn drop_note_side_rows(conn: &Connection, note_id: &str) -> Result<()
 }
 
 #[tauri::command]
-pub fn delete_note_permanently(id: String, state: State<AppState>) -> Result<(), String> {
+pub fn delete_note_permanently(
+    app: AppHandle,
+    id: String,
+    state: State<AppState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     // 加密笔记不可永久删除（解密会删 encrypted_keys，直接删只会留下无法恢复的密文）
     if encryption::note_enc_mode(&conn, &id)? != 0 {
         return Err(json!({ "code": "encrypted_note" }).to_string());
     }
 
+    // 正文一删就找不到图片路径了，先把这份笔记（含历史快照）用到的图记下来
+    let candidates = crate::attachments::collect_notes_attachment_paths(&conn, std::slice::from_ref(&id));
+
     conn.execute("DELETE FROM notes WHERE id = ?1", params![&id])
         .map_err(|e| e.to_string())?;
     purge_note_history(&conn, &id)?;
     drop_note_side_rows(&conn, &id)?;
     state.encryption.lock(encryption::NOTE_SCOPE, &id, true);
+
+    // 图片也一起回收：没人再引用的删文件 + 删 attachments 行，空分桶目录顺手删掉
+    crate::attachments::purge_unreferenced_attachments(&app, &conn, &candidates)?;
 
     // 没开级联外键，笔记没了标签关联会留成孤儿（list_tags 的计数会飘）
     prune_tag_links(&conn)?;
@@ -122,21 +132,33 @@ pub fn delete_note_permanently(id: String, state: State<AppState>) -> Result<(),
 
 /// 批量永久删除；返回因加密而跳过的条数（调用方据此提示用户先解密）
 #[tauri::command]
-pub fn delete_multiple_notes_permanently(ids: Vec<String>, state: State<AppState>) -> Result<usize, String> {
+pub fn delete_multiple_notes_permanently(
+    app: AppHandle,
+    ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<usize, String> {
     let conn = state.conn.lock().unwrap();
 
+    // 删除前先收齐这批笔记用到的图片；删完后再统一判断还有没有人引用
+    let mut candidates: Vec<String> = Vec::new();
     let mut skipped = 0usize;
     for id in ids {
         if encryption::note_enc_mode(&conn, &id).unwrap_or(0) != 0 {
             skipped += 1;
             continue;
         }
+        candidates.extend(crate::attachments::collect_notes_attachment_paths(
+            &conn,
+            std::slice::from_ref(&id),
+        ));
         conn.execute("DELETE FROM notes WHERE id = ?1", params![&id])
             .map_err(|e| e.to_string())?;
         purge_note_history(&conn, &id)?;
         drop_note_side_rows(&conn, &id)?;
         state.encryption.lock(encryption::NOTE_SCOPE, &id, true);
     }
+
+    crate::attachments::purge_unreferenced_attachments(&app, &conn, &candidates)?;
 
     prune_tag_links(&conn)?;
     drop(conn);
@@ -146,19 +168,12 @@ pub fn delete_multiple_notes_permanently(ids: Vec<String>, state: State<AppState
 }
 
 #[tauri::command]
-pub fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
+pub fn cleanup_old_trash(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let thirty_days_ago = Local::now() - Duration::days(30);
     let threshold = thirty_days_ago.to_rfc3339();
 
-    // 加密笔记不参与自动清理：它们的密文和密钥只能由用户先永久解密再删除
-    conn.execute(
-        "DELETE FROM notes_history WHERE note_id IN (
-            SELECT id FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0
-         )",
-        params![threshold],
-    )
-    .map_err(|e| e.to_string())?;
+    // 先挑出过期笔记：图片路径要在这批数据被删掉之前收集（历史快照也算引用）
     let expired: Vec<String> = {
         let mut stmt = conn
             .prepare(
@@ -172,6 +187,16 @@ pub fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
     };
+    let candidates = crate::attachments::collect_notes_attachment_paths(&conn, &expired);
+
+    // 加密笔记不参与自动清理：它们的密文和密钥只能由用户先永久解密再删除
+    conn.execute(
+        "DELETE FROM notes_history WHERE note_id IN (
+            SELECT id FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0
+         )",
+        params![threshold],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM notes WHERE is_deleted = 1 AND deleted_at < ?1 AND COALESCE(enc_mode, 0) = 0",
         params![threshold],
@@ -181,6 +206,8 @@ pub fn cleanup_old_trash(state: State<AppState>) -> Result<(), String> {
         drop_note_side_rows(&conn, &id)?;
         state.encryption.lock(encryption::NOTE_SCOPE, &id, true);
     }
+
+    crate::attachments::purge_unreferenced_attachments(&app, &conn, &candidates)?;
 
     prune_tag_links(&conn)?;
     drop(conn);

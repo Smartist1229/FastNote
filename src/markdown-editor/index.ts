@@ -73,6 +73,8 @@ export type {
   MarkdownEditorInstance,
   MarkdownEditorMode,
   MarkdownEditorLocale,
+  ImageResolveResult,
+  MarkdownImageAlign,
   MarkdownEditorInputConfig,
   MarkdownPreviewConfig,
   MarkdownToolbarConfig,

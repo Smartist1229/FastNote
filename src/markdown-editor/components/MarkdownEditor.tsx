@@ -398,6 +398,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     onImagePaste,
     onLinkClick,
     onTaskToggle,
+    resolveImage,
     onOutlineChange,
     onStatsChange,
     onFontSizeChange,
@@ -1043,18 +1044,26 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
 
   const imagePasteRef = useRef(onImagePaste);
   imagePasteRef.current = onImagePaste;
+  /**
+   * 图片插入队列：一次粘入多张时，每张都要走「异步保存 → 插入」。
+   * 不排队的话，保存完成的先后取决于宿主实现（网络、磁盘、压缩），
+   * 插入顺序就会乱，甚至两张图抢同一个光标位置。
+   */
+  const imageQueueRef = useRef<Promise<void>>(Promise.resolve());
   const handleImageFile = useCallback(
-    async (file: File) => {
-      const paste = imagePasteRef.current;
-      if (!paste) return;
-      try {
-        const url = await paste(file);
-        if (!url) return;
-        const alt = file.name.replace(/\.[^.]+$/, "") || labelsRef.current.image;
-        insertMarkdown(`![${alt}](${url})`);
-      } catch {
-        setFeedback({ key: "imagePasteFailed" });
-      }
+    (file: File) => {
+      imageQueueRef.current = imageQueueRef.current.then(async () => {
+        const paste = imagePasteRef.current;
+        if (!paste) return;
+        try {
+          const url = await paste(file);
+          if (!url) return;
+          const alt = file.name.replace(/\.[^.]+$/, "") || labelsRef.current.image;
+          insertMarkdown(`![${alt}](${url})`);
+        } catch {
+          setFeedback({ key: "imagePasteFailed" });
+        }
+      });
     },
     [insertMarkdown],
   );
@@ -2119,6 +2128,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
                 onLinkClick={stableLinkClick}
                 onTaskToggle={stableTaskToggle}
                 onImageClick={onImageClick}
+                resolveImage={resolveImage}
               />
             </div>
           )}

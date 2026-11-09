@@ -594,6 +594,19 @@ export const EDITOR_SETTING_SPECS: EditorSettingSpec[] = [
     keywords: "图片 预览 放大 缩放 灯箱 zoom image preview 浮层",
   },
   {
+    field: "imageAlign",
+    group: "预览",
+    kind: "segment",
+    title: "图片摆放",
+    desc: "图片在正文里的水平落点：靠左 / 居中 / 靠右。只影响按原始宽度显示的图，撑满正文宽度的图看不出来。",
+    keywords: "图片 位置 摆放 对齐 居中 靠左 靠右 image align center placement",
+    options: [
+      { value: "left", label: "靠左" },
+      { value: "center", label: "居中" },
+      { value: "right", label: "靠右" },
+    ],
+  },
+  {
     field: "imageZoomStep",
     group: "预览",
     kind: "number",

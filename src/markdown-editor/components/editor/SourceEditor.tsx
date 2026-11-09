@@ -207,6 +207,7 @@ interface SourceEditorProps {
   /** 返回 true 表示快捷键已处理（上层负责 preventDefault） */
   onKeyDown?: (event: ReactKeyboardEvent<HTMLElement>) => boolean;
   /** 粘贴/拖入图片 */
+  /** 剪贴板里的图片（粘贴路径；拖拽不处理图片） */
   onImageFile?: (file: File) => void;
   /** 拿到真实 DOM，供滚动同步绑定 */
   onElement?: (element: HTMLElement | null) => void;
@@ -1375,19 +1376,32 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       emit({ text: next, start: caret, end: caret }, "input");
     }, [emit]);
 
-    /** 图片文件统一交给上层（返回 URL 由上层插入） */
+    /**
+     * 剪贴板里的图片文件交给上层（返回 URL 由上层插入）。
+     *
+     * 只有**粘贴**走这里（拖拽不处理图片，见 handleDrop）。多张图要全部交出去：
+     * 一次粘进三张截图只插第一张，用户会以为后两张丢了；
+     * 上层负责串行处理（保存 → 插入），保证插入顺序与文件顺序一致。
+     */
     const pickImage = (files: FileList | null): boolean => {
       if (!files || !onImageFile) return false;
-      for (const file of Array.from(files)) {
-        if (file.type.startsWith("image/")) {
-          onImageFile(file);
-          return true;
-        }
-      }
-      return false;
+      const images = Array.from(files).filter((file) => file.type.startsWith("image/"));
+      if (images.length === 0) return false;
+      for (const file of images) onImageFile(file);
+      return true;
     };
 
     const handlePaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
+      /*
+       * 只读时也要把图片粘贴拦掉：不拦的话浏览器会把位图当原生内容塞进
+       * contenteditable，而这里是虚拟化的文本模型，脏 DOM 会被 readback 当成正文。
+       */
+      if (readOnly) {
+        if (Array.from(event.clipboardData?.files ?? []).some((f) => f.type.startsWith("image/"))) {
+          event.preventDefault();
+        }
+        return;
+      }
       if (pickImage(event.clipboardData?.files ?? null)) {
         event.preventDefault();
         return;
@@ -1418,8 +1432,17 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
       emit(next, "input");
     };
 
+    /**
+     * 拖入图片：**不处理，只拦下来**。
+     *
+     * 图片入口只保留「复制 / 截图 → 粘贴」这一条（见 handlePaste），拖拽不插入图片：
+     * 但必须 preventDefault，否则浏览器会往 contenteditable 里直接塞一个 `<img>`，
+     * 而这里是虚拟化的文本模型，脏 DOM 会被 readback 当成正文收下。
+     */
     const handleDrop = (event: ReactDragEvent<HTMLDivElement>) => {
-      if (pickImage(event.dataTransfer?.files ?? null)) event.preventDefault();
+      const files = event.dataTransfer?.files ?? null;
+      if (!files || !Array.from(files).some((file) => file.type.startsWith("image/"))) return;
+      event.preventDefault();
     };
 
     /**

@@ -121,6 +121,9 @@ export type EditorCodeTheme = CodeThemePreset;
 /** 预览正文对齐方式 */
 export type EditorTextAlign = "left" | "justify" | "start";
 
+/** 图片在正文里的水平落点：靠左 / 居中 / 靠右 */
+export type EditorImageAlign = "left" | "center" | "right";
+
 /** 点击大纲后光标的落点：行首（`###` 前面）| 标题文字前（跳过 `### `） */
 export type EditorOutlineCaret = "lineStart" | "textStart";
 
@@ -258,6 +261,8 @@ export interface EditorSettings {
   tableFullWidth: boolean;
   /** 点击图片放大预览（窗口级浮层，滚轮缩放、拖动平移） */
   imagePreview: boolean;
+  /** 图片在正文里的水平落点（预览 / 阅读视图） */
+  imageAlign: EditorImageAlign;
   /** 放大预览每格滚轮的倍率（>1，缩小取倒数） */
   imageZoomStep: number;
   /** 放大预览的最小倍率 */

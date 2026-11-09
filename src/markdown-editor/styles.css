@@ -1611,8 +1611,30 @@
 .mde-root .mde-image {
   display: block;
   max-width: 100%;
+  /*
+   * 必须显式 height:auto：宿主可能按原始像素给出 width/height 属性（用于提前占位），
+   * 没有这一行的话图片会被拉成固定高度，宽高比就错了。
+   */
+  height: auto;
   margin: 0.5em 0;
   border-radius: 6px;
+}
+
+/*
+ * 图片水平落点（preview.imageAlign）：
+ * 块级 + max-width:100%，靠左右 auto margin 定位；贴左是默认排布，不用额外规则。
+ */
+/* 同时覆盖两种用法：编辑器内的预览区（.mde-root）与独立只读渲染（.mde-preview） */
+.mde-root .mde-image.is-align-center,
+.mde-preview .mde-image.is-align-center {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.mde-root .mde-image.is-align-right,
+.mde-preview .mde-image.is-align-right {
+  margin-left: auto;
+  margin-right: 0;
 }
 
 /* 可点击放大：给个 zoom-in 指针提示（preview.imagePreview） */

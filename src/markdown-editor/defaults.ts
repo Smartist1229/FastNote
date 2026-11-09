@@ -485,6 +485,8 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     // 点击图片放大预览：分栏预览区与阅读视图里点图弹浮层，滚轮缩放
     imagePreview: true,
     imageZoom: { step: 1.2, min: 0.2, max: 8 },
+    // 图片默认居中：截图/插图多，居中比贴左更稳（左右留白对称）
+    imageAlign: "center",
     allowHtml: true,
     breaks: false,
     setext: true,

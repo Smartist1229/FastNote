@@ -7,7 +7,7 @@
  */
 import { createContext, useContext } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { MarkdownEditorConfig, OutlineItem } from "../types";
+import type { ImageResolveResult, MarkdownEditorConfig, OutlineItem } from "../types";
 import { LABELS } from "../locales";
 
 export interface PreviewContextValue {
@@ -23,6 +23,11 @@ export interface PreviewContextValue {
   onImageClick?: (src: string, alt: string) => boolean | void;
   /** 组件内置的放大浮层入口：把图片交给预览自己渲染的 `ImageViewer` */
   showImage?: (src: string, alt: string) => void;
+  /**
+   * 渲染前解析图片地址（宿主注入，默认不传 = 原样使用）。
+   * 组件只知道「一个 src 字符串」，不关心它在磁盘、图床还是 data URI。
+   */
+  resolveImage?: (src: string) => ImageResolveResult;
 }
 
 export const PreviewCtx = createContext<PreviewContextValue | null>(null);

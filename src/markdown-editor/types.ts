@@ -374,6 +374,9 @@ export interface MarkdownEditorInputConfig {
 }
 
 /** 预览区配置 */
+/** 图片水平落点（只影响按原始宽度显示的图；撑满宽度时三种取值看起来一样） */
+export type MarkdownImageAlign = "left" | "center" | "right";
+
 export interface MarkdownPreviewConfig {
   /** 输入到渲染的防抖（ms），0 = 同步 */
   debounce: number;
@@ -426,6 +429,13 @@ export interface MarkdownPreviewConfig {
    * 关掉后图片就是普通静态图，点击不弹浮层（宿主可以用 `onImageClick` 接管）。
    */
   imagePreview: boolean;
+  /**
+   * 图片在正文里的水平落点：靠左 / 居中 / 靠右。
+   *
+   * 实现是给 `<img>` 加 `is-align-*` 类、靠左右 auto margin 定位，
+   * 因此不影响行高与懒加载；宿主可以把它接到自己的设置项上。
+   */
+  imageAlign: MarkdownImageAlign;
   /** 放大预览浮层的缩放参数（`imagePreview` 为 true 时生效） */
   imageZoom: {
     /** 每格滚轮的倍率（>1；缩小取倒数） */
@@ -704,6 +714,13 @@ export interface MarkdownEditorInstance {
   closeSearch(): void;
 }
 
+/**
+ * `resolveImage` 的返回值：可加载的地址，外加可选的原始像素宽高。
+ *
+ * 带上宽高时，预览会按 `aspect-ratio` 提前占位，图片解码完成后不会把行高撑开。
+ */
+export type ImageResolveResult = string | { src: string; width?: number; height?: number };
+
 /** 组件 Props */
 export interface MarkdownEditorProps {
   /** 受控值 */
@@ -731,8 +748,18 @@ export interface MarkdownEditorProps {
   onReady?: (api: MarkdownEditorInstance) => void;
   /** Ctrl/⌘+S */
   onSave?: (value: string) => void;
-  /** 粘贴/拖入图片：返回可访问的 URL；返回 null 表示不处理 */
+  /** 粘贴图片（剪贴板里的位图 / 文件）：返回可访问的 URL；返回 null 表示不处理。拖拽不处理图片 */
   onImagePaste?: (file: File) => Promise<string | null> | string | null;
+  /**
+   * 渲染前解析图片地址（可选，默认原样使用）。
+   *
+   * 组件不认识任何存储方案：正文里写的是相对路径、自定义协议还是图床 URL，
+   * 全由宿主决定。需要把 `attachments/xx/a.png` 换成自己能加载的地址时传这个函数。
+   *
+   * **必须同步**：宽高只能从宿主缓存里就地取（例如启动时批量拉一次），
+   * 不要设计成异步——否则预览渲染要为每张图处理 Promise，复杂度和闪烁都不可控。
+   */
+  resolveImage?: (src: string) => ImageResolveResult;
   /** 点击链接：返回 false 阻止默认行为 */
   onLinkClick?: (href: string, event: React.MouseEvent) => boolean | void;
   /** 勾选任务：返回新的全文（不返回则使用内置改写） */

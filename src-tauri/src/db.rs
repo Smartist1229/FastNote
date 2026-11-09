@@ -142,6 +142,28 @@ pub(crate) fn init_database(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     /*
+     * ---- 笔记内图片（附件）----
+     * 字节落在 <数据目录>/attachments/<hash 前两位>/<hash>.<ext>，这里只存元数据：
+     * - width/height 供预览提前占位，图片解码完不会把行高撑开（避免长文滚动条跳动）；
+     * - data 平时为 NULL，只在 .db 快照备份时把字节写进快照，保证「一个 .db 文件」
+     *   就能完整恢复（见 commands/backup.rs 的快照导出）。
+     * 不存引用关系：谁引用了图片由正文扫描得出，见 src/attachments.rs 的 gc_attachments。
+     */
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS attachments (
+            hash TEXT PRIMARY KEY,
+            ext TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            data BLOB,
+            created_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    /*
      * ---- 标签（跨分组的主题检索）----
      * 一篇笔记只能进一个分组，标签是第二条维度：多对多，用来回答「所有和 X 相关的笔记」。
      *

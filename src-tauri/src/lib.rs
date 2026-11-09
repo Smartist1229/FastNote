@@ -4,6 +4,7 @@ use sha2::{Sha256, Digest};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
+mod attachments;
 mod autostart;
 mod browser;
 mod commands;
@@ -16,6 +17,7 @@ mod i18n;
 mod models;
 mod opener;
 mod plugins;
+mod repaint;
 mod semantic;
 mod tray;
 mod updater;
@@ -37,6 +39,8 @@ pub(crate) use commands::backup::*;
 pub(crate) use commands::system::*;
 pub(crate) use commands::shortcuts::*;
 pub(crate) use plugins::*;
+// 图片附件：命令与协议 handler 都从这里进
+pub(crate) use attachments::{get_attachment_meta, attachments_usage, gc_attachments, save_attachment};
 
 struct AppState {
     conn: Mutex<Connection>,
@@ -248,6 +252,20 @@ const DB_FILE_NAME: &str = "fastnote.db";
 const APP_IDENTIFIER: &str = "com.smartist.fastnote";
 
 /**
+ * 不让内核把「不可见窗口」当成可回收的后台页。
+ *
+ * 主窗口的同一组参数写在 tauri.conf.json 的 additionalBrowserArgs 里；但内置浏览器、
+ * 插件窗口各自用了**独立 user data folder**（WebView2 要求同目录环境参数完全一致，
+ * 混用会建环境失败），拿不到配置里那份，只能在这里补一遍。
+ *
+ * 少了这三项，窗口最小化久了会被 Chromium 判定为后台/被遮挡：渲染进程被降频甚至暂停，
+ * 恢复时合成面不重建，表现就是「整页空白」。这里刻意不带 msSmartScreenProtection，
+ * 内置浏览器要保留下载安全检查。
+ */
+pub(crate) const BACKGROUND_SAFE_WEBVIEW_ARGS: &str =
+    "--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
+
+/**
  * 数据目录：优先 exe 同级的 data（便携模式，拷走整个目录就带着数据走），
  * 否则退回系统应用数据目录（与 tauri 的 app_data_dir 同规则：dirs::data_dir()/identifier）。
  *
@@ -332,6 +350,11 @@ pub fn run() {
         // 浏览器原生解析模块内的相对路径 import（插件可拆多文件）
         .register_uri_scheme_protocol(plugins::PLUGIN_SCHEME, |_ctx, request| {
             plugins::handle_plugin_scheme_request(&request)
+        })
+        // 笔记内图片协议：正文里写的是相对路径 attachments/xx/hash.ext，
+        // 渲染时由前端转成 fastnote-asset:// 交给内核取字节（只服务附件根目录内的图片）
+        .register_uri_scheme_protocol(attachments::ASSET_SCHEME, |ctx, request| {
+            attachments::handle_asset_request(ctx.app_handle(), &request)
         })
         .invoke_handler(tauri::generate_handler![
             create_category,
@@ -492,6 +515,11 @@ pub fn run() {
             plugin_update_note,
             plugin_delete_note,
             sync_global_shortcuts,
+            // 笔记内图片
+            save_attachment,
+            get_attachment_meta,
+            attachments_usage,
+            gc_attachments,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件
@@ -642,6 +670,11 @@ pub fn run() {
         .on_window_event(|window, event| {
             // 内置浏览器窗口：尺寸变化时重排工具栏与网页两个子 WebView
             browser::handle_window_event(window, event);
+            // 最小化久了再恢复，WebView2 的合成面可能停在 0×0（整页空白）：
+            // 这里按尺寸事件记时并在恢复时补一次 bounds 变化，逼内核重绘
+            if let tauri::WindowEvent::Resized(size) = event {
+                repaint::on_resized(window, *size);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     return;

@@ -13,6 +13,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "re
 import type {
   AlertKind,
   BlockNode,
+  ImageResolveResult,
   InlineNode,
   ListItemNode,
   MarkdownEditorConfig,
@@ -123,6 +124,49 @@ const parseTagAttrs = (attrString: string): Record<string, unknown> => {
 export const renderInline = (nodes: InlineNode[], ctx: PreviewContextValue, keyBase: string): ReactNode[] =>
   nodes.map((node, index) => renderInlineNode(node, ctx, `${keyBase}-${index}`));
 
+/**
+ * 图片：先过宿主的 `resolveImage`，再交给 `<img>`。
+ *
+ * 宿主返回宽高时按原始像素写进属性（CSS 里 `max-width:100%` + `height:auto`），
+ * 这样图片解码完不会把行高撑开——长文档滚动条不会跳一下。
+ * 不传 `resolveImage` 时与原行为完全一致（`src` 原样使用）。
+ */
+const renderImage = (
+  node: Extract<InlineNode, { type: "image" }>,
+  ctx: PreviewContextValue,
+  key: string,
+): ReactNode => {
+  const resolved = ctx.resolveImage?.(node.src);
+  const src = typeof resolved === "string" ? resolved : resolved?.src ?? node.src;
+  const width = typeof resolved === "object" ? resolved?.width ?? 0 : 0;
+  const height = typeof resolved === "object" ? resolved?.height ?? 0 : 0;
+  const sized = width > 0 && height > 0;
+  return (
+    <img
+      key={key}
+      src={src}
+      alt={node.alt}
+      title={node.title}
+      {...(sized ? { width, height } : {})}
+      className={`mde-image is-align-${ctx.config.preview.imageAlign ?? "center"}${
+        ctx.config.preview.imagePreview ? " is-zoomable" : ""
+      }`}
+      loading="lazy"
+      decoding="async"
+      draggable={false}
+      onClick={
+        ctx.config.preview.imagePreview
+          ? () => {
+              // 宿主传了 onImageClick 就完全交给它（例如换成自己的灯箱）
+              if (ctx.onImageClick) ctx.onImageClick(src, node.alt);
+              else ctx.showImage?.(src, node.alt);
+            }
+          : undefined
+      }
+    />
+  );
+};
+
 const renderInlineNode = (node: InlineNode, ctx: PreviewContextValue, key: string): ReactNode => {
   switch (node.type) {
     case "text":
@@ -181,26 +225,7 @@ const renderInlineNode = (node: InlineNode, ctx: PreviewContextValue, key: strin
         </a>
       );
     case "image":
-      return (
-        <img
-          key={key}
-          src={node.src}
-          alt={node.alt}
-          title={node.title}
-          className={`mde-image${ctx.config.preview.imagePreview ? " is-zoomable" : ""}`}
-          loading="lazy"
-          draggable={false}
-          onClick={
-            ctx.config.preview.imagePreview
-              ? () => {
-                  // 宿主传了 onImageClick 就完全交给它（例如换成自己的灯箱）
-                  if (ctx.onImageClick) ctx.onImageClick(node.src, node.alt);
-                  else ctx.showImage?.(node.src, node.alt);
-                }
-              : undefined
-          }
-        />
-      );
+      return renderImage(node, ctx, key);
     case "footnoteRef":
       return (
         <sup key={key} className="mde-fn-ref">
@@ -552,6 +577,8 @@ export interface MarkdownPreviewProps {
   onLinkClick?: (href: string, event: ReactMouseEvent) => boolean | void;
   onTaskToggle?: (taskOffset: number, checked: boolean) => void;
   onImageClick?: (src: string, alt: string) => boolean | void;
+  /** 渲染前解析图片地址（宿主注入；不传则原样使用） */
+  resolveImage?: (src: string) => ImageResolveResult;
 }
 
 /** 首批铺多少块：够盖住两三屏，再多半点意义都没有 */
@@ -701,6 +728,7 @@ const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
   onLinkClick,
   onTaskToggle,
   onImageClick,
+  resolveImage,
 }) => {
   const hasFrontmatter = config.preview.showFrontmatter && doc.frontmatter;
   const large = doc.blocks.length > LARGE_DOC_BLOCKS;
@@ -726,9 +754,10 @@ const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
       onLinkClick,
       onTaskToggle,
       onImageClick,
+      resolveImage,
       showImage: (src: string, alt: string) => setViewing({ src, alt }),
     }),
-    [config, labels, readOnly, onLinkClick, onTaskToggle, onImageClick],
+    [config, labels, readOnly, onLinkClick, onTaskToggle, onImageClick, resolveImage],
   );
   return (
     <PreviewCtx.Provider value={ctx}>

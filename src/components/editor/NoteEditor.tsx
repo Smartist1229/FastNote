@@ -17,6 +17,9 @@ import { buildNoteEditorConfig } from "@/config/editor/markdownEditor";
 import { FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
 import { openExternalLink } from "@/lib/app/externalLink";
 import { saveNoteAsFile } from "@/lib/note/noteFileExport";
+import { saveAttachment } from "@/api/system/attachments";
+import { cacheImageSize } from "@/lib/markdown/imageSrc";
+import { useAttachmentImages } from "@/hooks/useAttachmentImages";
 import { useToast } from "@/components/common/Toast";
 import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { AiSparkleIcon } from "@/components/common/icons";
@@ -586,6 +589,33 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     scheduleSave();
   };
 
+  /**
+   * 粘贴 / 拖入的图片：落盘成内容寻址附件，返回相对路径。
+   *
+   * 编辑器拿到返回值后自己插入 `![alt](path)`，所以这里只负责存盘与报错。
+   * 尺寸先写进内存缓存：刚贴进来的图立刻能按比例占位，不用等第二次渲染。
+   */
+  const handleImagePaste = useCallback(
+    async (file: File): Promise<string | null> => {
+      if (isReadOnly) return null;
+      try {
+        const meta = await saveAttachment(file);
+        cacheImageSize(meta.path, meta.width, meta.height);
+        return meta.path;
+      } catch (e) {
+        showToast(
+          t("图片保存失败：{value1}", { value1: e instanceof Error ? e.message : String(e) }),
+          "error",
+        );
+        return null;
+      }
+    },
+    [isReadOnly, showToast, t],
+  );
+
+  /** 预览/阅读态把 attachments/… 换成 fastnote-asset://…，并按已知宽高提前占位 */
+  const resolveImage = useAttachmentImages(content);
+
   const wordCount = contentCounts.chars;
   const lineCount = contentCounts.lines;
   /** 已保存时间戳只显示 时:分；非法日期返回空串（new Date 不抛错，必须显式判断 Invalid Date） */
@@ -944,6 +974,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               onChange={handleContentChange}
               onReady={handleEditorReady}
               onFontSizeChange={handleFontSizeChange}
+              onImagePaste={handleImagePaste}
+              resolveImage={resolveImage}
               onLinkClick={(href) => {
                 // 页内锚点（脚注 ↔ 正文）留在编辑器里滚动，不能交给浏览器
                 if (href.startsWith("#")) return true;

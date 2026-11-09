@@ -30,17 +30,103 @@ pub(crate) fn backup_export_for_webdav(
 }
 
 pub(crate) fn backup_import_for_webdav(
+    app: AppHandle,
     state: State<AppState>,
     path: String,
 ) -> Result<BackupSummary, String> {
-    import_backup(state, path)
+    import_backup(app, state, path)
 }
 
 pub(crate) fn backup_import_sqlite_for_webdav(
+    app: AppHandle,
     state: State<AppState>,
     path: String,
 ) -> Result<BackupSummary, String> {
-    import_sqlite_backup(state, path)
+    import_sqlite_backup(app, state, path)
+}
+
+/// 备份里的图片条目：只带「被引用到的」（正文 + 历史快照），base64 内联。
+///
+/// 为什么内联而不是旁边放一个附件包：备份的价值是「一个文件拿去就能完整恢复」。
+/// 伴生文件丢一次就变成「笔记还在、图全没了」，而且用户很难第一时间察觉。
+fn attachment_backup_entries(
+    conn: &Connection,
+    app: &AppHandle,
+    notes: &[Value],
+    history: &[Value],
+) -> Vec<Value> {
+    /// attachments/xx/<hash>.<ext> → hash
+    fn hash_of(path: &str) -> &str {
+        path.rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .split('.')
+            .next()
+            .unwrap_or_default()
+    }
+
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in notes.iter().chain(history.iter()) {
+        let content = json_str(item, "content");
+        for path in crate::attachments::collect_attachment_paths(&content) {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let Some(bytes) = crate::attachments::read_attachment_bytes(app, &path) else {
+                continue;
+            };
+            // 宽高跟着一起备份：恢复后不用重新测，预览能立刻按比例占位
+            let (width, height): (i64, i64) = conn
+                .query_row(
+                    "SELECT width, height FROM attachments WHERE hash = ?1",
+                    params![hash_of(&path)],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap_or((0, 0));
+            out.push(json!({
+                "path": path,
+                "mime": crate::attachments::mime_of_attachment(&path),
+                "width": width,
+                "height": height,
+                "data": crate::attachments::base64_encode(&bytes),
+            }));
+        }
+    }
+    out
+}
+
+/// 恢复备份里的图片：先落盘（同名已存在就跳过，重复导入是幂等的），再补元数据行
+fn restore_backup_attachments(
+    app: &AppHandle,
+    conn: &Connection,
+    items: &[Value],
+) -> Result<(), String> {
+    let created_at = Local::now().to_rfc3339();
+    for item in items {
+        let path = json_str(item, "path");
+        let encoded = json_str(item, "data");
+        let Some(bytes) = crate::attachments::base64_decode(&encoded) else {
+            continue;
+        };
+        crate::attachments::restore_attachment(app, &path, &bytes)?;
+        let file_name = path.rsplit('/').next().unwrap_or_default();
+        let (hash, ext) = file_name.split_once('.').unwrap_or((file_name, "png"));
+        let _ = conn.execute(
+            "INSERT INTO attachments (hash, ext, mime, bytes, width, height, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(hash) DO NOTHING",
+            params![
+                hash,
+                ext,
+                json_str(item, "mime"),
+                bytes.len() as i64,
+                json_i64(item, "width"),
+                json_i64(item, "height"),
+                created_at
+            ],
+        );
+    }
+    Ok(())
 }
 
 /* ---------------- 数据备份与恢复 ----------------
@@ -493,6 +579,8 @@ pub fn export_backup(
             "tags": tags,
             "note_tags": note_tags,
             "notes_history": notes_history,
+            // 图片以 base64 内联：单个 JSON 就能完整恢复，用户不用手动搬 attachments 目录
+            "attachments": attachment_backup_entries(&conn, &app, &notes, &notes_history),
         }
     });
 
@@ -502,7 +590,7 @@ pub fn export_backup(
 }
 
 #[tauri::command]
-pub fn import_backup(state: State<AppState>, path: String) -> Result<BackupSummary, String> {
+pub fn import_backup(app: AppHandle, state: State<AppState>, path: String) -> Result<BackupSummary, String> {
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取备份文件失败：{e}"))?;
     let doc: Value =
         serde_json::from_str(&text).map_err(|_| "备份文件不是合法的 JSON".to_string())?;
@@ -523,6 +611,8 @@ pub fn import_backup(state: State<AppState>, path: String) -> Result<BackupSumma
     let tags = json_arr(data, "tags");
     let note_tags = json_arr(data, "note_tags");
     let notes_history = json_arr(data, "notes_history");
+    // 老备份没有这个字段 → 空数组，等价于「这次没有图片要恢复」，不报错
+    let attachments = json_arr(data, "attachments");
 
     let mut conn = state
         .conn
@@ -792,6 +882,9 @@ pub fn import_backup(state: State<AppState>, path: String) -> Result<BackupSumma
     }
 
     tx.commit().map_err(|e| e.to_string())?;
+    // 图片：备份里内联了被引用到的附件，恢复时直接写回磁盘并补元数据
+    restore_backup_attachments(&app, &conn, &attachments)?;
+
     drop(conn);
     semantic::invalidate(&state.semantic);
 
@@ -935,9 +1028,69 @@ pub(crate) fn build_sqlite_snapshot(
                 .map_err(|e| format!("清除快照中的加密数据失败：{e}"))?;
         }
     }
+    // 图片字节平时只存在磁盘上；快照要能「一个 .db 文件就完整恢复」，
+    // 就必须把被引用到的图片写进快照库的 attachments.data 列（运行时那一列始终是 NULL）。
+    embed_attachments_into_snapshot(conn, &snap, app)?;
+
     // 删行只让页面变成空闲页，VACUUM 才能真正把密文/元数据从文件里抹掉
     snap.execute("VACUUM", [])
         .map_err(|e| format!("整理数据库快照失败：{e}"))?;
+    Ok(())
+}
+
+/// 把图片字节写进快照的 `attachments.data`（恢复时再落地成文件）。
+///
+/// 只带附件表里登记过的图片，且必须文件真的存在——手工删过数据目录时跳过，
+/// 不让「一张丢了的图」把整次备份搞失败。
+fn embed_attachments_into_snapshot(
+    live: &Connection,
+    snap: &Connection,
+    app: &AppHandle,
+) -> Result<(), String> {
+    snap.execute_batch(
+        "CREATE TABLE IF NOT EXISTS attachments (
+            hash TEXT PRIMARY KEY,
+            ext TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            data BLOB,
+            created_at TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| format!("准备快照图片表失败：{e}"))?;
+
+    let mut stmt = live
+        .prepare("SELECT hash, ext, mime, bytes, width, height, created_at FROM attachments")
+        .map_err(|e| format!("读取图片元数据失败：{e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|e| format!("读取图片元数据失败：{e}"))?;
+
+    for row in rows.flatten() {
+        let (hash, ext, mime, bytes, width, height, created_at) = row;
+        let rel = format!("attachments/{}/{hash}.{ext}", &hash[..2.min(hash.len())]);
+        let Some(data) = crate::attachments::read_attachment_bytes(app, &rel) else {
+            continue;
+        };
+        snap.execute(
+            "INSERT OR REPLACE INTO attachments (hash, ext, mime, bytes, width, height, data, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![hash, ext, mime, bytes, width, height, data, created_at],
+        )
+        .map_err(|e| format!("写入快照图片失败：{e}"))?;
+    }
     Ok(())
 }
 
@@ -1488,8 +1641,48 @@ pub(crate) fn read_sqlite_backup(conn: &Connection) -> Result<SqliteBackupData, 
 }
 
 #[tauri::command]
-pub fn import_sqlite_backup(state: State<AppState>, path: String) -> Result<BackupSummary, String> {
+pub fn import_sqlite_backup(app: AppHandle, state: State<AppState>, path: String) -> Result<BackupSummary, String> {
+    // 先把快照里的图片落地成文件，再覆盖数据库：这样「一个 .db 就完整恢复」成立
+    restore_attachments_from_snapshot(&app, &std::path::PathBuf::from(&path))?;
     restore_sqlite_snapshot(&state, &std::path::PathBuf::from(&path), false)
+}
+
+/// 从 .db 快照里取出图片字节并写到附件目录（`attachments.data` 有值才处理）。
+///
+/// 老快照没有 attachments 表或 data 列，直接返回 Ok：等价于「这次备份没有图片」。
+fn restore_attachments_from_snapshot(app: &AppHandle, source: &Path) -> Result<(), String> {
+    if !source.is_file() {
+        return Ok(());
+    }
+    let snap = match Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(snap) => snap,
+        Err(_) => return Ok(()),
+    };
+    if !has_table(&snap, "attachments") || !has_column(&snap, "attachments", "data") {
+        return Ok(());
+    }
+    let mut stmt = snap
+        .prepare("SELECT hash, ext, data FROM attachments WHERE data IS NOT NULL")
+        .map_err(|e| format!("读取快照图片失败：{e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .map_err(|e| format!("读取快照图片失败：{e}"))?;
+    for row in rows.flatten() {
+        let (hash, ext, data) = row;
+        // 哈希格式异常的跳过，别让坏数据打断整次恢复
+        if hash.len() < 3 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let rel = format!("attachments/{}/{hash}.{ext}", &hash[..2]);
+        crate::attachments::restore_attachment(app, &rel, &data)?;
+    }
+    Ok(())
 }
 
 /// 用 SQLite 快照覆盖当前库。
@@ -1961,6 +2154,7 @@ pub fn export_encrypted_backup(
 
 #[tauri::command]
 pub fn import_encrypted_backup(
+    app: AppHandle,
     state: State<AppState>,
     path: String,
     passphrase: String,
@@ -2008,6 +2202,8 @@ pub fn import_encrypted_backup(
     plain.zeroize();
     write.map_err(|e| format!("写入临时文件失败：{e}"))?;
 
+    // 加密备份同样带着图片字节（快照的 attachments.data），先落地成文件再覆盖数据库
+    restore_attachments_from_snapshot(&app, &tmp)?;
     let result = restore_sqlite_snapshot(&state, &tmp, true);
     let _ = std::fs::remove_file(&tmp);
     result
@@ -2021,7 +2217,8 @@ pub fn import_encrypted_backup(
 #[derive(Debug)]
 pub struct ZipEntry {
     name: String,
-    content: String,
+    /// 二进制：分组导出要把图片原样打进包，文本只是其中一种
+    content: Vec<u8>,
 }
 
 /// 压缩包「其他文件格式」下，单篇笔记自选的后缀
@@ -2050,7 +2247,7 @@ pub(crate) fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), Str
         };
         zip.start_file(entry.name.as_str(), options)
             .map_err(|e| format!("写入 {0} 失败：{1}", entry.name, e))?;
-        zip.write_all(entry.content.as_bytes())
+        zip.write_all(&entry.content)
             .map_err(|e| format!("写入 {0} 失败：{1}", entry.name, e))?;
     }
 
@@ -2175,16 +2372,39 @@ pub(crate) fn load_category_name(conn: &Connection, category_id: &str) -> Result
 /// 单篇笔记的完整 HTML 页面
 pub(crate) fn note_html_page(title: &str, content: &str) -> String {
     format!(
-        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nh1{{border-bottom:1px solid #e2e8f0;padding-bottom:8px}}\n</style>\n</head>\n<body>\n<h1>{}</h1>\n{}\n</body>\n</html>\n",
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nimg{{display:block;max-width:100%;max-height:80vh;width:auto;height:auto;margin:1.2em auto;border-radius:6px}}\nh1{{border-bottom:1px solid #e2e8f0;padding-bottom:8px}}\n</style>\n</head>\n<body>\n<h1>{}</h1>\n{}\n</body>\n</html>\n",
         esc_html(title),
         esc_html(title),
         md_to_html(content)
     )
 }
 
+/// 把笔记引用到的图片打进压缩包（放在 zip 根目录的 `attachments/` 下）。
+///
+/// 正文里写的就是相对路径 `attachments/xx/hash.ext`，落进压缩包后位置不变，
+/// 所以 Markdown **一个字都不用改**，解压后 Typora / Obsidian / VS Code 直接能看。
+/// 只打包本次导出范围内笔记引用到的图，不多带一张。
+fn push_attachment_entries(app: &AppHandle, notes: &[Note], entries: &mut Vec<ZipEntry>) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for note in notes {
+        for path in crate::attachments::collect_attachment_paths(&note.content) {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            if let Some(bytes) = crate::attachments::read_attachment_bytes(app, &path) {
+                entries.push(ZipEntry {
+                    name: path,
+                    content: bytes,
+                });
+            }
+        }
+    }
+}
+
 /// 导出分组为压缩包：一篇笔记一个文件，格式可选
 #[tauri::command]
 pub fn export_category_zip(
+    app: AppHandle,
     state: State<AppState>,
     category_id: String,
     path: String,
@@ -2234,10 +2454,12 @@ pub fn export_category_zip(
             _ => note.content.clone(),
         };
 
-        entries.push(ZipEntry { name, content });
+        entries.push(ZipEntry { name, content: content.into_bytes() });
     }
 
-    let total = entries.len();
+    // 把引用到的图片一并打进包（正文里的相对路径与 zip 根目录下的 attachments/ 对齐）
+    push_attachment_entries(&app, &notes, &mut entries);
+    let total = notes.len();
     write_zip_file(&path, &entries)?;
     Ok(total)
 }
@@ -2245,6 +2467,7 @@ pub fn export_category_zip(
 /// 导出分组为电子书
 #[tauri::command]
 pub fn export_category_ebook(
+    app: AppHandle,
     state: State<AppState>,
     category_id: String,
     path: String,
@@ -2265,12 +2488,12 @@ pub fn export_category_ebook(
 
     match format.as_str() {
         "html" => {
-            let text = ebook_single_html(&notes);
+            let text = ebook_single_html(&app, &notes);
             std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
             Ok(notes.len())
         }
         "epub" => {
-            let entries = ebook_epub_entries(&title, &notes);
+            let entries = ebook_epub_entries(&app, &title, &notes);
             write_zip_file(&path, &entries)?;
             Ok(notes.len())
         }
@@ -2287,6 +2510,7 @@ pub fn export_category_ebook(
 /// format 是预设格式；note_formats 非空时表示「其他文件格式」逐篇自选后缀，此时以逐篇后缀为准。
 #[tauri::command]
 pub fn export_notes_zip(
+    app: AppHandle,
     state: State<AppState>,
     note_ids: Vec<String>,
     path: String,
@@ -2345,10 +2569,12 @@ pub fn export_notes_zip(
             _ => note.content.clone(),
         };
 
-        entries.push(ZipEntry { name, content });
+        entries.push(ZipEntry { name, content: content.into_bytes() });
     }
 
-    let total = entries.len();
+    // 把引用到的图片一并打进包（正文里的相对路径与 zip 根目录下的 attachments/ 对齐）
+    push_attachment_entries(&app, &notes, &mut entries);
+    let total = notes.len();
     write_zip_file(&path, &entries)?;
     Ok(total)
 }
@@ -2356,6 +2582,7 @@ pub fn export_notes_zip(
 /// 导出指定笔记 ID 列表为电子书
 #[tauri::command]
 pub fn export_notes_ebook(
+    app: AppHandle,
     state: State<AppState>,
     note_ids: Vec<String>,
     path: String,
@@ -2379,12 +2606,12 @@ pub fn export_notes_ebook(
 
     match format.as_str() {
         "html" => {
-            let text = ebook_single_html(&notes);
+            let text = ebook_single_html(&app, &notes);
             std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
             Ok(notes.len())
         }
         "epub" => {
-            let entries = ebook_epub_entries(&title, &notes);
+            let entries = ebook_epub_entries(&app, &title, &notes);
             write_zip_file(&path, &entries)?;
             Ok(notes.len())
         }
@@ -2398,7 +2625,7 @@ pub fn export_notes_ebook(
 }
 
 /// 单文件 HTML 电子书：目录 + 各章锚点，可直接用浏览器看
-pub(crate) fn ebook_single_html(notes: &[Note]) -> String {
+pub(crate) fn ebook_single_html(app: &AppHandle, notes: &[Note]) -> String {
     let mut toc = String::new();
     let mut body = String::new();
     for (i, note) in notes.iter().enumerate() {
@@ -2407,10 +2634,22 @@ pub(crate) fn ebook_single_html(notes: &[Note]) -> String {
             "<li><a href=\"#{anchor}\">{}</a></li>\n",
             esc_html(&note.title)
         ));
+        /*
+         * 单文件 HTML 要能「发给谁都能打开」，图片直接内联成 data URI：
+         * 不依赖附件目录、不联网。先改写 Markdown 再渲染，正文其余部分保持原样。
+         */
+        let inlined = crate::attachments::map_attachment_paths(&note.content, &|path| {
+            let bytes = crate::attachments::read_attachment_bytes(app, path)?;
+            Some(format!(
+                "data:{};base64,{}",
+                crate::attachments::mime_of_attachment(path),
+                crate::attachments::base64_encode(&bytes)
+            ))
+        });
         body.push_str(&format!(
             "<section id=\"{anchor}\">\n<h2>{}</h2>\n{}\n</section>\n",
             esc_html(&note.title),
-            md_to_html(&note.content)
+            md_to_html(&inlined)
         ));
     }
     // 沉浸式正文：不出现书名大标题，页面标题取第一章标题
@@ -2420,7 +2659,7 @@ pub(crate) fn ebook_single_html(notes: &[Note]) -> String {
         .filter(|title| !title.is_empty())
         .unwrap_or("笔记");
     format!(
-        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nsection{{margin-top:48px;padding-top:16px;border-top:1px solid #e2e8f0}}\n.toc{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 24px}}\n</style>\n</head>\n<body>\n<nav class=\"toc\">\n<h3>目录</h3>\n<ol>\n{}</ol>\n</nav>\n{}\n</body>\n</html>\n",
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>\nbody{{max-width:820px;margin:40px auto;padding:0 20px;font-family:system-ui,-apple-system,\"Microsoft YaHei\",sans-serif;line-height:1.8;color:#1e293b}}\npre{{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto}}\ncode{{background:#f1f5f9;padding:2px 4px;border-radius:4px}}\ntable{{border-collapse:collapse}}th,td{{border:1px solid #e2e8f0;padding:6px 10px}}\nblockquote{{border-left:3px solid #cbd5e1;margin:0;padding-left:14px;color:#64748b}}\nimg{{display:block;max-width:100%;max-height:80vh;width:auto;height:auto;margin:1.2em auto;border-radius:6px}}\nsection{{margin-top:48px;padding-top:16px;border-top:1px solid #e2e8f0}}\n.toc{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 24px}}\n</style>\n</head>\n<body>\n<nav class=\"toc\">\n<h3>目录</h3>\n<ol>\n{}</ol>\n</nav>\n{}\n</body>\n</html>\n",
         esc_html(page_title),
         toc,
         body
@@ -2445,7 +2684,13 @@ pub(crate) fn ebook_plain_text(notes: &[Note]) -> String {
 }
 
 /// EPUB（EPUB 3）：本质是特定结构的 zip
-pub(crate) fn ebook_epub_entries(title: &str, notes: &[Note]) -> Vec<ZipEntry> {
+///
+/// 图片作为包内资源放 `OEBPS/images/<hash>.<ext>`，章节里把
+/// `attachments/xx/hash.ext` 改写成 `images/<hash>.<ext>`，
+/// 并在 `content.opf` 的 manifest 里补上对应 `<item>`——否则阅读器不认这些资源。
+pub(crate) fn ebook_epub_entries(app: &AppHandle, title: &str, notes: &[Note]) -> Vec<ZipEntry> {
+    use std::collections::HashMap;
+
     let modified = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let book_id = format!("urn:fastnote:{}", chrono::Utc::now().timestamp());
 
@@ -2458,12 +2703,37 @@ pub(crate) fn ebook_epub_entries(title: &str, notes: &[Note]) -> Vec<ZipEntry> {
     // mimetype 必须是第一个条目且不压缩（write_zip_file 按名字处理）
     entries.push(ZipEntry {
         name: "mimetype".to_string(),
-        content: "application/epub+zip".to_string(),
+        content: b"application/epub+zip".to_vec(),
     });
     entries.push(ZipEntry {
         name: "META-INF/container.xml".to_string(),
-        content: "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n  <rootfiles>\n    <rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>\n  </rootfiles>\n</container>\n".to_string(),
+        content: "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">\n  <rootfiles>\n    <rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/>\n  </rootfiles>\n</container>\n".as_bytes().to_vec(),
     });
+
+    // 先把整本书引用到的图片收进来：同一张图在多个章节里只打一份
+    let mut image_map: HashMap<String, String> = HashMap::new();
+    let mut image_index = 0usize;
+    for note in notes {
+        for path in crate::attachments::collect_attachment_paths(&note.content) {
+            if image_map.contains_key(&path) {
+                continue;
+            }
+            let Some(bytes) = crate::attachments::read_attachment_bytes(app, &path) else {
+                continue;
+            };
+            let file_name = path.rsplit('/').next().unwrap_or("image.png").to_string();
+            image_index += 1;
+            let media_type = crate::attachments::mime_of_attachment(&path);
+            manifest.push_str(&format!(
+                "    <item id=\"img{image_index}\" href=\"images/{file_name}\" media-type=\"{media_type}\"/>\n"
+            ));
+            entries.push(ZipEntry {
+                name: format!("OEBPS/images/{file_name}"),
+                content: bytes,
+            });
+            image_map.insert(path, format!("images/{file_name}"));
+        }
+    }
 
     for (i, note) in notes.iter().enumerate() {
         let index = i + 1;
@@ -2477,14 +2747,20 @@ pub(crate) fn ebook_epub_entries(title: &str, notes: &[Note]) -> Vec<ZipEntry> {
             esc_html(&note.title)
         ));
 
+        // 图片路径改写成包内相对路径；找不到文件的引号原样留下（阅读器显示破图，但正文不丢）
+        let content = crate::attachments::map_attachment_paths(&note.content, &|path| {
+            image_map.get(path).cloned()
+        });
+
         entries.push(ZipEntry {
             name: format!("OEBPS/{href}"),
             content: format!(
-                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"zh-CN\" lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>{}</title>\n</head>\n<body>\n<h1>{}</h1>\n{}\n</body>\n</html>\n",
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"zh-CN\" lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>{}</title>\n<style>img{{max-width:100%;height:auto}}</style>\n</head>\n<body>\n<h1>{}</h1>\n{}\n</body>\n</html>\n",
                 esc_html(&note.title),
                 esc_html(&note.title),
-                md_to_html(&note.content)
-            ),
+                md_to_html(&content)
+            )
+            .into_bytes(),
         });
     }
 
@@ -2499,11 +2775,11 @@ pub(crate) fn ebook_epub_entries(title: &str, notes: &[Note]) -> Vec<ZipEntry> {
 
     entries.push(ZipEntry {
         name: "OEBPS/nav.xhtml".to_string(),
-        content: nav_doc,
+        content: nav_doc.into_bytes(),
     });
     entries.push(ZipEntry {
         name: "OEBPS/content.opf".to_string(),
-        content: opf,
+        content: opf.into_bytes(),
     });
 
     entries
@@ -2577,4 +2853,21 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
         format!("写入失败：{}", e)
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod export_css_tests {
+    use super::*;
+
+    /// 导出的 HTML 必须给图片兜底尺寸限制：不限制的话原图按像素铺开，
+    /// 一张 3000px 宽的截图会把整篇挤成横向滚动。
+    #[test]
+    fn note_html_page_limits_image_size() {
+        let page = note_html_page("标题", "![a](attachments/3f/3f9c2a8e1d4b6c7a.png)");
+        assert!(page.contains("<img"), "Markdown 里的图片应被渲染成 <img>");
+        assert!(
+            page.contains("img{display:block;max-width:100%"),
+            "导出页缺少图片样式：{page}"
+        );
+    }
 }

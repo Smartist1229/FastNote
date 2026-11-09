@@ -13,6 +13,7 @@ import { DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
 import { buildNoteEditorConfig } from "@/config/editor/markdownEditor";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
 import { MarkdownPreview, parseMarkdown, resolveConfig, resolveLabels } from "@/markdown-editor";
+import { resolveImageSource } from "@/lib/markdown/imageSrc";
 
 export interface MarkdownRenderProps {
   markdown: string;
@@ -33,5 +34,13 @@ export const MarkdownRenderView: React.FC<MarkdownRenderProps> = ({ markdown }) 
   const doc = useMemo(() => parseMarkdown(markdown), [markdown]);
   const labels = useMemo(() => resolveLabels(config), [config]);
 
-  return <MarkdownPreview doc={doc} config={config} labels={labels} readOnly />;
+  return (
+    <MarkdownPreview
+      doc={doc}
+      config={config}
+      labels={labels}
+      readOnly
+      resolveImage={resolveImageSource}
+    />
+  );
 };

@@ -423,6 +423,8 @@ pub async fn plugin_open_window(
      */
     let window = WebviewWindowBuilder::new(&app, label.clone(), WebviewUrl::App(app_url.into()))
         .data_directory(data_dir.join(PLUGIN_WINDOW_PROFILE_DIR))
+        // 独立数据目录带不到主窗口的 additionalBrowserArgs，这里补同一组后台抑制参数
+        .additional_browser_args(crate::BACKGROUND_SAFE_WEBVIEW_ARGS)
         .title(title)
         .inner_size(width, height)
         .min_inner_size(320.0, 240.0)

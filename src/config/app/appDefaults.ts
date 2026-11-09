@@ -212,6 +212,8 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   tableFullWidth: true,
   /** 点击图片放大预览 */
   imagePreview: true,
+  /** 图片水平落点：默认居中（截图/插图多，居中左右留白对称） */
+  imageAlign: "center",
   /** 放大预览每格滚轮倍率 */
   imageZoomStep: 1.2,
   /** 放大预览最小倍率 */

@@ -342,6 +342,7 @@ fn ensure_panel_window(parent: &Window) -> Result<Window, String> {
             )
             // 独立数据目录：WebView2 要求共用目录的环境选项完全一致，混用会建不起来
             .data_directory(data_dir.join(PANEL_PROFILE_DIR))
+            .additional_browser_args(crate::BACKGROUND_SAFE_WEBVIEW_ARGS)
             .transparent(true)
             .focused(false),
             LogicalPosition::new(0.0, 0.0),
@@ -629,6 +630,9 @@ fn create_browser_window(
              * 混用会导致环境创建失败（窗口闪一下就消失）。工具栏与网页各用独立目录。
              */
             .data_directory(data_dir.join(TOOLBAR_PROFILE_DIR))
+            // 独立数据目录拿不到 tauri.conf 里的 additionalBrowserArgs，补同一组：
+            // 否则窗口最小化久了渲染进程被降频，恢复后工具栏可能一片空白
+            .additional_browser_args(crate::BACKGROUND_SAFE_WEBVIEW_ARGS)
             .focused(false),
         LogicalPosition::new(0.0, 0.0),
         LogicalSize::new(logical.width, TOOLBAR_HEIGHT),
@@ -650,6 +654,8 @@ fn create_browser_window(
         WebviewUrl::External(start_url),
     )
     .data_directory(data_dir.join(BROWSER_PROFILE_DIR))
+    // 同工具栏：独立数据目录要自己带这组参数，否则最小化久了网页会空白
+    .additional_browser_args(crate::BACKGROUND_SAFE_WEBVIEW_ARGS)
     /*
      * 打开网页侧控制台：F12 / Ctrl+Shift+I 与右键菜单里的「检查」都由内核自己提供，
      * 页面脚本 preventDefault 也拦不住（快捷键在内核进程里处理）。

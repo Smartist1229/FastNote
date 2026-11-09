@@ -558,7 +558,7 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
         tokio::fs::write(&temp, &bytes)
             .await
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
-        let outcome = crate::backup_import_for_webdav(app.state::<AppState>(), temp.to_string_lossy().to_string());
+        let outcome = crate::backup_import_for_webdav(app.clone(), app.state::<AppState>(), temp.to_string_lossy().to_string());
         let _ = tokio::fs::remove_file(&temp).await;
         outcome
     }
@@ -613,9 +613,9 @@ pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummar
     }
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".json") {
-        crate::backup_import_for_webdav(app.state::<AppState>(), path.to_string_lossy().to_string())
+        crate::backup_import_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else if lower.ends_with(".db") || lower.ends_with(".sqlite") {
-        crate::backup_import_sqlite_for_webdav(app.state::<AppState>(), path.to_string_lossy().to_string())
+        crate::backup_import_sqlite_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else {
         Err("只支持 .json / .db / .sqlite 备份".to_string())
     }
