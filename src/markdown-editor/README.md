@@ -177,6 +177,8 @@ export const Demo = () => {
 | `imagePreview` | `boolean` | `true` | 点击图片放大预览（窗口级浮层，不受编辑器裁剪）；`render` 模式不弹 |
 | `imageZoom` | `{ step, min, max }` | `1.2 / 0.2 / 8` | 放大浮层：滚轮倍率与区间、按住拖动平移、双击复位、`Esc` / 点遮罩关闭 |
 | `imageAlign` | `"left" \| "center" \| "right"` | `"center"` | 图片水平落点（按原始宽度显示时可见）；实现是 `is-align-*` 类 + 左右 auto margin，不影响行高 |
+| `imageMaxWidth` | `number` | `20` | 图片最大宽度，内容区宽度的百分比（1–100）；只限制大图，小图按原始尺寸显示，`100` 恢复撑满 |
+| `imageMaxHeight` | `number` | `20` | 竖长图最大高度，窗口高度的百分比（15–100）；高度封顶后宽度等比缩小，正文不会被一张图拉出几屏。想看细节用 `imagePreview` 的放大浮层 |
 | `allowHtml` | `boolean` | `true` | 允许 HTML |
 | `breaks` | `boolean` | `false` | 单个换行即换行（GFM breaks）；开启时强制停用 Setext |
 | `setext` | `boolean` | `true` | Setext 标题（段落下一行 `===` / `---`）；`breaks` 开启时不生效 |

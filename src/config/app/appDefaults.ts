@@ -214,6 +214,10 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   imagePreview: true,
   /** 图片水平落点：默认居中（截图/插图多，居中左右留白对称） */
   imageAlign: "center",
+  /** 图片最大宽度（内容区百分比）：大图铺满在宽窗口里太大，默认缩到两成 */
+  imageMaxWidth: 20,
+  /** 竖长图最大高度（窗口百分比）：手机截图/长条漫不封顶会把正文拉出几屏，默认两成 */
+  imageMaxHeight: 20,
   /** 放大预览每格滚轮倍率 */
   imageZoomStep: 1.2,
   /** 放大预览最小倍率 */

@@ -153,6 +153,13 @@ const DEFAULT_UPGRADES = [
    * 编辑字间距 0.5 → 1：中英混排贴得太紧，光标夹在两个字符中间时视觉上更挤，放宽一点。
    */
   { category: "editor", field: "letterSpacing", from: 0.5, to: 1, flag: "app.migrations.editorLetterSpacing" },
+  /*
+   * 图片尺寸默认值收紧（宽度 60 → 20、高度 80 → 20）：这两个键加进来时库里的默认值已被补写，
+   * 光改 DEFAULT_APP_SETTINGS 对老库无效——必须按「仍等于旧默认值」升级一次。
+   * 用户自己拖过 sliders 的（值不等于旧默认值）不会被覆盖。
+   */
+  { category: "editor", field: "imageMaxWidth", from: 60, to: 20, flag: "app.migrations.editorImageMaxWidth" },
+  { category: "editor", field: "imageMaxHeight", from: 80, to: 20, flag: "app.migrations.editorImageMaxHeight" },
 ] as const;
 
 /**

@@ -263,6 +263,10 @@ export interface EditorSettings {
   imagePreview: boolean;
   /** 图片在正文里的水平落点（预览 / 阅读视图） */
   imageAlign: EditorImageAlign;
+  /** 图片最大宽度（内容区宽度的百分比，1–100） */
+  imageMaxWidth: number;
+  /** 竖长图最大高度（窗口高度的百分比，15–100） */
+  imageMaxHeight: number;
   /** 放大预览每格滚轮的倍率（>1，缩小取倒数） */
   imageZoomStep: number;
   /** 放大预览的最小倍率 */

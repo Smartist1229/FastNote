@@ -141,6 +141,13 @@ const renderImage = (
   const width = typeof resolved === "object" ? resolved?.width ?? 0 : 0;
   const height = typeof resolved === "object" ? resolved?.height ?? 0 : 0;
   const sized = width > 0 && height > 0;
+  // 大图限制最大宽度（内容区百分比）、竖长图限制最大高度（窗口百分比）：
+  // 两边都以等比缩放收尾，正文不会被一张图撑开；想看细节走 imagePreview 的放大浮层。
+  // 内联在 <img> 上而不是容器 CSS 变量——renderImage 是所有用法（split/read/render）的唯一出口。
+  const rawMax = ctx.config.preview.imageMaxWidth;
+  const maxPct = Math.min(100, Math.max(1, typeof rawMax === "number" && rawMax > 0 ? rawMax : 100));
+  const rawMaxH = ctx.config.preview.imageMaxHeight;
+  const maxHVh = Math.min(100, Math.max(10, typeof rawMaxH === "number" && rawMaxH > 0 ? rawMaxH : 100));
   return (
     <img
       key={key}
@@ -148,6 +155,13 @@ const renderImage = (
       alt={node.alt}
       title={node.title}
       {...(sized ? { width, height } : {})}
+      style={{
+        maxWidth: `${maxPct}%`,
+        maxHeight: `${maxHVh}vh`,
+        // width/height 被改写 auto 后占位失效，显式补 aspect-ratio：
+        // 未加载时也能按比例把位置撑出来，长文档滚动条不会在图片加载完时跳一下
+        ...(sized ? { aspectRatio: `${width} / ${height}` } : {}),
+      }}
       className={`mde-image is-align-${ctx.config.preview.imageAlign ?? "center"}${
         ctx.config.preview.imagePreview ? " is-zoomable" : ""
       }`}

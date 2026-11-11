@@ -1610,12 +1610,17 @@
 
 .mde-root .mde-image {
   display: block;
-  max-width: 100%;
   /*
-   * 必须显式 height:auto：宿主可能按原始像素给出 width/height 属性（用于提前占位），
-   * 没有这一行的话图片会被拉成固定高度，宽高比就错了。
+   * width/height 都写 auto：宿主可能按原始像素给出 width/height 属性（用于提前占位），
+   * 显式像素会拦住另一条 max 约束的等比收缩——max-width 把宽度缩小时高度没问题，
+   * 但竖长图被 max-height 卡住时，宽度若还钉在属性像素上就会被压扁。
+   * 两个都 auto 后，Chromium 会从属性派生 aspect-ratio，两条 max 约束都按比例收。
+   * 兜底：正常情况下 renderImage 会按 preview.imageMaxWidth / imageMaxHeight 内联 max-*。
    */
+  width: auto;
   height: auto;
+  max-width: 100%;
+  max-height: 100vh;
   margin: 0.5em 0;
   border-radius: 6px;
 }

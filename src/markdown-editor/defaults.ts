@@ -487,6 +487,11 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     imageZoom: { step: 1.2, min: 0.2, max: 8 },
     // 图片默认居中：截图/插图多，居中比贴左更稳（左右留白对称）
     imageAlign: "center",
+    // 大图默认缩到内容区 20%：铺满在宽窗口里太大，小图不受影响
+    imageMaxWidth: 20,
+    // 竖长图高度封顶在视口的 20%：手机截图/长条漫再窄，等比缩完也有几千 px 高，
+    // 不封顶会把正文拉出好几屏；想看细节点图片进放大浮层
+    imageMaxHeight: 20,
     allowHtml: true,
     breaks: false,
     setext: true,

@@ -252,6 +252,8 @@ export const buildNoteEditorConfig = (
       showFootnotes: settings.showFootnotes,
       imagePreview: settings.imagePreview,
       imageAlign: settings.imageAlign,
+      imageMaxWidth: clamp(settings.imageMaxWidth, 1, 100),
+      imageMaxHeight: clamp(settings.imageMaxHeight, 15, 100),
       // 放大浮层缩放区间：最小值不能高过最大值，否则滚轮一滚就顶到边界
       imageZoom: {
         step: clamp(settings.imageZoomStep, 1.05, 3),
