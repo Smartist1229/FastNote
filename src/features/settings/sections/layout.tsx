@@ -16,6 +16,16 @@ export const buildLayoutRows = ({ appSettings, setApp }: SettingsRowsContext): S
     value: appSettings.layout.sidebarCollapsed,
     onChange: (v) => setApp("layout", "sidebarCollapsed", v),
   },
+  {
+    section: "layout",
+    kind: "toggle",
+    badges: badges("live"),
+    title: "欢迎页显示最近列表",
+    desc: "未打开笔记时，欢迎页显示「最近更新」与「最近打开的文件」。",
+    keywords: "欢迎页 首页 最近 更新 最近打开 文件 列表 welcome recent home dashboard",
+    value: appSettings.layout.welcomeRecentList,
+    onChange: (v) => setApp("layout", "welcomeRecentList", v),
+  },
   // 依赖 enableAI：关闭 AI 能力时不出现这个「启动时打开面板」的开关
   ...(appSettings.general.enableAI
     ? [

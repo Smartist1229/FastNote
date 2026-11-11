@@ -19,8 +19,6 @@ pub(super) fn sample_manifest(id: &str) -> PluginManifest {
         api_version: None,
         net_domains: Vec::new(),
         runtime: None,
-        name_i18n: HashMap::new(),
-        description_i18n: HashMap::new(),
         tags: Vec::new(),
         homepage: None,
         license: None,

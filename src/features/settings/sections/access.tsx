@@ -44,7 +44,7 @@ export const buildAccessRows = ({ aiSettings, setAi }: SettingsRowsContext): Set
           badges: badges("live"),
           title: "新建笔记默认权限",
           desc:
-            "之后新建的笔记以此档位开局：软件里新建、另存为笔记、导入文件，以及 AI 创建笔记都算。已有笔记不受影响，建好后仍可在「笔记属性」里单独改。",
+            "之后新建的笔记（含 AI 创建、导入）以此档位开局；已有笔记不受影响。",
           keywords: "默认 新建 笔记 权限 档位 note default",
           value: String(aiSettings.defaultNoteAiAccess),
           options: ACCESS_LEVEL_OPTIONS,
@@ -56,7 +56,7 @@ export const buildAccessRows = ({ aiSettings, setAi }: SettingsRowsContext): Set
           badges: badges("live"),
           title: "新建分组默认权限",
           desc:
-            "之后新建的分组（含 AI 创建的分组）以此档位开局。分组档位是组内笔记的上限，设成「只读」时组内笔记再怎么写也超不过它。",
+            "之后新建的分组以此档位开局；分组档位是组内笔记的访问上限。",
           keywords: "默认 新建 分组 权限 档位 category default",
           value: String(aiSettings.defaultCategoryAiAccess),
           options: ACCESS_LEVEL_OPTIONS,

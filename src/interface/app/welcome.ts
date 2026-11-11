@@ -22,6 +22,8 @@ export interface WelcomeDashboardProps {
   onOpenRecentFile?: (path: string) => void;
   /** 划掉一条最近文件（多半是文件已被删除或改名） */
   onRemoveRecentFile?: (path: string) => void;
+  /** 欢迎页是否显示「最近更新」与「最近打开的文件」列表（默认 true） */
+  showRecentList?: boolean;
   onCreateNote: () => void;
   onOpenTrash: () => void;
   /** 打开电脑上的文本文件（拖入规则一致） */

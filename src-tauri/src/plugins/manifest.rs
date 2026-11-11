@@ -50,12 +50,6 @@ pub struct PluginManifest {
     /// "sandbox" = 跑在独立源的隐藏 iframe 里，只能通过 RPC 申请能力（安全边界真实）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
-    /// 插件名的本地化文本：语言标识 → 文本（缺省回落 name）
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub name_i18n: HashMap<String, String>,
-    /// 插件简介的本地化文本（缺省回落 description）
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub description_i18n: HashMap<String, String>,
     /// 标签，仅用于展示
     #[serde(default)]
     pub tags: Vec<String>,

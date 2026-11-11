@@ -181,8 +181,8 @@
     }
   },
   "settings": {
-    "sectionTitle": "Plugin Demo",
-    "advancedTitle": "Plugin Demo · Advanced",
+    "sectionTitle": "Basic",
+    "advancedTitle": "Advanced",
     "demoGroupTitle": "Demo fields",
     "demoGroupDesc": "Demonstrates boolean / string / select / number controls; these fields share the same config.json as the main section.",
     "groups": {

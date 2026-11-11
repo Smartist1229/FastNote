@@ -51,7 +51,7 @@ export interface SectionMeta {
   key: SettingsSection;
   label: string;
   icon: string;
-  group: "软件" | "AI" | "数据" | "其他";
+  group: "常规" | "界面" | "AI" | "数据" | "其他";
 }
 
 /** 所有设置行的公共字段 */

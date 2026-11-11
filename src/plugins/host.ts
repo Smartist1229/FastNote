@@ -163,14 +163,7 @@ const getAppVersion = (): Promise<string> => {
   return appVersionPromise;
 };
 
-/** 本地化文本取值：完整 locale → 基础语言 → 原文 */
-const localizedText = (plain: string | undefined, map?: Record<string, string>): string => {
-  const fallback = plain ?? "";
-  if (!map) return fallback;
-  const locale = getLocale();
-  return map[locale] ?? map[locale.split("-")[0]] ?? fallback;
-};
-
+/* ---------------- 列表同步与初始化 ---------------- */
 /** 插件声明的最低软件版本与当前不兼容时返回原因，否则 null */
 const compatibilityProblem = async (manifest: PluginManifest): Promise<string | null> => {
   if (manifest.minAppVersion && manifest.minAppVersion.trim()) {
@@ -966,10 +959,10 @@ const deactivate = (dirName: string): void => {
 const makeEntry = (manifest: PluginManifest): PluginEntry => ({
   id: manifest.id,
   dirName: manifest.dirName,
-  name: localizedText(manifest.name, manifest.nameI18n),
+  name: manifest.name,
   version: manifest.version,
   author: manifest.author || undefined,
-  description: localizedText(manifest.description, manifest.descriptionI18n) || undefined,
+  description: manifest.description || undefined,
   iconUrl: manifest.iconUrl,
   tags: manifest.tags,
   homepage: manifest.homepage || undefined,
@@ -991,11 +984,10 @@ const syncInstalled = async (): Promise<void> => {
     const existing = entries.find((e) => e.dirName === manifest.dirName);
     if (existing) {
       existing.id = manifest.id;
-      existing.name = localizedText(manifest.name, manifest.nameI18n);
+      existing.name = manifest.name;
       existing.version = manifest.version;
       existing.author = manifest.author || undefined;
-      existing.description =
-        localizedText(manifest.description, manifest.descriptionI18n) || undefined;
+      existing.description = manifest.description || undefined;
       existing.iconUrl = manifest.iconUrl;
       existing.tags = manifest.tags;
       existing.homepage = manifest.homepage || undefined;

@@ -37,17 +37,24 @@ import { usePluginContributions, type PluginSettingsSectionEntry } from "@/plugi
  */
 
 /** AI 专属分区：enableAI 为 false 时整组隐藏，避免出现点了没反应的入口 */
-const AI_SECTION_KEYS: SettingsSection[] = ["provider", "chat", "context", "memory", "access"];
+const AI_SECTION_KEYS: SettingsSection[] = [
+  "semantic",
+  "provider",
+  "chat",
+  "context",
+  "memory",
+  "access",
+];
 
 /** 分区元数据在 config 里定义（命令面板复用）；这里只做本地别名 */
 const SECTIONS = SETTINGS_SECTIONS;
 
 /** 目录分组顺序：与 SECTIONS 里的 group 对应，空分组在渲染时自动跳过 */
-const ALL_GROUPS: SectionMeta["group"][] = ["软件", "AI", "数据", "其他"];
+const ALL_GROUPS: SectionMeta["group"][] = ["常规", "界面", "AI", "数据", "其他"];
 
 /** 关闭 AI 能力时，「AI」分组整体不渲染 */
 const getVisibleGroups = (enableAI: boolean): SectionMeta["group"][] =>
-  enableAI ? ALL_GROUPS : ["软件", "数据", "其他"];
+  enableAI ? ALL_GROUPS : ["常规", "界面", "数据", "其他"];
 
 /** 插件设置分区在目录 / 状态里用的合成 key：`plugin:<dirName>:<sectionId>`（dirName 与 id 都不含冒号） */
 const pluginSectionKey = (entry: PluginSettingsSectionEntry): string =>
@@ -520,7 +527,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 name={s.icon}
                                 className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? "opacity-100" : "opacity-70"}`}
                               />
-                              <span className="min-w-0 text-left break-words">{t(s.label)}</span>
+                              <span className="min-w-0 text-left truncate">{t(s.label)}</span>
                               {hits > 0 && !isActive && (
                                 <span className="ml-auto flex-shrink-0 text-[10px] text-faint-soft">{hits}</span>
                               )}
@@ -538,7 +545,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       key={name}
                                       data-nav-key={`${s.key}:${name}`}
                                       onClick={() => scrollToGroup(s.key, name)}
-                                      className={`w-full text-left px-2 py-[5px] rounded-md text-[11px] break-words ${
+                                      className={`w-full text-left px-2 py-[5px] rounded-md text-[11px] truncate ${
                                         on
                                           ? "bg-primary-50 text-primary-600 font-medium"
                                           : "text-faint hover:bg-surface-alt/70 hover:text-body"
@@ -590,7 +597,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               size={16}
                               className={groupActive ? "opacity-100" : "opacity-70"}
                             />
-                            <span className="min-w-0 text-left break-words">{group.pluginName}</span>
+                            <span className="min-w-0 text-left truncate">{group.pluginName}</span>
                           </button>
                           <div className="mt-0.5 mb-1 ml-[18px] border-l border-line-soft pl-1.5">
                             {group.sections.map((entry) =>

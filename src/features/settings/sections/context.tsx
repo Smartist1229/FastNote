@@ -62,7 +62,7 @@ export const buildContextRows = ({ aiSettings, aiProviders, setAi }: SettingsRow
       kind: "toggle",
       badges: badges("live"),
       title: "自动召回相关笔记",
-      desc: "每次提问前用本地语义检索找出可能相关的旧笔记，第一轮就带给模型，省掉它先跑一轮搜索的往返。需要先在「语义搜索」分区下载模型并建好索引，否则会自动跳过。",
+      desc: "每次提问前用本地语义检索相关旧笔记并带给模型；需先在「语义搜索」分区下载模型并建好索引。",
       keywords: "召回 rag 语义 检索 recall 相关笔记 vector",
       value: aiSettings.semanticRecall,
       onChange: (v) => setAi("semanticRecall", v),

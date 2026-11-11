@@ -85,7 +85,6 @@ zip 允许两种布局：`plugin.json` 在根目录；或压缩包里只有一�
 | `minAppVersion` | string | 否 | 要求的最低软件版本，**安装与激活都会校验**，不满足直接拒绝 |
 | `apiVersion` | number | 否 | 插件按哪一版 ctx 契约编写；高于宿主支持版本时安装被拒（当前宿主支持 v1） |
 | `netDomains` | string[] | 否 | `ctx.net.fetch` 的主机白名单（主机名或后缀）；空 = 不允许联网 |
-| `nameI18n` / `descriptionI18n` | Record<string,string> | 否 | 名称 / 简介的本地化文本，语言标识 → 文本；缺省回落 `name` / `description` |
 
 `entry` / `style` 必须是相对路径：不能以 `/`、`\` 或盘符开头，不能包含 `..`。
 

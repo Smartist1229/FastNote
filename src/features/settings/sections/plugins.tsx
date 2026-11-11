@@ -107,21 +107,6 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
       previous != null && compareVersions(manifest.version, previous.version) < 0
         ? { from: previous.version, to: manifest.version }
         : null;
-    const permListHtml =
-      perms.length === 0
-        ? `<div class="text-sm text-faint">${t("无特殊权限")}</div>`
-        : perms
-            .map((p) => {
-              const info = PERMISSION_INFO[p];
-              return `<div class="flex items-start gap-2 py-1.5">
-                <span class="text-[11px] font-medium text-primary-500 font-mono bg-primary-50 dark:bg-primary-900/20 px-2 py-0.5 rounded">${p}</span>
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm text-body">${info?.label ?? p}</div>
-                  ${info?.desc ? `<div class="text-[11px] text-faint mt-0.5">${info.desc}</div>` : ""}
-                </div>
-              </div>`;
-            })
-            .join("");
 
     const confirmed = await confirm({
       title: t("安装前确认"),
@@ -189,8 +174,6 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
         console.warn("插件安装后取消，回滚删除失败", manifest.dirName);
       }
     }
-    // 静默使用（避免 TS 抱怨未使用）：permListHtml 仅作为备用字符串拼接方案，实际用 JSX 渲染
-    void permListHtml;
   };
 
   /**
@@ -341,7 +324,8 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
 
   const busy = zipBusy || refreshBusy || demoBusy;
 
-  /** 「配置」按钮：该插件在 registry 里有设置分区时显示，点击跳到对应分区 */
+  /** 「配置」按钮：该插件在 registry 里有设置分区时显示，点击跳到对应分区。
+   *  卡片操作区全部用纯图标按钮：中英文宽度一致，不再出现英文按钮挤压标题的问题。 */
   const renderConfigButton = (plugin: PluginEntry) => {
     const section = sectionByPlugin.get(plugin.dirName);
     if (!section) return null;
@@ -349,9 +333,10 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
       <button
         onClick={() => onOpenPluginSection?.(pluginSectionKey(section))}
         disabled={busy}
-        className="inline-flex h-7 items-center px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+        title={t("配置")}
       >
-        {t("配置")}
+        <Icon name="ai-settings" className="w-3.5 h-3.5 flex-shrink-0" />
       </button>
     );
   };
@@ -406,7 +391,7 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
           <span className="inline-flex items-center px-1.5 py-0.5 mr-1.5 rounded-md bg-purple-100 text-purple-700 font-medium">
             {t("实验性功能")}
           </span>
-          {t("插件在应用内运行第三方代码，请仅安装可信来源的插件包；安装前会列出插件申请的权限。")}
+          {t("插件会运行第三方代码，只安装可信来源的插件包；安装前会列出申请的权限。")}
         </p>
       </div>
 
@@ -442,10 +427,6 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
         >
           {t("打开插件文件夹")}
         </button>
-        <p className="text-[11px] text-faint ml-1">{t("插件可以为笔记右键菜单与命令面板添加功能。")}</p>
-        <p className="text-[11px] text-faint ml-1">
-          {t("配置在「插件」分组下的对应分区中修改，改动即时生效。")}
-        </p>
       </div>
 
       {/* 插件列表 */}
@@ -455,88 +436,76 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
         <div className="space-y-2">
           {plugins.map((plugin) => (
             <div key={plugin.dirName} className="px-3 py-2.5 rounded-xl bg-app border border-line-soft">
-              {/* 顶部一行：左边标题块、右边操作按钮 */}
-              <div className="flex items-start justify-between gap-6">
-                <div className="flex items-start gap-2 min-w-0 flex-1">
-                  <PluginIcon url={plugin.iconUrl} size={20} className="mt-0.5" />
-                  <div className="min-w-0 flex-1">
-                    {/* 标题行只放名称 / 版本 / 作者：标签已挪到下一行的目录名旁边。
-                        原因：启用后会多出一个「配置」按钮，右侧操作区变宽、左栏变窄，
-                        标签留在这一行就会被挤到第二行（未启用时恰好放得下）。 */}
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs font-medium text-body truncate min-w-0">{plugin.name}</span>
-                      <span className="text-[10px] text-faint flex-shrink-0">v{plugin.version}</span>
-                      {plugin.author ? (
-                        <span className="text-[10px] text-faint truncate min-w-0">{plugin.author}</span>
-                      ) : null}
-                    </div>
-                    {/* 目录名 + 标签同一行：这一行左侧空间富余（不跟操作按钮抢宽度），
-                        标签跟着目录名走，插件启停时行数不变，视觉上也不再被按钮挤来挤去。 */}
-                    <div className="mt-0.5 flex items-center gap-2 min-w-0">
-                      <span className="text-[10px] text-faint truncate min-w-0" title={plugin.dirName}>
-                        {plugin.dirName}
+              {/* 单行主区：图标 + 名称块（第一行 名称/版本/作者，第二行 目录id/标签）
+                  + 右侧操作图标组和开关。
+                  操作按钮是固定总宽的纯图标组，放主行不会挤压名称块；
+                  目录 id 挂在名称下面（跟随图标缩进），不再独占一行顶在最前面。 */}
+              <div className="flex items-center gap-2 min-w-0">
+                <PluginIcon url={plugin.iconUrl} size={20} className="flex-shrink-0" />
+                <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs font-medium text-body truncate min-w-0">{plugin.name}</span>
+                    <span className="text-[10px] text-faint flex-shrink-0">v{plugin.version}</span>
+                    {plugin.author ? (
+                      <span className="text-[10px] text-faint truncate min-w-0">{plugin.author}</span>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-[10px] text-faint truncate min-w-0" title={plugin.dirName}>
+                      {plugin.dirName}
+                    </span>
+                    {plugin.tags && plugin.tags.length > 0 && (
+                      <span className="text-[10px] text-faint-soft whitespace-nowrap flex-shrink-0">
+                        {/* 纯文本 + · 分隔：tag 是元信息，胶囊样式反而比目录 id 抢眼 */}
+                        {plugin.tags.map((tag) => t(tag)).join(" · ")}
                       </span>
-                      {plugin.tags && plugin.tags.length > 0 && (
-                        <span className="flex items-center gap-1 flex-shrink-0">
-                          {plugin.tags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="px-1.5 py-[1px] rounded bg-surface-alt text-[10px] text-faint border border-line whitespace-nowrap"
-                            >
-                              {t(tag)}
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                    </div>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
+                {/* 操作按钮：统一 h-7 w-7 纯图标（全名放 title），总宽固定 ~170px，任何语言下布局一致 */}
+                <div className="flex items-center gap-0.5 flex-shrink-0">
                   {plugin.permissions && plugin.permissions.length > 0 && (
                     <button
                       onClick={() => setPermTarget(plugin)}
                       disabled={busy}
-                      className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
                       title={t("申请权限")}
                     >
                       <Icon name="ai-shield-check" className="w-3.5 h-3.5 flex-shrink-0" />
-                      <span className="leading-none">{t("权限")}</span>
                     </button>
                   )}
                   {renderConfigButton(plugin)}
                   <button
                     onClick={() => void handleReload(plugin)}
                     disabled={busy || reloadBusy === plugin.dirName}
-                    className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
                     title={t("重新加载这个插件（等价于停用再启用）")}
                   >
                     <Icon name="sidebar-refresh" className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span className="leading-none">{t("重载")}</span>
                   </button>
                   <button
                     onClick={() => void openDiagnostics(plugin)}
                     disabled={busy}
-                    className="inline-flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-medium leading-none text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-body hover:bg-surface-alt transition-colors disabled:opacity-50"
                     title={t("查看这个插件注册了哪些东西")}
                   >
                     <Icon name="sidebar-list" className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span className="leading-none">{t("诊断")}</span>
                   </button>
                   <button
                     onClick={() => void handleUninstall(plugin)}
                     disabled={busy}
-                    className="inline-flex h-7 items-center px-2 rounded-lg text-[11px] font-medium leading-none text-danger-strong hover:bg-danger-soft transition-colors disabled:opacity-50"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-danger-strong hover:bg-danger-soft transition-colors disabled:opacity-50"
+                    title={t("卸载")}
                   >
-                    {t("卸载")}
+                    <Icon name="app-trash-thin" className="w-3.5 h-3.5 flex-shrink-0" />
                   </button>
-                  <div className="flex h-7 items-center pl-1">
-                    <Switch value={plugin.enabled} onChange={(v) => void handleToggle(plugin, v)} />
-                  </div>
+                </div>
+                <div className="flex-shrink-0 ml-1.5">
+                  <Switch value={plugin.enabled} onChange={(v) => void handleToggle(plugin, v)} />
                 </div>
               </div>
 
-              {/* 简介 / 主页 / 错误横跨整张卡片：右栏只有顶部那一行按钮，
-                  下面那片空白正好留给正文——之前描述被关在左栏里，右边明明空着一大片却只能窄着换行 */}
+              {/* 简介 / 主页 / 错误横跨整张卡片：主行下方整行宽度都留给正文 */}
               <div className="mt-1.5 min-w-0 pl-7">
                 {plugin.description && (
                   <div className="flex items-start gap-1.5">

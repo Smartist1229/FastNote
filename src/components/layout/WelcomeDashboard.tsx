@@ -271,6 +271,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   trashCount,
   recentNotes,
   recentFiles = [],
+  showRecentList = true,
   onOpenRecentFile,
   onRemoveRecentFile,
   onCreateNote,
@@ -374,8 +375,8 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
           <div className="mt-3 grid grid-cols-2 gap-2.5">{actions}</div>
         </section>
 
-        {/* 最近更新 */}
-        {recent.length > 0 && (
+        {/* 最近更新：settings「界面布局 → 欢迎页显示最近列表」可整体隐藏 */}
+        {showRecentList && recent.length > 0 && (
           <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.15s" }}>
             <SectionTitle title={t("最近更新")} meta={t(recent.length === 1 ? "1 篇" : "{count} 篇", { count: recent.length })} />
             <div className="mt-3 divide-y divide-line overflow-hidden rounded-xl border border-line-soft bg-surface">
@@ -387,7 +388,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
         )}
 
         {/* 最近打开的电脑文件：开了又关就得重新找，这里一次性列出来，点一下即加载 */}
-        {recentFileList.length > 0 && (
+        {showRecentList && recentFileList.length > 0 && (
           <section className="mt-8 animate-slideUp" style={{ animationDelay: "0.18s" }}>
             <SectionTitle title={t("最近打开的文件")} meta={t(recentFileList.length === 1 ? "1 个文件" : "{count} 个文件", { count: recentFileList.length })} />
             <div className="mt-3 divide-y divide-line overflow-hidden rounded-xl border border-line-soft bg-surface">

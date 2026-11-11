@@ -351,6 +351,8 @@ export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
   sidebarCollapsed: false,
   /** 启动时 AI 面板是否打开（仅决定启动时的布局，不跟随运行时的开关状态） */
   aiPanelOpen: false,
+  /** 欢迎页显示「最近更新」与「最近打开的文件」列表（默认显示） */
+  welcomeRecentList: true,
 };
 
 /* ---------- View ---------- */

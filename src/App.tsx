@@ -485,6 +485,7 @@ function AppContent() {
                   trashCount={trash.trashNotes.length}
                   recentNotes={notes.recentNotes}
                   recentFiles={recentFiles}
+                  showRecentList={settings.appSettings.layout.welcomeRecentList}
                   onOpenRecentFile={(path) => void externalFiles.openExternalFile(path)}
                   onRemoveRecentFile={removeRecentFile}
                   onCreateNote={() => notes.handleCreateNote()}

@@ -133,10 +133,6 @@ export interface PluginManifest {
   apiVersion?: number;
   /** 联网白名单（ctx.net.fetch 用）：主机名或后缀，如 "api.example.com"；空表示不允许联网 */
   netDomains?: string[];
-  /** 插件名的本地化文本：语言标识 → 文本（缺省回落 name） */
-  nameI18n?: Record<string, string>;
-  /** 插件简介的本地化文本（缺省回落 description） */
-  descriptionI18n?: Record<string, string>;
   /** 展示用标签 */
   tags?: string[];
   /** 项目主页（空串表示没有） */

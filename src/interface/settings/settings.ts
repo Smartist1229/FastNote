@@ -415,6 +415,8 @@ export interface LayoutSettings {
   sidebarCollapsed: boolean;
   /** 启动时 AI 对话面板是否展开 */
   aiPanelOpen: boolean;
+  /** 欢迎页是否显示「最近更新」与「最近打开的文件」两个列表 */
+  welcomeRecentList: boolean;
 }
 
 /** 笔记列表视图：排序字段与方向（透传给 get_notes） */

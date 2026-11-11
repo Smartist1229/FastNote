@@ -1,13 +1,9 @@
 {
   "id": "my-plugin",
   "name": "我的插件",
-  "nameI18n": { "en": "My Plugin" },
   "version": "0.1.0",
   "author": "you",
   "description": "插件模板：把整个目录拷到 plugin/ 下即可（设置页「打开插件文件夹」）。",
-  "descriptionI18n": {
-    "en": "Plugin template: copy this folder into plugin/ (Settings → Plugins → Open folder)."
-  },
   "apiVersion": 1,
   "runtime": "sandbox",
   "defaultEnabled": true,
