@@ -24,19 +24,6 @@ export type EditorSettingGroup =
   | "查找替换"
   | "主题与其他";
 
-/** 各分组在弹窗中的顺序（新增分组记得同步这里） */
-export const EDITOR_SETTING_GROUPS: EditorSettingGroup[] = [
-  "视图",
-  "编辑",
-  "预览",
-  "排版",
-  "工具栏",
-  "状态栏",
-  "大纲",
-  "查找替换",
-  "主题与其他",
-];
-
 interface SpecBase {
   /** EditorSettings 的字段名，同时是数据库键 app.config.editor.<field> */
   field: keyof EditorSettings;

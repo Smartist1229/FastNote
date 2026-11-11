@@ -15,6 +15,7 @@ export const SETTINGS_SECTIONS: readonly SectionMeta[] = [
   { key: "theme", label: "主题", icon: "settings-theme", group: "软件" },
   { key: "semantic", label: "语义搜索", icon: "ai-bolt", group: "软件" },
   { key: "toolbox", label: "工具箱", icon: "toolbox", group: "软件" },
+  { key: "cleaning", label: "清理", icon: "app-trash-thin", group: "软件" },
   { key: "provider", label: "AI 服务商", icon: "settings-provider", group: "AI" },
   { key: "chat", label: "对话行为", icon: "settings-chat", group: "AI" },
   { key: "context", label: "上下文", icon: "settings-context", group: "AI" },

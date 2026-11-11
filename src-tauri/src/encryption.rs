@@ -741,7 +741,16 @@ pub fn crypto_scrub_flush(state: State<AppState>) -> Result<bool, String> {
     let conn = state.conn.lock().unwrap();
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     match conn.execute_batch("VACUUM;") {
-        Ok(()) => Ok(true),
+        Ok(()) => {
+            /*
+             * VACUUM 在 WAL 下是把**整库重写进 -wal**，主库文件在合并前一个字都没变。
+             * 只在事后等 autocheckpoint 的话，WAL 会长到和库一样大（实测 649 MB 的库
+             * 留下 656 MB 的 -wal），之后每次读写都要在几十个 WAL 段里找页，整个软件都变慢。
+             * 而且明文页这时仍躺在 -wal 里，不合并等于没抹掉。所以这里必须显式 TRUNCATE。
+             */
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            Ok(true)
+        }
         Err(error) => {
             // 压缩失败不影响内容安全，下次空闲再试
             SCRUB_DIRTY.store(true, Ordering::SeqCst);

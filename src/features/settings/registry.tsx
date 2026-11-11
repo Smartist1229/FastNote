@@ -12,6 +12,7 @@ import { ShortcutsSection } from "./sections/shortcuts";
 import { ThemeSection } from "./sections/theme";
 import { SemanticSection } from "./sections/semantic";
 import { ToolboxSection } from "./sections/toolbox";
+import { CleaningSection } from "./sections/cleaning";
 import { ProviderSection } from "./sections/provider";
 import { ChatSection, buildChatRows } from "./sections/chat";
 import { ContextSection, buildContextRows } from "./sections/context";
@@ -35,6 +36,7 @@ export const SECTION_RENDERERS: Record<
   theme: (ctx) => <ThemeSection ctx={ctx} />,
   semantic: (ctx) => <SemanticSection ctx={ctx} />,
   toolbox: (ctx) => <ToolboxSection ctx={ctx} />,
+  cleaning: (ctx) => <CleaningSection ctx={ctx} />,
   provider: (ctx) => <ProviderSection ctx={ctx} />,
   chat: (ctx) => <ChatSection ctx={ctx} />,
   context: (ctx) => <ContextSection ctx={ctx} />,
@@ -80,6 +82,9 @@ export const SECTION_SEARCH_ENTRIES: Record<SettingsSection, readonly string[]> 
   ],
   toolbox: [
     "工具箱 下载 下载器 链接 url http https 线程 并发 分段 文件 目录 download downloader threads",
+  ],
+  cleaning: [
+    "清理 缓存 临时 残留 索引 向量 占用 空间 存储 图片 回收 删除 cache temp index storage cleanup gc",
   ],
   provider: [
     "服务商 模型 api key 密钥 openai google claude 接口 base url http",

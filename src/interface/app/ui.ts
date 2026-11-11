@@ -82,12 +82,6 @@ export interface PluginModalResult {
   value?: unknown;
 }
 
-/** 宿主内部持有的、待渲染的 modal 条目 */
-export interface PluginModalState {
-  id: number;
-  options: PluginModalOptions;
-}
-
 /** Toast 语义：success / error 决定配色与图标，info 为中性提示 */
 export type ToastType = "success" | "error" | "info";
 

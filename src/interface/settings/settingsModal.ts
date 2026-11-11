@@ -25,6 +25,8 @@ export type SettingsSection =
   | "semantic"
   /** 工具箱：通用下载工具与下载线程数 */
   | "toolbox"
+  /** 清理：语义索引缓存、临时残留与未使用的图片 */
+  | "cleaning"
   /** AI 服务商：增删改、拉取模型 */
   | "provider"
   /** AI 对话行为：轮数、流式、确认、轨迹、输出长度 */

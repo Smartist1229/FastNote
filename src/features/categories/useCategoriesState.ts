@@ -11,6 +11,8 @@ import type { AiAccessLevel } from "@/interface/ai/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
 import * as categoriesApi from "@/api/note/categories";
 import { useI18n } from "@/i18n";
+import { isBackendError } from "@/lib/app/backendError";
+import { errorText } from "@/lib/app/errorText";
 import { useToast } from "@/components/common/Toast";
 
 export interface UseCategoriesStateParams {
@@ -86,7 +88,7 @@ export function useCategoriesState({
       await loadDataRef.current();
       showToast(t("已创建分组「{name}」", { name: trimmed }), "success");
     } catch (error) {
-      showToast(t("创建分组失败：{error}", { error: String(error) }), "error");
+      showToast(t("创建分组失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -140,9 +142,9 @@ export function useCategoriesState({
     } catch (error) {
       console.error("Failed to delete category:", error);
       // 加密分组不允许「只删分组」：后端会回带 code，转成人话
-      const raw = String(error);
+      const raw = errorText(error);
       showToast(
-        raw.includes("category_encrypted_keep")
+        isBackendError(error, "category_encrypted_keep")
           ? t("加密分组不能只删分组：请先「解密分组」，或在删除时选择同时删除组内笔记")
           : t("删除失败：{error}", { error: raw }),
         "error",

@@ -85,7 +85,10 @@ export const deleteMultipleNotesPermanently = async (ids: string[]): Promise<num
   return await invoke('delete_multiple_notes_permanently', { ids });
 };
 
-/** 清理回收站（cleanup_old_trash）：删除 deleted_at 早于 30 天前的笔记 */
+/**
+ * 清理回收站（cleanup_old_trash）：删除 deleted_at 早于 30 天**且未加密**的笔记。
+ * 加密笔记不参与（密文只能由用户先解密再删），连带清理它们的历史版本与图片引用。
+ */
 export const cleanupOldTrash = async (): Promise<void> => {
   return await invoke('cleanup_old_trash');
 };

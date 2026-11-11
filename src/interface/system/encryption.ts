@@ -61,13 +61,3 @@ export interface EncryptionSelfCheckReport {
   orphan_keys: number[];
   content_mismatch: number[];
 }
-
-/** 后端用 JSON 字符串拒绝时携带的错误码 */
-export interface EncryptionErrorPayload {
-  code: string;
-  reason?: string;
-  attempts?: number;
-  required?: number;
-  cooldown_seconds?: number;
-  note_ids?: number[];
-}

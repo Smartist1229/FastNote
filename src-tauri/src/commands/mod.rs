@@ -8,3 +8,5 @@ pub(crate) mod settings;
 pub(crate) mod backup;
 pub(crate) mod system;
 pub(crate) mod shortcuts;
+pub(crate) mod cleanup;
+pub(crate) mod webview_cache;

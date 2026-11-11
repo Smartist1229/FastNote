@@ -39,6 +39,8 @@ import {
 } from "@/interface/settings/backup";
 
 import { Switch } from "./controls";
+import { errorText } from "@/lib/app/errorText";
+import { backendErrorCode } from "@/lib/app/backendError";
 
 /** 分区开关的展示顺序与文案键；`key` 对应 BackupSelection 里的字段 */
 const SECTIONS = [
@@ -59,16 +61,6 @@ const allSectionsOn = (): Record<SectionKey, boolean> =>
     (acc, s) => ({ ...acc, [s.key]: true }),
     {} as Record<SectionKey, boolean>,
   );
-
-/** 把 Tauri 抛出的错误压成一行：带 code 的 JSON 字符串要能识别出具体原因 */
-const errorText = (e: unknown) =>
-  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
-
-const errorCode = (e: unknown): string => {
-  const raw = errorText(e);
-  const match = raw.match(/"code"\s*:\s*"([^"]+)"/);
-  return match ? match[1] : "";
-};
 
 /** 笔记列表一次渲染多少条：几千条全铺出来会卡，搜索仍覆盖全集 */
 const NOTE_RENDER_LIMIT = 300;
@@ -245,7 +237,7 @@ export const RestoreDialog: React.FC<RestoreDialogProps> = ({
           await verifyBackupRootPassword(path, rootPassword);
         } catch (e) {
           setRootError(
-            errorCode(e) === "root_bad_password"
+            backendErrorCode(e) === "root_bad_password"
               ? t("原设备根密码不正确")
               : errorText(e),
           );
@@ -286,7 +278,7 @@ export const RestoreDialog: React.FC<RestoreDialogProps> = ({
             }
           }
         } catch (e) {
-          const code = errorCode(e);
+          const code = backendErrorCode(e);
           if (code === "root_already_set") {
             setRootError(t("本机已有根密码，需要勾选「替换本机根密码」才能采纳备份的密钥"));
           } else if (code === "root_bad_password") {

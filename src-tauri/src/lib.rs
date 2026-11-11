@@ -38,6 +38,8 @@ pub(crate) use commands::settings::*;
 pub(crate) use commands::backup::*;
 pub(crate) use commands::system::*;
 pub(crate) use commands::shortcuts::*;
+pub(crate) use commands::cleanup::*;
+pub(crate) use commands::webview_cache::*;
 pub(crate) use plugins::*;
 // 图片附件：命令与协议 handler 都从这里进
 pub(crate) use attachments::{get_attachment_meta, attachments_usage, gc_attachments, save_attachment};
@@ -329,6 +331,13 @@ struct AppLocaleState(Mutex<String>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+
+    // WebView2 缓存补清：必须赶在 Builder 之前。配置文件里的主窗口是在 `run()`
+    // 里创建的，那时 `Default/Cache` 已被内核打开，再删就只能删一半。
+    // 这里只处理上次点了清理却没删干净的那部分，没有登记时是空操作。
+    run_pending_cleanup(&context.config().identifier, &resolve_data_dir(None));
+
     // 单实例开关必须在 Builder 之前读：插件一旦注册就必然创建互斥量，事后无法撤销。
     // 关掉时干脆不注册——第二实例不会创建互斥量，也就不会被挡下，可以真正多开。
     let single_instance = read_single_instance_enabled(None);
@@ -449,8 +458,6 @@ pub fn run() {
             webdav::webdav_local_state,
             webdav::webdav_snapshot_local,
             webdav::webdav_save_copy,
-            export_category_zip,
-            export_category_ebook,
             export_notes_zip,
             export_notes_ebook,
             read_text_file,
@@ -530,6 +537,12 @@ pub fn run() {
             get_attachment_meta,
             attachments_usage,
             gc_attachments,
+            // 清理缓存
+            cache_usage,
+            clear_cache,
+            // WebView2 缓存（每个网页视图一份 profile）
+            webview_usage,
+            clean_webview_cache,
         ])
         .setup(|app| {
             // 与 run() 里读开关时同一套解析规则，保证两边是同一个库文件
@@ -580,6 +593,33 @@ pub fn run() {
             };
 
             app.manage(state);
+
+            /*
+             * 启动后补一次 WAL 合并。
+             *
+             * 一次大 VACUUM（加密笔记后的空闲压缩、或清理面板里的压缩）在 WAL 模式下
+             * 是**整库重写进 -wal**。合并没成功的话 WAL 会一直和库一样大——实测
+             * 649 MB 的库留下过 656 MB 的 -wal，之后每次读写都要在几十个 WAL 段里翻页，
+             * 表现就是「删除、清空回收站全变慢」。
+             *
+             * 延迟到启动噪声过去再合并；用 try_lock，用户已经在操作就跳过，不抢锁。
+             */
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    for wait in [20u64, 60, 180] {
+                        std::thread::sleep(std::time::Duration::from_secs(wait));
+                        let state = handle.state::<AppState>();
+                        // 先落成一个具名变量：guard 会借用 state，写成 if let 的临时值
+                        // 就活不过 state 的析构（E0597）
+                        let locked = state.conn.try_lock();
+                        if let Ok(conn) = locked {
+                            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+                            break;
+                        }
+                    }
+                });
+            }
             let language = read_setting_string(app.handle(), "app.config.general.language", "system");
             let system = i18n::system_locale();
             app.manage(AppLocaleState(Mutex::new(
@@ -702,6 +742,6 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

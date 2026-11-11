@@ -1,29 +1,11 @@
 /**
- * 分组/笔记导出前端 API 层：压缩包与电子书两种形态。
+ * 笔记导出前端 API 层：压缩包与电子书两种形态（导出范围是**选中的若干笔记**）。
  * path 由调用方通过保存对话框选定；命令返回实际导出的条目数，失败以字符串 reject。
  */
 
 import { invoke } from '@tauri-apps/api/core';
 
 import type { CategoryEbookFormat, CategoryZipFormat, NoteFormatSpec } from '@/interface/settings/backup';
-
-/** 整个分组导出为压缩包（export_category_zip），一篇笔记一个文件；返回笔记数 */
-export const exportCategoryZip = async (
-  categoryId: string,
-  path: string,
-  format: CategoryZipFormat,
-): Promise<number> => {
-  return await invoke<number>('export_category_zip', { categoryId, path, format });
-};
-
-/** 整个分组导出为电子书（export_category_ebook），章节按创建时间正序；返回章节数 */
-export const exportCategoryEbook = async (
-  categoryId: string,
-  path: string,
-  format: CategoryEbookFormat,
-): Promise<number> => {
-  return await invoke<number>('export_category_ebook', { categoryId, path, format });
-};
 
 /**
  * 指定笔记导出为压缩包（export_notes_zip），返回笔记数。

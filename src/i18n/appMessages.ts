@@ -132,8 +132,6 @@ export const appMessages: Record<string, string> = {
   "只看渲染结果": "Show only the rendered content",
   "编辑器全屏 / 退出全屏": "Toggle editor fullscreen",
   "隐藏侧边栏与 AI 面板，只留正文": "Hide the sidebar and AI panel to focus on the content",
-  "在笔记中查找": "Find in note",
-  "Ctrl+F 也能打开": "You can also press Ctrl+F",
   "查找并替换": "Find and replace",
   "阅读视图下不可用": "Not available in reading view",
   "按更新时间排序": "Sort by last updated",
@@ -200,4 +198,7 @@ export const appMessages: Record<string, string> = {
   "删除于 {date}": "Deleted on {date}",
   "还原": "Restore",
   "松开即可打开文件 · 拖到某个分组上可导入该分组": "Drop to open the file · Drop onto a group to import it",
+  "暂停": "Pause",
+  "继续": "Resume",
+  "操作失败：{value1}": "Operation failed: {value1}",
 };

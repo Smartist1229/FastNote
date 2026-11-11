@@ -8,8 +8,8 @@ import { t, useI18n } from "@/i18n";
 import { useCallback, useEffect, useState } from "react";
 import { getFingerprint } from "@/api/system/fingerprint";
 import type { BrowserFingerprint, FingerprintBrand } from "@/interface/system/fingerprint";
+import { errorText } from "@/lib/app/errorText";
 
-const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 const brandText = (brands: FingerprintBrand[]): string =>
   brands.map((b) => `${b.brand} ${b.version}`).join(" · ");

@@ -89,6 +89,10 @@ zip 允许两种布局：`plugin.json` 在根目录；或压缩包里只有一�
 
 `entry` / `style` 必须是相对路径：不能以 `/`、`\` 或盘符开头，不能包含 `..`。
 
+`config` 里的文案同样可以本地化：字段支持 `labelI18n` / `descriptionI18n`，`options` 的元素支持
+`labelI18n`（键可写 `"en"` 或 `"en-US"`）。不写就原样显示 `label`——
+宿主只能翻译**自己**词典里的词条，插件写的文案必须由插件自己提供译文，否则英文界面下会显示中文。
+
 `i18n` 的每个值额外要求：只能引用 `.json` 文件，不能含反斜杠与 `..`，且文件必须真实存在于插件包内（缺失会在安装时拒绝）。
 
 ## 3. 权限声明（permissions）
@@ -110,7 +114,7 @@ zip 允许两种布局：`plugin.json` 在根目录；或压缩包里只有一�
 | `settings.section` | 在设置窗口添加插件自己的分区 | `ctx.settings.section` |
 | `db.read_write` | 创建 / 删除并读写**本插件自己的**数据表 | `ctx.db.*`（表名强制带 `plugin_<目录名>__` 前缀，见 §5.15） |
 | `window.open` | 用插件目录里的页面开独立窗口 | `ctx.window.*`（见 §5.16） |
-| `shortcut.register` | 注册快捷键（窗口内 / 系统全局，见 §5.17） | `ctx.shortcut.*` |
+| `shortcut.register` | 注册窗口内快捷键（系统全局热键由宿主独占，见 §5.17） | `ctx.shortcut.*` |
 | `fs.read_write` | 读写插件自己的**数据目录**（不是插件目录） | `ctx.fs.*`（见 §5.18） |
 | `net.fetch` | 通过宿主代理联网（还要 `netDomains` 白名单） | `ctx.net.fetch`（见 §5.19） |
 | `ui.modal` | 宿主统一风格弹窗 | `ctx.ui.modal`（**当前版本无需显式声明，默认开放**） |
@@ -223,12 +227,12 @@ interface PluginContext {
     open(relPath: string, options?: { title?: string; width?: number; height?: number }): Promise<string>;
     close(label: string): Promise<void>;
   };
-  /** 快捷键（需 shortcut.register）：停用 / 重激活时自动注销；scope 区分系统全局与窗口内 */
+  /** 快捷键（需 shortcut.register）：停用 / 重激活时自动注销；只能注册窗口内快捷键 */
   shortcut: {
     register(
       combo: string,
       handler: () => void,
-      options?: { scope?: "app" | "global" },
+      options?: { scope?: "app" },
     ): void | (() => void);
     unregister(combo: string): void;
   };
@@ -994,36 +998,31 @@ await callHost("window.close");
 ### 5.17 快捷键 `ctx.shortcut`（需 `shortcut.register`）
 
 ```js
-// 窗口内快捷键（默认）：窗口有焦点时触发
+// 窗口内快捷键：软件在前台、窗口有焦点时触发（插件唯一可用的作用域）
 ctx.shortcut.register("Ctrl+Alt+P", () => {
   ctx.ui.toast("按下了一次 Ctrl+Alt+P");
 });
 
-// 系统全局热键：窗口最小化 / 藏在托盘里也能触发
-ctx.shortcut.register(
-  "Ctrl+Alt+Q",
-  () => ctx.ui.toast("系统级热键"),
-  { scope: "global" },
-);
+// 系统全局热键由宿主独占，插件声明它会被直接拒绝：
+ctx.shortcut.register("Ctrl+Alt+Q", () => {}, { scope: "global" }); // ← 抛错
 ```
 
 - 写法 `"Ctrl+Shift+K"`，修饰键支持 `Ctrl` / `Shift` / `Alt` / `Meta`（`Cmd` / `Win` 也认），不分大小写；
-- **`options.scope` 区分作用域**：
-  - `"app"`（默认）：只在软件窗口有焦点时触发，走窗口 keydown 分发；
-  - `"global"`：注册为系统级热键（Rust 侧 `global-shortcut`），窗口隐藏 / 托盘里同样生效；
-    被输入法、截图工具等系统占用时注册失败，原因会出现在插件的诊断信息里。
-- 冲突检测对两种作用域一视同仁：与宿主键位（按「设置 → 快捷键」里**当前生效值**比较，不是写死的
-  默认值）、其它插件键位冲突时**直接抛错**，不静默覆盖；
+- **插件只能注册窗口内快捷键**（`scope` 固定 `"app"`，软件窗口有焦点时才触发，走窗口 keydown 分发）。
+  系统全局热键是进程级、系统级资源，由宿主独占（`app.*` 那几个动作）：
+  两个插件抢同一个组合键时用户在别处完全看不到"是谁占的"，而且全局键注册成功后再靠宿主及时注销，
+  漏一次就是幽灵热键。传 `{"scope":"global"}` 会**直接抛错**，不静默降级——否则插件作者会以为
+  注册成功，等软件最小化时才发现按不出来；
+- 与宿主键位（按「设置 → 快捷键」里**当前生效值**比较，不是写死的默认值）、其它插件键位
+  冲突时**直接抛错**，不静默覆盖；
 - 停用 / 卸载 / 重激活时宿主自动注销，不需要手动 remove；`register` 返回的 disposer 也会在
-  重激活时统一执行；
-- 同一条键位在 `app` 与 `global` 之间也互斥：全局热键会被系统截走，窗口内再绑一次就永远收不到。
+  重激活时统一执行。
 
 **让组合键可改**的推荐做法：键位本身放 `manifest.config`（`kind: "shortcut"`，用户在设置 → 插件里改，
 宿主写配置后会自动重新激活，旧键由宿主注销、新键立即生效），再把**生效值**记进插件私有表
 （§5.15）备查；要换键的 UI 也可以由插件自己提供（改完写表再调 `plugin.reactivate`）。
-演示插件的 `shortcutCombo`（键位）+ `shortcutScope`（作用域，默认 `global`）配置项 +
-`modules/prefs.js` 就是这套：默认按 `Ctrl+Alt+P` 在**任何程序前台时**打开速记窗口，
-表里能看到当前键位与打开次数；把作用域改成「仅窗口内」即可对照两种分发路径。
+演示插件的 `shortcutCombo`（键位）配置项 + `modules/prefs.js` 就是这套：
+默认按 `Ctrl+Alt+P` 在软件前台时打开速记窗口，表里能看到当前键位与打开次数。
 
 ### 5.18 插件文件存储 `ctx.fs`（需 `fs.read_write`）
 
@@ -1283,7 +1282,7 @@ await ctx.config.set({ effectEnabled: !ctx.config.values.effectEnabled });
 | 往宿主界面挂节点（`ctx.ui.mount`，停用自动摘除） | **已实现** |
 | 插件私有数据表（`ctx.db`，表名前缀隔离，可建表 / 删表 / 增删改查） | **已实现** |
 | 插件自己的窗口（`ctx.window.open`，加载插件目录里的 html） | **已实现** |
-| 快捷键（`ctx.shortcut.register`，scope 区分窗口内 / 系统全局、停用自动注销、撞键报错） | **已实现** |
+| 快捷键（`ctx.shortcut.register`，仅窗口内、停用自动注销、撞键报错） | **已实现** |
 | 多文件 ESM import（相对路径，`.js` / `.mjs`；含 `locales/*.json` 语言包） | **支持**（`fastnote-plugin://` 协议） |
 | 编辑器源码菜单扩展点 | 暂不开放 |
 | 外部网络请求 | 被 CSP 阻止 |

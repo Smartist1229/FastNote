@@ -1,5 +1,5 @@
 /**
- * 笔记内图片 API：保存 / 查元数据 / 占用统计 / 回收。
+ * 笔记内图片 API：保存 / 读像素尺寸 / 查元数据 / 占用统计 / 回收。
  *
  * 为什么字节走 IPC 的 **raw body**：`invoke(cmd, new Uint8Array(...))` 只有把整个
  * payload 当二进制传时才不经过 JSON。若把字节塞进参数对象，序列化结果会是
@@ -20,11 +20,13 @@ export interface AttachmentMeta {
   height: number;
 }
 
+/** 图片占用：张数与总体积 */
 export interface AttachmentUsage {
   count: number;
   bytes: number;
 }
 
+/** 回收结果：删掉几个文件、腾出多少字节 */
 export interface AttachmentGcReport {
   removed: number;
   freed: number;
@@ -80,12 +82,17 @@ export const getAttachmentMeta = async (paths: string[]): Promise<Array<Attachme
   return await invoke<Array<AttachmentMeta | null>>("get_attachment_meta", { paths });
 };
 
-/** 占用统计（设置页展示） */
+/** 本地图片的总张数与总体积（设置 · 工具箱 · 存储） */
 export const attachmentsUsage = async (): Promise<AttachmentUsage> => {
   return await invoke<AttachmentUsage>("attachments_usage");
 };
 
-/** 回收未引用的图片；默认宽限 7 天（撤销 / 备份未完成时不至于被误删） */
+/**
+ * 回收未被引用的图片文件；默认宽限 7 天。
+ *
+ * 引用集合来自所有笔记正文**与历史版本**，所以回滚笔记不会让图被误删；
+ * 宽限期兜住「撤销后正要重新插入」「剪贴板里还留着旧文本」「备份尚未完成」三种情况。
+ */
 export const gcAttachments = async (graceDays = 7): Promise<AttachmentGcReport> => {
   return await invoke<AttachmentGcReport>("gc_attachments", { graceDays });
 };

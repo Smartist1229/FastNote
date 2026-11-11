@@ -10,6 +10,7 @@ import { Icon } from '@/components/common/Icon';
 import { useToast } from '@/components/common/Toast';
 import { TextExtPicker } from '@/components/data/TextExtPicker';
 import { DEFAULT_TEXT_EXT } from '@/config/app/textFileFormats';
+import { errorText } from "@/lib/app/errorText";
 
 /** 压缩包内笔记的文件格式：预设四种，或逐篇自选 */
 const ZIP_FORMATS: FormatOption[] = [
@@ -27,7 +28,6 @@ const EBOOK_FORMATS: FormatOption[] = [
   { value: 'epub', label: 'EPUB', ext: 'epub', desc: '标准电子书，可导入阅读器' },
 ];
 
-const errorText = (e: unknown) => (typeof e === 'string' ? e : e instanceof Error ? e.message : String(e));
 
 /**
  * 分组导出弹窗：把 target.notes 导出为「压缩包」（一篇笔记一个文件）

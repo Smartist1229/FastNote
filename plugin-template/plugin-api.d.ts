@@ -58,10 +58,17 @@ export interface PluginToolbarItem {
 export interface PluginConfigField {
   key: string;
   label: string;
+  /**
+   * 各语言下的 label，键可写 `"en"` 或 `"en-US"`。
+   * 不填时英文界面会直接显示 label 原文（中文）——宿主词典里没有插件的词条。
+   */
+  labelI18n?: Record<string, string>;
   kind: "boolean" | "string" | "number" | "select" | "shortcut";
   default?: unknown;
   description?: string;
-  options?: { value: string; label: string }[];
+  /** 各语言下的 description，规则同 labelI18n */
+  descriptionI18n?: Record<string, string>;
+  options?: { value: string; label: string; labelI18n?: Record<string, string> }[];
   min?: number;
   max?: number;
   step?: number;
@@ -231,13 +238,14 @@ export interface FastNoteContext {
      * 注册一条快捷键，返回注销函数（停用 / 卸载时宿主也会自动注销）。
      *
      * 冲突（宿主当前生效的键位、其它插件、系统里已被占用的热键）会抛错，不静默覆盖。
-     * `scope`：`"app"` 只在软件窗口有焦点时触发；`"global"` 注册为系统热键
-     * （最小化 / 托盘里同样生效）。沙箱运行时里返回 Promise，需要 `await`。
+     * 插件只能注册**窗口内**快捷键：软件窗口有焦点时才触发。
+     * 系统全局热键由宿主独占，传 `scope: "global"` 会直接抛错（不会静默降级）。
+     * 沙箱运行时里返回 Promise，需要 `await`。
      */
     register(
       combo: string,
       handler: () => void,
-      options?: { scope?: "app" | "global" },
+      options?: { scope?: "app" },
     ): void | (() => void) | Promise<void>;
     unregister(combo: string): void | Promise<void>;
   };

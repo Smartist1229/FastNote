@@ -12,6 +12,7 @@ import type { NoteEditorActions } from "@/interface/note/editor";
 import * as notesApi from "@/api/note/notes";
 import * as tagsApi from "@/api/note/tags";
 import { useI18n } from "@/i18n";
+import { errorText } from "@/lib/app/errorText";
 import { useToast } from "@/components/common/Toast";
 
 export interface UsePropertiesStateParams {
@@ -124,7 +125,7 @@ export function usePropertiesState({
       setNoteHistory(await notesApi.getNoteHistory(updated.id));
       return true;
     } catch (error) {
-      showToast(t("回滚失败：{error}", { error: String(error) }), "error");
+      showToast(t("回滚失败：{error}", { error: errorText(error) }), "error");
       return false;
     }
   };
@@ -162,7 +163,7 @@ export function usePropertiesState({
         ? t("已添加 {count} 个标签", { count: names.length })
         : t("已添加标签「{name}」", { name: names[0] }), "success");
     } catch (error) {
-      showToast(t("添加标签失败：{error}", { error: String(error) }), "error");
+      showToast(t("添加标签失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -173,7 +174,7 @@ export function usePropertiesState({
       setNoteTags(next);
       showToast(t("已移除标签「{name}」", { name }), "success");
     } catch (error) {
-      showToast(t("移除标签失败：{error}", { error: String(error) }), "error");
+      showToast(t("移除标签失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -185,7 +186,7 @@ export function usePropertiesState({
       if (noteId != null) setNoteTags(await tagsApi.listNoteTags(noteId));
       showToast(t("已重命名标签"), "success");
     } catch (error) {
-      showToast(t("重命名失败：{error}", { error: String(error) }), "error");
+      showToast(t("重命名失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -196,7 +197,7 @@ export function usePropertiesState({
       setNoteHistory((prev) => prev.filter((item) => item.id !== entry.id));
       showToast(t("已删除该历史版本"), "success");
     } catch (error) {
-      showToast(t("删除失败：{error}", { error: String(error) }), "error");
+      showToast(t("删除失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -208,7 +209,7 @@ export function usePropertiesState({
       setNoteHistory([]);
       showToast(t("已清空历史版本"), "success");
     } catch (error) {
-      showToast(t("清空失败：{error}", { error: String(error) }), "error");
+      showToast(t("清空失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -220,7 +221,7 @@ export function usePropertiesState({
       setNoteHistory(await notesApi.getNoteHistory(propertiesNoteId));
       showToast(created ? t("已保存当前版本") : t("当前内容与最新版本相同"), created ? "success" : "info");
     } catch (error) {
-      showToast(t("保存版本失败：{error}", { error: String(error) }), "error");
+      showToast(t("保存版本失败：{error}", { error: errorText(error) }), "error");
     }
   };
 
@@ -232,7 +233,7 @@ export function usePropertiesState({
       setNoteHistory((prev) => prev.map((item) => (item.id === entry.id ? { ...item, pinned } : item)));
       showToast(pinned ? t("已固定该版本") : t("已取消固定"), "success");
     } catch (error) {
-      showToast(t("操作失败：{error}", { error: String(error) }), "error");
+      showToast(t("操作失败：{error}", { error: errorText(error) }), "error");
     }
   };
 

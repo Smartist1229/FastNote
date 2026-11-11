@@ -2,15 +2,15 @@
  * 加密相关的四个弹窗：根密码设置 / 根密码修改 / 加密 / 解锁（含永久解密）。
  *
  * 弹窗只负责收集密码与展示错误，真正的命令调用由调用方通过 onSubmit 注入；
- * 后端以 {"code":...} 拒绝时在这里解析成可读文案（密码错误次数、根密码冷却等）。
+ * 后端以 {"code":...} 拒绝时统一交给 `lib/app/backendErrorMessage` 翻成人话
+ * （密码错误次数、根密码冷却等附加参数都在那份词典里消费）。
  */
 import { useEffect, useState } from "react";
 
 import { Modal } from "@/components/common/Modal";
-import { normalizeEncryptionError } from "@/api/system/encryption";
-import type { EncryptionError } from "@/api/system/encryption";
 import type { UnlockScope } from "@/interface/system/encryption";
 import { useI18n } from "@/i18n";
+import { describeBackendError } from "@/lib/app/backendErrorMessage";
 
 const PASSWORD_MIN = 8;
 
@@ -48,97 +48,6 @@ const ErrorLine: React.FC<{ message: string | null }> = ({ message }) =>
       {message}
     </p>
   ) : null;
-
-/** 把命令错误翻译成界面文案；同时把最新尝试次数回传给调用方 */
-const describeError = (
-  error: unknown,
-  t: (source: string, params?: Record<string, string | number>) => string,
-): { message: string; code: string | null; cooldown?: number } => {
-  const { code, error: normalized } = normalizeEncryptionError(error);
-  if (normalized instanceof Error) {
-    const payload = (normalized as EncryptionError).payload;
-    switch (code) {
-      case "bad_password": {
-        const attempts = typeof payload?.attempts === "number" ? payload.attempts : 0;
-        if (attempts >= 3) return { message: t("条目密码已错 3 次，现在可以改用根密码"), code };
-        return { message: t("密码错误，还可尝试 {count} 次", { count: Math.max(0, 3 - attempts) }), code };
-      }
-      case "root_bad_password": {
-        const cooldown = Number(payload?.cooldown_seconds ?? 0);
-        if (cooldown > 0) {
-          return {
-            message: t("根密码错误次数过多，请等待 {seconds} 秒后再试", { seconds: cooldown }),
-            code,
-            cooldown,
-          };
-        }
-        return { message: t("根密码错误，还可尝试 {count} 次", { count: 4 }), code };
-      }
-      case "root_not_allowed":
-        return { message: t("请先连续输错 3 次条目密码，才能改用根密码"), code };
-      case "root_unavailable":
-        return { message: t("该加密项无法用根密码恢复"), code };
-      case "root_not_set":
-        return { message: t("根密码未设置，请先设置"), code };
-      case "root_locked":
-        return { message: t("本次运行尚未验证根密码，请重新输入"), code };
-      case "root_already_set":
-        return { message: t("根密码已设置，如需修改请在关于页操作"), code };
-      case "password_too_short":
-        return { message: t("密码至少 8 位"), code };
-      case "password_too_long":
-        return { message: t("密码最多 128 位"), code };
-      case "already_encrypted":
-        return { message: t("该内容已经加密"), code };
-      case "already_sealed": {
-        // 分组加密会带上是哪几篇已经是密文；单篇（或保存时发现密文）只有错误码
-        const count = payload?.note_ids?.length ?? 0;
-        return {
-          message: count > 0
-            ? t("有 {count} 篇笔记已是密文，请先永久解密再重试", { count })
-            : t("该内容已是密文，请先永久解密再重试"),
-          code,
-        };
-      }
-      case "not_encrypted":
-        return { message: t("该内容没有加密"), code };
-      case "locked":
-        return { message: t("内容已重新锁定，请先解锁再试"), code };
-      case "encrypted_note":
-        return { message: t("加密笔记不支持该操作：请先永久解密"), code };
-      case "invalid_scope":
-        return { message: t("解锁范围无效，请重试"), code };
-      case "has_individual_encrypted_notes":
-        return { message: t("组内有单独加密的笔记，请先逐篇解密"), code };
-      case "note_encrypted":
-        return { message: t("加密笔记不支持该操作：请先永久解密"), code };
-      case "note_deleted":
-        return { message: t("回收站里的笔记不能加密，请先还原"), code };
-      case "category_encrypted":
-        return { message: t("该分组已加密，不能移入或修改"), code };
-      case "tags_encrypted":
-        return { message: t("标签随笔记加密，不能直接修改"), code };
-      case "local_has_encrypted":
-        return { message: t("当前库存在加密内容，恢复会丢失密钥，已取消"), code };
-      case "backup_contains_encrypted":
-        return { message: t("备份包含加密内容，无法恢复"), code };
-      case "backup_passphrase_too_short":
-        return { message: t("备份口令至少 8 位"), code };
-      case "backup_passphrase_too_long":
-        return { message: t("备份口令最多 128 位"), code };
-      case "bad_backup_passphrase":
-        return { message: t("备份口令错误，或文件已损坏"), code };
-      case "not_encrypted_backup":
-        return { message: t("这不是 FastNote 加密备份文件"), code };
-      default:
-        return { message: normalized.message || t("操作失败，请重试"), code };
-    }
-  }
-  return { message: typeof error === "string" && error ? error : t("操作失败，请重试"), code };
-};
-
-/** 弹窗之外的调用方（toast）复用同一套错误码 → 文案映射，避免把后端 JSON 直接抛给用户 */
-export const describeEncryptionError = describeError;
 
 /* ---------------- 根密码设置 ---------------- */
 
@@ -181,7 +90,7 @@ export const RootSetupDialog: React.FC<{
     try {
       await onSubmit(password);
     } catch (e) {
-      setError(describeError(e, t).message);
+      setError(describeBackendError(e, t).message);
     } finally {
       setBusy(false);
     }
@@ -257,7 +166,7 @@ export const RootChangeDialog: React.FC<{
       await onSubmit(oldPassword, password);
       onClose();
     } catch (e) {
-      setError(describeError(e, t).message);
+      setError(describeBackendError(e, t).message);
     } finally {
       setBusy(false);
     }
@@ -332,7 +241,7 @@ export const EncryptDialog: React.FC<{
       await onSubmit(password, hint.trim() || null, requiresRoot ? rootPassword : null);
       onClose();
     } catch (e) {
-      setError(describeError(e, t).message);
+      setError(describeBackendError(e, t).message);
     } finally {
       setBusy(false);
     }
@@ -450,7 +359,7 @@ export const UnlockDialog: React.FC<{
       await onSubmit(password, useRoot, permanent ? "session" : scope);
       onClose();
     } catch (e) {
-      const described = describeError(e, t);
+      const described = describeBackendError(e, t);
       setError(described.message);
       if (described.cooldown && described.cooldown > 0) setCooldown(described.cooldown);
       if (described.code === "bad_password" || described.code === "root_not_allowed") {
@@ -580,7 +489,7 @@ export const BackupPassphraseDialog: React.FC<{
       await onSubmit(passphrase);
       onClose();
     } catch (e) {
-      setError(describeError(e, t).message);
+      setError(describeBackendError(e, t).message);
     } finally {
       setBusy(false);
     }

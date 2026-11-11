@@ -24,9 +24,8 @@ import type { SyncConflictInfo } from "@/components/settings/SyncConflictDialog"
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { flushThemeSettings } from "@/stores/themeStore";
 import { formatBytes } from "@/lib/text/format";
+import { errorText } from "@/lib/app/errorText";
 
-const errorText = (e: unknown): string =>
-  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 
 /** ISO 时间去秒，展示成 2026-10-06 19:30；缺值或非法日期显示「未知」 */
 const prettyTime = (iso: string | null) => {

@@ -20,6 +20,7 @@ import { useConfirm } from "@/components/common/ConfirmDialog";
 import { CustomModelImportForm } from "@/components/settings/CustomModelImportForm";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { formatBytes, formatSpeed } from "@/lib/text/format";
+import { errorText } from "@/lib/app/errorText";
 import type {
   SemanticIndexProgress,
   SemanticModelInfo,
@@ -787,4 +788,3 @@ export const SemanticPanel: React.FC<SemanticPanelProps> = ({
 };
 
 /** 统一把 invoke 抛出的错误转成可读文本 */
-const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));

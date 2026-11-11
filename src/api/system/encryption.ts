@@ -1,14 +1,14 @@
 /**
  * 加密相关命令的 Tauri 封装。
  *
- * 后端在拒绝时会 reject 一个 JSON 字符串（{"code":"bad_password",...}），
- * 这里统一解析成 `EncryptionError`，调用方按 code 决定提示文案与后续流程。
+ * 后端在拒绝时会 reject 一个 JSON 字符串（{"code":"bad_password",...}）。
+ * 这一层**不碰**错误：原样抛出，由 `lib/app/backendError` 解析、
+ * `lib/app/backendErrorMessage` 配文案，调用方按 code 决定后续流程。
  */
 
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
-  EncryptionErrorPayload,
   EncryptionInfo,
   EncryptionScope,
   EncryptionSelfCheckReport,
@@ -17,42 +17,14 @@ import type {
 } from "@/interface/system/encryption";
 import type { Note } from "@/interface/note/note";
 
-/** 带错误码的异常：message 仍是后端原文，code 供界面分支 */
-export class EncryptionError extends Error {
-  readonly code: string;
-  readonly payload: EncryptionErrorPayload;
+/**
+ * 原样转发。错误不在这里包装：`{"code":...}` 的解析与文案都归
+ * `lib/app/backendError` + `lib/app/backendErrorMessage`，
+ * 多包一层自定义 Error 只会让调用方多一次 instanceof 判断。
+ */
+const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
+  invoke<T>(command, args);
 
-  constructor(payload: EncryptionErrorPayload, raw: string) {
-    super(raw);
-    this.code = payload.code;
-    this.payload = payload;
-  }
-}
-
-/** 把任意 reject 值归一：能解析出 code 就是 EncryptionError，否则原样返回 */
-export const normalizeEncryptionError = (error: unknown): { code: string | null; error: unknown } => {
-  if (error instanceof EncryptionError) return { code: error.code, error };
-  if (typeof error === "string") {
-    try {
-      const parsed = JSON.parse(error);
-      if (parsed && typeof parsed.code === "string") {
-        return { code: parsed.code as string, error: new EncryptionError(parsed, error) };
-      }
-    } catch {
-      // 普通字符串错误：没有 code
-    }
-  }
-  return { code: null, error };
-};
-
-const call = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
-  try {
-    return await invoke<T>(command, args);
-  } catch (error) {
-    const { error: normalized } = normalizeEncryptionError(error);
-    throw normalized;
-  }
-};
 
 /**
  * 加解密改写了正文所在的行，旧的明文页会被释放。真正压缩库文件（VACUUM）要扫全库，
@@ -93,8 +65,6 @@ export const setRootPassword = async (password: string) => {
   scheduleScrub();
   return result;
 };
-
-export const unlockRoot = (password: string) => call<{ ok: boolean }>("unlock_root", { password });
 
 export const changeRootPassword = async (oldPassword: string, newPassword: string) => {
   const result = await call<{ rewrapped: number; skipped: number }>("change_root_password", {

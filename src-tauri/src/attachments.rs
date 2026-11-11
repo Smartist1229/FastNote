@@ -468,7 +468,7 @@ pub(crate) fn mime_of_attachment(rel: &str) -> &'static str {
 ///
 /// 宽限期（`grace_days`）兜三类边缘情况：撤销后正要重新插入、剪贴板里还放着旧文本、
 /// 备份尚未完成。只有「没人引用 + 落盘超过宽限期」的文件才会被删除。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn gc_attachments(app: AppHandle, state: State<AppState>, grace_days: u32) -> Result<GcReport, String> {
     // 1) 收集引用（锁内只做查询，尽快释放，避免与保存/编辑抢锁）
     let mut referenced: HashSet<String> = HashSet::new();
@@ -605,10 +605,20 @@ pub(crate) fn purge_unreferenced_attachments(
         return Ok(0);
     }
     // 1) 剩下的正文 + 历史快照里还有谁在引用
+    //
+    // 先用 `LIKE '%attachments/%'` 在 SQLite 里过一遍：这一步仍然扫全表，但只把**含图片
+    // 路径的行**带回 Rust。不预筛的话，1500 条历史快照（实测 392 MB）会被整份读进内存，
+    // 每次删笔记都要分配几百 MB——这正是「删除、清空回收站变慢」的来源之一。
+    // 用 LIKE 而不是 instr：两者在 SQL 层都是全表扫，但 LIKE 对 ASCII 大小写不敏感，
+    // 正文里写成大写时也不会整行漏掉（Rust 侧仍按严格的小写形状判定）。
     let mut referenced: HashSet<String> = HashSet::new();
     {
         let mut stmt = conn
-            .prepare("SELECT content FROM notes UNION ALL SELECT content FROM notes_history")
+            .prepare(
+                "SELECT content FROM notes WHERE content LIKE '%attachments/%'
+                 UNION ALL
+                 SELECT content FROM notes_history WHERE content LIKE '%attachments/%'",
+            )
             .map_err(|e| format!("读取笔记正文失败：{e}"))?;
         let mut rows = stmt.query([]).map_err(|e| format!("读取笔记正文失败：{e}"))?;
         while let Some(row) = rows.next().map_err(|e| format!("读取笔记正文失败：{e}"))? {

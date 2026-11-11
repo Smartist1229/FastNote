@@ -8,7 +8,6 @@ use tauri::{AppHandle, State};
 use zeroize::{Zeroizing, Zeroize};
 use crate::{AppState, encrypt_secret, decrypt_secret, is_encrypted};
 use crate::semantic;
-use crate::encryption;
 use crate::crypto;
 use crate::db::{has_column, has_table};
 use crate::parse_models_json;
@@ -3712,27 +3711,6 @@ pub(crate) fn sanitize_ext(ext: &str) -> String {
     }
 }
 
-/// 分组下未删除的笔记，按创建时间正序（最早在前）
-pub(crate) fn load_category_notes(conn: &Connection, category_id: &str) -> Result<Vec<Note>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, content, category_id, created_at, updated_at, is_deleted, deleted_at,
-                    is_pinned, ai_access
-             FROM notes
-             WHERE is_deleted = 0 AND category_id = ?1 AND COALESCE(enc_mode, 0) = 0
-             ORDER BY created_at ASC, id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![category_id], map_row_to_note)
-        .map_err(|e| e.to_string())?;
-    let mut notes = Vec::new();
-    for row in rows {
-        notes.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(notes)
-}
-
 /// 按指定 ID 列表加载未删除的笔记，保持传入顺序
 pub(crate) fn load_notes_by_ids(conn: &Connection, note_ids: &[String]) -> Result<Vec<Note>, String> {
     if note_ids.is_empty() {
@@ -3756,15 +3734,6 @@ pub(crate) fn load_notes_by_ids(conn: &Connection, note_ids: &[String]) -> Resul
         }
     }
     Ok(notes)
-}
-
-pub(crate) fn load_category_name(conn: &Connection, category_id: &str) -> Result<String, String> {
-    conn.query_row(
-        "SELECT name FROM categories WHERE id = ?1",
-        params![category_id],
-        |row| row.get::<_, String>(0),
-    )
-    .map_err(|_| "分组不存在".to_string())
 }
 
 /// 单篇笔记的完整 HTML 页面
@@ -3795,119 +3764,6 @@ fn push_attachment_entries(app: &AppHandle, notes: &[Note], entries: &mut Vec<Zi
                     content: bytes,
                 });
             }
-        }
-    }
-}
-
-/// 导出分组为压缩包：一篇笔记一个文件，格式可选
-/*
- * (async)：备份/恢复是重 IO（整库读写、VACUUM、图片编解码），同步命令会占着
- * IPC 线程把窗口一起卡住。交给 Tauri 的线程池跑，UI 不再冻结。
- */
-#[tauri::command(async)]
-pub fn export_category_zip(
-    app: AppHandle,
-    state: State<AppState>,
-    category_id: String,
-    path: String,
-    format: String,
-) -> Result<usize, String> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
-    if encryption::category_is_encrypted(&conn, &category_id)? {
-        return Err(json!({ "code": "category_encrypted" }).to_string());
-    }
-    let notes = load_category_notes(&conn, &category_id)?;
-    if notes.is_empty() {
-        return Err("这个分组下还没有笔记，没什么可导出的".to_string());
-    }
-
-    let ext = match format.as_str() {
-        "txt" => "txt",
-        "html" => "html",
-        "json" => "json",
-        _ => "md",
-    };
-
-    let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut entries = Vec::with_capacity(notes.len());
-    for (i, note) in notes.iter().enumerate() {
-        let base = safe_filename(&note.title, &format!("未命名笔记-{}", i + 1));
-        let count = used.entry(base.to_lowercase()).or_insert(0);
-        *count += 1;
-        let name = if *count > 1 {
-            format!("{base}-{count}.{ext}")
-        } else {
-            format!("{base}.{ext}")
-        };
-
-        let content = match ext {
-            "html" => note_html_page(&note.title, &note.content),
-            "json" => serde_json::to_string_pretty(&json!({
-                "title": note.title,
-                "content": note.content,
-                "created_at": note.created_at,
-                "updated_at": note.updated_at,
-            }))
-            .unwrap_or_default(),
-            // md / txt 都是 Markdown 原文，txt 不带 md 语法高亮能力但内容一致
-            _ => note.content.clone(),
-        };
-
-        entries.push(ZipEntry { name, content: content.into_bytes() });
-    }
-
-    // 把引用到的图片一并打进包（正文里的相对路径与 zip 根目录下的 attachments/ 对齐）
-    push_attachment_entries(&app, &notes, &mut entries);
-    let total = notes.len();
-    write_zip_file(&path, &entries)?;
-    Ok(total)
-}
-
-/// 导出分组为电子书
-/*
- * (async)：备份/恢复是重 IO（整库读写、VACUUM、图片编解码），同步命令会占着
- * IPC 线程把窗口一起卡住。交给 Tauri 的线程池跑，UI 不再冻结。
- */
-#[tauri::command(async)]
-pub fn export_category_ebook(
-    app: AppHandle,
-    state: State<AppState>,
-    category_id: String,
-    path: String,
-    format: String,
-) -> Result<usize, String> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| "数据库被占用，请稍后重试".to_string())?;
-    if encryption::category_is_encrypted(&conn, &category_id)? {
-        return Err(json!({ "code": "category_encrypted" }).to_string());
-    }
-    let title = load_category_name(&conn, &category_id)?;
-    let notes = load_category_notes(&conn, &category_id)?;
-    if notes.is_empty() {
-        return Err("这个分组下还没有笔记，没什么可导出的".to_string());
-    }
-
-    match format.as_str() {
-        "html" => {
-            let text = ebook_single_html(&app, &notes);
-            std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
-            Ok(notes.len())
-        }
-        "epub" => {
-            let entries = ebook_epub_entries(&app, &title, &notes);
-            write_zip_file(&path, &entries)?;
-            Ok(notes.len())
-        }
-        _ => {
-            // txt：章节之间用分隔线断开，正文是 Markdown 原文
-            let text = ebook_plain_text(&notes);
-            std::fs::write(&path, text).map_err(|e| format!("写入文件失败：{e}"))?;
-            Ok(notes.len())
         }
     }
 }

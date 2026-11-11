@@ -14,19 +14,31 @@ import { useEffect, useState } from "react";
 
 import { readPluginConfig } from "@/api/system/plugins";
 import { useToast } from "@/components/common/Toast";
-import { useI18n } from "@/i18n";
+import { getLocale, useI18n } from "@/i18n";
 import type { PluginConfigField } from "@/interface/system/plugins";
 import { pluginHost } from "@/plugins/host";
 import type { PluginSettingsSectionEntry } from "@/plugins/contributions";
 import type { PluginSectionField } from "@/plugins/registry";
 import { NumberInput, SelectInput, ShortcutInput, Switch } from "../controls";
+import { errorText } from "@/lib/app/errorText";
 
 /** 分组标题样式：与设置弹窗里数据行的分组小标题保持同一套（见 sectionRows.tsx） */
 const GROUP_TITLE_CLASS = "pt-3 pb-1 text-[11px] font-semibold text-muted";
 
 /** 把 Tauri 抛出的错误（字符串 / Error / 其他）压成一行提示文案 */
-const errorText = (e: unknown) =>
-  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+
+/**
+ * 取插件的本地化文案：`{ "en": "…" }` / `{ "en-US": "…" }` 两种写法都认，
+ * 都没有时回落到插件写在 manifest 里的原文。
+ *
+ * 为什么必须走这一层：manifest 的 label 是中文原文，直接 `t(label)` 等于拿插件的文案
+ * 去查**宿主**词典——插件的词条不在宿主词典里，英文界面下就会原样显示中文。
+ */
+const pickLocalized = (base: string, i18n?: Record<string, string>): string => {
+  if (!i18n) return base;
+  const locale = getLocale();
+  return i18n[locale] ?? i18n[locale.split("-")[0]] ?? base;
+};
 
 export const PluginSectionView: React.FC<{ entry: PluginSettingsSectionEntry }> = ({ entry }) => {
   const { t } = useI18n();
@@ -90,9 +102,13 @@ export const PluginSectionView: React.FC<{ entry: PluginSettingsSectionEntry }> 
       case "select":
         return (
           <SelectInput
-            label={t(field.label)}
+            label={t(pickLocalized(field.label, field.labelI18n))}
             value={typeof value === "string" ? value : ""}
-            options={field.options ?? []}
+            // 候选文案同样按当前语言取：插件可以只翻选项、不翻字段说明
+            options={(field.options ?? []).map((option) => ({
+              value: option.value,
+              label: pickLocalized(option.label, option.labelI18n),
+            }))}
             onChange={(next) => update(field.key, next)}
           />
         );
@@ -140,7 +156,11 @@ export const PluginSectionView: React.FC<{ entry: PluginSettingsSectionEntry }> 
       key: field.key,
       kind: field.kind ?? schema?.kind ?? "string",
       label: field.label ?? schema?.label ?? field.key,
+      // 插件自己写了 label 就是已经翻好的（它内部用 ctx.i18n.t 取的），
+      // 只有继承 manifest 时才需要把 labelI18n 带下来
+      labelI18n: field.label ? undefined : schema?.labelI18n,
       description: field.description ?? schema?.description,
+      descriptionI18n: field.description ? undefined : schema?.descriptionI18n,
       default: field.default ?? schema?.default,
       options: field.options ?? schema?.options,
       min: field.min ?? schema?.min,
@@ -172,10 +192,10 @@ export const PluginSectionView: React.FC<{ entry: PluginSettingsSectionEntry }> 
       className="flex items-center justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft"
     >
       <div className="min-w-0">
-        <span className="text-xs font-medium text-body">{t(field.label)}</span>
+        <span className="text-xs font-medium text-body">{t(pickLocalized(field.label, field.labelI18n))}</span>
         {field.description && (
           <p className="text-[10px] text-faint leading-relaxed mt-0.5">
-            {t(field.description)}
+            {t(pickLocalized(field.description, field.descriptionI18n))}
           </p>
         )}
       </div>

@@ -25,21 +25,16 @@ import {
   buildComboIndex,
   resolveShortcutBindings,
   SHORTCUT_ACTION_BY_ID,
-  type ShortcutActionSpec,
   type ShortcutScope,
 } from "@/config/shortcuts";
 import { comboFromEvent, normalizeCombo, splitCombos, toGlobalAccelerator } from "@/lib/shortcuts/combo";
+import type { GlobalShortcutFailure } from "@/interface/system/shortcuts";
 import { translate } from "@/i18n";
 
 type ActionHandler = (payload?: unknown) => void;
 
-/** 全局热键注册失败的记录（系统里已被别的软件占用 / 非法组合） */
-export interface GlobalShortcutFailure {
-  /** 宿主动作 id 或 `plugin:<dirName>:<combo>` */
-  id: string;
-  combo: string;
-  reason: string;
-}
+// `GlobalShortcutFailure` 由 interface 层单点定义（api 与运行时共用），此处不再另立一份：
+// 之前两份的字段名不一致（`accelerator` / `combo`），而运行时存的其实一直是 accelerator 写法。
 
 /** 插件注册的一条键位 */
 interface PluginShortcutEntry {
@@ -105,13 +100,6 @@ export function applyShortcutOverrides(overrides: Record<string, string> | null 
   void syncGlobalHotkeys();
 }
 
-/** 当前生效的键位（动作 id → 键位数组） */
-export const currentShortcutBindings = (): Record<string, string[]> => state.bindings;
-
-/** 动作规格（文案 / 作用域），供设置面板与插件冲突提示使用 */
-export const shortcutActionSpec = (id: string): ShortcutActionSpec | undefined =>
-  SHORTCUT_ACTION_BY_ID[id];
-
 /**
  * 这组键当前被谁占着：宿主动作 id / `plugin:<dir>:<combo>`。
  * 插件注册键位、面板改键都走它，保证「只有一份判定」。
@@ -174,6 +162,14 @@ const pluginShortcutId = (dirName: string, combo: string) => `plugin:${dirName}:
 /**
  * 插件注册一条键位。
  *
+ * **只允许窗口内快捷键**：系统全局热键由宿主独占（`app.*` 那几个动作，见 config/shortcuts）。
+ * 插件拿不到全局注册能力，理由是那类键位是进程级、系统级资源——两个插件抢同一个组合键时，
+ * 用户在别处完全看不到"是谁占的"，排查成本极高；而且全局键一旦注册成功，
+ * 即使插件被停用也要靠宿主及时注销，漏一次就是幽灵热键。
+ *
+ * 传 `scope: "global"` 会**直接抛错**（不静默降级）：插件作者需要立刻知道这个能力不存在，
+ * 而不是以为自己注册成功、上线后才发现最小化时按不出来。
+ *
  * 冲突一律抛错（不回退、不静默覆盖）：插件注册失败时自己会 toast，
  * 用户能立刻知道「这个键被谁占了」，比悄无声息地不生效好排查。
  *
@@ -185,6 +181,11 @@ export function registerPluginShortcut(
   scope: ShortcutScope,
   handler: ActionHandler,
 ): () => void {
+  if (scope === "global") {
+    throw new Error(
+      translate("插件不能注册系统全局快捷键，只能注册窗口内快捷键（scope 固定为 app）"),
+    );
+  }
   const combo = normalizeCombo(rawCombo);
   if (!combo) throw new Error(translate("快捷键不能为空：{combo}", { combo: rawCombo }));
   const owners = shortcutOwners(combo, pluginShortcutId(dirName, combo));
@@ -197,8 +198,7 @@ export function registerPluginShortcut(
     );
   }
   state.pluginShortcuts.set(combo, { dirName, scope, handler });
-  if (scope === "app") attachKeyListener();
-  else void syncGlobalHotkeys();
+  attachKeyListener();
   return () => unregisterPluginShortcut(dirName, combo);
 }
 
@@ -311,20 +311,12 @@ export async function syncGlobalHotkeys(): Promise<GlobalShortcutFailure[]> {
     if (SHORTCUT_ACTION_BY_ID[id]?.scope !== "global") continue;
     for (const combo of combos) items.push({ id, accelerator: toGlobalAccelerator(combo) });
   }
-  for (const [combo, entry] of state.pluginShortcuts) {
-    if (entry.scope !== "global") continue;
-    items.push({
-      id: pluginShortcutId(entry.dirName, combo),
-      accelerator: toGlobalAccelerator(combo),
-    });
-  }
+  // 插件键位不参与：registerPluginShortcut 已经拒绝 scope: "global"，
+  // 系统级热键是宿主独占的资源（进程级、用户在别处看不到是谁占的）
   try {
     const failures = await syncGlobalShortcuts(items);
-    state.failures = failures.map((item) => ({
-      id: item.id,
-      combo: item.accelerator,
-      reason: item.reason,
-    }));
+    // 类型与 Rust 侧一致（都是 accelerator 写法），不需要再逐字段改名
+    state.failures = failures;
     notify();
     return state.failures;
   } catch (error) {
@@ -379,7 +371,7 @@ function attachGlobalEvent() {
 /** 设置面板用：这组键的系统注册失败原因（没有失败返回空串） */
 export function globalFailureOf(combo: string): string {
   const accelerator = toGlobalAccelerator(combo);
-  return state.failures.find((item) => item.combo === accelerator)?.reason ?? "";
+  return state.failures.find((item) => item.accelerator === accelerator)?.reason ?? "";
 }
 
 /**

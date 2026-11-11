@@ -335,7 +335,7 @@ pub fn plugin_db_delete(
 static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// 插件窗口的 WebView2 数据目录（与主窗口 / 内置浏览器分开，避免 additionalBrowserArgs 冲突）
-const PLUGIN_WINDOW_PROFILE_DIR: &str = "plugin-window-profile";
+pub(crate) const PLUGIN_WINDOW_PROFILE_DIR: &str = "plugin-window-profile";
 
 /// query 值编码：只留 RFC 3986 unreserved，其余按 UTF-8 编 %XX（目录名/文件名/标题都可能带中文）
 fn encode_query(value: &str) -> String {

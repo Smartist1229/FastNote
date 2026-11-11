@@ -212,10 +212,10 @@ export interface PluginContext {
    * 与宿主键位（可在「设置 → 快捷键」里改，所以按**当前生效值**比）、其它插件、
    * 以及系统里已被占用的热键冲突时抛错，不静默覆盖。
    *
-   * `options.scope`：
-   * - `"app"`（默认）只在软件窗口有焦点时触发；
-   * - `"global"` 注册为系统级热键，窗口最小化 / 藏在托盘里同样生效
-   *   （被别的软件占用时注册失败，插件诊断里能看到原因）。
+   * **只允许窗口内快捷键**：软件窗口有焦点时才触发。
+   * 系统全局热键由宿主独占（`app.*` 那几个动作），插件拿不到这个能力——
+   * 传 `scope: "global"` 会直接抛错，不会静默降级成窗口内，
+   * 否则插件作者会以为注册成功，等最小化时才发现按不出来。
    *
    * 沙箱运行时里这些调用是异步的（`await`）；需要声明 shortcut.register 权限。
    */
@@ -223,7 +223,7 @@ export interface PluginContext {
     register(
       combo: string,
       handler: () => void,
-      options?: { scope?: "app" | "global" },
+      options?: { scope?: "app" },
     ): void | (() => void);
     unregister(combo: string): void;
   };

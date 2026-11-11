@@ -6,40 +6,31 @@
 export const encryptionMessages: Record<string, string> = {
   /* 根密码 */
   "设置根密码": "Set root password",
-  "根密码是最高权限密码：加密笔记/分组时用它包裹密钥，条目密码连续输错 3 次后也可以改用它解密。":
-    "The root password is the highest-privilege password: it wraps keys when encrypting notes/groups, and can be used to decrypt after an item password fails 3 times.",
   "根密码一旦遗忘，没有任何找回手段，已加密的内容将永久无法解密。请务必牢记，或记录在安全的地方。":
     "If you forget the root password there is no recovery: encrypted content will be permanently unreadable. Remember it or store it somewhere safe.",
   "根密码用于加密时保护密钥，也是忘记条目密码后的最后手段。":
     "The root password protects keys when encrypting, and is the last resort if you forget an item password.",
   "以后可在「关于」页连续点击作者名 5 次修改根密码。":
     "You can change the root password later by clicking the author name 5 times on the About page.",
-  "设置根密码后才能加密笔记或分组。": "Set a root password before encrypting notes or groups.",
   "根密码": "Root password",
   "确认根密码": "Confirm root password",
   "密码至少 8 位": "Use at least 8 characters",
   "密码最多 128 位": "Use at most 128 characters",
   "两次输入的密码不一致": "The two passwords do not match",
   "根密码设置成功": "Root password set",
-  "根密码设置失败，请重试": "Failed to set the root password, please try again",
   "修改根密码": "Change root password",
   "原根密码": "Current root password",
   "新根密码": "New root password",
   "确认新根密码": "Confirm new root password",
   "根密码已修改": "Root password changed",
-  "根密码已更新": "Root password updated",
   "根密码已设置，如需修改请在关于页操作": "The root password is already set; change it from the About page",
   "有 {count} 个加密项已重新绑定到新根密码": "{count} encrypted items were re-bound to the new root password",
   "有 {count} 个加密项无法重新绑定（早期数据），仍可用条目密码解密": "{count} encrypted items could not be re-bound (legacy data); their item passwords still work",
   "有 {count} 个加密项无法绑定根密码（早期数据），只能用各自的条目密码解密":
     "{count} encrypted items could not be bound to the root password (legacy data); only their own item passwords can decrypt them",
-  "修改根密码失败，请重试": "Failed to change the root password, please try again",
-
   /* 加密 */
   "加密笔记": "Encrypt note",
   "加密分组": "Encrypt group",
-  "笔记名保持明文，正文、标签与历史版本会以密文保存到数据库。":
-    "Note titles stay in plain text; the body, tags and history are stored as ciphertext.",
   "笔记标题、所属分组名、创建/更新时间和密码提示不加密；正文、标签与历史版本以密文保存。":
     "Note titles, group names, created/updated times and password hints are not encrypted; the body, tags and history are stored as ciphertext.",
   "加密后立即锁定，打开时要输入密码；不参与导出、备份、恢复、AI 与语义搜索；忘记密码可在输错 3 次后改用根密码；根密码也遗忘则无法恢复。":
@@ -64,7 +55,6 @@ export const encryptionMessages: Record<string, string> = {
   "解锁范围无效，请重试": "Invalid unlock scope, please try again",
   "加密成功": "Encrypted",
   "分组已加密，组内笔记全部锁定": "Group encrypted; all notes inside are now locked",
-  "加密失败，请重试": "Encryption failed, please try again",
   "请先输入密码": "Please enter a password",
 
   /* 解锁 */
@@ -73,9 +63,6 @@ export const encryptionMessages: Record<string, string> = {
   "这篇笔记已加密，输入密码后查看内容。": "This note is encrypted. Enter its password to view the content.",
   "这个分组已加密，输入密码后展开分组并查看组内笔记。":
     "This group is encrypted. Enter its password to expand the group and view the notes inside.",
-  "使用笔记密码": "Use note password",
-  "使用分组密码": "Use group password",
-  "使用根密码": "Use root password",
   "改用笔记密码": "Switch to note password",
   "改用根密码": "Switch to root password",
   "请先连续输错 3 次条目密码，才能改用根密码": "Enter the item password incorrectly 3 times before you can use the root password",
@@ -120,14 +107,10 @@ export const encryptionMessages: Record<string, string> = {
   "解锁后可查看历史版本": "Unlock the note to view its history",
   "解锁后可查看内容": "Unlock to view the content",
   "加密笔记不支持导出，请先永久解密": "Encrypted notes cannot be exported — decrypt it first",
-  "加密笔记需先永久解密才能删除": "Permanently decrypt an encrypted note before deleting it",
-  "已跳过 {count} 篇加密笔记，请先永久解密": "Skipped {count} encrypted note(s) — permanently decrypt them first",
   "永久解密": "Decrypt permanently",
   "永久解密后正文、标签与历史版本会以明文重新写入数据库，确定继续吗？":
     "After permanent decryption, the body, tags and history are written back to the database in plain text. Continue?",
   "已解密": "Decrypted",
-  "解密失败，请重试": "Decryption failed, please try again",
-
   /* 菜单与状态 */
   "加密笔记…": "Encrypt note…",
   "加密分组…": "Encrypt group…",
@@ -142,25 +125,15 @@ export const encryptionMessages: Record<string, string> = {
   "无法用根密码恢复（早期数据）": "Cannot be recovered with the root password (legacy data)",
   "忘记条目密码时可用根密码解密": "The root password can decrypt it if the item password is forgotten",
   "此笔记随所属分组加密，请在分组上操作": "This note is encrypted with its group — manage it from the group",
-  "加密内容不参与导出、备份、AI 与语义搜索": "Encrypted items are excluded from export, backup, AI and semantic search",
   "标签随笔记加密": "Tags are encrypted with the note",
-  "请先解锁笔记": "Unlock the note first",
   "该分组已加密，组内笔记不可单独新建或移入": "This group is encrypted; notes cannot be created or moved into it",
-  "该分组已加密并锁定，请先解锁分组": "This group is encrypted and locked — unlock the group first",
   "该分组已加密，请先解密分组再还原": "This group is encrypted — permanently decrypt the group before restoring",
   "加密笔记不支持该操作：请先永久解密": "Encrypted notes do not support this — decrypt permanently first",
   "加密笔记不能移动到其他分组": "An encrypted note cannot be moved to another group",
   "该分组已加密，不能移入或修改": "This group is encrypted; content cannot be moved in or modified",
   "标签随笔记加密，不能直接修改": "Tags are encrypted with the note and cannot be edited directly",
   "请先解密分组": "Decrypt the group first",
-  "加密内容不参与导出": "Encrypted items cannot be exported",
   "该分组没有可导出的笔记": "This group has no notes to export",
-  "还有加密内容未解密，请先处理": "Some encrypted items are still locked — handle them first",
-  "加密分组不能删除，请先永久解密": "Encrypted groups cannot be deleted — decrypt it first",
-  "当前库存在加密内容，恢复会丢失密钥，已取消": "This database contains encrypted items; restoring would lose their keys, so it was cancelled",
-  "备份包含加密内容，无法恢复": "The backup contains encrypted items and cannot be restored",
-  "备份已跳过 {count} 篇加密笔记": "Skipped {count} encrypted note(s) in the backup",
-  "加密笔记已锁定": "Encrypted note is locked",
   "笔记已加密": "Note encrypted",
   "笔记已加密并锁定，打开时需要输入密码": "Note encrypted and locked — a password is required to open it",
   "笔记已锁定": "Note locked",
@@ -168,7 +141,6 @@ export const encryptionMessages: Record<string, string> = {
   "分组已锁定": "Group locked",
   "分组已解密": "Group decrypted",
   "已加密": "Encrypted",
-  "已加密（已解锁）": "Encrypted (unlocked)",
   "已加密（已锁定）": "Encrypted (locked)",
   "根密码未设置，请先设置": "Set a root password first",
   "尚未设置根密码": "No root password has been set yet",

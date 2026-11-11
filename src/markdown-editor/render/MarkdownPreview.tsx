@@ -796,6 +796,3 @@ const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
 };
 
 export const MarkdownPreview = memo(MarkdownPreviewBase);
-
-/** 供实时预览渲染单个块时复用上下文 */
-export const PreviewProvider = PreviewCtx.Provider;

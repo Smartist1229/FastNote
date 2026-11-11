@@ -204,39 +204,6 @@ export function buildComboIndex(bindings: Record<string, string[]>): Record<stri
   return index;
 }
 
-export interface ShortcutConflict {
-  combo: string;
-  /** 占用同一组键的动作 id（含 2 个以上才算冲突） */
-  actions: string[];
-}
-
-/** 找出同一组键被多个动作占用的情形 */
-export function findShortcutConflicts(bindings: Record<string, string[]>): ShortcutConflict[] {
-  const owners: Record<string, string[]> = {};
-  for (const [id, combos] of Object.entries(bindings)) {
-    for (const combo of combos) {
-      owners[combo] = owners[combo] ? [...owners[combo], id] : [id];
-    }
-  }
-  return Object.entries(owners)
-    .filter(([, ids]) => ids.length > 1)
-    .map(([combo, actions]) => ({ combo, actions }));
-}
-
-/** 某个动作之外，这组键还被谁占着（面板改键时实时提示用） */
-export function comboOwners(
-  bindings: Record<string, string[]>,
-  combo: string,
-  exceptId?: string,
-): string[] {
-  const out: string[] = [];
-  for (const [id, combos] of Object.entries(bindings)) {
-    if (id === exceptId) continue;
-    if (combos.includes(combo)) out.push(id);
-  }
-  return out;
-}
-
 /**
  * 编辑器配置里的 `shortcuts` 字段：动作 id → 键位数组 / `false`。
  *
@@ -251,16 +218,6 @@ export function resolveEditorShortcutOverrides(
     if (!id.startsWith("editor.")) continue;
     const action = id.slice("editor.".length);
     out[action] = combos.length === 0 ? false : combos;
-  }
-  return out;
-}
-
-/** 需要交给系统注册的热键：`[{ id, accelerator }]`（`mod` 已折算成 CommandOrControl） */
-export function resolveGlobalBindings(bindings: Record<string, string[]>): { id: string; combo: string }[] {
-  const out: { id: string; combo: string }[] = [];
-  for (const spec of SHORTCUT_ACTIONS) {
-    if (spec.scope !== "global") continue;
-    for (const combo of bindings[spec.id] ?? []) out.push({ id: spec.id, combo });
   }
   return out;
 }

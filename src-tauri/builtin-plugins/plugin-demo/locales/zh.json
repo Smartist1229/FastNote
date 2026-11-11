@@ -176,7 +176,7 @@
       "notes": "写笔记 API（source_plugin 沙箱）",
       "sourceModal": "自绘弹窗",
       "db": "私有数据表",
-      "shortcut": "全局快捷键",
+      "shortcut": "窗口内快捷键",
       "window": "插件窗口（速记工具）"
     }
   },
@@ -197,7 +197,7 @@
       "sourceDb": "自绘弹窗与私有表",
       "sourceDbDesc": "读取正文弹窗、插件数据表以及表名。",
       "shortcutWindow": "快捷键与窗口",
-      "shortcutWindowDesc": "全局快捷键、插件窗口开关与尺寸。"
+      "shortcutWindowDesc": "窗口内快捷键、插件窗口开关与尺寸。"
     },
     "fields": {
       "menuEnabled": "笔记右键菜单项",
@@ -244,11 +244,9 @@
       "dbVisitsTableDesc": "只写裸名（小写字母/数字/下划线），宿主会加 plugin_plugin_demo__ 前缀。",
       "dbPrefsTable": "配置表名",
       "dbPrefsTableDesc": "存插件键值配置（当前快捷键、打开次数）的表名。",
-      "shortcutEnabled": "全局快捷键",
-      "shortcutEnabledDesc": "注册全局快捷键，按下打开插件窗口里的工具。",
+      "shortcutEnabled": "窗口内快捷键",
+      "shortcutEnabledDesc": "注册窗口内快捷键（软件在前台时才响应），按下打开插件窗口里的工具。",
       "shortcutCombo": "快捷键",
-      "shortcutScope": "作用域",
-      "shortcutScopeDesc": "仅窗口内：软件在前台时才响应；系统全局：最小化或藏在托盘里也能按到（注册为系统热键，被别的软件占用时不生效）。",
       "shortcutComboDesc": "点一下这个框，然后按下想要的组合键即可（不用手写，至少带一个 Ctrl / Alt / Shift）。改完立刻生效，旧键自动注销。",
       "windowEnabled": "插件窗口",
       "windowEnabledDesc": "允许打开插件自己的窗口；关闭后快捷键与菜单项都不再开窗。",
@@ -263,8 +261,6 @@
       "themeNone": "不修改",
       "themeAccent": "强调色描边",
       "themeFocus": "专注模式",
-      "shortcutScopeApp": "仅窗口内",
-      "shortcutScopeGlobal": "系统全局",
       "demoSimple": "简单",
       "demoAdvanced": "高级"
     }

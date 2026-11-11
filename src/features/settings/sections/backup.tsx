@@ -21,6 +21,7 @@ import { RestoreDialog } from "@/features/settings/RestoreDialog";
 import { Icon } from "@/components/common/Icon";
 import { SegmentedInput, Switch } from "../controls";
 import type { SettingsSectionContext } from "../context";
+import { errorText } from "@/lib/app/errorText";
 
 /* ---------- 备份工具函数 ---------- */
 
@@ -45,8 +46,6 @@ const prettyTime = (iso: string | null) => {
 const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
 /** 把 Tauri 抛出的错误（字符串 / Error / 其他）压成一行提示文案 */
-const errorText = (e: unknown) =>
-  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 
 export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }) => {
   const { t } = useI18n();

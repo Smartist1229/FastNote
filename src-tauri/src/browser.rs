@@ -86,10 +86,11 @@ const RANDOM_FINGERPRINT_SETTING: &str = "app.config.general.browserRandomFinger
 const FINGERPRINT_SCRIPT: &str = include_str!("browser_script.js");
 /// 链接拦截脚本：把 target="_blank" / window.open 改成本窗口导航
 const LINK_SCRIPT: &str = include_str!("browser_link_script.js");
-/// 网页 WebView 独立的 WebView2 数据目录（放在软件的数据目录下）
-const BROWSER_PROFILE_DIR: &str = "inapp-browser-profile";
+/// 网页 WebView 独立的 WebView2 数据目录（放在软件的数据目录下）。
+/// 清理模块要按它定位缓存，所以对 crate 内可见。
+pub(crate) const BROWSER_PROFILE_DIR: &str = "inapp-browser-profile";
 /// 工具栏 WebView 的独立数据目录
-const TOOLBAR_PROFILE_DIR: &str = "inapp-browser-toolbar-profile";
+pub(crate) const TOOLBAR_PROFILE_DIR: &str = "inapp-browser-toolbar-profile";
 /// 工具栏高度（逻辑像素），必须与 public/browser-toolbar.css 里的 --bar-height 一致
 const TOOLBAR_HEIGHT: f64 = 44.0;
 /// 下载面板窗口：浮在网页上的小弹窗，宽度固定，高度按条目数算
@@ -103,7 +104,7 @@ const PANEL_SHADOW_PAD: f64 = 10.0;
 /// 面板窗口 / WebView 的 label 后缀（完整 label = 浏览器窗口 label + 它）
 const PANEL_SUFFIX: &str = "-download-panel";
 /// 面板 WebView 的独立数据目录（WebView2 要求共用目录的环境选项完全一致）
-const PANEL_PROFILE_DIR: &str = "inapp-browser-panel-profile";
+pub(crate) const PANEL_PROFILE_DIR: &str = "inapp-browser-panel-profile";
 /// 一个窗口最多保留的下载记录条数，超出时优先丢掉最早结束的
 const MAX_DOWNLOADS: usize = 8;
 /// 网页 WebView 的 label 后缀

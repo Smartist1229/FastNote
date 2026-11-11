@@ -64,10 +64,6 @@ export const PERMISSION_INFO: Record<
   },
 };
 
-/** 已知权限标识符集合（运行时用，避免硬编码） */
-export const KNOWN_PERMISSIONS = Object.freeze(Object.keys(PERMISSION_INFO));
-
-/** 插件配置字段类型：决定设置弹窗里渲染哪种控件 */
 /**
  * 配置项控件种类：
  *   boolean → 开关；string → 文本框；number → 数字框；select → 下拉；
@@ -79,18 +75,26 @@ export type PluginConfigFieldKind = "boolean" | "string" | "number" | "select" |
 export interface PluginConfigOption {
   value: string;
   label: string;
+  /** 各语言下的候选文案，规则同 PluginConfigField.labelI18n */
+  labelI18n?: Record<string, string>;
 }
 
 /**
  * 插件配置字段（plugin.json 的 config 数组项）。
  * default 在缺失配置时由后端补上；options 仅 select 用，min / max / step 仅 number 用。
+ *
+ * labelI18n / descriptionI18n：按语言覆盖文案，键可以是 `"en"` 或 `"en-US"`。
+ * 没有它的话，设置界面只能拿 label 的中文去查**宿主**词典——插件文案不在宿主词典里，
+ * 英文界面下就会显示中文。
  */
 export interface PluginConfigField {
   key: string;
   label: string;
+  labelI18n?: Record<string, string>;
   kind: PluginConfigFieldKind;
   default?: unknown;
   description?: string;
+  descriptionI18n?: Record<string, string>;
   options?: PluginConfigOption[];
   min?: number;
   max?: number;

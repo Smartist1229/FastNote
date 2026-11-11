@@ -16,7 +16,7 @@ import type {
 } from "@/interface/system/encryption";
 import * as encryptionApi from "@/api/system/encryption";
 import * as notesApi from "@/api/note/notes";
-import { describeEncryptionError } from "@/components/common/EncryptionDialogs";
+import { describeBackendError } from "@/lib/app/backendErrorMessage";
 import { useIdleLock } from "@/hooks/useIdleLock";
 import { useI18n } from "@/i18n";
 import { useToast } from "@/components/common/Toast";
@@ -116,7 +116,7 @@ export function useEncryptionState({
       setUnlockTarget({ scope, id, permanent, info });
     } catch (e) {
       // 后端拒绝时是 JSON 字符串，不能直接展示给用户
-      showToast(describeEncryptionError(e, t).message, "error");
+      showToast(describeBackendError(e, t).message, "error");
     }
   }, [showToast, t]);
 

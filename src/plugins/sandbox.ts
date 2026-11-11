@@ -341,10 +341,15 @@ export const startPluginSandbox = async (options: SandboxOptions): Promise<Plugi
       if (op === "shortcut.register") {
         const combo = String(args[0] ?? "");
         /*
-         * 作用域由插件声明：`app` 只在窗口有焦点时触发，`global` 交系统注册。
-         * 宿主侧按「当前生效的宿主键位 + 其它插件」判冲突，冲突直接抛错回给插件。
+         * 插件只能注册窗口内快捷键：系统全局热键由宿主独占。
+         * 这里显式回错而不是让宿主的注册函数抛——沙箱是跨文档 RPC，
+         * 明确一条 "不能注册全局热键" 比插件端看到一个泛化的失败更容易定位。
          */
         const options = (args[1] ?? {}) as { scope?: "app" | "global" };
+        if (options.scope === "global") {
+          reply(id, { error: "插件不能注册系统全局快捷键，只能注册窗口内快捷键（scope 固定为 app）" });
+          return;
+        }
         ctx.shortcut.register(
           combo,
           () => {
@@ -353,7 +358,7 @@ export const startPluginSandbox = async (options: SandboxOptions): Promise<Plugi
               origin,
             );
           },
-          { scope: options.scope === "global" ? "global" : "app" },
+          { scope: "app" },
         );
         reply(id, { result: null });
         return;

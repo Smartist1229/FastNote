@@ -3,12 +3,13 @@
  *
  * trashNotes 只在回收站操作时更新，欢迎页计数也取自它。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Note } from "@/interface/note/note";
 import type { ConfirmOptions } from "@/interface/app/ui";
 import type { EncryptionScope } from "@/interface/system/encryption";
 import * as notesApi from "@/api/note/notes";
 import { useI18n } from "@/i18n";
+import { isBackendError } from "@/lib/app/backendError";
 import { useToast } from "@/components/common/Toast";
 
 export interface UseTrashStateParams {
@@ -17,9 +18,31 @@ export interface UseTrashStateParams {
   confirm: (options: ConfirmOptions) => Promise<boolean>;
 }
 
+/**
+ * 启动后延时自动清理回收站（30 天前的未加密笔记）。
+ *
+ * 三个设计点：
+ * - **延时**：刚启动时正忙着读库、渲染首屏，清理是纯维护动作，不该抢资源；
+ * - **模块级单例**：StrictMode 双挂载、主题切换导致的重挂都不该重复注册定时器
+ *   （不在这里 return 清理函数，就是为了让定时器活过第一次卸载）；
+ * - **失败静默**：清理失败不影响任何功能，只记日志。弹窗提示反而会让用户以为出了故障。
+ */
+let trashCleanupTimer: number | null = null;
+const TRASH_CLEANUP_DELAY = 6000;
+
 export function useTrashState({ loadData, requestUnlockRef, confirm }: UseTrashStateParams) {
   const { locale, t } = useI18n();
   const { showToast } = useToast();
+
+  useEffect(() => {
+    if (trashCleanupTimer !== null) return;
+    trashCleanupTimer = window.setTimeout(() => {
+      trashCleanupTimer = null;
+      void notesApi.cleanupOldTrash().catch((error) => {
+        console.warn("回收站自动清理失败：", error);
+      });
+    }, TRASH_CLEANUP_DELAY);
+  }, []);
 
   /** 回收站：列表 + 多选集合 */
   const [showTrashModal, setShowTrashModal] = useState(false);
@@ -57,17 +80,9 @@ export function useTrashState({ loadData, requestUnlockRef, confirm }: UseTrashS
       showToast(t("笔记已还原"), "success");
     } catch (error) {
       // 目标分组已加密时后端会拒绝（明文笔记不能落进加密分组）
-      let message = t("还原失败");
-      if (typeof error === "string") {
-        try {
-          const parsed = JSON.parse(error) as { code?: string };
-          if (parsed?.code === "category_encrypted") {
-            message = t("该分组已加密，请先解密分组再还原");
-          }
-        } catch {
-          // 普通字符串错误：保留通用提示
-        }
-      }
+      const message = isBackendError(error, "category_encrypted")
+        ? t("该分组已加密，请先解密分组再还原")
+        : t("还原失败");
       showToast(message, "error");
     }
   };

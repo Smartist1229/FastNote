@@ -354,9 +354,6 @@ export const applyTheme = (settings: ThemeSettings): ResolvedThemeMode => {
   return writeVars(settings);
 };
 
-/** 预览单个令牌的改动而不落地：自定义面板拖色时用它即时看效果 */
-export const previewTheme = (settings: ThemeSettings): ResolvedThemeMode => applyTheme(settings);
-
 /* ---------- 本地缓存（首帧防闪） ---------- */
 
 const CACHE_KEY = "fastnote.theme";

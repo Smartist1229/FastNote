@@ -15,7 +15,6 @@ export const settingsMessages: Record<string, string> = {
   "上下文": "Context",
   "记忆与提示词": "Memory and prompts",
   "AI 访问权限": "AI access",
-  "恢复默认": "Reset defaults",
   "备份与恢复": "Backup and restore",
   "关于": "About",
   "软件": "Application",
@@ -142,9 +141,7 @@ export const settingsMessages: Record<string, string> = {
   "删除": "Delete",
   "共 {count} 条，其中 {enabled} 条已启用": "{count} entries, {enabled} enabled",
   "三档权限：禁止（AI 完全看不到）、只读（能读能总结，不能改）、完全（读写都可以）。分组定的是组内上限，展开分组可以给单篇笔记单独设；两层取更严格的那一档。": "Three access levels: Blocked (invisible to AI), Read-only (read and summarize, but not edit), and Full (read and write). Group access caps access for its notes. Expand a group to configure each note; the stricter level always applies.",
-  "禁止": "Blocked",
   "只读": "Read-only",
-  "完全": "Full",
   "总开关已关闭，下面的设置暂时不起作用；AI 无法读取任何笔记。": "The master switch is off. These settings are inactive, and AI cannot read any notes.",
   "该分组还没有笔记": "This group has no notes",
   "收起笔记": "Collapse notes",
@@ -220,7 +217,6 @@ export const settingsMessages: Record<string, string> = {
   "30 分钟": "30 min",
   "1 小时": "1 hour",
   "下载并安装": "Download and install",
-  "正在更新...": "Updating…",
   "正在下载更新...": "Downloading update…",
   "正在下载更新... {value1}%": "Downloading update… {value1}%",
   "更新失败：{value1}": "Update failed: {value1}",
@@ -321,7 +317,6 @@ export const settingsMessages: Record<string, string> = {
   "{value1} 个线程下载中": "{value1} threads downloading",
   "等待分片分配…": "Assigning segments…",
   "单线程": "Single thread",
-  "{modeLabel} · 准备下载…": "{modeLabel} · preparing download…",
   "准备下载…": "Preparing download…",
   "下载线程": "Download threads",
   "同时发起的连接数，默认 32，最高 128。文件会切成更多小分片，先下完的线程自动接手下一片，不会闲着；语义模型下载也使用这个值，线程过多可能被服务器限速。": "Concurrent connections: 32 by default, up to 128. Files are split into extra segments so a thread that finishes early picks up the next one instead of idling. Also used for semantic model downloads. Too many connections may trigger server rate limits.",
@@ -627,7 +622,6 @@ export const settingsMessages: Record<string, string> = {
   " · 默认": " · default",
   "API 能力": "API capabilities",
   "以上字段覆盖请求头与浏览器可观测属性。应用不运行网页 JS，也不模拟 TLS / HTTP2 握手指纹，因此无法保证在所有检测维度上完全隐身，实际兼容性取决于目标站的检测方式。": "These fields cover request headers and observable browser properties. The app does not run webpage JavaScript or emulate TLS / HTTP2 handshake fingerprints, so it cannot guarantee invisibility across all detection methods. Compatibility depends on the target site.",
-  "下表是当前生效的全部键位。Ctrl 在 macOS 上是 ⌘，Alt 对应 ⌥。部分键位可在「编辑器」分区关闭，关闭后对应行会置灰。": "All current shortcuts are listed below. On macOS, Ctrl means ⌘ and Alt means ⌥. Some shortcuts can be disabled in Editor settings; disabled rows are dimmed.",
   "编辑器里的格式快捷键全部由「编辑器 → 启用快捷键」控制；关闭后仍可用工具栏按钮完成同样的操作。": "All formatting shortcuts are controlled by Editor → Enable keyboard shortcuts. Toolbar buttons remain available when shortcuts are disabled.",
   "已关闭": "Disabled",
   "加粗": "Bold",
@@ -672,7 +666,6 @@ export const settingsMessages: Record<string, string> = {
   "已安装演示插件（最新版本）": "Demo plugin installed (latest version)",
   "安装演示插件失败：{value1}": "Failed to install the demo plugin: {value1}",
   "已重新扫描插件文件夹，并更新了演示插件": "Plugin folder rescanned; demo plugin updated",
-  "演示插件已安装，可在列表里启用": "Demo plugin installed — enable it in the list",
   "重新扫描插件文件夹": "Rescan the plugin folder",
   "把内置的演示插件装回来（会覆盖为最新版本，配置保留）": "Install the bundled demo plugin again (overwrites with the latest version, keeps its config)",
   "打开插件文件夹": "Open plugin folder",
@@ -702,12 +695,9 @@ export const settingsMessages: Record<string, string> = {
   "点一下，然后按下要用的组合键（Esc 取消）": "Click, then press the combination you want (Esc to cancel)",
   "这个组合键已被「{name}」占用，换一个": "That combination is taken by「{name}」— pick another",
   /* 宿主保留键位的功能名（组合键捕获框里提示用） */
-  "跳转笔记": "Jump to note",
   "查找": "Find",
-  "跳到行": "Go to line",
   "替换": "Replace",
   /* ---------------- 权限声明（label / desc 也走 t()，见 PERMISSION_INFO） ---------------- */
-  "读取笔记": "Read notes",
   "读取您的笔记正文内容": "Read the body of your notes",
   "写入笔记": "Write notes",
   "创建、修改或删除您的笔记": "Create, edit or delete your notes",
@@ -798,8 +788,6 @@ export const settingsMessages: Record<string, string> = {
     "{count} already exist locally",
   "分组":
     "Groups",
-  "历史版本":
-    "History",
   "标签":
     "Tags",
   "图片":
@@ -956,5 +944,72 @@ export const settingsMessages: Record<string, string> = {
     "Images are stored as plain files in the data folder; they are not encrypted together with the note.",
   "图片保存失败：{value1}":
     "Could not save the image: {value1}",
+  "安装": "Install",
+  "重新扫描插件文件夹（开发预览下会同步更新演示插件）": "Rescan the plugin folder (the demo plugin is refreshed in dev preview)",
+
+  /* ---------------- 设置 · 清理（缓存与图片回收） ---------------- */
+  "清理": "Cleanup",
+  "缓存": "Cache",
+  "清理缓存": "Clear cache",
+  "可清理": "Reclaimable",
+  "{count} 个索引分块": "{count} index chunks",
+  "索引 {size} · 临时残留 {size2}（{count} 项）":
+    "Index {size} · temp leftovers {size2} ({count} items)",
+  "{count} 张": "{count} images",
+  "正文引用的图片": "Images referenced in notes",
+  "统计中…": "Calculating…",
+  "读取失败：{error}": "Could not read: {error}",
+  "清理中…": "Cleaning up…",
+  "扫描": "Scan",
+  "扫描中…": "Scanning…",
+  "重新扫描": "Scan again",
+  "扫描全部": "Scan all",
+  "清理全部": "Clean up all",
+  "尚未扫描，点右上角的「扫描」统计占用。":
+    "Not scanned yet. Use Scan in the top-right corner to measure usage.",
+  "上次清理还有残留，下次启动会继续。":
+    "Some files were left last time; cleanup continues on next launch.",
+  "共释放 {size}：缓存 {size2} · 浏览器 {size3} · 图片 {size4}":
+    "Freed {size}: cache {size2} · browser {size3} · images {size4}",
+  "部分浏览器缓存文件正被使用，已登记在下次启动时继续清理":
+    "Some browser cache files are in use; they will be cleaned up on next launch",
+  "会依次清空语义索引与临时残留、清除 WebView2 缓存、删除落盘超过 {days} 天且没人引用的图片。前两项都可以重建，图片删除后无法恢复。站点数据与各网站登录状态不受影响。":
+    "This clears the semantic index and temp leftovers, then the WebView2 caches, then images older than {days} days that nothing references. The first two are rebuildable; deleted images are gone for good. Site data and website logins are not touched.",
+  "开始清理": "Start cleanup",
+  "语义索引是笔记的向量副本，可以随时重建；临时残留是恢复备份前留下的整库快照，正常退出会自己删掉，崩溃才会剩下。":
+    "The semantic index is a vector copy of your notes and can be rebuilt at any time. Temp leftovers are full database snapshots taken before a restore — a normal exit removes them, a crash leaves them behind.",
+  "会清空语义检索的向量索引（约 {size}）和临时目录里的残留文件。索引可以重建，但重建完成前语义搜索没有结果。":
+    "This clears the semantic vector index (about {size}) and leftover temp files. The index can be rebuilt, but semantic search returns nothing until it is.",
+  "已清理 {chunks} 个索引分块、{files} 个临时文件，释放 {size}":
+    "Cleared {chunks} index chunks and {files} temp files, freeing {size}",
+  "没有可清理的缓存": "Nothing to clean up",
+  "「自动建立索引」已开启，索引会在后台重建":
+    "Automatic indexing is on, so the index will be rebuilt in the background",
+  "图片按内容去重后存在本地；删笔记或改正文都不会自动删掉文件，所以需要在这里清一次。":
+    "Images are stored locally and deduplicated by content. Deleting a note or editing text never removes the file, so clean up here.",
+  /* ---- 浏览器缓存（WebView2 profile） ---- */
+  "浏览器缓存": "Browser cache",
+  "站点数据 {size}": "Site data {size}",
+  "界面 {size} · 内置浏览器 {size2}": "App {size} · in-app browser {size2}",
+  "清理浏览器缓存": "Clear browser cache",
+  "清理缓存与站点数据": "Clear cache and site data",
+  "已释放 {size}": "Freed {size}",
+  "已释放 {size}，其中站点数据 {size2}": "Freed {size}, of which {size2} was site data",
+  "部分文件正被使用，已登记在下次启动时继续清理":
+    "Some files are in use and will be cleaned up on next launch",
+  "每个网页视图都会把资源和编译结果缓存到磁盘，删了会按需重建。软件运行期间这些文件被内核占着，部分要等下次启动才删得掉。":
+    "Every web view keeps fetched resources and compiled code on disk and rebuilds them on demand. While the app is running the engine holds these files open, so some can only be removed on the next launch.",
+  "会清空主窗口与内置浏览器的资源缓存与编译缓存。笔记、设置与各网站的登录状态都不受影响，只是清完后第一次启动会稍慢一点。":
+    "This clears the resource and code caches of the main window and the in-app browser. Notes, settings and website logins are untouched; the first launch afterwards is a little slower.",
+  "会清空内置浏览器的 Cookie、本地存储与 IndexedDB，所有登录过的网站都要重新登录。主窗口的主题与语言缓存不受影响。":
+    "This clears cookies, local storage and IndexedDB of the in-app browser, so every site you were signed in to will ask again. The main window keeps its theme and language caches.",
+  "清理未使用的图片": "Clean up unused images",
+  "只删除「没有被任何笔记或历史版本引用」且「落盘超过 {days} 天」的图片。此操作不可撤销。":
+    "Only images that no note or history entry references, and that have been on disk longer than {days} days, are deleted. This cannot be undone.",
+  "已清理 {count} 个文件，释放 {size}": "Removed {count} files, freed {size}",
+  "没有可清理的图片": "Nothing to clean up",
+  "清理失败：{error}": "Cleanup failed: {error}",
+  "清理只删可以重建或没人引用的数据，笔记本身不会被删除。":
+    "Cleanup only removes rebuildable or unreferenced data; your notes are never deleted.",
 
 };

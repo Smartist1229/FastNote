@@ -1,5 +1,5 @@
 import { useI18n } from "@/i18n";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ConfirmOptions } from "@/interface/app/ui";
 import { Modal } from "@/components/common/Modal";
@@ -10,8 +10,13 @@ const ConfirmDialog: React.FC<{
   options: ConfirmOptions | null;
   onConfirm: () => void;
   onCancel: () => void;
-}> = ({ isOpen, options, onConfirm, onCancel }) => {
+  /** 挂载即回调：给 useConfirm 判断「调用方到底有没有把这个弹窗渲染出来」 */
+  onMount: () => void;
+}> = ({ isOpen, options, onConfirm, onCancel, onMount }) => {
   const { t } = useI18n();
+  useEffect(() => {
+    onMount();
+  }, [onMount]);
   if (!options) return null;
   const { title, message, confirmText = "确定", cancelText = "取消", danger } = options;
   return (
@@ -52,14 +57,30 @@ export const useConfirm = () => {
   const [options, setOptions] = useState<ConfirmOptions | null>(null);
   /** 当前待结算的 Promise resolve；null 表示没有弹窗在等结果 */
   const resolverRef = useRef<((ok: boolean) => void) | null>(null);
+  /** confirmDialog 是否真的进了渲染树：只调用不渲染的话弹窗永远不会出现 */
+  const mountedRef = useRef(false);
 
   const confirm = useCallback((opts: ConfirmOptions) => {
+    /*
+     * 忘了把 confirmDialog 放进 JSX 是这套 API 最容易踩的坑：
+     * confirm() 会把 Promise 挂起，但没人渲染弹窗，界面毫无反应、调用方永远等不到结果。
+     * 开发期直接报出来，生产环境保持安静。
+     */
+    if (import.meta.env.DEV && !mountedRef.current) {
+      console.warn(
+        "[confirm] confirm() 被调用了，但 confirmDialog 没有渲染到 JSX 里：弹窗不会出现，Promise 不会结算。",
+      );
+    }
     // 上一个还没结算时直接按「取消」放行，避免把调用方永久挂起
     resolverRef.current?.(false);
     return new Promise<boolean>((resolve) => {
       resolverRef.current = resolve;
       setOptions(opts);
     });
+  }, []);
+
+  const markMounted = useCallback(() => {
+    mountedRef.current = true;
   }, []);
 
   const settle = useCallback((ok: boolean) => {
@@ -80,6 +101,7 @@ export const useConfirm = () => {
       options={options}
       onConfirm={() => settle(true)}
       onCancel={() => settle(false)}
+      onMount={markMounted}
     />,
     document.body,
   );

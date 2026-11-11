@@ -176,7 +176,7 @@
       "notes": "notes API (source_plugin sandbox)",
       "sourceModal": "self-drawn dialog",
       "db": "plugin-owned tables",
-      "shortcut": "global shortcut",
+      "shortcut": "in-window shortcut",
       "window": "plugin window (scratchpad)"
     }
   },
@@ -197,7 +197,7 @@
       "sourceDb": "Dialog & tables",
       "sourceDbDesc": "The read-note dialog, plugin tables and their names.",
       "shortcutWindow": "Shortcut & window",
-      "shortcutWindowDesc": "Global shortcut, plugin window toggle and size."
+      "shortcutWindowDesc": "In-window shortcut, plugin window toggle and size."
     },
     "fields": {
       "menuEnabled": "Note context menu items",
@@ -244,11 +244,9 @@
       "dbVisitsTableDesc": "Bare name only (lowercase letters, digits, underscore); the host prefixes plugin_plugin_demo__.",
       "dbPrefsTable": "Prefs table name",
       "dbPrefsTableDesc": "Table that stores the plugin's key/value data (current shortcut, open count).",
-      "shortcutEnabled": "Global shortcut",
-      "shortcutEnabledDesc": "Registers a global shortcut that opens the plugin window tool.",
+      "shortcutEnabled": "In-window shortcut",
+      "shortcutEnabledDesc": "Registers an in-window shortcut (only while FastNote is focused) that opens the plugin window tool.",
       "shortcutCombo": "Shortcut",
-      "shortcutScope": "Scope",
-      "shortcutScopeDesc": "Window: only while FastNote is focused. Global: works minimized or in the tray (registered as a system hotkey; fails if another app owns it).",
       "shortcutComboDesc": "Click the box and press the combination you want (no typing, needs at least one of Ctrl / Alt / Shift). It applies immediately and the old key is released.",
       "windowEnabled": "Plugin window",
       "windowEnabledDesc": "Allow opening the plugin's own window; turning this off disables the shortcut and menu entry.",
@@ -263,8 +261,6 @@
       "themeNone": "No change",
       "themeAccent": "Accent outline",
       "themeFocus": "Focus mode",
-      "shortcutScopeApp": "Window only",
-      "shortcutScopeGlobal": "System-wide",
       "demoSimple": "Simple",
       "demoAdvanced": "Advanced"
     }

@@ -202,14 +202,6 @@ export const closePluginWindow = async (dirName: string, label: string): Promise
   await invoke('plugin_close_window', { dirName, label });
 };
 
-/**
- * 请求宿主重新激活某个插件（plugin_reactivate → 主窗口收到事件后重跑 activate）。
- * 插件在自己的窗口里改了数据（快捷键、菜单项等）之后调用，注册类副作用才会用上新值。
- */
-export const reactivatePlugin = async (dirName: string): Promise<void> => {
-  await invoke('plugin_reactivate', { dirName });
-};
-
 /** 删除某个插件的全部私有表（卸载时用户选择「删除表」），返回删掉的表数 */
 export const pluginDbDropAll = async (dirName: string): Promise<number> => {
   return await invoke('plugin_db_drop_all', { dirName });

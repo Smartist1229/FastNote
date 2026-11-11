@@ -6,6 +6,7 @@
  */
 
 import type { ToolTrace } from "@/interface/ai/aiOutput";
+import { errorText } from "@/lib/app/errorText";
 
 /* ---------- 标签剥离 ---------- */
 
@@ -40,16 +41,13 @@ export const firstLine = (text: string, max = 90): string => {
  * 字符串原样返回，Error 取 message，其余对象尝试 JSON.stringify。
  * Tauri 命令的 Err(String) 会以字符串 reject，因此字符串分支是常见路径。
  */
-export const formatError = (error: unknown): string => {
-  if (error == null) return "未知错误";
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-};
+/**
+ * 错误文案：统一走 `lib/app/errorText`。
+ *
+ * 这里不再自己写 `instanceof Error` 的取值逻辑——那份副本不会翻译，
+ * 英文界面下会把 Rust 抛回的中文原样显示出来。
+ */
+export const formatError = (error: unknown): string => errorText(error);
 
 /* ---------- 会话标题清洗 ---------- */
 

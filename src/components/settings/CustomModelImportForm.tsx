@@ -12,8 +12,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import * as semanticApi from "@/api/ai/semantic";
 import { Icon } from "@/components/common/Icon";
 import { ProgressBar } from "@/components/common/ProgressBar";
+import { errorText } from "@/lib/app/errorText";
 
-const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 const folderName = (path: string): string => {
   const parts = path.split(/[\\/]/).filter(Boolean);

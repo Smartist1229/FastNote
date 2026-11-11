@@ -34,9 +34,11 @@ pub(super) fn config_field(key: &str, kind: &str) -> PluginConfigField {
     PluginConfigField {
         key: key.into(),
         label: key.into(),
+        label_i18n: Default::default(),
         kind: kind.into(),
         default: None,
         description: None,
+        description_i18n: Default::default(),
         options: Vec::new(),
         min: None,
         max: None,

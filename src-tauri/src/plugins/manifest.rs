@@ -82,6 +82,12 @@ pub struct PluginManifest {
 pub struct PluginConfigField {
     pub key: String,
     pub label: String,
+    /// 各语言下的 label：`{ "en": "Shortcut" }`。
+    ///
+    /// 没有它的话，设置界面只能拿 `label` 的中文去查**宿主**词典——插件的文案不可能出现在
+    /// 宿主词典里，于是英文界面下整片设置项都是中文。留空时回落到 `label` 本身。
+    #[serde(default)]
+    pub label_i18n: HashMap<String, String>,
     /// "boolean" | "string" | "number" | "select" | "shortcut"
     /// （shortcut 的值与 string 同构，都是 "Ctrl+Alt+P" 这样的组合键字符串，只是宿主用捕获框渲染）
     pub kind: String,
@@ -89,6 +95,9 @@ pub struct PluginConfigField {
     pub default: Option<Value>,
     #[serde(default)]
     pub description: Option<String>,
+    /// 各语言下的 description，规则同 label_i18n
+    #[serde(default)]
+    pub description_i18n: HashMap<String, String>,
     #[serde(default)]
     pub options: Vec<PluginConfigOption>, // kind == select 时用
     #[serde(default)]
@@ -105,6 +114,9 @@ pub struct PluginConfigField {
 pub struct PluginConfigOption {
     pub value: String,
     pub label: String,
+    /// 各语言下的候选文案，规则同 `PluginConfigField::label_i18n`
+    #[serde(default)]
+    pub label_i18n: HashMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -415,6 +427,7 @@ mod tests {
         select.options = vec![PluginConfigOption {
             value: "none".into(),
             label: "不修改".into(),
+            label_i18n: Default::default(),
         }];
         let mut number = config_field("scale", "number");
         number.default = Some(serde_json::json!(0.5));

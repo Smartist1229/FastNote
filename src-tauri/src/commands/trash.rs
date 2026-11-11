@@ -10,7 +10,7 @@ use crate::map_row_to_note;
 use super::tags::prune_tag_links;
 use super::history::purge_note_history;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_to_trash(id: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     /*
@@ -31,7 +31,7 @@ pub fn move_to_trash(id: String, state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_note(id: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let (category_id, enc_mode): (Option<String>, i64) = conn
@@ -99,7 +99,7 @@ pub(crate) fn drop_note_side_rows(conn: &Connection, note_id: &str) -> Result<()
     encryption::cleanup_note_key(conn, note_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_note_permanently(
     app: AppHandle,
     id: String,
@@ -128,7 +128,7 @@ pub fn delete_note_permanently(
 }
 
 /// 批量永久删除；返回因加密而跳过的条数（调用方据此提示用户先解密）
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_multiple_notes_permanently(
     app: AppHandle,
     ids: Vec<String>,
@@ -165,7 +165,7 @@ pub fn delete_multiple_notes_permanently(
     Ok(0)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cleanup_old_trash(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let thirty_days_ago = Local::now() - Duration::days(30);

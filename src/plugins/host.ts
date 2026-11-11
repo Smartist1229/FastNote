@@ -47,6 +47,7 @@ import { compareVersions } from "./version";
 import * as registry from "./registry";
 import type { PluginSettingsSection } from "./registry";
 import type { PluginContext, PluginCurrentNote, PluginHook } from "./types";
+import { errorText } from "@/lib/app/errorText";
 
 /** 启用状态在 app_settings 表里的持久化键 */
 const STATES_KEY = "plugin.states";
@@ -308,15 +309,7 @@ export const resolvePluginModal = (ok: boolean, value?: unknown): void => {
   emitModal();
 };
 
-/**
- * 主动取消当前 modal（关闭按钮 / Esc 等）：如果有在等的就以 ok:false 结算。
- * 与 resolvePluginModal(false) 等价，但名字更直白，PluginModal 组件用这个也可以。
- */
-export const cancelPluginModal = (): void => resolvePluginModal(false);
-
 /** 把 Tauri 抛出的错误（字符串 / Error / 其他）压成一行文案 */
-const errorText = (e: unknown): string =>
-  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 
 /* ---------------- PluginContext ---------------- */
 
@@ -697,7 +690,13 @@ export const createPluginContext = (
   shortcut: {
     register: (combo, handler, options) => {
       guardShortcut();
-      const scope = options?.scope === "global" ? "global" : "app";
+      /*
+       * 插件只允许窗口内快捷键。旧插件可能还传 scope: "global"，
+       * 这里不吞掉它——原样交给 registerPluginShortcut 抛错，
+       * 插件作者才能看到「这个能力不存在」，而不是以为自己注册成功了。
+       */
+      const requested = (options as { scope?: string } | undefined)?.scope;
+      const scope = requested === "global" ? "global" : "app";
       const dispose = registerPluginShortcut(dirName, combo, scope, handler);
       // 注册即登记注销：重激活时 runDisposers 会先把它摘掉，不会越积越多
       addDisposer(dispose);
@@ -923,7 +922,6 @@ const activate = async (dirName: string): Promise<void> => {
     }
     if (manifest?.style) {
       const css = await pluginsApi.readPluginResource(dirName, manifest.style);
-      registry.setPluginStyle(dirName, css);
       injectPluginStyle(dirName, css);
     }
     // 记录插件显示名与配置 schema：前者供菜单分组标题，后者给设置分区补全字段定义
@@ -1211,7 +1209,7 @@ const readDiagnostics = (dirName: string) => {
     // 系统级热键注册失败（被别的软件占用）：插件自己拿不到这个信息，诊断面板必须显示
     shortcutFailures: globalShortcutFailures()
       .filter((failure) => failure.id.startsWith(`plugin:${dirName}:`))
-      .map((failure) => `${failure.combo}：${failure.reason}`),
+      .map((failure) => `${failure.accelerator}：${failure.reason}`),
     contributions: registry.describePlugin(dirName),
   };
 };

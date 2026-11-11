@@ -17,10 +17,9 @@ import { PluginIcon } from "../PluginIcon";
 import { pluginHost, type PluginDiagnostics, type PluginEntry } from "@/plugins/host";
 import { usePluginContributions, type PluginSettingsSectionEntry } from "@/plugins/contributions";
 import { Switch } from "../controls";
+import { errorText } from "@/lib/app/errorText";
 
 /** 把 Tauri 抛出的错误（字符串 / Error / 其他）压成一行提示文案 */
-const errorText = (e: unknown) =>
-  typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 
 /** 开发预览（vite dev）下刷新才同步演示插件；打包版刷新只重扫目录，不重装 */
 const IS_DEV = import.meta.env.DEV;

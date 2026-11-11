@@ -5,9 +5,12 @@
     "en": "Plugin Demo"
   },
   "apiVersion": 1,
-  "version": "0.16.0",
+  "version": "0.17.0",
   "author": "FastNote",
-  "description": "全面演示插件能力：笔记/分组右键菜单、命令面板、编辑器工具栏、Modal（含插件自绘弹窗）、样式覆盖、Toast、写笔记 API、生命周期钩子、AI 能力、设置分区、插件 i18n 与多文件 ESM，以及插件私有数据表、插件自己的窗口与全局快捷键。",
+  "description": "全面演示插件能力：笔记/分组右键菜单、命令面板、编辑器工具栏、Modal（含插件自绘弹窗）、样式覆盖、Toast、写笔记 API、生命周期钩子、AI 能力、设置分区、插件 i18n 与多文件 ESM，以及插件私有数据表、插件自己的窗口与窗口内快捷键。",
+  "descriptionI18n": {
+    "en": "Demonstrates the full plugin surface: note/group context menus, command palette, editor toolbar, modals (including self-drawn dialogs), style overrides, toasts, the notes API, lifecycle hooks, AI capabilities, settings sections, plugin i18n and multi-file ESM, plus plugin-owned tables, plugin windows and in-window shortcuts."
+  },
   "entry": "main.js",
   "style": "style.css",
   "defaultEnabled": false,
@@ -185,10 +188,10 @@
     },
     {
       "key": "shortcutEnabled",
-      "label": "全局快捷键",
+      "label": "窗口内快捷键",
       "kind": "boolean",
       "default": true,
-      "description": "注册全局快捷键，按下打开插件窗口里的速记工具。"
+      "description": "注册窗口内快捷键（软件在前台时才响应），按下打开插件窗口里的速记工具。系统级全局热键由宿主独占，插件不能注册。"
     },
     {
       "key": "shortcutCombo",
@@ -196,23 +199,6 @@
       "kind": "shortcut",
       "default": "Ctrl+Alt+P",
       "description": "点一下这个框，然后按下想要的组合键即可（不用手写，至少带一个 Ctrl / Alt / Shift）。改完立刻生效，旧键自动注销。"
-    },
-    {
-      "key": "shortcutScope",
-      "label": "作用域",
-      "kind": "select",
-      "default": "global",
-      "options": [
-        {
-          "value": "app",
-          "label": "仅窗口内"
-        },
-        {
-          "value": "global",
-          "label": "系统全局"
-        }
-      ],
-      "description": "仅窗口内：软件在前台时才响应；系统全局：最小化或藏在托盘里也能按到（会注册为系统热键，被别的软件占用时失效）。"
     },
     {
       "key": "windowEnabled",
@@ -283,8 +269,5 @@
       "description": "供「插件演示」设置分区演示 number 控件。"
     }
   ],
-  "descriptionI18n": {
-    "en": "Demonstrates the whole plugin surface: note/category menus, command palette, editor toolbar, modals (incl. plugin-drawn ones), style overrides, toasts, the note write API, lifecycle hooks, AI tools, settings section, plugin i18n and multi-file ESM, plus plugin-owned tables, plugin windows, global shortcuts and the plugin data folder."
-  },
   "runtime": "sandbox"
 }

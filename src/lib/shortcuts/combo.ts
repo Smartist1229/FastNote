@@ -220,9 +220,6 @@ export function comboIsUsable(combo: string): boolean {
   return /^f\d{1,2}$/.test(parsed.key);
 }
 
-/** 同一组键的判定签名：用于冲突检测（规范形式本身就是签名） */
-export const comboSignature = (combo: string): string => normalizeCombo(combo);
-
 /** 规范字符串 → Tauri 全局热键写法：`mod+shift+p` → `CommandOrControl+Shift+P` */
 export function toGlobalAccelerator(combo: string): string {
   const parsed = parseCombo(combo);

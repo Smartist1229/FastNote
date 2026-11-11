@@ -105,14 +105,7 @@ export const registerSettingsSection = (ctx, config) => {
             makeField(t, "shortcutEnabled", "boolean", { default: true }),
             // kind = shortcut：宿主渲染成「点一下按键」的捕获框，不再让人手写 "Ctrl+Alt+P"
             makeField(t, "shortcutCombo", "shortcut", { default: "Ctrl+Alt+P" }),
-            // 作用域：窗口内 / 系统全局（全局会注册成系统热键，最小化也能按到）
-            makeField(t, "shortcutScope", "select", {
-              default: "global",
-              options: [
-                { value: "app", label: t("settings.options.shortcutScopeApp") },
-                { value: "global", label: t("settings.options.shortcutScopeGlobal") },
-              ],
-            }),
+            // 没有「作用域」可选项：插件只允许窗口内快捷键，系统全局热键由宿主独占
             makeField(t, "windowEnabled", "boolean", { default: true }),
             makeField(t, "windowWidth", "number", {
               default: 560,

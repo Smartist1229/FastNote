@@ -16,6 +16,7 @@ import { Icon } from "@/components/common/Icon";
 import { emitAppEvent } from "@/shared/bus";
 import { t as translate, useI18n } from "@/i18n";
 import { usePluginContributions, type PluginAiProviderEntry } from "@/plugins/contributions";
+import { errorText } from "@/lib/app/errorText";
 
 /**
  * 三种协议的默认名称与地址，新建配置时填入草稿。
@@ -42,19 +43,10 @@ const providerDefaults: Record<AiProviderType, { name: string; baseUrl: string; 
 };
 
 /**
- * 把 Tauri / JS 抛出的任意错误转成可读文案。
- * invoke 失败多以字符串 reject，其次才是 Error；两者都不匹配时兜底序列化，保证原因不被吞掉。
+ * 把 Tauri / JS 抛出的任意错误转成可读文案：统一走 `lib/app/errorText`，
+ * 那里既做取值兜底（invoke 多以字符串 reject），也在英文界面下翻译 Rust 的中文错误。
  */
-const formatError = (error: unknown): string => {
-  if (error == null) return translate("未知错误");
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-};
+const formatError = (error: unknown): string => errorText(error);
 
 /**
  * 统一取"已勾选模型"。

@@ -171,7 +171,6 @@ const aiPrompts = new Map<string, AiPromptBucketEntry[]>();
 const aiProviders = new Map<string, AiProviderBucketEntry[]>();
 const settingsSections = new Map<string, SettingsSectionBucketEntry[]>();
 const hooks = new Map<PluginHook, Map<string, PluginHookHandler>>();
-const styles = new Map<string, string>();
 /** dirName → manifest.name（插件显示名）；由 host 在激活成功后写入 */
 const pluginNames = new Map<string, string>();
 /** dirName → manifest.config：插件设置分区字段的类型 / 默认值都从这里继承 */
@@ -289,10 +288,6 @@ export const registerEditorToolbar = (pluginId: string, item: PluginEditorToolba
   if (bucket) bucket.push({ pluginId, item });
   else editorToolbars.set(pluginId, [{ pluginId, item }]);
   notifyContributionsChanged();
-};
-
-export const setPluginStyle = (pluginId: string, css: string): void => {
-  styles.set(pluginId, css);
 };
 
 /**
@@ -518,8 +513,6 @@ export const getPluginCommands = (): PluginCommandEntry[] => {
   return out;
 };
 
-export const getPluginStyle = (pluginId: string): string | undefined => styles.get(pluginId);
-
 /**
  * 当前编辑器可用的插件工具栏项：按注册顺序返回（先按插件、再按插件内注册顺序）。
  * 声明了 when 的贡献先按当前笔记状态过滤，并通过闭包把本次 ctx 绑定进 onClick；
@@ -744,7 +737,6 @@ export const removePlugin = (
   for (const pluginBucket of hooks.values()) {
     pluginBucket.delete(pluginId);
   }
-  styles.delete(pluginId);
   if (!options?.keepSettingsSections) {
     settingsSections.delete(pluginId);
     settingsEpochs.delete(pluginId);

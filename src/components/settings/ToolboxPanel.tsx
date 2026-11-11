@@ -23,8 +23,8 @@ import { useToast } from "@/components/common/Toast";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { formatBytes, formatDuration, formatSpeed } from "@/lib/text/format";
 import { FingerprintPanel } from "@/components/settings/FingerprintPanel";
+import { errorText } from "@/lib/app/errorText";
 
-const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** 工具箱的两个二级分类：下载设置与指纹信息 */
 const TABS = [
