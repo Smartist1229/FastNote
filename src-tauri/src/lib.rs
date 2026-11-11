@@ -49,6 +49,8 @@ struct AppState {
     webdav: webdav::WebdavState,
     updater: updater::UpdateState,
     encryption: encryption::EncryptionState,
+    /// AI 请求运行时：复用的 HTTP 客户端 + 按 requestId 的取消标志
+    ai: commands::ai::AiRuntime,
 }
 
 /// 解析数据库中的模型列表（JSON 数组 TEXT）
@@ -412,6 +414,7 @@ pub fn run() {
             fetch_ai_models,
             send_ai_chat,
             send_ai_chat_stream,
+            cancel_ai_chat,
             create_chat_session,
             get_chat_sessions,
             get_chat_messages,
@@ -573,6 +576,7 @@ pub fn run() {
                 webdav: webdav::WebdavState::default(),
                 updater: updater::UpdateState::default(),
                 encryption: encryption::EncryptionState::default(),
+                ai: commands::ai::AiRuntime::default(),
             };
 
             app.manage(state);

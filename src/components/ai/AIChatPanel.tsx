@@ -17,13 +17,14 @@ import { t as translate, useI18n } from "@/i18n";
 import * as aiApi from "@/api/ai/ai";
 import type { AiChatMessage, AiChatSession, AiProvider } from "@/interface/ai/ai";
 import type { AIChatPanelProps, ToolResult } from "@/interface/ai/aiChat";
-import { TOOL_EXECUTORS, toolDetail, summarizeToolCall } from "@/lib/ai/tools";
+import { TOOL_EXECUTORS, fetchNoteById, toolDetail, summarizeToolCall } from "@/lib/ai/tools";
+import { semanticSearch } from "@/api/ai/semantic";
 import { pluginContributions } from "@/plugins/contributions";
 import { getNote } from "@/api/note/notes";
 import type { ToolCall, ToolTrace } from "@/interface/ai/aiOutput";
 import { finalReplyText, parseResponse, parseStreamContent } from "@/lib/ai/aiParse/parse";
 import { isThinkingDeepEnough, shouldRetryForShallowThinking, streamStartsWithThinking } from "@/lib/ai/aiParse/thinking";
-import { compressTranscript, localSummaryFallback, selectContextWindow } from "@/lib/ai/aiParse/context";
+import { compressTranscript, estimateTokens, localSummaryFallback, selectContextWindow } from "@/lib/ai/aiParse/context";
 import { expandRefs, stripNoteRefs } from "@/lib/ai/aiParse/noteRef";
 import { buildFinalContent, cleanSessionTitle, formatError, hasActionClaim, stripAiTags } from "@/lib/ai/aiParse/text";
 import type { ChatComposerHandle } from "@/components/ai/ChatComposer";
@@ -45,7 +46,6 @@ import {
   AI_ACCESS_DENIED_PROMPT,
   AI_ACCESS_RESTRICTED_PROMPT,
   AI_READ_ONLY_PROMPT,
-  AI_SYSTEM_PROMPT,
   CLAIM_WITHOUT_TOOLS_NOTICE,
   CONTEXT_SUMMARY_PROMPT,
   MIN_THINKING_LEN,
@@ -59,8 +59,8 @@ import {
   buildMemoryBlock,
   buildPluginToolsBlock,
   buildShallowThinkingNotice,
+  buildStableSystemPrompt,
   buildSummaryUserMessage,
-  buildThinkRule,
   buildTitlePrompt,
   buildToolResultMessage,
 } from "@/config/ai/aiDefaults";
@@ -107,18 +107,131 @@ const CONFIRM_TIMEOUT_MS = 180000;
 
 
 
+/* ---------- 自动语义召回 ---------- */
+
+/** 召回条数上限：多了会挤占上下文，而且模型也看不过来 */
+const RECALL_LIMIT = 5;
+/** 检索时多取一些候选：受限笔记会被过滤掉，留点余量 */
+const RECALL_CANDIDATES = 20;
+/** 相似度下限：低于这个值的命中通常是"词面沾边、主题无关"，塞给模型只会干扰 */
+const RECALL_MIN_SCORE = 0.45;
+/** 单条片段最多带多少字 */
+const RECALL_SNIPPET_CHARS = 240;
+
+/**
+ * 用本地向量库召回与当前提问相关的旧笔记，整理成一段可注入提示词的文本。
+ *
+ * 为什么值得做：模型只能"想起来"才去调 searchNotesSemantic，而它经常想不起来，
+ * 于是先跑一轮 searchNotes 试探、再读、再改——多两三趟往返，既慢又烧 token。
+ * 本地召回是纯 CPU 的（bge 小模型），不花钱不出网，把第一步替模型做掉。
+ *
+ * 返回空串表示不注入：开关关闭、AI 无笔记权限、语义模型没下载、索引没建、
+ * 或没有足够相关的命中。任何一种都不该影响正常对话，因此整体 try/catch。
+ *
+ * 权限：检索本身不做过滤（不传 noteIds 就不限范围），改为对命中逐条走
+ * fetchNoteById —— 它对受限笔记返回 null，所以"看不见的笔记"不会漏进提示词。
+ * 这样比"先拉全库笔记列表再传 noteIds"轻得多（那是一次可能几十 MB 的 IPC）。
+ */
+const buildSemanticRecall = async (
+  query: string,
+  access: AiAccessRules,
+  options: { enabled: boolean; excludeNoteId: string | null },
+): Promise<string> => {
+  if (!options.enabled || !access.enabled) return "";
+  // 引用块是 JSON 包装，先剥掉再检索，否则 query 会被一堆字段名污染
+  const text = stripNoteRefs(query).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  // 太短的输入（"继续""好的"）没有检索价值，纯属浪费一次推理
+  if (text.length < 6) return "";
+  try {
+    const hits = await semanticSearch(text, RECALL_CANDIDATES);
+    const candidates = hits.filter((hit) => hit.score >= RECALL_MIN_SCORE);
+    if (candidates.length === 0) return "";
+    const resolved = await Promise.all(
+      candidates.map(async (hit) => ({ hit, note: await fetchNoteById(hit.note_id, access) })),
+    );
+    const lines = resolved
+      .filter((item): item is { hit: typeof item.hit; note: NonNullable<typeof item.note> } => Boolean(item.note))
+      .filter((item) => item.hit.note_id !== options.excludeNoteId)
+      .slice(0, RECALL_LIMIT)
+      .map(({ hit, note }) => {
+        const snippet = hit.snippet.replace(/\s+/g, " ").slice(0, RECALL_SNIPPET_CHARS);
+        return `- 《${note.title || "(untitled)"}》 (id=${hit.note_id}, similarity ${hit.score.toFixed(2)})\n  ${snippet}`;
+      });
+    if (lines.length === 0) return "";
+    return [
+      "## Possibly relevant notes (auto-retrieved from the local vector index)",
+      "Recalled by semantic similarity, not chosen by the user. Treat them as leads only:",
+      "quote or edit one only after reading it with getNoteContent — never assume the rest.",
+      ...lines,
+    ].join("\n");
+  } catch {
+    // 语义模型未下载 / 索引未建 / Rust 侧忙：全部静默跳过
+    return "";
+  }
+};
+
 /* ---------- 上下文瘦身（记忆管理） ---------- */
+
+/** 结构化裁剪的深度上限：工具的返回值都是浅层 JSON，超过这个深度基本可以判定是脏数据 */
+const SHRINK_MAX_DEPTH = 6;
+/** 数组最多保留的条目数：搜索结果/列表类工具通常按相关度排序，前 20 条足够模型决策 */
+const SHRINK_MAX_ITEMS = 20;
+
+/**
+ * 递归裁剪工具结果：长字符串按字符截断、数组保留前若干项并标注剩余数量、对象保留全部键名。
+ *
+ * 为什么不直接 slice 文本：硬切会把 JSON 切成半截（`{"id":12,"tit` ），模型读到残协议后
+ * 要么解析失败、要么误判成"工具坏了"再重试一次，等于一次调用付两遍钱。
+ * 结构化裁剪之后仍然是合法 JSON，模型能看懂"哪部分被省略了、怎么拿到细节"。
+ */
+const shrinkStructure = (value: unknown, budget: number, depth = 0): unknown => {
+  if (typeof value === "string") {
+    // 单个字段最多占预算的一半：避免一段正文把同级的 id / title 全挤掉
+    const cap = Math.max(80, Math.floor(budget * 0.5));
+    return value.length > cap
+      ? `${value.slice(0, cap)}…(this field was truncated; read the rest by range if needed)`
+      : value;
+  }
+  if (typeof value !== "object" || value === null) return value;
+  if (depth >= SHRINK_MAX_DEPTH) return "(nested too deep, omitted)";
+  if (Array.isArray(value)) {
+    const kept = value.slice(0, SHRINK_MAX_ITEMS).map((item) => shrinkStructure(item, budget, depth + 1));
+    if (value.length > SHRINK_MAX_ITEMS) {
+      kept.push(`… ${value.length - SHRINK_MAX_ITEMS} more items omitted; narrow the query to see them`);
+    }
+    return kept;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = shrinkStructure(item, budget, depth + 1);
+  }
+  return out;
+};
 
 /**
  * 工具结果进上下文前的瘦身。
  * getNoteContent 会把整篇笔记原样回传，一次就是几千 token；多轮工具调用下来，
- * 上下文增长的主要来源就是这些回传。这里截断并明确告诉模型"需要细节请按范围读"。
+ * 上下文增长的主要来源就是这些回传。这里做结构化裁剪并明确告诉模型
+ * "需要细节请按范围读"，而不是把 JSON 切成无法解析的半截。
  */
 const compactToolResult = (result: unknown, max = TOOL_RESULT_MAX_CHARS): string => {
   let text: string;
-  try { text = JSON.stringify(result ?? null); } catch { text = String(result); }
+  try { text = JSON.stringify(result ?? null); } catch { text = ""; }
   if (!text) return "";
-  return text.length > max ? `${text.slice(0, max)}…(truncated; for details, read again by range with getNoteContent/readNoteLines)` : text;
+  if (text.length <= max) return text;
+  // 逐级收紧预算，直到落在上限内；结构化裁剪本身就能覆盖绝大多数工具返回值
+  let budget = max;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let shrunk = "";
+    try { shrunk = JSON.stringify(shrinkStructure(result, budget)); } catch { shrunk = ""; }
+    if (shrunk && shrunk.length <= max) return shrunk;
+    budget = Math.floor(budget / 2);
+  }
+  // 极端情况（成千上万个键）：宁可给一句合法的提示，也不塞半截 JSON
+  return JSON.stringify({
+    truncated: true,
+    note: "This result is too large and was omitted. Retry with narrower arguments (smaller line range, shorter keyword, lower limit).",
+  });
 };
 
 /** 旧工具结果压缩：只保留最近 keep 条原样，更早的折叠到 max 字 */
@@ -136,6 +249,38 @@ const compressOldToolResults = <T extends { role: string; content: string }>(msg
 };
 
 
+
+/**
+ * 把输入框滚到光标所在的位置。
+ *
+ * 为什么需要手动做：`.composer-input` 的滚动条本来由 contenteditable 自己管，
+ * 但我们在外面用 JS 改它的 `height`（自动长高）——每次重设高度都会让元素重排，
+ * 浏览器随即把 `scrollTop` 归零。于是出现"内容明明换行了、光标已经跑到底部，
+ * 视口却还停在第一行"的现象：滚动条位置不再跟着光标走。
+ *
+ * 这里按 caret 的实际矩形把滚动位置补回来；caret 落在行尾换行符之后拿不到矩形时，
+ * 直接贴底（这是 Shift+Enter 最常见的情形）。
+ */
+const revealComposerCaret = (el: HTMLElement) => {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!el.contains(range.startContainer)) return;
+  const caret = range.cloneRange();
+  caret.collapse(true);
+  const rect = caret.getBoundingClientRect();
+  const box = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    el.scrollTop = el.scrollHeight;
+    return;
+  }
+  const pad = 8;
+  if (rect.bottom > box.bottom - pad) {
+    el.scrollTop += rect.bottom - (box.bottom - pad);
+  } else if (rect.top < box.top + pad) {
+    el.scrollTop -= box.top + pad - rect.top;
+  }
+};
 
 /**
  * 右侧 AI 对话面板。isOpen=false 时直接返回 null：消息 state 保留，滚动 DOM 与会话视图重建。
@@ -246,6 +391,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const titleGenRef = useRef<number | null>(null);
   /** 已请求停止：agentLoop 在各检查点据此提前返回，不再改 UI */
   const abortRef = useRef(false);
+  /**
+   * 当前在飞请求的取消控制器。
+   * 点"停止"时必须经它通知 Rust 真正断流：只置 abortRef 的话前端只是不再渲染，
+   * 后端的流会继续跑到模型说完，token 照样计费。
+   */
+  const roundAbortRef = useRef<AbortController | null>(null);
+  /** 本会话累计用量（拿不到服务商 usage 时不累加，界面上就是 0） */
+  const usageRef = useRef({ prompt: 0, completion: 0, cached: 0 });
+  const [usageTotals, setUsageTotals] = useState({ prompt: 0, completion: 0, cached: 0 });
   const isSendingRef = useRef(false);
   /** 发送同步锁：防止连按回车 / 输入法提交把同一条消息发出两次 */
   const sendLockRef = useRef(false);
@@ -318,6 +472,11 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   const enabledModels = useMemo(() => (activeProvider ? getEnabledModels(activeProvider) : []), [activeProvider]);
   /** 本次对话使用的模型：优先已选值，未选时回退到勾选列表第一项 */
   const activeModel = activeModelOf(activeProvider, enabledModels);
+  /**
+   * 辅助任务（上下文摘要、会话标题）用的服务商：设置里指定了就用自己的，否则跟随主服务商。
+   * 这类任务对模型能力要求低，指一个小模型能省掉相当一部分开销。
+   */
+  const helperProviderId = aiSettings.helperProviderId > 0 ? aiSettings.helperProviderId : activeProvider?.id ?? 0;
   /** 选中的模型写回服务商的 enabled_model 并持久化，保证重启后选中项不丢 */
   const persistActiveModel = useCallback((model: string) => {
     if (!activeProvider || !model || activeProvider.enabled_model === model) return;
@@ -464,6 +623,25 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     bumpStreamGen();
     setStreamingContent('');
   }, [bumpStreamGen]);
+
+  /**
+   * 累计本轮请求的 token 用量。
+   * 数据来自服务商返回的 usage（OpenAI 需要 stream_options、Gemini 在 usageMetadata、
+   * Claude 在 message_start/message_delta）。拿不到时字段为 0，不参与累加，
+   * 界面显示的就是"未知"——不要用本地估算冒充真实计费。
+   */
+  const recordUsage = useCallback((usage?: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number }) => {
+    if (!usage) return;
+    const prompt = usage.prompt_tokens || 0;
+    const completion = usage.completion_tokens || 0;
+    if (!prompt && !completion) return;
+    usageRef.current = {
+      prompt: usageRef.current.prompt + prompt,
+      completion: usageRef.current.completion + completion,
+      cached: usageRef.current.cached + (usage.cached_tokens || 0),
+    };
+    setUsageTotals({ ...usageRef.current });
+  }, []);
 
   useEffect(() => () => {
     if (streamTimerRef.current !== null) window.clearTimeout(streamTimerRef.current);
@@ -665,6 +843,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       setGroupOpen({});
       setThoughtOpen({});
       setExpandedTools({});
+      // 用量也是按会话累计的：切会话必须归零，否则显示的是上一段对话的消耗
+      usageRef.current = { prompt: 0, completion: 0, cached: 0 };
+      setUsageTotals({ prompt: 0, completion: 0, cached: 0 });
       setMessages(m.map(x => {
         const p = x.role === "assistant" ? parseResponse(x.content) : null;
         // 历史消息用数据库里的真实时间（created_at 是 RFC3339）
@@ -680,7 +861,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   };
   const ensureSession = async (): Promise<number> => { if (activeSessionId) return activeSessionId; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); return s.id; };
   const switchSession = async (sid: number) => { if (sid === activeSessionId) return; settleConfirm(false); draftsRef.current[activeSessionId] = input; setActiveSessionId(sid); setInput(draftsRef.current[sid] || ''); resetStreaming(); setTurnActive(false); await loadSessionMessages(sid); const s = sessions.find(x => x.id === sid); if (s) setSelectedProviderId(s.provider_id); };
-  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); setTurnActive(false); setGroupOpen({}); setThoughtOpen({}); setExpandedTools({}); titleGenRef.current = null; };
+  const handleNewSession = async () => { settleConfirm(false); draftsRef.current[activeSessionId] = input; const s = await aiApi.createChatSession("新对话", selectedProviderId, activeModel); setSessions(p => [s, ...p]); setActiveSessionId(s.id); setMessages([]); setInput(''); resetStreaming(); resetToLatest(); setTurnActive(false); setGroupOpen({}); setThoughtOpen({}); setExpandedTools({}); titleGenRef.current = null; usageRef.current = { prompt: 0, completion: 0, cached: 0 }; setUsageTotals({ prompt: 0, completion: 0, cached: 0 }); };
   /**
    * 自动生成对话标题，只对仍叫"新对话"的会话生效。
    * titleGenRef 记住已生成过的会话 ID，保证每个会话只请求一次标题模型；
@@ -688,7 +869,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
    * 输入先去标签并截断到 300 字，防止 <thinking> 推理或工具 JSON 混进标题。
    */
   const genTitle = async (sid: number, up: string, ar: string) => {
-    if (titleGenRef.current === sid || !activeProvider) return;
+    // 辅助任务可以走单独指定的小模型：标题/摘要这类活儿用主模型纯属浪费
+    if (titleGenRef.current === sid || !helperProviderId) return;
     titleGenRef.current = sid;
     try {
       const list = await aiApi.getChatSessions();
@@ -698,7 +880,14 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       // 引用块是 JSON 包装，先剥掉，只留用户自己打的字（纯引用时给一句占位）
       const userText = (stripNoteRefs(stripAiTags(up)).replace(/<[^>]+>/g, "").trim() || translate("引用了笔记片段")).slice(0, 300);
       const assistantText = stripAiTags(ar).replace(/<[^>]+>/g, "").trim().slice(0, 300);
-      const t = await aiApi.sendAiChat(activeProvider.id, [{ role: "system", content: buildTitlePrompt(userText, assistantText) }, { role: "user", content: TITLE_USER_MESSAGE }], "", "");
+      const t = await aiApi.sendAiChat(
+        helperProviderId,
+        [{ role: "system", content: buildTitlePrompt(userText, assistantText) }, { role: "user", content: TITLE_USER_MESSAGE }],
+        "",
+        "",
+        256,
+        aiSettings.helperModel.trim() || undefined,
+      );
       const ct = cleanSessionTitle(t);
       // 洗不出有效标题就不写库，并允许下次重试
       if (!ct) { titleGenRef.current = null; return; }
@@ -744,17 +933,65 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       .filter((p) => p.position !== "prepend")
       .map((p) => p.text)
       .join("\n\n");
-    const systemPrompt = [
-      pluginPrependBlock,
-      AI_SYSTEM_PROMPT,
+    /** 当前笔记能否作为上下文：手动关闭附带、笔记受限、总开关关闭，任一情况都不发 */
+    const canAttachNote = attachNote && currentLevel > 0;
+    /*
+     * 自动召回：发请求前先用本地向量库找"可能相关的旧笔记"。
+     * 走本机 ONNX（bge 小模型），不花钱不出网；模型没下载/索引没建时返回空串，不影响对话。
+     */
+    const recallBlock = await buildSemanticRecall(prompt, accessRef.current, {
+      enabled: aiSettings.semanticRecall,
+      excludeNoteId: currentLevel === 0 ? null : currentNoteId ?? null,
+    });
+    /* ---------- 系统提示词：稳定段 / 动态段 ----------
+     * 拆成两段是为了让服务商的前缀缓存真正生效（OpenAI/DeepSeek 自动、Claude 显式
+     * cache_control、Gemini 隐式）。稳定段只有常量，任何一轮、任何对话都完全相同；
+     * 动态段接在它后面，即使每轮变化也不影响前缀命中。
+     * 过去笔记正文、记忆、访问限制全混在 system 里，前缀每轮都变 → 缓存一次都打不中，
+     * 多轮工具调用等于把同一段提示词按原价买 N 遍。
+     */
+    const stablePrompt = [pluginPrependBlock, buildStableSystemPrompt(aiSettings.minThinkingLen)]
+      .filter(Boolean)
+      .join("\n\n");
+    /** 当前笔记上下文：短笔记内联全文，长笔记只给规模和首段预览，细节交给 readNoteLines */
+    const noteContext = (() => {
+      if (!canAttachNote) {
+        return "## Current context\n- The body of the currently open note is NOT shared with you (either the user turned off \"attach note\" or this note is not shared with AI). Do not guess its content.";
+      }
+      const body = noteContent || "";
+      const totalLines = body ? body.split("\n").length : 0;
+      const idLine = currentLevel === 0
+        ? "- No note ID is shared"
+        : currentNoteId
+          ? `- ID of the currently open note: ${currentNoteId} (when the user says "this note / the current note / it", this is the ID they mean)`
+          : "- No note is currently open (if the user refers to \"this note\", first point out which one)";
+      const head = `## Current context\n${idLine}\n- Current note title: ${noteTitle || "(untitled)"}`;
+      if (!body.trim()) return `${head}\n- Current note content: (empty)`;
+      // 内联预算：超过这个规模就不再整篇塞进 system。整篇每次请求都要重算输入 token，
+      // 而模型真正需要的往往只是一两段——让它用工具按行读，既省钱也更准。
+      const inlineBudget = 2500;
+      if (estimateTokens(body) <= inlineBudget) {
+        return `${head}\n- Total lines: ${totalLines}\n\nCurrent note content:\n${body}`;
+      }
+      const preview = body.split("\n").slice(0, 30).join("\n");
+      return [
+        head,
+        `- Total lines: ${totalLines} (about ${estimateTokens(body)} tokens — too long to inline in full)`,
+        "- Only the first 30 lines are shown below. Read other parts with getCurrentNote / readNoteLines / findInNote; never assume the rest.",
+        "",
+        "Current note content (first 30 lines):",
+        preview,
+      ].join("\n");
+    })();
+    const dynamicPrompt = [
+      noteContext,
+      // 自动召回：本地向量比对的"可能相关旧笔记"，让模型不必先跑一轮 searchNotes 试探
+      recallBlock,
       pluginToolsBlock,
-      buildThinkRule(aiSettings.minThinkingLen),
       accessBlock,
       memoryBlock,
       pluginAppendBlock,
     ].filter(Boolean).join("\n\n");
-    /** 当前笔记能否作为上下文：手动关闭附带、笔记受限、总开关关闭，任一情况都不发 */
-    const canAttachNote = attachNote && currentLevel > 0;
     let roundMsgs = [...msgs];
 
     /* ---------- 上下文压缩（滑动窗口 + 摘要） ----------
@@ -769,18 +1006,21 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       if (covered > dropped.length) { summary = ""; covered = 0; }              // 换会话或历史被清空
       // 每新增 6 条被丢弃的消息才重算一次摘要：摘要请求本身也耗 token 与时间
       const needsSummary = dropped.length > 0 && (!summary || dropped.length - covered >= 6);
-      if (needsSummary && activeProvider?.id) {
+      if (needsSummary && helperProviderId) {
         try {
           const text = await aiApi.sendAiChat(
-            activeProvider.id,
+            helperProviderId,
             [
               { role: "system", content: CONTEXT_SUMMARY_PROMPT },
               { role: "user", content: buildSummaryUserMessage(summary, compressTranscript(dropped)) },
             ],
             // noteTitle / noteContent 都传空：摘要是纯文本压缩，不该把当前笔记或模型名
-            // 当作上下文塞进去（模型由 provider 自己的 enabled_model 决定）
+            // 当作上下文塞进去（模型由 helperModel / provider 的 enabled_model 决定）
             "",
             "",
+            // 摘要产物只有 400 字，256~1024 的输出上限足够，没必要按主对话的 8192 来
+            1024,
+            aiSettings.helperModel.trim() || undefined,
           );
           const clean = stripAiTags(text || "").replace(/<[^>]*>/g, "").trim().slice(0, 1200);
           if (clean) { summary = clean; covered = dropped.length; }
@@ -809,33 +1049,58 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       if (isStale()) return;
       setIsSending(true);
       const roundGen = bumpStreamGen();
+      // 每轮一个控制器：点停止只断当前这一轮（历史轮次早已结束）
+      const roundAbort = new AbortController();
+      roundAbortRef.current = roundAbort;
       let nativeReasoning = '';
       try {
         // 设置里关掉流式时走一次性请求：个别服务商的流式不稳定，这时界面先显示"思考中"，
         // 拿到完整结果再一次性呈现（解析与后续流程完全一致）。
-        const full = aiSettings.streaming
-          ? await aiApi.sendAiChatStream(
-              activeProvider!.id,
-              [{ role: 'system', content: systemPrompt }, ...roundMsgs],
-              canAttachNote ? noteTitle || '' : '',
-              canAttachNote ? noteContent : '',
-              (c, r) => {
-                nativeReasoning = r;
-                if (!isStale()) pushStreamContent(c, roundGen);
-              },
-              aiSettings.minThinkingLen,
+        let full: string;
+        if (aiSettings.streaming) {
+          /*
+           * 增量累积：Rust 现在只推 delta（过去每个 chunk 都发完整累计文本，
+           * 长回复的总传输量是平方级）。这里自己拼，并保留"停下来就不再渲染"的判断。
+           * 最终内容以返回值 result.content 为准：事件是异步投递的，
+           * 最后几个 chunk 可能在 invoke resolve 之后才到。
+           */
+          let streamed = '';
+          const result = await aiApi.sendAiChatStream(
+            {
+              providerId: activeProvider!.id,
+              messages: roundMsgs,
+              // 稳定段（常量）与动态段（笔记上下文/记忆/访问限制）分开传，前缀缓存才能命中
+              systemStable: stablePrompt,
+              systemDynamic: dynamicPrompt,
+              // 笔记已经在 systemDynamic 里按规模分级注入过了，这里不再重复传
+              noteTitle: '',
+              noteContent: '',
               // 受限笔记连 ID 都不告诉模型：否则它会以为"当前笔记可用"，反复调用后再失败。
               // 用户只是手动取消「附笔记」时不在此列——那时内容仍可通过工具读取。
-              currentLevel === 0 ? null : currentNoteId ?? null,
-              aiSettings.maxTokens,
-            )
-          : await aiApi.sendAiChat(
-              activeProvider!.id,
-              [{ role: 'system', content: systemPrompt }, ...roundMsgs],
-              canAttachNote ? noteTitle || '' : '',
-              canAttachNote ? noteContent : '',
-              aiSettings.maxTokens,
-            );
+              currentNoteId: currentLevel === 0 ? null : currentNoteId ?? null,
+              maxTokens: aiSettings.maxTokens,
+              signal: roundAbort.signal,
+            },
+            (deltaText, deltaReasoning) => {
+              if (deltaText) {
+                streamed += deltaText;
+                if (!isStale()) pushStreamContent(streamed, roundGen);
+              }
+              if (deltaReasoning) nativeReasoning += deltaReasoning;
+            },
+          );
+          if (result.reasoning) nativeReasoning = result.reasoning;
+          recordUsage(result.usage);
+          full = result.content;
+        } else {
+          full = await aiApi.sendAiChat(
+            activeProvider!.id,
+            [{ role: 'system', content: `${stablePrompt}\n\n${dynamicPrompt}` }, ...roundMsgs],
+            '',
+            '',
+            aiSettings.maxTokens,
+          );
+        }
         if (isStale()) return;
         const parsed = parseResponse(full, nativeReasoning);
         // thinking 为纯推理（用于校验深度），thinkingDisplay 才是思考区展示文本（含工具调用原文）
@@ -1209,9 +1474,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       pinScrollToBottom();
       return;
     }
+    // 必须在改 height 之前读：置成 auto 的那一刻 scrollTop 就已经被浏览器清零了
+    const prevScrollTop = el.scrollTop;
     el.style.height = "auto";
+    const contentH = el.scrollHeight;
     const autoMax = Math.max(44, Math.min(320, Math.round(areaH * 0.45)));
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, 44), autoMax)}px`;
+    const nextH = Math.min(Math.max(contentH, 44), autoMax);
+    el.style.height = `${nextH}px`;
+    /*
+     * 上面把 height 设成 auto 的一瞬间，元素展开到完整高度，浏览器的 scrollTop 就被归零了；
+     * 再压回 nextH 之后它仍然停在 0——这就是"换行后画面还在第一行、光标在底部"的直接原因。
+     * 所以先还原滚动位置，再把光标行滚进视野（内容没溢出时没有滚动可言）。
+     */
+    if (contentH > nextH) {
+      // 用实际可滚动距离夹紧：height 是 border-box，scrollHeight 与 clientHeight 的差
+      // 才是真正的上限，直接拿 contentH - nextH 会少算 padding 那一截
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.min(prevScrollTop, maxScroll);
+      revealComposerCaret(el);
+    } else {
+      el.scrollTop = 0;
+    }
     pinScrollToBottom();
   }, [input, aiSettings.composerHeight, activeSessionId, isOpen, pinScrollToBottom]);
 
@@ -1296,6 +1579,9 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
 
   const handleStop = () => {
     abortRef.current = true;
+    // 真正断开后端的流：不 abort 的话 Rust 会一直读到模型说完，token 照常计费
+    roundAbortRef.current?.abort();
+    roundAbortRef.current = null;
     // 停止 = 立即作废当前轮次并解锁：正在飞的那次流式请求可能还要一会儿才返回，
     // 不能让它卡住下一次发送（否则就会出现"上一条请求还没结束，本次发送已忽略"）。
     runIdRef.current += 1;
@@ -1591,6 +1877,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
         providerName={activeProvider?.name}
         activeModel={activeModel}
         providersError={providersError}
+        usage={usageTotals}
         onOpenSessionPicker={() => { setShowSessionPicker(true); setEditingSessionId(null); setEditTitle(''); setSessionQuery(''); }}
         onNewSession={handleNewSession}
         onOpenAiMemory={onOpenAiMemory}

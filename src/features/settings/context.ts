@@ -1,7 +1,7 @@
 /* 设置分区上下文：各分区渲染所需的值与回调，字段从 SettingsModalProps 派生。 */
 
 import type { RefObject } from "react";
-import type { AiSettings } from "@/interface/ai/ai";
+import type { AiProvider, AiSettings } from "@/interface/ai/ai";
 import type { Category, Note } from "@/interface/note/note";
 import type {
   SettingRow,
@@ -20,10 +20,12 @@ export type SetAppField = <K extends keyof AppSettings>(
 /** 写 AI 设置：整个对象上抛，App 侧 diff 后落库 */
 export type SetAiField = <K extends keyof AiSettings>(field: K, value: AiSettings[K]) => void;
 
-/** 数据驱动分区的行构建只需要设置值与写回函数 */
+/** 数据驱动分区的行构建只需要设置值、写回函数与可选项来源 */
 export interface SettingsRowsContext {
   appSettings: AppSettings;
   aiSettings: AiSettings;
+  /** 已配置的 AI 服务商：辅助模型这类"需要选服务商"的行要用 */
+  aiProviders: AiProvider[];
   setApp: SetAppField;
   setAi: SetAiField;
 }

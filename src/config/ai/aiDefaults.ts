@@ -39,6 +39,11 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   toolResultChars: 1500,
   retryShallowThinking: false,
   autoTitle: true,
+  /** 辅助任务默认跟随主服务商/主模型（0 与空串都表示"跟随"），用户可另指一个小模型 */
+  helperProviderId: 0,
+  helperModel: "",
+  /** 自动召回：默认开。语义模型没装时这段逻辑会静默跳过，不会报错 */
+  semanticRecall: true,
   streaming: true,
   confirmByDefault: true,
   showToolTrace: true,
@@ -53,8 +58,22 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
 /* ---------- 工具声明 ---------- */
 
 /**
+ * 单个工具声明。
+ * - name：与 TOOL_EXECUTORS 的键名一致（模型输出里用的就是它）
+ * - desc / args：给模型看的说明，args 的值是参数类型说明
+ * - needsConfirm：写操作，执行前必须经用户确认
+ */
+export interface AiToolDef {
+  name: string;
+  desc: string;
+  args: Record<string, string>;
+  needsConfirm: boolean;
+}
+
+/**
  * 工具清单，一处声明、多处消费：
- * - desc / args：给模型看的参数说明（desc 用中文短句，args 的值是类型说明）
+ * - desc / args：给模型看的参数说明（desc 用中文短句，args 的值是类型说明），
+ *   系统提示词里的「## Tools」段由 buildToolsBlock 从本数组生成，**不要再手写一份**
  * - needsConfirm=true：会改动数据的写操作，执行前必须经用户确认；
  *   AIChatPanel 正是按这个字段把每轮调用分成"只读直接执行"与"待确认"两组。
  *
@@ -62,90 +81,68 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
  * （硬线落在 Rust 侧按 source 过滤，renameTag 另在前端补了 same-source 校验），
  * 没有"误删用户数据"的风险，再逐条问用户只会打断"读完顺手打标签"这种连贯动作。
  */
-export const TOOL_DEFS = [
-  { name: "searchNotes", desc: "搜索笔记（标题 + 正文）", args: { query: "搜索关键词" }, needsConfirm: false },
-  { name: "searchNotesSemantic", desc: "按语义搜索笔记（同义/换述也能命中）", args: { query: "用自然语言描述要找的内容" }, needsConfirm: false },
-  { name: "listNotes", desc: "列出笔记（可按分组/数量）", args: { categoryName: "分组名(可选)", limit: "条数(可选)" }, needsConfirm: false },
-  { name: "getNoteContent", desc: "获取笔记正文（默认前200行，可指定行范围）", args: { noteId: "笔记ID", startLine: "起始行(可选)", lineCount: "行数(可选)" }, needsConfirm: false },
+export const TOOL_DEFS: AiToolDef[] = [
+  { name: "searchNotes", desc: "搜索笔记（标题 + 正文，关键词要短，2-4 字最好）", args: { query: "搜索关键词" }, needsConfirm: false },
+  { name: "searchNotesSemantic", desc: "按语义搜索笔记（同义/换述也能命中，适合主题式提问）", args: { query: "用自然语言描述要找的内容" }, needsConfirm: false },
+  { name: "listNotes", desc: "列出笔记（按更新时间倒序，默认 15 条）", args: { categoryName: "分组名(可选)", limit: "条数(可选,默认15)" }, needsConfirm: false },
+  { name: "getNoteContent", desc: "读取笔记正文（带行号，默认前 200 行，最多 800；只读，不会打开笔记）", args: { noteId: "笔记ID", startLine: "起始行(可选,默认1)", lineCount: "行数(可选,默认200,最多800)" }, needsConfirm: false },
   { name: "getCurrentNote", desc: "读取当前打开的笔记", args: {}, needsConfirm: false },
   { name: "readNoteLines", desc: "按行范围读取长文", args: { noteId: "笔记ID", startLine: "起始行", lineCount: "行数(可选)" }, needsConfirm: false },
-  { name: "findInNote", desc: "按内容定位行号（grep -n）", args: { noteId: "笔记ID", query: "要找的内容", contextLines: "附带上下文行数(可选,0-3)", limit: "最多返回几处(可选)" }, needsConfirm: false },
+  { name: "findInNote", desc: "按内容定位行号（grep -n，带上下文）", args: { noteId: "笔记ID", query: "要找的内容", contextLines: "附带上下文行数(可选,0-3)", limit: "最多返回几处(可选,默认20)" }, needsConfirm: false },
   { name: "getCategories", desc: "获取所有分组", args: {}, needsConfirm: false },
   { name: "listTrash", desc: "查看回收站", args: {}, needsConfirm: false },
-  { name: "createNote", desc: "创建笔记", args: { title: "标题", content: "内容(可选)", categoryName: "分组名(可选)" }, needsConfirm: true },
-  { name: "createNotes", desc: "批量创建多篇笔记", args: { notes: "[{title,content?,categoryName?}]" }, needsConfirm: true },
-  { name: "appendToNote", desc: "在笔记末尾追加内容（不覆盖）", args: { noteId: "笔记ID(可选)", text: "要追加的正文" }, needsConfirm: true },
-  { name: "updateNote", desc: "按 ID 修改指定笔记", args: { noteId: "笔记ID", title: "新标题(可选)", content: "新内容(可选)", categoryName: "新分组名(可选)" }, needsConfirm: true },
-  { name: "updateCurrentNote", desc: "修改当前打开的笔记（无需 ID，精确作用于用户正在看的那一篇）", args: { title: "新标题(可选)", content: "新内容(覆盖正文)", categoryName: "新分组名(可选)" }, needsConfirm: true },
+  { name: "createNote", desc: "创建单篇笔记", args: { title: "标题", content: "内容(可选)", categoryName: "分组名(可选)" }, needsConfirm: true },
+  { name: "createNotes", desc: "批量创建多篇笔记（一次调用，别反复 createNote）", args: { notes: "[{title,content?,categoryName?}]" }, needsConfirm: true },
+  { name: "appendToNote", desc: "在笔记末尾追加内容（不覆盖）", args: { noteId: "笔记ID(可选,默认当前笔记)", text: "要追加的正文" }, needsConfirm: true },
+  { name: "updateNote", desc: "按 ID 修改指定笔记（整篇覆盖正文，慎用）", args: { noteId: "笔记ID", title: "新标题(可选)", content: "新内容(可选)", categoryName: "新分组名(可选)" }, needsConfirm: true },
+  { name: "updateCurrentNote", desc: "修改当前打开的笔记（无需 ID，整篇覆盖正文）", args: { title: "新标题(可选)", content: "新内容(可选)", categoryName: "新分组名(可选)" }, needsConfirm: true },
   { name: "replaceLines", desc: "按行替换指定区间（只改这一段）", args: { noteId: "笔记ID", startLine: "起始行", endLine: "结束行", text: "替换后的内容" }, needsConfirm: true },
   { name: "insertLines", desc: "在指定行之后插入内容", args: { noteId: "笔记ID", afterLine: "插到这一行之后(0=最前)", text: "插入的内容" }, needsConfirm: true },
   { name: "deleteLines", desc: "删除指定行区间", args: { noteId: "笔记ID", startLine: "起始行", endLine: "结束行" }, needsConfirm: true },
-  { name: "replaceInNote", desc: "定点替换文本（不用整篇覆盖）", args: { noteId: "笔记ID", oldText: "原文", newText: "替换为", replaceAll: "是否全部替换(可选)" }, needsConfirm: true },
+  { name: "replaceInNote", desc: "定点替换文本（改错别字、统一措辞，不用整篇覆盖）", args: { noteId: "笔记ID", oldText: "原文", newText: "替换为", replaceAll: "是否全部替换(可选,默认只替换第一处)" }, needsConfirm: true },
   { name: "deleteNote", desc: "删除笔记(移到回收站)", args: { noteId: "笔记ID" }, needsConfirm: true },
   { name: "restoreNote", desc: "从回收站还原笔记", args: { noteId: "笔记ID" }, needsConfirm: true },
   { name: "deleteFromTrash", desc: "彻底删除回收站中的笔记(不可恢复)", args: { noteId: "笔记ID" }, needsConfirm: true },
   { name: "emptyTrash", desc: "清空回收站(不可恢复)", args: {}, needsConfirm: true },
   { name: "createCategory", desc: "创建分组", args: { name: "分组名" }, needsConfirm: true },
   { name: "renameCategory", desc: "重命名分组", args: { categoryId: "分组ID", name: "新名称" }, needsConfirm: true },
-  { name: "deleteCategory", desc: "删除分组", args: { categoryId: "分组ID", deleteNotes: "是否同时把组内笔记移入回收站(可选)" }, needsConfirm: true },
+  { name: "deleteCategory", desc: "删除分组；deleteNotes=true 只是把组内笔记移入回收站（可恢复），从不永久删除；不确定时用 false（仅解除归属）", args: { categoryId: "分组ID", deleteNotes: "是否同时把组内笔记移入回收站(可选,默认false)" }, needsConfirm: true },
   { name: "moveNote", desc: "移动笔记到其他分组", args: { noteId: "笔记ID", categoryId: "目标分组ID" }, needsConfirm: true },
-  { name: "selectNote", desc: "选择并打开指定笔记", args: { noteId: "笔记ID" }, needsConfirm: false },
+  { name: "selectNote", desc: "打开并切换到指定笔记（用户说“打开”时必须用它）", args: { noteId: "笔记ID" }, needsConfirm: false },
   { name: "listTags", desc: "列出全部标签及各标签的笔记数", args: {}, needsConfirm: false },
-  { name: "getNoteTags", desc: "读取某篇笔记的标签", args: { noteId: "笔记ID" }, needsConfirm: false },
-  { name: "findNotesByTag", desc: "按标签查找笔记", args: { tagName: "标签名", limit: "条数(可选)" }, needsConfirm: false },
-  { name: "addNoteTags", desc: "给笔记添加标签", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: false },
-  { name: "removeNoteTags", desc: "移除笔记上的标签（仅限 AI 自己添加的）", args: { noteId: "笔记ID", names: "['标签1']" }, needsConfirm: false },
-  { name: "setNoteTags", desc: "整体重写某篇笔记的 AI 标签（旧的 AI 标签会被替换）", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: false },
+  { name: "getNoteTags", desc: "读取某篇笔记的标签（每条带 source：user=用户自己加的，ai=你加的）", args: { noteId: "笔记ID" }, needsConfirm: false },
+  { name: "findNotesByTag", desc: "按标签查找笔记（跨分组按主题找，最快的方式）", args: { tagName: "标签名", limit: "条数(可选,默认20)" }, needsConfirm: false },
+  { name: "addNoteTags", desc: "给笔记添加标签（不存在的标签会自动创建，无需用户确认）", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: false },
+  { name: "removeNoteTags", desc: "移除笔记上的标签（仅限 AI 自己添加的，用户加的被拒绝）", args: { noteId: "笔记ID", names: "['标签1']" }, needsConfirm: false },
+  { name: "setNoteTags", desc: "整体重写某篇笔记的 AI 标签（旧 AI 标签被替换，用户标签不受影响）", args: { noteId: "笔记ID", names: "['标签1','标签2']" }, needsConfirm: false },
   { name: "renameTag", desc: "重命名标签（全局生效，仅限 AI 自己创建的）", args: { tagName: "原标签名", newName: "新标签名" }, needsConfirm: false },
-  { name: "deleteTag", desc: "删除标签（仅限 AI 自己创建的，连带所有笔记上的关联）", args: { tagName: "标签名" }, needsConfirm: false },
+  { name: "deleteTag", desc: "删除标签（连带解除所有笔记关联，仅限 AI 自己创建的）", args: { tagName: "标签名" }, needsConfirm: false },
 ];
+
+/**
+ * 把工具声明渲染成提示词里的「## Tools」清单。
+ *
+ * 这是**唯一**的清单来源：过去 TOOL_DEFS 与 AI_SYSTEM_PROMPT 里各手写一份 37 行清单，
+ * 每次请求多付约 1.3k token，改工具名时还极容易只改一处、模型看到一个不存在的工具。
+ * 插件工具复用同一函数（见 buildPluginToolsBlock），格式完全一致。
+ */
+export const buildToolsBlock = (
+  tools: { name: string; desc: string; args: Record<string, string> }[] = TOOL_DEFS,
+): string => tools.map((tool) => `- ${tool.name}: ${tool.desc} ${JSON.stringify(tool.args)}`).join("\n");
 
 /* ---------- 系统提示词 ---------- */
 
 /**
- * 主系统提示词：角色、工具清单、选工具策略、长文行号工作流、输出格式、防编造与回复风格。
+ * 主系统提示词模板：角色、选工具策略、长文行号工作流、输出格式、防编造与回复风格。
  *
- * 工具清单在这里以自然语言再写一遍（并非由 TOOL_DEFS 生成），因此增删或改名工具时
- * TOOL_DEFS 与本段必须同步修改，否则模型会看到不存在或缺失的工具。
+ * 注意它是**模板**不是成品：`{{TOOLS}}` 由 buildToolsBlock 在运行时填成真实工具清单，
+ * 外部不要直接用它发请求，请调 buildStableSystemPrompt（它还负责追加思考规则）。
+ * 工具清单不再手写第二份：以前 TOOL_DEFS 与本段各写一遍，改工具名时极易只改一处。
  */
 export const AI_SYSTEM_PROMPT = `You are the FastNote smart note assistant. You operate on notes and categories through tools.
 
 ## Tools (all parameters are JSON objects)
-- searchNotes: search notes by keyword (title + content). {"query":"关键词"}
-- searchNotesSemantic: semantic search over notes — matches by meaning, so synonyms and paraphrases still hit. Use it for topic-style requests; it needs the local model (the tool reports when it is unavailable). {"query":"用自然语言描述要找的内容"}
-- listNotes: list notes, most recently updated first. {"categoryName":"分组名(可选)","limit":"条数(可选,默认15)"}
-- getNoteContent: read a note's body with line numbers, **first 200 lines by default**; read-only, **does not open it**. {"noteId":"笔记ID","startLine":"起始行(可选,默认1)","lineCount":"行数(可选,默认200,最多800)"}
-- getCurrentNote: read the **currently open** note (one window). {}
-- readNoteLines: read a line range of a long note. {"noteId":"笔记ID","startLine":"起始行","lineCount":"行数(可选)"}
-- findInNote: locate line numbers by content (grep -n), returns matches with context. {"noteId":"笔记ID","query":"要找的内容","contextLines":"附带上下文行数(可选,0-3)","limit":"最多返回几处(可选,默认20)"}
-- replaceLines: **replace by line** over a range (only that segment changes). {"noteId":"笔记ID","startLine":"起始行","endLine":"结束行","text":"替换后的内容(可多行)"}
-- insertLines: insert content after a line. {"noteId":"笔记ID","afterLine":"插到这一行之后(0=最前)","text":"要插入的内容"}
-- deleteLines: delete a line range. {"noteId":"笔记ID","startLine":"起始行","endLine":"结束行"}
-- replaceInNote: replace text at a specific spot (fix typos, unify wording). {"noteId":"笔记ID","oldText":"要被替换的原文","newText":"替换为","replaceAll":"是否全部替换(可选,默认只替换第一处)"}
-- selectNote: open (switch to) a note; **required** whenever the user says "打开". {"noteId":"笔记ID"}
-- getCategories: get all categories. {}
-- listTrash: view the notes inside the trash. {}
-- createNote: create a note. {"title":"标题","content":"正文(可选)","categoryName":"分组名(可选)"}
-- createNotes: create multiple notes in one call. {"notes":[{"title":"标题","content":"正文(可选)","categoryName":"分组名(可选)"}]}
-- appendToNote: **append** content to the **end** (does not overwrite). {"noteId":"笔记ID(可选,默认当前打开的笔记)","text":"要追加的正文"}
-- updateNote: modify a note by ID. {"noteId":"笔记ID","title":"新标题(可选)","content":"新正文(可选)","categoryName":"分组名(可选)"}
-- updateCurrentNote: modify the currently open note (no ID needed). {"title":"新标题(可选)","content":"新正文(可选)","categoryName":"分组名(可选)"}
-- deleteNote: delete a note (move to trash). {"noteId":"笔记ID"}
-- restoreNote: restore a note from the trash. {"noteId":"笔记ID"}
-- deleteFromTrash: **permanently delete** a trashed note (**unrecoverable**). {"noteId":"笔记ID"}
-- emptyTrash: **empty the trash** (**unrecoverable**). {}
-- createCategory: create a category. {"name":"分组名"}
-- renameCategory: rename a category. {"categoryId":"分组ID","name":"新名称"}
-- deleteCategory: delete a category; deleteNotes=true only **moves its notes to the trash** (recoverable) and never permanently deletes them; when unsure use false (just unassigns the category). {"categoryId":"分组ID","deleteNotes":"是否同时把组内笔记移入回收站(可选,默认false)"}
-- moveNote: move a note to another category. {"noteId":"笔记ID","categoryId":"目标分组ID"}
-- listTags: list every tag in the library with its note count. {}
-- getNoteTags: read the tags of one note; each entry carries source ("user" = added by the user, "ai" = added by you). {"noteId":"笔记ID"}
-- findNotesByTag: find all notes carrying a tag (cross-category retrieval) — the fastest way to pull notes **by topic**. {"tagName":"标签名","limit":"条数(可选,默认20)"}
-- addNoteTags: add tags to a note; unknown tags are created automatically; runs without user confirmation. {"noteId":"笔记ID","names":["标签1","标签2"]}
-- removeNoteTags: remove tags from a note; runs without user confirmation. You can **only remove tags you added**; user tags are rejected. {"noteId":"笔记ID","names":["标签1"]}
-- setNoteTags: rewrite all AI tags of a note at once (previous AI tags are removed; user tags are untouched); runs without user confirmation. {"noteId":"笔记ID","names":["标签1","标签2"]}
-- renameTag: rename a tag globally (every note it is on follows the new name). You can **only rename tags you created**; user-created ones are rejected. {"tagName":"原标签名","newName":"新标签名"}
-- deleteTag: delete a tag globally; it also detaches it from every note, so use it only for clearly redundant tags you introduced. You can **only delete tags you created**; user-created ones are rejected. {"tagName":"标签名"}
+{{TOOLS}}
 
 ## Tags (cross-category topics)
 A note belongs to exactly one category but can carry many tags — tags are how you retrieve by **theme across categories**.
@@ -217,16 +214,14 @@ Round 3: selectNote #17.
 Round 4 (all tools done): write the summary and note that the current note switched to 《浏览器是如何渲染页面的？》.`;
 
 /**
- * 插件工具清单段：把插件注册的 AI 工具按主提示词 "## Tools" 里相同的
- * `- name: desc. {args}` 格式拼成独立小节，追加在主提示词之后。
- * 每次发消息都实时从注册表取，插件启停立即反映；没有插件工具时返回空串。
+ * 插件工具清单段：与内置工具共用 buildToolsBlock 的渲染格式，
+ * 追加在主提示词之后（动态段）。每次发消息都实时从注册表取，插件启停立即反映。
  */
 export const buildPluginToolsBlock = (
   tools: { name: string; desc: string; args: Record<string, string> }[],
 ): string => {
   if (tools.length === 0) return "";
-  const lines = tools.map((t) => `- ${t.name}: ${t.desc}. ${JSON.stringify(t.args)}`);
-  return ["## Plugin tools (contributed by plugins; all parameters are JSON objects)", ...lines].join("\n");
+  return ["## Plugin tools (contributed by plugins; all parameters are JSON objects)", buildToolsBlock(tools)].join("\n");
 };
 
 /**
@@ -247,6 +242,21 @@ export const buildThinkRule = (minThinkingLen: number): string => {
     "- Think and answer in the same language the user writes in; never switch language just for the reasoning.",
   ].join("\n");
 };
+
+/**
+ * 拼出**稳定段**系统提示词：角色 + 工具协议（由 TOOL_DEFS 生成）+ 深度思考规则。
+ *
+ * 为什么单独拆出来：服务商的前缀缓存按"完全相同的前缀"命中（OpenAI/DeepSeek 自动、
+ * Claude 要显式 cache_control、Gemini 有隐式缓存）。过去笔记正文、记忆条目、访问限制
+ * 全都拼在 system 里，前缀每轮都在变，缓存一次都命不中，多轮工具调用等于把同一段
+ * 提示词按原价买了 N 遍。现在稳定段只由本函数产出，任何一轮都不变。
+ *
+ * 动态内容（笔记上下文/记忆/访问限制/插件追加片段）由调用方拼成 dynamic 段，
+ * 接在稳定段之后 —— 前缀仍然稳定，断点之后的变化不影响命中。
+ */
+export const buildStableSystemPrompt = (minThinkingLen: number): string =>
+  // 用函数形式做替换：清单里可能出现 `$&` 之类的字符，字符串形式会被当成替换模式处理
+  `${AI_SYSTEM_PROMPT.replace("{{TOOLS}}", () => buildToolsBlock())}\n\n${buildThinkRule(minThinkingLen)}`;
 
 /**
  * 用户自定义提示词 / 长期记忆拼成的追加段：只取 enabled 且文本非空的条目。
@@ -365,12 +375,14 @@ export const TRUNCATED_TOOL_CALL_NOTICE =
   'Please output again: it must be written as <tool_calls>[{"name":"工具名","args":{...}}]</tool_calls>, with both tags present and complete JSON, and do not wrap it in a code block; ' +
   "if the content is too long, trim it down, or split it into several steps done in separate calls.";
 
-/* ---------- Rust 端提示词（本文件不负责，修改去 src-tauri/src/lib.rs） ----------
- * DEEP_THINKING_PROMPT：每次请求都由 Rust 强制追加，保证后端对任何调用方都先推理再回答。
- * base_prompt：send_ai_chat / send_ai_chat_stream 中拼装，注入当前笔记的 ID/标题/正文，
- *   并声明"内置笔记助手"角色。
- * thinking_reminder：按前端传入的 min_thinking_len 做强制检查，要求 thinking 达到字数，
- *   且需要工具时必须同时给出 <tool_calls>。
+/* ---------- 系统提示词的分工（改之前先看这里） ----------
+ * 本文件是提示词的唯一来源：稳定段由 buildStableSystemPrompt 产出（角色 + 工具协议 + 思考规则），
+ * 动态段由 AIChatPanel 拼（笔记上下文 / 记忆 / 访问限制 / 插件片段）。
+ *
+ * Rust 侧（src-tauri/src/commands/ai.rs）**不再追加任何提示词**：
+ * 过去它有一份 DEEP_THINKING_PROMPT + thinking_reminder，与前端两份叠在一起，
+ * 每轮请求多付几百输入 token 与上百输出 token。现在它只负责原样发送两段 system，
+ * 以及在没有 system 时用 base_prompt 兜底（仅非流式、且调用方一个 system 都没给的情况）。
  */
 
 /**
@@ -402,5 +414,7 @@ export const normalizeAiSettings = (raw: Record<string, unknown> | null | undefi
   // 默认档位只有 0/1/2 三档：手改库写成 5 或 -1 时按最近的合法档收住
   merged.defaultNoteAiAccess = Math.min(2, Math.max(0, Math.round(merged.defaultNoteAiAccess))) as 0 | 1 | 2;
   merged.defaultCategoryAiAccess = Math.min(2, Math.max(0, Math.round(merged.defaultCategoryAiAccess))) as 0 | 1 | 2;
+  // 辅助服务商 id 只有 0（跟随）与真实 id 两种合法情况，负数一律按跟随处理
+  merged.helperProviderId = Math.max(0, Math.round(merged.helperProviderId));
   return merged;
 };

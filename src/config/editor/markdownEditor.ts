@@ -381,6 +381,13 @@ export const buildAiRenderConfig = (
     math: true,
     mermaid: true,
     mermaidTheme: settings.mermaidTheme,
+    // 表格样式必须和笔记编辑器同源：AI 回复里的表格常常比正文更宽，
+    // 用户调了「表格边框 / 紧凑 / 撑满」却发现只有笔记里变、对话里不变，会以为开关坏了
+    tables: {
+      bordered: settings.tableBordered,
+      compact: settings.tableCompact,
+      fullWidth: settings.tableFullWidth,
+    },
     taskInteractive: false,
     linkTarget: "_self",
     typography: {

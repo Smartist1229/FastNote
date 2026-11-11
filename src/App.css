@@ -1057,10 +1057,23 @@ body.is-dragging-panel * {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-height: 26px;
+  /* placeholder 用绝对定位的伪元素盖在上面，需要这里做定位参照 */
+  position: relative;
 }
-/* contenteditable 没有原生 placeholder，用伪元素顶替；pointer-events 关掉免得挡住点击 */
+/*
+ * contenteditable 没有原生 placeholder，用伪元素顶替。
+ *
+ * 必须绝对定位：伪元素一旦参与文本流，它就是"第 0 个子节点"，
+ * 光标落在 (root, 0) 时会渲染在它**后面**——表现就是光标跑到提示文字末尾，
+ * 看起来像输入框里已经有一个字符。抽离文档流后光标不再受它影响，
+ * pointer-events 关掉免得挡住点击。
+ */
 .composer-input[data-empty="true"]::before {
   content: attr(data-placeholder);
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 10px;
   color: var(--color-border-strong);
   pointer-events: none;
 }
@@ -1070,9 +1083,15 @@ body.is-dragging-panel * {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  /* 固定宽度：标签只截断，不随选区文字长短把草稿或气泡撑开 */
-  width: 148px;
-  max-width: 100%;
+  /*
+   * 半固定宽度：标签显示的是笔记名——
+   * 名字短就跟着收窄（有下限，行号不至于贴得太紧），名字长则封顶后省略，
+   * 既不把草稿/气泡撑开，也不会让一个"7"孤零零飘在很宽的块里。
+   */
+  width: auto;
+  min-width: 72px;
+  /* min() 兜住窄容器（输入框被挤压时）不至于横向溢出 */
+  max-width: min(180px, 100%);
   margin: 0 2px;
   padding: 0 6px;
   border: 1px solid var(--color-border);

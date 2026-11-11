@@ -41,6 +41,39 @@ interface ChatComposerProps {
 const isInvisible = (node: Node): boolean =>
   node.nodeType === Node.TEXT_NODE && (node.textContent || "").split(ZWSP).join("") === "";
 
+/**
+ * 把光标滚进输入框的可视区。
+ *
+ * 为什么必须手动做：用户打字时浏览器会自动保证光标可见，但我们插入内容是
+ * `range.insertNode()` 直接改 DOM——那是程序化修改，浏览器不会跟滚。
+ * 于是连按 Shift+Enter 时滚动条一直停最上面，光标却已经掉到下面看不见。
+ */
+const scrollCaretIntoView = (root: HTMLElement) => {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer)) return;
+  const caret = range.cloneRange();
+  caret.collapse(true);
+  const rect = caret.getBoundingClientRect();
+  const box = root.getBoundingClientRect();
+  // 空行里拿不到光标矩形（行尾换行符之后）。只有光标确实位于内容末尾时才贴底，
+  // 否则用户点中间某个空行也会被甩到底部。
+  if (rect.width === 0 && rect.height === 0) {
+    const tail = document.createRange();
+    tail.selectNodeContents(root);
+    tail.setStart(range.startContainer, range.startOffset);
+    if (tail.toString().trim() === "") root.scrollTop = root.scrollHeight;
+    return;
+  }
+  const pad = 6;
+  if (rect.bottom > box.bottom - pad) {
+    root.scrollTop += rect.bottom - (box.bottom - pad);
+  } else if (rect.top < box.top + pad) {
+    root.scrollTop -= box.top + pad - rect.top;
+  }
+};
+
 /** DOM → 内容字符串；BR 是浏览器给空行塞的占位，不参与内容 */
 const readContent = (root: HTMLElement): string => {
   let out = "";
@@ -132,7 +165,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     if (!root) return;
     const content = readContent(root);
     lastEmittedRef.current = content;
-    const hasContent = content.trim().length > 0 || !!root.querySelector("[data-note-ref]");
+    /*
+     * 判"有没有内容"用 length 而不是 trim：
+     * 用户敲了空格（或先按了换行）就该让占位提示消失——提示是绝对定位盖在上面的，
+     * 不消失会一直压在光标和空格前面，看起来像输入没生效。
+     * 是否为空（能不能发送）由 AIChatPanel 的 prompt.trim() 决定，这里只管展示。
+     */
+    const hasContent = content.length > 0 || !!root.querySelector("[data-note-ref]");
     root.dataset.empty = hasContent ? "false" : "true";
     onChange(content);
   }, [onChange]);
@@ -191,7 +230,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       }
     }
     root.replaceChildren(fragment);
-    root.dataset.empty = content.trim().length > 0 || hasRef ? "false" : "true";
+    root.dataset.empty = content.length > 0 || hasRef ? "false" : "true";
   }, [buildChip]);
 
   useEffect(() => {
@@ -201,6 +240,41 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     const root = rootRef.current;
     if (root && document.activeElement === root) placeCaretAtEnd(root);
   }, [value, renderContent]);
+
+  /*
+   * 光标跟随：内容一变就把光标滚进视野。
+   *
+   * 同时观察 root 的 style：外层（AIChatPanel 的自动长高）每次把 height 从 auto 压回
+   * 封顶值，浏览器都会把 scrollTop 清零——不盯着这次改动的话，
+   * 我们刚滚下去的位置会立刻被打回第一行，这正是"滚动条始终在最上面"的来源。
+   *
+   * 滚动本身不产生 DOM 变更，所以不会自激。
+   */
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const el = rootRef.current;
+        if (el) scrollCaretIntoView(el);
+      });
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(root, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
 
   /** 在光标处插入纯文本（换行、粘贴都走这里，DOM 里只留文本节点） */
   const insertPlainText = useCallback((text: string) => {
@@ -262,10 +336,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     const root = rootRef.current;
     if (!root) return;
-    const empty = !readContent(root).trim();
+    const raw = readContent(root);
+    const empty = !raw.trim();
     if (event.key === "Escape") {
       if (isSending) { event.preventDefault(); onStop(); }
-      else if (!empty) {
+      // 只有空格/换行时也算"有东西"，Esc 要能清掉——否则占位提示已消失、内容却删不干净
+      else if (raw.length > 0) {
         event.preventDefault();
         renderContent("");
         lastEmittedRef.current = "";

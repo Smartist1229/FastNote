@@ -140,8 +140,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
    * 这里按分区聚合成一份，供搜索与命中计数使用。
    */
   const rowsCtx = useMemo(
-    () => ({ appSettings, aiSettings, setApp, setAi }),
-    [appSettings, aiSettings, setApp, setAi],
+    () => ({ appSettings, aiSettings, aiProviders, setApp, setAi }),
+    [appSettings, aiSettings, aiProviders, setApp, setAi],
   );
   const rows: SettingRow[] = useMemo(() => buildSettingRows(rowsCtx), [rowsCtx]);
 

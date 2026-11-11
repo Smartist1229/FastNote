@@ -70,24 +70,43 @@ export const splitContent = (content: string): ContentSegment[] => {
   return segments;
 };
 
-/** 块上显示的文本：选区首行去掉 markdown 记号，超宽由 CSS 省略号收尾 */
+/**
+ * 块上显示的文本：**笔记名优先**。
+ *
+ * 引用块出现在草稿和气泡里时，用户首先要认的是"这段来自哪篇笔记"，而不是选区正文的前几个字；
+ * 正文首行只在笔记没有标题时兜底（去 markdown 记号）。
+ * 超宽由 CSS 省略号收尾（.chat-note-ref 是半固定宽度：短标题收窄、长标题封顶）。
+ */
 export const refLabel = (ref: ChatNoteRef): string => {
-  const line = ref.text.split("\n").map((s) => s.trim()).find(Boolean) || ref.text.trim() || ref.noteTitle;
+  const title = ref.noteTitle.trim();
+  if (title) return title;
+  const line = ref.text.split("\n").map((s) => s.trim()).find(Boolean) || ref.text.trim();
   const cleaned = line
     .replace(/^#{1,6}\s+/, "")
     .replace(/^>\s*/, "")
     .replace(/^([-*+]|\d+[.)])\s+/, "")
     .replace(/\s+/g, " ")
     .trim();
-  return cleaned || ref.noteTitle || "…";
+  return cleaned || "…";
 };
 
-export const refRangeLabel = (ref: ChatNoteRef): string =>
-  ref.from === ref.to ? `${ref.from}` : `${ref.from}-${ref.to}`;
+/**
+ * 行区间的统一写法：**起始:结束**，单行也写成 `8:8`。
+ *
+ * 不用单个数字（`8` 看不出是"一行"还是"起点"），也不用短横线（`3-5` 在窄块里
+ * 容易和减号/连字符混读）。冒号两边恒为两个行号，长度固定、一眼能对上。
+ */
+export const refRangeLabel = (ref: ChatNoteRef): string => `${ref.from}:${ref.to}`;
 
-/** 块上的悬浮提示：笔记名 + 行区间 */
-export const refTitle = (ref: ChatNoteRef): string =>
-  ref.noteTitle ? `${ref.noteTitle} · ${refRangeLabel(ref)}` : refRangeLabel(ref);
+/**
+ * 块上的悬浮提示：笔记名 + 行区间，再附一段引用正文的预览。
+ * 标签本身只显示笔记名，正文首行就用这里补上，悬停即可确认引的是哪一段。
+ */
+export const refTitle = (ref: ChatNoteRef): string => {
+  const head = ref.noteTitle ? `${ref.noteTitle} · ${refRangeLabel(ref)}` : refRangeLabel(ref);
+  const preview = ref.text.replace(/\s+/g, " ").trim().slice(0, 80);
+  return preview ? `${head}\n${preview}` : head;
+};
 
 /** 去掉所有引用块，只留用户自己打的字（会话标题生成用） */
 export const stripNoteRefs = (content: string): string =>
@@ -103,6 +122,6 @@ export const flattenNoteRefs = (content: string): string =>
     .map((seg) =>
       seg.kind === "text"
         ? seg.text
-        : `【引用《${seg.ref.noteTitle || "笔记"}》${refRangeLabel(seg.ref)} 行】${seg.ref.text}`,
+        : `【引用《${seg.ref.noteTitle || "笔记"}》${refRangeLabel(seg.ref)}】${seg.ref.text}`,
     )
     .join("");

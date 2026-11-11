@@ -1771,13 +1771,19 @@
   border-top: 1px solid var(--mde-border);
 }
 
-/* 表格：整块独立底色 + 边框 + 圆角，和正文背景拉开层次 */
+/*
+ * 表格：外框只负责"这是一块表格"的边界，层次交给表头与行线。
+ *
+ * 之前是"整块淡蓝底 + 表头灰底 + 每行下边线"三层色块叠在一起，
+ * 加上边框和圆角，整块看着发闷、表头和正文也分不开。
+ * 现在底色降到几乎看不见，靠表头的一条实线和留白来分层。
+ */
 .mde-root .mde-table-wrap {
   margin: 0 0 var(--mde-preview-para);
-  overflow-x: auto;
-  background: var(--mde-table-bg);
+  overflow: auto;
+  background: color-mix(in srgb, var(--mde-table-bg) 26%, transparent);
   border: 1px solid var(--mde-table-border);
-  border-radius: 8px;
+  border-radius: 10px;
 }
 
 .mde-root .mde-table {
@@ -1785,24 +1791,38 @@
   width: auto;
   max-width: 100%;
   font-size: 0.95em;
+  line-height: 1.55;
 }
 
 .mde-root .mde-table.is-full {
   width: 100%;
 }
 
+/* 单元格：横向多留一点白，纵向也放开些；行与行之间只用一条极淡的线 */
 .mde-root .mde-table th,
 .mde-root .mde-table td {
-  padding: 0.5em 0.8em;
+  padding: 0.55em 0.9em;
   border-bottom: 1px solid var(--mde-table-border);
   vertical-align: top;
 }
 
+/*
+ * 表头：浅底色 + 一条更实的下边线 + 小字号加字距。
+ * 靠"标题栏"而不是"整块更深"来区分，暗色主题下也不会糊成一片。
+ */
 .mde-root .mde-table th {
   background: var(--mde-table-header-bg);
   color: var(--mde-text);
   font-weight: 600;
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
   white-space: nowrap;
+  border-bottom: 1px solid color-mix(in srgb, var(--mde-table-border) 55%, var(--mde-text-faint));
+}
+
+/* 宽表横向扫读时容易串行：鼠标所在行轻微提亮，比斑马纹安静 */
+.mde-root .mde-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--mde-table-header-bg) 50%, transparent);
 }
 
 .mde-root .mde-table.is-bordered th,

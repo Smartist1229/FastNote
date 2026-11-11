@@ -7,7 +7,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { listen, once } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 
 import type { AiChatDbMessage, AiChatMessage, AiChatSession, AiProvider } from '@/interface/ai/ai';
 
@@ -55,7 +55,9 @@ export const fetchAiModels = async (provider: AiProvider): Promise<string[]> => 
 };
 
 /**
- * 非流式对话（send_ai_chat）：Rust 拼接当前笔记上下文后请求服务商，返回完整文本。
+ * 非流式对话（send_ai_chat）：Rust 请求服务商，返回完整文本。
+ * 只用于摘要、标题这类辅助任务；主对话请用 sendAiChatStream（才有流式与用量）。
+ * modelOverride 可临时指定模型（辅助模型走便宜档），不传则用服务商当前选中的模型。
  * maxTokens 默认 8192，Rust 侧再 clamp 到 256–32000；失败以字符串 reject。
  */
 export const sendAiChat = async (
@@ -64,66 +66,102 @@ export const sendAiChat = async (
   noteTitle: string,
   noteContent: string,
   maxTokens = 8192,
+  modelOverride?: string,
 ): Promise<string> => {
-  return await invoke('send_ai_chat', { providerId, messages, noteTitle, noteContent, maxTokens });
+  return await invoke('send_ai_chat', {
+    providerId,
+    messages,
+    noteTitle,
+    noteContent,
+    maxTokens,
+    modelOverride: modelOverride ?? null,
+  });
 };
 
+/** 一次请求的 token 用量；拿不到时各字段为 0，调用方回退到本地估算 */
+export interface AiUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  /** 命中前缀缓存的输入 token（真正省钱的那部分） */
+  cached_tokens: number;
+}
+
+/** 流式请求的最终结果：内容以它为准（增量事件只用于实时预览） */
+export interface AiStreamResult {
+  content: string;
+  reasoning: string;
+  usage: AiUsage;
+  /** 用户点了停止（Rust 侧主动断流），不是失败 */
+  aborted: boolean;
+}
+
+export interface SendAiChatStreamOptions {
+  providerId: number;
+  /** 对话历史，不含系统提示词（由 systemStable / systemDynamic 单独给） */
+  messages: AiChatMessage[];
+  /**
+   * 永不变化的系统提示词（角色 + 工具协议）。放在最前面且内容稳定，
+   * 服务商的前缀缓存才能命中；Claude 侧还会在它之后打 cache_control 断点。
+   */
+  systemStable: string;
+  /** 每轮都可能变的系统提示词（当前笔记、记忆、访问限制），追加在稳定段之后 */
+  systemDynamic?: string;
+  noteTitle?: string;
+  noteContent?: string;
+  currentNoteId?: string | null;
+  maxTokens?: number;
+  modelOverride?: string;
+  /** 取消信号：abort 时通知 Rust 真正断流（否则只是不渲染，token 照烧） */
+  signal?: AbortSignal;
+}
+
 /**
- * 流式对话（send_ai_chat_stream），事件契约：
- *   ai-chat-chunk  { content: 累计负载（原生思维链已包进 <thinking>）,
- *                    reasoning?: 累计思维链 }
- *   ai-chat-done   { content, reasoning } 结束并 resolve 累计负载
- *   ai-chat-error  { error }              以 Error reject
- * onChunk 拿到的是累计值而非增量，可直接覆盖渲染；minThinkingLen 透传给 Rust 约束提示词。
- * 必须在 invoke 之前注册好三个监听，否则首包/结束事件可能早于监听导致 Promise 永挂；
- * 无论成功失败都在 finally 中注销。
+ * 流式对话（send_ai_chat_stream）。
+ *
+ * 事件契约（每个请求一个独立事件名，多窗口/多会话天然隔离、不会串台）：
+ *   `ai-chat-chunk-{requestId}`  { text?: 增量正文, reasoning?: 增量思维链 }
+ * 结束由 invoke 的返回值承载（含完整内容与用量），失败以 Error reject。
+ * onDelta 拿到的是**增量**，调用方自己累积；最终请以返回值的 content 为准
+ * （事件是异步投递的，最后几个 chunk 可能在 resolve 之后才到）。
  */
 export const sendAiChatStream = async (
-  providerId: number,
-  messages: AiChatMessage[],
-  noteTitle: string,
-  noteContent: string,
-  onChunk: (fullText: string, reasoning: string) => void,
-  minThinkingLen = 120,
-  currentNoteId: string | null = null,
-  maxTokens = 8192,
-): Promise<string> => {
-  const unlistenChunk = await listen<{ content: string; reasoning?: string; text?: string }>('ai-chat-chunk', (event) => {
-    onChunk(event.payload.content, event.payload.reasoning || "");
+  options: SendAiChatStreamOptions,
+  onDelta: (text: string, reasoning: string) => void,
+): Promise<AiStreamResult> => {
+  const requestId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const eventName = `ai-chat-chunk-${requestId}`;
+
+  const unlisten = await listen<{ text?: string; reasoning?: string }>(eventName, (event) => {
+    onDelta(event.payload.text || '', event.payload.reasoning || '');
   });
 
-  // 先建 Promise 并把 resolve/reject 暴露给下方的事件回调
-  let resolve: (value: string) => void;
-  let reject: (reason: unknown) => void;
-  const resultPromise = new Promise<string>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-
-  // 注册完成后再 invoke：done/error 可能瞬间到达，漏听会让 Promise 永久挂起
-  const unlistenDone = await once<{ content: string; reasoning?: string }>('ai-chat-done', (event) => {
-    resolve(event.payload.content);
-  });
-  const unlistenError = await once<{ error: string }>('ai-chat-error', (event) => {
-    reject(new Error(event.payload.error));
-  });
+  // 取消必须真正通知后端：只把前端中断言置位的话，Rust 侧的流会继续跑到模型说完为止
+  const abortHandler = () => {
+    void invoke('cancel_ai_chat', { requestId }).catch(() => {});
+  };
+  options.signal?.addEventListener('abort', abortHandler, { once: true });
 
   try {
-    await invoke('send_ai_chat_stream', {
-      providerId,
-      messages,
-      noteTitle,
-      noteContent,
-      minThinkingLen,
-      currentNoteId,
-      maxTokens,
+    // 监听注册完成后再 invoke：首包/结束可能瞬间到达，漏听会让内容凭空缺失
+    return await invoke<AiStreamResult>('send_ai_chat_stream', {
+      providerId: options.providerId,
+      messages: options.messages,
+      noteTitle: options.noteTitle ?? '',
+      noteContent: options.noteContent ?? '',
+      currentNoteId: options.currentNoteId ?? null,
+      maxTokens: options.maxTokens ?? 8192,
+      requestId,
+      systemStable: options.systemStable,
+      systemDynamic: options.systemDynamic ?? '',
+      modelOverride: options.modelOverride ?? null,
     });
-    const result = await resultPromise;
-    return result;
   } finally {
-    unlistenChunk();
-    unlistenDone();
-    unlistenError();
+    options.signal?.removeEventListener('abort', abortHandler);
+    unlisten();
   }
 };
 

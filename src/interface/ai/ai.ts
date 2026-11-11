@@ -70,6 +70,19 @@ export interface AiSettings {
   retryShallowThinking: boolean;
   /** 是否自动根据首轮对话生成会话标题 */
   autoTitle: boolean;
+  /**
+   * 辅助任务（上下文摘要、会话标题）使用的服务商 ID；0 = 跟随主服务商。
+   * 这类任务对模型能力要求很低，用小模型能省掉相当一部分成本。
+   */
+  helperProviderId: number;
+  /** 辅助任务使用的模型名；空字符串 = 跟随该服务商当前选中的模型 */
+  helperModel: string;
+  /**
+   * 每轮提问前是否先用本地向量库召回相关笔记片段（默认 true）。
+   * 开着的时候模型第一轮就能看到「可能相关的旧笔记」，不必自己先跑一轮 searchNotes 试探；
+   * 语义模型未下载 / 索引未建时静默跳过，不影响对话。
+   */
+  semanticRecall: boolean;
   /** 是否使用流式输出（关闭后等待完整回复一次性显示） */
   streaming: boolean;
   /** 默认开启"工具执行前确认"（面板里可临时切换） */

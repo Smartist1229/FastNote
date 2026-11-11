@@ -1,14 +1,20 @@
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 
+/** 用量缩写：小于 1000 显示原值，大于等于 1000 显示一位小数的 k（侧栏很窄，只能这么放） */
+const formatTokens = (value: number): string =>
+  value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
+
 export function ChatHeader({
-  sessionTitle, hasProvider, providerName, activeModel, providersError, onOpenSessionPicker, onNewSession, onOpenAiMemory, onOpenProviderSettings, onClose,
+  sessionTitle, hasProvider, providerName, activeModel, providersError, usage, onOpenSessionPicker, onNewSession, onOpenAiMemory, onOpenProviderSettings, onClose,
 }: {
   sessionTitle?: string;
   hasProvider: boolean;
   providerName?: string;
   activeModel: string;
   providersError: string;
+  /** 本会话累计用量：拿不到服务商 usage 时全是 0，此时不显示 */
+  usage?: { prompt: number; completion: number; cached: number };
   onOpenSessionPicker: () => void;
   onNewSession: () => void;
   onOpenAiMemory: () => void;
@@ -16,8 +22,19 @@ export function ChatHeader({
   onClose?: () => void;
 }) {
   const { t } = useI18n();
+  const usageTotal = usage ? usage.prompt + usage.completion : 0;
+  const usageLabel = usageTotal > 0
+    ? t(" · {count} tok", { count: formatTokens(usageTotal) })
+    : "";
+  const usageTitle = usageTotal > 0
+    ? t("本会话用量：输入 {prompt} / 输出 {completion}，其中 {cached} 命中缓存", {
+        prompt: String(usage!.prompt),
+        completion: String(usage!.completion),
+        cached: String(usage!.cached),
+      })
+    : "";
   return (<>
-    {/* 头部：左边是"会话卡片"（标题 + 当前模型），右边是一组图标按钮 */}
+    {/* 头部：左边是"会话卡片"（标题 + 当前模型 + 累计用量），右边是一组图标按钮 */}
     <div className="ai-header flex-shrink-0">
       <button
         className="ai-session-btn"
@@ -26,8 +43,8 @@ export function ChatHeader({
       >
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[12.5px] font-medium text-body">{!sessionTitle || sessionTitle === "新对话" ? t("新对话") : sessionTitle}</span>
-          <span className="block truncate text-[10.5px] text-faint">
-            {hasProvider ? `${providerName} · ${activeModel || t("未选模型")}` : t("未配置服务商")}
+          <span className="block truncate text-[10.5px] text-faint" title={usageTitle || undefined}>
+            {hasProvider ? `${providerName} · ${activeModel || t("未选模型")}${usageLabel}` : t("未配置服务商")}
           </span>
         </span>
         <Icon name="ai-chevron-down" className="w-3 h-3 flex-shrink-0 text-faint-soft" />

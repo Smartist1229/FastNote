@@ -1,26 +1,24 @@
 /**
- * 编辑区选中文本后浮出的 AI 工具条（润色 / 翻译 / 总结 / 添加到对话）。
+ * 编辑区选中文本后浮出的 AI 工具条。
  *
- * 不改编辑器组件：用 document 级 selectionchange 观察选区，只认完全落在
- * `.mde-content`（源码编辑区）里的选区，浮层自己用 fixed 定位贴在选区上方。
+ * 只做一件事：把选中的片段以「引用块快照」的形式投进 AI 对话草稿，发不发由用户决定。
+ *
+ * 之前还有润色 / 翻译 / 总结三个动作，已经去掉。它们本质上只是往草稿里追加一句指令，
+ * 用户仍然要自己点发送、再自己把结果粘回笔记——两段跳转并不比手打一句"润色这段"更省事，
+ * 反而让浮层更吵、更容易误点。真要"选中就地改稿"，该走编辑器内的替换预览（另一条路径），
+ * 不应该挤在这个"投递引用"的入口里。
  *
  * 四条硬约束：
  * - 不打断输入：按下按钮时 preventDefault，编辑器不失焦、选区也不会被收起；
  *   拖选过程中不显示，松手后才出现，避免浮层挡住鼠标；
- * - 不自动发送：四个动作都只往 AI 面板草稿里追加一个引用块；
- *   润色/翻译/总结再跟一句指令（"润色引用的笔记片段…"），发不发由用户决定；
+ * - 不自动发送：只投递引用块，草稿内容与是否发送都由用户决定；
  * - 不碰只读场景：历史预览、AI 回复的渲染区都没有可编辑的 `.mde-content`，天然不触发；
  * - 引用块是快照：行号与文本取自点击那一刻，之后笔记怎么改都不影响已加进草稿的块。
  */
 import { useEffect, useRef, useState } from "react";
-import { getLocale, useI18n } from "@/i18n";
+import { useI18n } from "@/i18n";
 import { Icon } from "@/components/common/Icon";
 import type { ChatNoteRef } from "@/interface/ai/aiChat";
-
-export type SelectionAiAction = "polish" | "translate" | "summarize" | "add";
-
-/** 带指令的动作（"add" 只投递引用块） */
-type SelectionPromptAction = Exclude<SelectionAiAction, "add">;
 
 interface Anchor {
   text: string;
@@ -32,35 +30,7 @@ interface Anchor {
   to: number;
 }
 
-/**
- * 随引用块一起追加的指令。选中文本本身已在块的 JSON 里，这里只描述要做什么，
- * 不再把正文重复贴一遍。
- * 这里不走 t()：这段文字是发给模型的任务描述，跟着界面语言走即可，
- * 也不需要出现在翻译词典里。
- */
-export const buildSelectionInstruction = (action: SelectionPromptAction): string => {
-  const zh = getLocale() === "zh-CN";
-  if (action === "polish") {
-    return zh
-      ? "请润色引用的笔记片段，保持原意与原有语气，让表达更通顺自然。只返回润色后的文本。"
-      : "Polish the referenced note excerpt. Keep the original meaning and tone, and make it read more naturally. Return only the revised text.";
-  }
-  if (action === "translate") {
-    return zh
-      ? "请把引用的笔记片段翻译成英文。只返回译文。"
-      : "Translate the referenced note excerpt into Chinese. Return only the translation.";
-  }
-  return zh
-    ? "请用简洁的要点总结引用的笔记片段，语言与原文保持一致。只返回总结。"
-    : "Summarize the referenced note excerpt in concise bullet points, in the same language as the original. Return only the summary.";
-};
-
-const ACTIONS: { action: SelectionAiAction; label: string }[] = [
-  { action: "polish", label: "润色" },
-  { action: "translate", label: "翻译" },
-  { action: "summarize", label: "总结" },
-  { action: "add", label: "添加到对话" },
-];
+const ADD_LABEL = "添加到对话";
 
 /** 选区的起止行：优先取行元素上渲染时写死的 data-line，退化成按行元素顺序数 */
 const lineOfNode = (node: Node, box: Element): number => {
@@ -79,8 +49,8 @@ const lineOfNode = (node: Node, box: Element): number => {
 };
 
 interface SelectionAiToolbarProps {
-  /** 投递引用块；prompt 为随块追加的指令（润色/翻译/总结），"添加到对话"不带 */
-  onAddToChat?: (ref: ChatNoteRef, prompt?: string) => void;
+  /** 投递引用块：选中文本以快照形式进入 AI 面板草稿，发不发由用户决定 */
+  onAddToChat?: (ref: ChatNoteRef) => void;
   /** 当前笔记：一起塞进引用块，方便模型与用户分辨出处 */
   noteId?: string | null;
   noteTitle?: string;
@@ -194,30 +164,25 @@ export const SelectionAiToolbar: React.FC<SelectionAiToolbarProps> = ({ noteId =
   return (
     <div className="selection-ai-bar" style={style} role="toolbar" aria-label={t("AI 工具条")}>
       <Icon name="ai-chat" className="w-3.5 h-3.5 flex-none text-primary-500" />
-      {ACTIONS.map(({ action, label }) => (
-        <button
-          key={action}
-          type="button"
-          className="selection-ai-action"
-          // 关键：把焦点与选区留在编辑器里，否则点一下按钮选区就没了
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => {
-            // 四个动作都只投递引用块：选中文本以快照形式进草稿，指令跟在块后面
-            const ref: ChatNoteRef = {
-              noteId,
-              noteTitle,
-              from: anchor.from,
-              to: anchor.to,
-              text: anchor.text,
-            };
-            const prompt = action === "add" ? undefined : buildSelectionInstruction(action);
-            setAnchor(null);
-            onAddToChat?.(ref, prompt);
-          }}
-        >
-          {t(label)}
-        </button>
-      ))}
+      <button
+        type="button"
+        className="selection-ai-action"
+        // 关键：把焦点与选区留在编辑器里，否则点一下按钮选区就没了
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          const ref: ChatNoteRef = {
+            noteId,
+            noteTitle,
+            from: anchor.from,
+            to: anchor.to,
+            text: anchor.text,
+          };
+          setAnchor(null);
+          onAddToChat?.(ref);
+        }}
+      >
+        {t(ADD_LABEL)}
+      </button>
     </div>
   );
 };
