@@ -1,0 +1,18 @@
+{
+  "id": "my-plugin",
+  "name": "我的插件",
+  "version": "0.1.0",
+  "author": "you",
+  "description": "插件模板：把整个目录拷到 plugin/ 下即可（设置页「打开插件文件夹」）。",
+  "apiVersion": 1,
+  "runtime": "sandbox",
+  "defaultEnabled": true,
+  "entry": "main.js",
+  "style": "style.css",
+  "i18n": { "zh": "locales/zh.json", "en": "locales/en.json" },
+  "permissions": ["config.read_write", "db.read_write", "fs.read_write", "shortcut.register"],
+  "config": [
+    { "key": "greeting", "label": "问候语", "kind": "string", "default": "你好" },
+    { "key": "combo", "label": "快捷键", "kind": "shortcut", "default": "Ctrl+Alt+L" }
+  ]
+}
