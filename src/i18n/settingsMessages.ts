@@ -164,28 +164,28 @@ export const settingsMessages: Record<string, string> = {
   "通用、编辑器、笔记列表、界面布局与主题回到默认值，不影响 AI 设置。": "Reset general, editor, note list, layout, and theme settings. AI settings are unaffected.",
   "恢复 AI 默认设置": "Reset AI settings",
   "对话行为、上下文等 AI 参数回到默认值，不影响服务商与记忆条目。": "Reset chat behavior, context, and other AI parameters. Providers and memory entries are unaffected.",
-  "备份内容包含笔记、分组（含加密项，以密文原样保存）、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。": "Backups include notes, groups (including encrypted items, kept as ciphertext), trash, tags, history, AI chats, and all settings, including the editor and theme. JSON, SQLite, and encrypted backups are supported. API keys and WebDAV settings are excluded unless selected below. Semantic indexes and local models are not included; download or import models again and rebuild the index after restoring. Configure WebDAV below to automatically upload JSON backups and restore them as needed.",
+  "备份包含笔记、分组、回收站、标签、历史版本、AI 对话与设置；语义索引与模型文件不在备份内，需重建。": "Backups cover notes, groups, trash, tags, history, AI chats, and settings. Semantic indexes and model files are not included and must be rebuilt.",
   "备份格式": "Backup format",
-  "SQLite 是整库快照（.db），恢复更快，适合本机定期备份。": "SQLite is a full database snapshot (.db), ideal for fast, regular backups on this device.",
+  "整库快照（.db），恢复更快，适合本机定期备份。": "Full database snapshot (.db); faster to restore, good for regular local backups.",
   "加密备份": "Encrypted",
   "加密容器": "Encrypted container",
   "FastNote 加密备份": "FastNote encrypted backup",
-  "加密备份（.fnbak）是整库快照再用独立口令加密的密文，包含加密笔记与密钥元数据，恢复时需要输入备份口令。": "An encrypted backup (.fnbak) is a full database snapshot sealed with a separate passphrase. It includes encrypted notes and key metadata, and restoring it requires the backup passphrase.",
-  "加密备份会把整库（含加密笔记、API Key 与 WebDAV 配置的本机密文、密钥元数据）一起放进容器，由备份口令保护，无需单独勾选。": "Encrypted backups package the whole database, including encrypted notes, locally encrypted API keys and WebDAV settings, and key metadata, protected by the backup passphrase. No extra toggles are needed.",
+  "整库快照再用独立口令加密（.fnbak），恢复时需输入备份口令。": "Full snapshot sealed with a separate passphrase (.fnbak); restoring asks for it.",
+  "加密备份始终包含整库内容，由备份口令保护，无需勾选下方选项。": "Encrypted backups always contain the whole database, protected by the passphrase; the toggles below do not apply.",
   "保存为一个加密备份文件（.fnbak），需要备份口令才能打开。": "Save an encrypted backup (.fnbak); opening it requires the backup passphrase.",
   "已导出加密备份：{notes} 篇笔记（含加密笔记与密钥元数据）": "Encrypted backup exported: {notes} notes, including encrypted notes and key metadata",
-  "JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。": "JSON supports field-level compatibility across versions and is ideal for migrating to another device.",
+  "带字段级兼容，可跨版本恢复，适合换机迁移。": "Field-level compatible across versions; ideal for migrating to another device.",
   "备份 API Key": "Include API keys",
-  "勾选后导出的备份文件会保留 API Key：JSON 里是明文（请妥善保管），SQLite 里保持本机加密（换机可能解不开）；不勾选则只保留服务商配置、不含 Key。手动「备份到云端」同样遵循此开关，自动备份则始终不含 Key。": "Include API keys in exported backups: JSON stores them as plain text, so keep backups secure. SQLite keeps local encryption, which may not work on another device. Otherwise, only provider configuration is included. Manual cloud backups follow this switch; automatic backups never include keys.",
+  "备份保留 API Key（JSON 中为明文）；不勾选则只留服务商配置。自动备份始终不含 Key。": "Include API keys in the backup (plain text in JSON). Otherwise only provider settings are kept. Automatic backups never include keys.",
   "备份 WebDAV 配置": "Include WebDAV settings",
-  "勾选后备份会带上 WebDAV 服务器、账号、文件夹与自动备份设置：JSON 里密码为明文（请妥善保管），SQLite 保持本机加密（换机可能解不开）；不勾选则完全不含 WebDAV 配置。手动「备份到云端」同样遵循此开关，自动备份始终不含。": "Include WebDAV server, account, folder, and automatic backup settings. JSON stores passwords as plain text; keep it secure. SQLite keeps local encryption, which may not work on another device. Otherwise, all WebDAV settings are excluded. Manual cloud backups follow this switch; automatic backups always exclude them.",
+  "备份带上 WebDAV 服务器、账号与密码（JSON 中为明文）。自动备份不含。": "Include the WebDAV server, account, and password (plain text in JSON). Automatic backups never include them.",
   "导出备份": "Export backup",
   "保存为一个 SQLite 数据库文件（.db），可放到 U 盘或备份目录。": "Save a SQLite database (.db) to a USB drive or backup folder.",
   "保存为一个 JSON 文件，可放到网盘或 U 盘带走。": "Save a JSON file to cloud storage or a USB drive.",
   "已导出：{value1} · {notes} 篇笔记 · {messages} 条对话消息": "Exported: {value1} · {notes} notes · {messages} chat messages",
   "导出中...": "Exporting…",
   "导出": "Export",
-  "支持 .json、.db 与 .fnbak 加密备份。JSON 与 SQLite 都会先列出备份内容供你勾选（分区、分组、单篇笔记），按合并方式恢复，本地已有内容不会被删除；只有加密容器（.fnbak）仍是整库覆盖并需要备份口令。带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。要连图片一起完整备份（包括加密笔记里的图片），请用 SQLite 或加密备份——JSON 只会带上正文里出现过路径的图片。": "Supports .json, .db and .fnbak encrypted backups. For .json and .db you first see what the backup contains and tick what to restore (sections, groups, individual notes) in merge mode — existing local content is never deleted; only the encrypted container (.fnbak) still replaces the whole database and asks for a passphrase. Included API keys are re-encrypted on import, and restoring on the same device preserves existing keys. To back up images as well (including those inside encrypted notes), use SQLite or an encrypted backup — JSON only carries images whose paths appear in the note body.",
+  "支持 .json、.gz、.db 与 .fnbak。JSON / SQLite 先勾选再合并恢复，不删本地数据；.fnbak 整库覆盖。": "Supports .json, .gz, .db, and .fnbak. JSON and SQLite let you pick contents and then merge without deleting local data; .fnbak replaces the whole database.",
   "恢复中...": "Restoring…",
   "选择文件": "Choose file",
   "本次导出时间：{value1}": "Exported at: {value1}",
@@ -355,9 +355,9 @@ export const settingsMessages: Record<string, string> = {
   "恢复会用{formatLabel}「{name}」覆盖当前的**全部**笔记、分组、回收站、AI 对话记录与设置。当前数据将被清空，无法撤销，建议先导出一份备份。": "Restoring the {formatLabel} “{name}” replaces **all** current notes, groups, trash, AI chat history, and settings. Current data will be erased. This cannot be undone. Export a backup first.",
   "打开备份目录失败：{value1}": "Could not open backup folder: {value1}",
   "处理中…": "Working…",
-  "WebDAV 可与 Nextcloud、群晖、坚果云、Alist 等服务配合，把备份保存到自己的云端。 自动备份只生成 JSON 且不包含 API Key；手动备份是否带 Key 由上方开关决定。": "Use WebDAV with Nextcloud, Synology, Nutstore, Alist, or other services to keep backups in your own cloud storage. Automatic backups use JSON and never include API keys. Manual backups follow the switch above.",
+  "把备份存到自己的 WebDAV（Nextcloud、群晖、坚果云、Alist 等），上传前自动 gzip 压缩。": "Keep backups in your own WebDAV (Nextcloud, Synology, Nutstore, Alist, and others). Uploads are gzip-compressed.",
   "连接配置": "Connection settings",
-  "服务器填 WebDAV 根地址；备份会放进该地址下的文件夹（默认 FastNote，不存在时自动创建）。": "Enter the WebDAV root URL. Backups go into a folder below it (FastNote by default), created automatically if needed.",
+  "填 WebDAV 根地址，备份存进其下的文件夹（默认 FastNote，不存在时自动创建）。": "Enter the WebDAV root URL; backups go into a folder below it (FastNote by default, created if missing).",
   "密码已保存": "Password saved",
   "密码未设置": "No password",
   "服务器地址": "Server URL",
@@ -374,7 +374,7 @@ export const settingsMessages: Record<string, string> = {
   "测试连接": "Test connection",
   "上次自动备份失败：{last_error}": "Last automatic backup failed: {last_error}",
   "自动备份": "Automatic backup",
-  "后台按间隔自动生成本地 JSON 备份，并可按目标上传云端；失败 10 分钟后重试。": "Create JSON backups at the chosen interval and optionally upload them. Failed backups retry after 10 minutes.",
+  "按间隔自动生成备份并可按目标上传云端，失败 10 分钟后重试。": "Create backups at the chosen interval and optionally upload them. Failed runs retry after 10 minutes.",
   "备份间隔": "Backup interval",
   "1–720 小时，修改后下一轮生效。": "1–720 hours. Changes apply to the next cycle.",
   "小时": "hours",
@@ -391,7 +391,7 @@ export const settingsMessages: Record<string, string> = {
   "（不含 API Key 与 WebDAV 配置）": " (excluding API keys and WebDAV settings)",
   "备份": "Back up",
   "从云端恢复": "Restore from cloud",
-  "获取云端备份列表后，选择一份拉取并覆盖当前数据。": "List cloud backups, then choose one to download and replace current data.",
+  "列出云端备份，选一份合并回本地。": "List cloud backups and merge one back into this device.",
   "读取中…": "Loading…",
   "刷新列表": "Refresh list",
   "获取列表": "List backups",
@@ -884,8 +884,8 @@ export const settingsMessages: Record<string, string> = {
 
   "备份加密内容":
     "Back up encrypted content",
-  "勾选后快照会带上加密笔记、分组密钥与根密码材料（都只有密文，不含明文）：同机可直接恢复，换机需要原设备根密码。不勾选则快照里完全没有加密内容，恢复后这些笔记不会出现。":
-    "When enabled, the snapshot includes encrypted notes, group keys and root-password material (ciphertext only, never plaintext): they restore directly on the same device and need the original root password on another. When disabled the snapshot contains no encrypted content at all, and those notes will not appear after restoring.",
+  "快照带上加密笔记与密钥材料（仅密文），换机恢复需原设备根密码。":
+    "The snapshot includes encrypted notes and key material (ciphertext only); restoring on another device requires the original root password.",
 
   "只恢复指定的笔记":
     "Restore only selected notes",
@@ -925,20 +925,28 @@ export const settingsMessages: Record<string, string> = {
 
   "备份内容":
     "Backup contents",
-  "下面两项对「手动备份到云端」和「自动备份」同时生效。":
-    "Both options apply to manual cloud backups and automatic backups.",
+  "以下选项对手动备份与自动备份同时生效。":
+    "These options apply to both manual and automatic backups.",
+  "只备份笔记":
+    "Notes only",
+  "只含笔记、分组与标签，不含历史版本、图片、AI 对话与设置，体积通常只有完整备份的几分之一。":
+    "Notes, groups, and tags only — no history, images, AI chats, or settings. Usually a fraction of a full backup.",
+  "已随「只备份笔记」关闭。":
+    "Disabled by \"Notes only\".",
+  "立即上传一份压缩后的笔记备份（不含历史版本、图片、AI 对话与设置）。":
+    "Upload a compressed notes-only backup now (no history, images, AI chats, or settings).",
   "包含图片":
     "Include images",
-  "图片会以 base64 内联进 JSON，体积约是原图的 1.4 倍。关掉后备份明显变小、上传更快，代价是恢复后正文里的图片不会回来。":
-    "Images are inlined into the JSON as base64, roughly 1.4x the original size. Turning this off makes backups much smaller and faster to upload, but the images will not come back after restoring.",
+  "图片以 base64 内联进备份，体积约为原图的 1.4 倍。":
+    "Images are inlined as base64, roughly 1.4x the original size.",
   "包含根密码材料":
     "Include root-password material",
-  "带上后换机输入原根密码即可解锁加密笔记；但它同时是一份可离线试密码的校验块。关掉后这份备份只能在本机恢复。":
-    "Including it lets another device unlock encrypted notes with the original root password, but it is also a verifier that can be brute-forced offline. Without it, this backup can only be restored on this device.",
+  "换机后可用原根密码解锁加密笔记；关掉则这份备份只能在本机恢复。":
+    "Lets another device unlock encrypted notes with the original root password. Without it, the backup only restores on this device.",
   "合并并恢复":
     "Merge and restore",
-  "恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容会保留。\n\n若备份里的加密笔记需要原设备根密码才能打开，请先用「另存为本地副本」把它存到本地，再到备份设置里用「选择文件」恢复——那里可以填原设备根密码并迁移密钥。":
-    "Restoring merges {formatLabel} \"{name}\" into the current data: matching items take the backup version and content that exists only locally is kept.\n\nIf the backup's encrypted notes need the original device root password, first use \"Save a local copy\" and then restore that file from the backup settings via \"Choose file\" - there you can enter the original root password and migrate the keys.",
+  "恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容保留。\n\n加密笔记若需原设备根密码，请存为本地副本后用「选择文件」恢复。":
+    "Restoring merges the {formatLabel} \"{name}\" into your data: matching items take the backup version, local-only content is kept.\n\nIf encrypted notes need the original root password, save a local copy and restore it via \"Choose file\".",
 
   "图片以明文存放在数据目录，不随笔记加密":
     "Images are stored as plain files in the data folder; they are not encrypted together with the note.",

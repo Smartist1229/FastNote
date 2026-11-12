@@ -104,18 +104,20 @@ const NumberField: React.FC<{
 };
 
 /** 开关：与设置弹窗里的 Switch 同一套外观 */
-const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void }> = ({
+const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void; disabled?: boolean }> = ({
   value,
   onChange,
+  disabled = false,
 }) => (
   <button
     type="button"
     role="switch"
     aria-checked={value}
+    disabled={disabled}
     onClick={() => onChange(!value)}
     className={`w-9 h-5 rounded-full flex-shrink-0 transition-colors relative ${
       value ? "bg-primary-500" : "bg-surface-strong"
-    }`}
+    } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
   >
     <span
       className={`absolute top-0.5 w-4 h-4 rounded-full bg-surface shadow transition-all ${
@@ -365,7 +367,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
       const formatLabel = source === "remote" ? t("云端备份") : t("本地备份");
       const ok = await confirm({
         title: t("从备份恢复"),
-        message: t("恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容会保留。\n\n若备份里的加密笔记需要原设备根密码才能打开，请先用「另存为本地副本」把它存到本地，再到备份设置里用「选择文件」恢复——那里可以填原设备根密码并迁移密钥。", { formatLabel: formatLabel, name: name }),
+        message: t("恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容保留。\n\n加密笔记若需原设备根密码，请存为本地副本后用「选择文件」恢复。", { formatLabel: formatLabel, name: name }),
         confirmText: t("合并并恢复"),
         danger: true,
       });
@@ -469,19 +471,21 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
   };
 
   const target = settings.autoTarget;
+  /** 只备份笔记（旧库没有这个键 → 视为开启，与后端 notesOnly 默认 true 一致） */
+  const notesOnly = settings.notesOnly !== false;
   const autoBusy = busy !== null;
   const busyLabel = (label: string) => (busy !== null ? t("处理中…") : label);
 
   return (
     <div className="space-y-3">
-      <p className="text-[11px] leading-relaxed text-faint">{t("WebDAV 可与 Nextcloud、群晖、坚果云、Alist 等服务配合，把备份保存到自己的云端。 自动备份只生成 JSON 且不包含 API Key；手动备份是否带 Key 由上方开关决定。")}</p>
+      <p className="text-[11px] leading-relaxed text-faint">{t("把备份存到自己的 WebDAV（Nextcloud、群晖、坚果云、Alist 等），上传前自动 gzip 压缩。")}</p>
 
       {/* 连接配置 */}
       <div className="overflow-hidden rounded-xl border border-line">
         <div className="flex items-start justify-between gap-3 px-3.5 py-2.5">
           <div className="min-w-0">
             <p className="text-xs font-medium text-body">{t("连接配置")}</p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("服务器填 WebDAV 根地址；备份会放进该地址下的文件夹（默认 FastNote，不存在时自动创建）。")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("填 WebDAV 根地址，备份存进其下的文件夹（默认 FastNote，不存在时自动创建）。")}</p>
           </div>
           <span
             className={`flex-shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
@@ -593,24 +597,40 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         </div>
       </div>
 
-      {/* 备份内容：体积与安全两个开关，手动与自动备份同时生效 */}
+      {/* 备份内容：体积与安全几个开关，手动与自动备份同时生效 */}
       <div className="overflow-hidden rounded-xl border border-line">
         <div className="px-3.5 py-2.5">
           <p className="text-xs font-medium text-body">{t("备份内容")}</p>
           <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-            {t("下面两项对「手动备份到云端」和「自动备份」同时生效。")}
+            {t("以下选项对手动备份与自动备份同时生效。")}
           </p>
         </div>
         <div className="space-y-2.5 border-t border-line-soft px-3.5 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs text-body">{t("包含图片")}</p>
+              <p className="text-xs text-body">{t("只备份笔记")}</p>
               <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
-                {t("图片会以 base64 内联进 JSON，体积约是原图的 1.4 倍。关掉后备份明显变小、上传更快，代价是恢复后正文里的图片不会回来。")}
+                {t("只含笔记、分组与标签，不含历史版本、图片、AI 对话与设置，体积通常只有完整备份的几分之一。")}
               </p>
             </div>
             <Toggle
-              value={settings.includeAttachments !== false}
+              value={notesOnly}
+              onChange={(v) => onAppSettingChange("webdav", "notesOnly", v)}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className={`text-xs ${notesOnly ? "text-faint" : "text-body"}`}>{t("包含图片")}</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
+                {notesOnly
+                  ? t("已随「只备份笔记」关闭。")
+                  : t("图片以 base64 内联进备份，体积约为原图的 1.4 倍。")}
+              </p>
+            </div>
+            <Toggle
+              value={settings.includeAttachments !== false && !notesOnly}
+              disabled={notesOnly}
               onChange={(v) => onAppSettingChange("webdav", "includeAttachments", v)}
             />
           </div>
@@ -619,7 +639,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
             <div className="min-w-0">
               <p className="text-xs text-body">{t("包含根密码材料")}</p>
               <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
-                {t("带上后换机输入原根密码即可解锁加密笔记；但它同时是一份可离线试密码的校验块。关掉后这份备份只能在本机恢复。")}
+                {t("换机后可用原根密码解锁加密笔记；关掉则这份备份只能在本机恢复。")}
               </p>
             </div>
             <Toggle
@@ -635,7 +655,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         <div className="flex items-start justify-between gap-3 px-3.5 py-2.5">
           <div className="min-w-0">
             <p className="text-xs font-medium text-body">{t("自动备份")}</p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("后台按间隔自动生成本地 JSON 备份，并可按目标上传云端；失败 10 分钟后重试。")}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-faint">{t("按间隔自动生成备份并可按目标上传云端，失败 10 分钟后重试。")}</p>
           </div>
           <Toggle
             value={settings.autoBackup}
@@ -708,7 +728,9 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-body">{t("备份到云端")}</p>
-          <p className="mt-0.5 text-[11px] text-faint">{t("立即上传一份 JSON 备份{value1}。", { value1: includeApiKeys || includeWebdav
+          <p className="mt-0.5 text-[11px] text-faint">{notesOnly
+            ? t("立即上传一份压缩后的笔记备份（不含历史版本、图片、AI 对话与设置）。")
+            : t("立即上传一份 JSON 备份{value1}。", { value1: includeApiKeys || includeWebdav
               ? t("（含{value1}）", { value1: [includeApiKeys ? "API Key" : "", includeWebdav ? t("WebDAV 配置") : ""].filter(Boolean).join(getLocale() === "zh-CN" ? "、" : ", ") })
               : t("（不含 API Key 与 WebDAV 配置）") })}</p>
         </div>
@@ -727,7 +749,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
           <div className="min-w-0">
             <p className="text-xs font-medium text-body">{t("从云端恢复")}</p>
-            <p className="mt-0.5 text-[11px] text-faint">{t("获取云端备份列表后，选择一份拉取并覆盖当前数据。")}</p>
+            <p className="mt-0.5 text-[11px] text-faint">{t("列出云端备份，选一份合并回本地。")}</p>
           </div>
           <button
             type="button"

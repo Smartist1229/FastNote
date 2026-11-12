@@ -31,6 +31,9 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 备份压缩：云端 / 自动备份写成 `.json.gz`（笔记正文是文本，deflate 后只剩 1/5~1/10）。
+# 版本与锁文件里 zip 间接依赖的一致，不新增编译单元、可离线构建。
+flate2 = "1.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "cookies"] }
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }

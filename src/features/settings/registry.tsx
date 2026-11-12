@@ -97,7 +97,7 @@ export const SECTION_SEARCH_ENTRIES: Record<SettingsSection, readonly string[]> 
   ],
   reset: ["恢复默认 重置 出厂值 reset default"],
   backup: [
-    "备份 恢复 导出 导入 数据 json sqlite db 数据库 快照 迁移 加密 口令 fnbak 加密备份 webdav 云同步 云端 网盘 nextcloud 群晖 坚果云 alist 自动备份 服务器 账号 密码 文件夹 backup restore cloud sync encrypted passphrase",
+    "备份 恢复 导出 导入 数据 json sqlite db gz 压缩 数据库 快照 迁移 加密 口令 fnbak 加密备份 webdav 云同步 云端 网盘 nextcloud 群晖 坚果云 alist 自动备份 只备份笔记 服务器 账号 密码 文件夹 backup restore cloud sync compress encrypted passphrase",
   ],
   plugins: [
     "插件 插件管理 plugin plugins 安装 卸载 实验 实验性 zip 导入 内置 安装包 install uninstall experimental extension 扩展",

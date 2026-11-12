@@ -153,7 +153,8 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
         multiple: false,
         directory: false,
         filters: [
-          { name: t("FastNote 备份"), extensions: ["json", "db", "sqlite", "fnbak"] },
+          // gz：WebDAV / 自动备份写的是压缩后的 .gz，从云端「另存为本地副本」后要能选回来
+          { name: t("FastNote 备份"), extensions: ["json", "gz", "db", "sqlite", "fnbak"] },
         ],
       });
       if (!selected || typeof selected !== "string") return;
@@ -208,7 +209,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
   return (
     <>
       <div className="space-y-3">
-        <p className="text-[11px] text-faint leading-relaxed">{t("备份内容包含笔记、分组（含加密项，以密文原样保存）、回收站、标签、历史版本、AI 对话记录与全部设置 （含编辑器与主题），支持 JSON、SQLite 与加密备份三种格式。API Key 与 WebDAV 默认不备份，可在下方按需勾选；语义向量索引与本地模型文件同样不在备份里： 恢复后需要重新下载（或重新导入）模型并重建索引。另可在下方配置 WebDAV， 把 JSON 备份自动同步到云端并按需恢复。")}</p>
+        <p className="text-[11px] text-faint leading-relaxed">{t("备份包含笔记、分组、回收站、标签、历史版本、AI 对话与设置；语义索引与模型文件不在备份内，需重建。")}</p>
 
         {/* 格式选择：JSON 带字段级兼容，SQLite 是整库快照，加密备份再套一层口令 */}
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
@@ -216,10 +217,10 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
             <span className="text-xs font-medium text-body">{t("备份格式")}</span>
             <p className="text-[11px] text-faint leading-relaxed mt-1">
               {backupFormat === "sqlite"
-                ? t("SQLite 是整库快照（.db），恢复更快，适合本机定期备份。")
+                ? t("整库快照（.db），恢复更快，适合本机定期备份。")
                 : backupFormat === "encrypted"
-                  ? t("加密备份（.fnbak）是整库快照再用独立口令加密的密文，包含加密笔记与密钥元数据，恢复时需要输入备份口令。")
-                  : t("JSON 带字段级兼容逻辑，可跨版本恢复，适合换机迁移。")}
+                  ? t("整库快照再用独立口令加密（.fnbak），恢复时需输入备份口令。")
+                  : t("带字段级兼容，可跨版本恢复，适合换机迁移。")}
             </p>
           </div>
           <SegmentedInput
@@ -241,7 +242,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
         {backupFormat === "encrypted" && (
           <div className="px-3 py-2.5 rounded-xl bg-app border border-line-soft">
             <p className="text-[11px] text-faint leading-relaxed">
-              {t("加密备份会把整库（含加密笔记、API Key 与 WebDAV 配置的本机密文、密钥元数据）一起放进容器，由备份口令保护，无需单独勾选。")}
+              {t("加密备份始终包含整库内容，由备份口令保护，无需勾选下方选项。")}
             </p>
           </div>
         )}
@@ -252,7 +253,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
         <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
           <div className="min-w-0">
             <span className="text-xs font-medium text-body">{t("备份 API Key")}</span>
-            <p className="text-[11px] text-faint leading-relaxed mt-1">{t("勾选后导出的备份文件会保留 API Key：JSON 里是明文（请妥善保管），SQLite 里保持本机加密（换机可能解不开）；不勾选则只保留服务商配置、不含 Key。手动「备份到云端」同样遵循此开关，自动备份则始终不含 Key。")}</p>
+            <p className="text-[11px] text-faint leading-relaxed mt-1">{t("备份保留 API Key（JSON 中为明文）；不勾选则只留服务商配置。自动备份始终不含 Key。")}</p>
           </div>
           <div className="max-w-full pt-0.5">
             <Switch value={backupIncludeApiKey} onChange={setBackupIncludeApiKey} />
@@ -264,7 +265,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
           <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
             <div className="min-w-0">
               <span className="text-xs font-medium text-body">{t("备份加密内容")}</span>
-              <p className="text-[11px] text-faint leading-relaxed mt-1">{t("勾选后快照会带上加密笔记、分组密钥与根密码材料（都只有密文，不含明文）：同机可直接恢复，换机需要原设备根密码。不勾选则快照里完全没有加密内容，恢复后这些笔记不会出现。")}</p>
+              <p className="text-[11px] text-faint leading-relaxed mt-1">{t("快照带上加密笔记与密钥材料（仅密文），换机恢复需原设备根密码。")}</p>
             </div>
             <div className="max-w-full pt-0.5">
               <Switch value={backupIncludeEncrypted} onChange={setBackupIncludeEncrypted} />
@@ -276,7 +277,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
         <div className="flex items-start justify-between gap-6 px-3 py-2.5 rounded-xl bg-app border border-line-soft">
           <div className="min-w-0">
             <span className="text-xs font-medium text-body">{t("备份 WebDAV 配置")}</span>
-            <p className="text-[11px] text-faint leading-relaxed mt-1">{t("勾选后备份会带上 WebDAV 服务器、账号、文件夹与自动备份设置：JSON 里密码为明文（请妥善保管），SQLite 保持本机加密（换机可能解不开）；不勾选则完全不含 WebDAV 配置。手动「备份到云端」同样遵循此开关，自动备份始终不含。")}</p>
+            <p className="text-[11px] text-faint leading-relaxed mt-1">{t("备份带上 WebDAV 服务器、账号与密码（JSON 中为明文）。自动备份不含。")}</p>
           </div>
           <div className="max-w-full pt-0.5">
             <Switch value={backupIncludeWebdav} onChange={setBackupIncludeWebdav} />
@@ -317,7 +318,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-body">{t("从备份恢复")}</p>
-            <p className="text-[11px] text-faint mt-0.5">{t("支持 .json、.db 与 .fnbak 加密备份。JSON 与 SQLite 都会先列出备份内容供你勾选（分区、分组、单篇笔记），按合并方式恢复，本地已有内容不会被删除；只有加密容器（.fnbak）仍是整库覆盖并需要备份口令。带 API Key 时会重新加密写入，同机恢复会保留已填好的 Key。要连图片一起完整备份（包括加密笔记里的图片），请用 SQLite 或加密备份——JSON 只会带上正文里出现过路径的图片。")}</p>
+            <p className="text-[11px] text-faint mt-0.5">{t("支持 .json、.gz、.db 与 .fnbak。JSON / SQLite 先勾选再合并恢复，不删本地数据；.fnbak 整库覆盖。")}</p>
           </div>
           <button
             onClick={() => void guard(handleImport)}

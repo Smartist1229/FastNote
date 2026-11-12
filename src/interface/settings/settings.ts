@@ -455,6 +455,11 @@ export interface WebdavSettings {
   includeAttachments: boolean;
   /** 备份是否携带根密码材料（关掉后包内没有可爆破的 verifier，但只能在本机恢复） */
   includeRootKey: boolean;
+  /**
+   * 只备份笔记：分组、标签、密钥环、加密笔记的密文都带，
+   * 历史版本 / 图片 / AI 对话 / 设置一律不进包。云端空间与单文件上限吃紧时用它。
+   */
+  notesOnly: boolean;
 }
 
 /**

@@ -382,6 +382,11 @@ export const DEFAULT_WEBDAV_SETTINGS: WebdavSettings = {
   includeAttachments: true,
   /** 默认带根密码材料：换机恢复要靠它解锁，同时它也是可离线验证的靶子 */
   includeRootKey: true,
+  /**
+   * 默认只备份笔记：历史版本 + base64 图片很容易把一份 JSON 顶到几百 MB，
+   * 不少 WebDAV 服务直接拒收。想要完整包的用户在设置里关掉即可。
+   */
+  notesOnly: true,
 };
 
 /* ---------- 合并后的完整默认值 ---------- */

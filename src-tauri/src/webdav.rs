@@ -74,6 +74,8 @@ struct Config {
     include_attachments: bool,
     /// 备份是否携带根密码材料（关掉后这份备份只能在本机恢复）
     include_root_key: bool,
+    /// 只备份笔记：分组、标签、密钥环、加密笔记的密文都带，历史版本 / 图片 / AI 对话 / 设置全不带
+    notes_only: bool,
 }
 
 fn setting_raw(conn: &rusqlite::Connection, key: &str) -> Option<String> {
@@ -141,6 +143,9 @@ fn load_config(app: &AppHandle) -> Result<Config, String> {
         max_local: setting_u64(&conn, "app.config.webdav.autoMaxLocal", 10).clamp(1, 200),
         include_attachments: setting_bool(&conn, "app.config.webdav.includeAttachments", true),
         include_root_key: setting_bool(&conn, "app.config.webdav.includeRootKey", true),
+        // 默认只备份笔记：云端空间与单文件上限是这类用户的头号痛点，
+        // 想连历史版本 / 图片 / 设置一起传的再手动关掉
+        notes_only: setting_bool(&conn, "app.config.webdav.notesOnly", true),
     })
 }
 
@@ -187,7 +192,7 @@ fn prune_local(dir: &Path, max: u64) {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with(AUTO_PREFIX) || !name.to_ascii_lowercase().ends_with(".json") {
+        if !name.starts_with(AUTO_PREFIX) || !is_json_backup(&name) {
             continue;
         }
         if let Ok(meta) = entry.metadata() {
@@ -198,6 +203,16 @@ fn prune_local(dir: &Path, max: u64) {
     for (path, _) in files.into_iter().skip(max as usize) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// 备份文件名判定：明文 JSON 与压缩后的 `.gz` 都算。
+///
+/// 早期压缩备份叫 `.json.gz`，云端还留着一批，所以这个双后缀也要认；新备份一律写 `.gz`。
+fn is_json_backup(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".json")
+        || lower.ends_with(".gz")
+        || lower.ends_with(".gzip")
 }
 
 /* ---------------- HTTP / WebDAV ---------------- */
@@ -242,6 +257,8 @@ fn status_error(action: &str, status: StatusCode) -> String {
         401 => format!("{action}失败：账号或密码不正确"),
         403 => format!("{action}失败：账号没有写入权限"),
         404 => format!("{action}失败：服务器路径不存在"),
+        // 单文件上限是 WebDAV 服务最常见的硬限制，直接把可操作的结论说出来
+        413 => format!("{action}失败：文件超过服务器允许的单文件大小，可开启「只备份笔记」或关闭「包含图片」后再试"),
         507 => format!("{action}失败：云端空间不足"),
         _ => format!("{action}失败：HTTP {status}"),
     }
@@ -324,8 +341,14 @@ async fn put_file(
 ) -> Result<(), String> {
     ensure_folder(client, cfg).await?;
     let url = file_url(cfg, name)?;
+    // `.gz` 是 gzip 容器，别谎报成 application/json：部分服务端会按类型改写或拒绝
+    let content_type = if name.to_ascii_lowercase().ends_with(".gz") {
+        "application/gzip"
+    } else {
+        "application/json; charset=utf-8"
+    };
     let response = request(client, Method::PUT, url, cfg)
-        .header(reqwest::header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(reqwest::header::CONTENT_TYPE, content_type)
         .body(body)
         .send()
         .await
@@ -352,10 +375,12 @@ fn new_local_backup(
     prefix: &str,
     include_attachments: bool,
     include_root_key: bool,
+    notes_only: bool,
 ) -> Result<(PathBuf, BackupSummary), String> {
     let dir = backup_dir(app)?;
+    // 统一写 `.gz`：本地备份目录同样怕大，压缩后一份通常只有原来的几分之一
     let path = dir.join(format!(
-        "{prefix}{}.json",
+        "{prefix}{}.gz",
         Local::now().format("%Y%m%d-%H%M%S")
     ));
     let summary = crate::backup_export_for_webdav(
@@ -365,6 +390,7 @@ fn new_local_backup(
         false,
         include_attachments,
         include_root_key,
+        notes_only,
         app.clone(),
     )?;
     Ok((path, summary))
@@ -380,9 +406,9 @@ async fn cloud_backup(
     ensure_folder(client, cfg).await?;
 
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let name = format!("fastnote-{stamp}.json");
+    let name = format!("fastnote-{stamp}.gz");
     let temp = std::env::temp_dir().join(format!(
-        "fastnote-webdav-{}-{stamp}.json",
+        "fastnote-webdav-{}-{stamp}.gz",
         std::process::id()
     ));
 
@@ -393,6 +419,7 @@ async fn cloud_backup(
         include_webdav,
         cfg.include_attachments,
         cfg.include_root_key,
+        cfg.notes_only,
         app.clone(),
     );
 
@@ -549,7 +576,7 @@ pub async fn webdav_list_remote(app: AppHandle) -> Result<Vec<RemoteBackupFile>,
         };
         let raw = href.trim_end_matches('/').rsplit('/').next().unwrap_or("");
         let name = percent_decode(raw);
-        if !name.starts_with("fastnote-") || !name.to_ascii_lowercase().ends_with(".json") {
+        if !name.starts_with("fastnote-") || !is_json_backup(&name) {
             continue;
         }
         out.push(RemoteBackupFile {
@@ -591,7 +618,7 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
             .map_err(|e| net_error("下载云端备份", &e))?;
 
         let temp = std::env::temp_dir().join(format!(
-            "fastnote-restore-{}-{}.json",
+            "fastnote-restore-{}-{}.gz",
             std::process::id(),
             Local::now().format("%Y%m%d-%H%M%S")
         ));
@@ -620,7 +647,9 @@ pub fn webdav_list_local(app: AppHandle) -> Result<Vec<LocalBackupFile>, String>
         let name = entry.file_name().to_string_lossy().to_string();
         let lower = name.to_ascii_lowercase();
         if !name.starts_with("fastnote-")
-            || !(lower.ends_with(".json") || lower.ends_with(".db") || lower.ends_with(".sqlite"))
+            || !(is_json_backup(&name)
+                || lower.ends_with(".db")
+                || lower.ends_with(".sqlite"))
         {
             continue;
         }
@@ -652,12 +681,13 @@ pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummar
         return Err("备份文件不存在".to_string());
     }
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".json") {
+    // `.gz`（以及老的 `.json.gz`）也走 JSON 合并恢复：解压在 load_backup_doc 里按魔数自动完成
+    if is_json_backup(&name) {
         crate::backup_restore_merge_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else if lower.ends_with(".db") || lower.ends_with(".sqlite") {
         crate::backup_import_sqlite_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else {
-        Err("只支持 .json / .db / .sqlite 备份".to_string())
+        Err("只支持 .json / .gz / .db / .sqlite 备份".to_string())
     }
 }
 
@@ -699,14 +729,15 @@ pub fn webdav_local_state(app: AppHandle) -> Result<LocalDataState, String> {
 pub fn webdav_snapshot_local(app: AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
     begin(&state.webdav)?;
-    // 覆盖前的安全快照是兜底，永远带全量内容（图片 + 根密码材料）
-    let outcome = new_local_backup(&app, "fastnote-safety-", true, true);
+    // 覆盖前的安全快照是兜底，永远带全量内容（图片 + 根密码材料 + 历史），
+    // 不受「只备份笔记」影响：这份是要用来救命的
+    let outcome = new_local_backup(&app, "fastnote-safety-", true, true, false);
     end(&state.webdav);
     let (path, _) = outcome?;
     Ok(path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("fastnote-safety.json")
+        .unwrap_or("fastnote-safety.gz")
         .to_string())
 }
 
@@ -719,6 +750,7 @@ pub async fn webdav_save_copy(
 ) -> Result<String, String> {
     validate_name(&name)?;
     let dir = backup_dir(&app)?;
+    // 副本沿用原文件的扩展名：`.gz` 就是 `.gz`，老备份的 `.json.gz` 也原样保留
     let extension = Path::new(&name)
         .extension()
         .and_then(|value| value.to_str())
@@ -843,8 +875,13 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
     let result = async {
         let mut done: Vec<String> = Vec::new();
         if cfg.target == "local" || cfg.target == "both" {
-            let (path, _) =
-                new_local_backup(app, AUTO_PREFIX, cfg.include_attachments, cfg.include_root_key)?;
+            let (path, _) = new_local_backup(
+                app,
+                AUTO_PREFIX,
+                cfg.include_attachments,
+                cfg.include_root_key,
+                cfg.notes_only,
+            )?;
             prune_local(&backup_dir(app)?, cfg.max_local);
             done.push(
                 path.file_name()
@@ -855,9 +892,9 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
         }
         if cfg.target == "cloud" || cfg.target == "both" {
             let client = http_client()?;
-            let name = format!("{AUTO_PREFIX}{}.json", now.format("%Y%m%d-%H%M%S"));
+            let name = format!("{AUTO_PREFIX}{}.gz", now.format("%Y%m%d-%H%M%S"));
             let temp = std::env::temp_dir().join(format!(
-                "fastnote-auto-{}-{}.json",
+                "fastnote-auto-{}-{}.gz",
                 std::process::id(),
                 now.format("%Y%m%d-%H%M%S")
             ));
@@ -868,6 +905,7 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
                 false,
                 cfg.include_attachments,
                 cfg.include_root_key,
+                cfg.notes_only,
                 app.clone(),
             );
             let upload = match exported {
@@ -1071,5 +1109,17 @@ mod tests {
     #[test]
     fn decodes_percent_encoded_name() {
         assert_eq!(percent_decode("fastnote-%E6%8A%A5%E5%91%8A.json"), "fastnote-报告.json");
+    }
+
+    /// 云端列表与本地清理都靠它：压缩后的 `.gz`（含早期 `.json.gz`）必须和老的 `.json`
+    /// 一样被认出来，否则「上传成功但列表里看不到」——最难查的那类问题。
+    #[test]
+    fn recognises_compressed_backups() {
+        assert!(is_json_backup("fastnote-auto-20260101-120000.json"));
+        assert!(is_json_backup("fastnote-auto-20260101-120000.gz"));
+        assert!(is_json_backup("fastnote-auto-20260101-120000.json.gz"));
+        assert!(is_json_backup("FASTNOTE-20260101.GZ"));
+        assert!(!is_json_backup("fastnote-20260101.sqlite"));
+        assert!(!is_json_backup("readme.txt"));
     }
 }
