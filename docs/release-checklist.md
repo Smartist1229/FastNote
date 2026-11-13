@@ -7,7 +7,7 @@ CI 只证明「类型对、单测过、能打包」。界面行为、升级路�
 
 ## 0. 打包前
 
-- [ ] `package.json` 版本已改，且 `pnpm version:sync` 跑过（提交里含 `Cargo.toml` / `tauri.conf.json` 两处变更）
+- [ ] `package.json` 版本已改，`pnpm version:sync` 跑过，且 `pnpm version:check` 通过（提交里含 `Cargo.toml` / `tauri.conf.json` 两处变更）
 - [ ] `cargo test --release --lib` 全绿（140+）
 - [ ] `pnpm test` 全绿（43）
 - [ ] CI 的 Release 流程走完，安装包与 `latest.json` 都在

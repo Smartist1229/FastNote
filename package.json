@@ -11,7 +11,8 @@
     "build": "tauri build",
     "demo:editor": "vite --port 5200",
     "test": "vitest run",
-    "version:sync": "node scripts/sync-version.mjs"
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:check": "node scripts/sync-version.mjs --check"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.12.4",

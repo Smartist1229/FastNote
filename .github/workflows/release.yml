@@ -103,18 +103,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # 版本号只有 package.json 一个来源。这里跑一遍同步并断言仓库没有被改动：
-      # 有人只改 package.json 就打包时，装出来的版本会与 tag / Cargo.toml 对不上。
-      - name: Verify version is synced
-        shell: pwsh
-        run: |
-          pnpm version:sync
-          $dirty = git status --porcelain
-          if ($dirty) {
-            Write-Host $dirty
-            throw "版本号未同步（package.json / tauri.conf.json / Cargo.toml）。请本地执行 pnpm version:sync 并提交。"
-          }
-          Write-Host "版本号已同步"
+      # 版本号对不对在本地管：`pnpm version:check`（打 tag 前跑），
+      # `tauri build` 的 beforeBuildCommand 也会先同步一次。
+      # CI 只做一件与发布相关的事——上面那步校验 tag 与 package.json 一致。
+      # 这里曾经用「跑一次同步后 git status 是否干净」来判断，但那会把
+      # 工作区里任何无关的改动都算成「版本未同步」（release-notes.md 就是这样一个），
+      # 版本明明一致也会被拦下。
 
       # 发布前必须过的门：类型 + 前端单测。CI 只验证「能编译」是不够的，
       # 坏逻辑照样能打包签名推给所有人。
