@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "fastnote"
-version = "0.1.0"
+version = "2.8.7"
 dependencies = [
  "argon2",
  "chrono",

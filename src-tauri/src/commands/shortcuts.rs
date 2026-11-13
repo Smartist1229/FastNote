@@ -84,7 +84,7 @@ pub fn sync_global_shortcuts(
                 crate::tray::show_main_window(&handle);
             }
             if let Err(error) = handle.emit(GLOBAL_SHORTCUT_EVENT, id.as_str()) {
-                eprintln!("[shortcuts] 派发全局热键失败: {error}");
+                crate::log_warn!("派发全局热键失败：{error}");
             }
         });
         if let Err(error) = registered {

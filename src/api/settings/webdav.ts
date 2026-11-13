@@ -70,7 +70,12 @@ export const listRemoteBackups = async (): Promise<BackupFileEntry[]> => {
   return await invoke<BackupFileEntry[]>('webdav_list_remote');
 };
 
-/** 从云端下载指定备份并覆盖恢复（webdav_restore_remote） */
+/**
+ * 从云端下载指定备份并合并恢复（webdav_restore_remote）。
+ *
+ * 界面已不走这条：统一走恢复向导（取回本地 → 预检 → 勾选 → 合并），
+ * 这里保留给脚本 / 旧调用方，语义与向导一致（合并，不覆盖）。
+ */
 export const restoreRemoteBackup = async (name: string): Promise<BackupSummary> => {
   return await invoke<BackupSummary>('webdav_restore_remote', { name });
 };
@@ -80,7 +85,11 @@ export const listLocalBackups = async (): Promise<BackupFileEntry[]> => {
   return await invoke<BackupFileEntry[]>('webdav_list_local');
 };
 
-/** 从本地备份目录恢复（webdav_restore_local）；按扩展名分派 JSON / SQLite */
+/**
+ * 从本地备份目录恢复（webdav_restore_local）；按扩展名分派 JSON / SQLite，两者都是合并。
+ *
+ * 同 `restoreRemoteBackup`：界面已改走恢复向导，这里保留给脚本 / 旧调用方。
+ */
 export const restoreLocalBackup = async (name: string): Promise<BackupSummary> => {
   return await invoke<BackupSummary>('webdav_restore_local', { name });
 };

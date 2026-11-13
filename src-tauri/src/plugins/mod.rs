@@ -57,7 +57,7 @@ pub fn plugin_list_installed(_app: AppHandle) -> Vec<PluginManifest> {
     let dir = match plugins_root() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("{e}");
+            crate::log_error!("插件目录解析失败：{e}");
             return Vec::new();
         }
     };

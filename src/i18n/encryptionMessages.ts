@@ -31,8 +31,8 @@ export const encryptionMessages: Record<string, string> = {
   /* 加密 */
   "加密笔记": "Encrypt note",
   "加密分组": "Encrypt group",
-  "笔记标题、所属分组名、创建/更新时间和密码提示不加密；正文、标签与历史版本以密文保存。":
-    "Note titles, group names, created/updated times and password hints are not encrypted; the body, tags and history are stored as ciphertext.",
+  "笔记标题、所属分组名、创建/更新时间与密码提示不加密；正文、标签与历史版本以密文保存；图片按明文存放在数据目录，不随笔记加密。":
+    "Note titles, group names, created/updated times and password hints are not encrypted; the body, tags and history are stored as ciphertext; images are stored as plain files in the data folder and are not encrypted with the note.",
   "加密后立即锁定，打开时要输入密码；不参与导出、备份、恢复、AI 与语义搜索；忘记密码可在输错 3 次后改用根密码；根密码也遗忘则无法恢复。":
     "The item locks immediately after encrypting and needs the password to open. Encrypted items are excluded from export, backup, restore, AI and semantic search. After 3 failed attempts you can use the root password — but if that is forgotten too, there is no recovery.",
   "笔记密码": "Note password",

@@ -70,6 +70,8 @@ struct Config {
     interval_hours: u64,
     target: String,
     max_local: u64,
+    /// 云端自动备份最多保留份数（手动备份不清理）
+    max_cloud: u64,
     /// 备份是否内联图片（关掉可以显著减小体积）
     include_attachments: bool,
     /// 备份是否携带根密码材料（关掉后这份备份只能在本机恢复）
@@ -141,6 +143,7 @@ fn load_config(app: &AppHandle) -> Result<Config, String> {
         interval_hours: setting_u64(&conn, "app.config.webdav.autoIntervalHours", 1).clamp(1, 720),
         target: setting_string(&conn, "app.config.webdav.autoTarget", "both"),
         max_local: setting_u64(&conn, "app.config.webdav.autoMaxLocal", 10).clamp(1, 200),
+        max_cloud: setting_u64(&conn, "app.config.webdav.autoMaxCloud", 10).clamp(1, 200),
         include_attachments: setting_bool(&conn, "app.config.webdav.includeAttachments", true),
         include_root_key: setting_bool(&conn, "app.config.webdav.includeRootKey", true),
         // 默认只备份笔记：云端空间与单文件上限是这类用户的头号痛点，
@@ -332,13 +335,39 @@ async fn ensure_folder(client: &Client, cfg: &Config) -> Result<reqwest::Url, St
     }
 }
 
+/// 把本地文件包成请求体：**边读边发**，不整份读进内存。
+///
+/// 原来的写法是 `tokio::fs::read` 拿到 `Vec<u8>` 再交给 reqwest，等于文件内容存两份
+/// （我们一份 + reqwest 的 body 一份）。流式只占一个 64 KB 缓冲。
+///
+/// 长度必须自己写进 `Content-Length`：`wrap_stream` 的 `size_hint` 是未知，
+/// reqwest 会退化成 `Transfer-Encoding: chunked`，而部分 WebDAV 服务端（老 nginx-dav、
+/// 坚果云等）直接拒收 chunked 上传。
+fn file_body(path: &Path) -> Result<(reqwest::Body, u64), String> {
+    use tokio::io::AsyncReadExt;
+
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("读取临时备份文件失败：{e}"))?
+        .len();
+    let file = std::fs::File::open(path).map_err(|e| format!("读取临时备份文件失败：{e}"))?;
+    let file = tokio::fs::File::from_std(file);
+
+    let stream = futures_util::stream::unfold(file, |mut file| async move {
+        let mut buf = vec![0u8; 64 * 1024];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<Vec<u8>, std::io::Error>(buf), file))
+            }
+            Err(e) => Some((Err(e), file)),
+        }
+    });
+    Ok((reqwest::Body::wrap_stream(stream), size))
+}
+
 /// 上传一个本地文件到云端文件夹
-async fn put_file(
-    client: &Client,
-    cfg: &Config,
-    name: &str,
-    body: Vec<u8>,
-) -> Result<(), String> {
+async fn put_file(client: &Client, cfg: &Config, name: &str, path: &Path) -> Result<(), String> {
     ensure_folder(client, cfg).await?;
     let url = file_url(cfg, name)?;
     // `.gz` 是 gzip 容器，别谎报成 application/json：部分服务端会按类型改写或拒绝
@@ -347,8 +376,10 @@ async fn put_file(
     } else {
         "application/json; charset=utf-8"
     };
+    let (body, size) = file_body(path)?;
     let response = request(client, Method::PUT, url, cfg)
         .header(reqwest::header::CONTENT_TYPE, content_type)
+        .header(reqwest::header::CONTENT_LENGTH, size)
         .body(body)
         .send()
         .await
@@ -359,6 +390,50 @@ async fn put_file(
             "上传备份",
             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
         )),
+    }
+}
+
+fn delete_method() -> Method {
+    Method::from_bytes(b"DELETE").unwrap_or(Method::DELETE)
+}
+
+/// 删除云端一个备份文件。404 当成功：清理是幂等的，重跑一次不该报错。
+async fn delete_file(client: &Client, cfg: &Config, name: &str) -> Result<(), String> {
+    let url = file_url(cfg, name)?;
+    let response = request(client, delete_method(), url, cfg)
+        .send()
+        .await
+        .map_err(|e| net_error("删除云端备份", &e))?;
+    match response.status().as_u16() {
+        200 | 202 | 204 | 404 => Ok(()),
+        status => Err(status_error(
+            "删除云端备份",
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+        )),
+    }
+}
+
+/// 云端只保留最近 N 份**自动备份**，多出来的删掉。
+///
+/// 手动备份（`fastnote-<时间戳>`）一概不碰 —— 与本地 `prune_local` 只清 `fastnote-auto-`
+/// 是同一套语义：用户主动传上去的东西，程序不替他决定去留。
+///
+/// 清理失败只打日志：这次备份已经上传成功了，不该因为删旧文件失败而报「备份失败」。
+async fn prune_remote(client: &Client, cfg: &Config) {
+    let max = cfg.max_cloud.max(1) as usize;
+    let Ok(files) = list_remote(client, cfg).await else {
+        return; // 列不出来就别乱删
+    };
+    let mut auto: Vec<&RemoteBackupFile> = files
+        .iter()
+        .filter(|file| file.name.starts_with(AUTO_PREFIX))
+        .collect();
+    // 文件名里嵌着 %Y%m%d-%H%M%S，字典序即时间序；服务器的 getlastmodified 时区与格式都不统一
+    auto.sort_by(|a, b| b.name.cmp(&a.name));
+    for file in auto.into_iter().skip(max) {
+        if let Err(error) = delete_file(client, cfg, &file.name).await {
+            crate::log_warn!("清理云端备份失败 {}：{error}", file.name);
+        }
     }
 }
 
@@ -424,14 +499,20 @@ async fn cloud_backup(
     );
 
     let result = match summary {
-        Ok(summary) => match tokio::fs::read(&temp).await {
-            Ok(bytes) => match put_file(client, cfg, &name, bytes).await {
-                Ok(()) => Ok(CloudBackupResult { file: name, summary }),
-                Err(e) => Err(e),
-            },
-            Err(e) => Err(format!("读取临时备份文件失败：{e}")),
+        Ok(summary) => match put_file(client, cfg, &name, &temp).await {
+            Ok(()) => {
+                crate::log_info!("云备份上传成功：{name}（{} 篇笔记）", summary.notes);
+                Ok(CloudBackupResult { file: name, summary })
+            }
+            Err(e) => {
+                crate::log_error!("云备份上传失败：{name}：{e}");
+                Err(e)
+            }
         },
-        Err(e) => Err(e),
+        Err(e) => {
+            crate::log_error!("云备份导出失败：{e}");
+            Err(e)
+        }
     };
 
     let _ = tokio::fs::remove_file(&temp).await;
@@ -543,14 +624,13 @@ pub async fn webdav_backup(
     result
 }
 
-/// 云端备份列表：只列 JSON 备份，按修改时间倒序
-#[tauri::command]
-pub async fn webdav_list_remote(app: AppHandle) -> Result<Vec<RemoteBackupFile>, String> {
-    let cfg = load_config(&app)?;
-    let client = http_client()?;
-    let url = ensure_folder(&client, &cfg).await?;
+/// 云端备份列表：只列备份文件，按修改时间倒序。
+///
+/// 命令与「保留 N 份」的清理共用同一份实现——两边各自写一遍 PROPFIND 是最容易分叉的地方。
+async fn list_remote(client: &Client, cfg: &Config) -> Result<Vec<RemoteBackupFile>, String> {
+    let url = ensure_folder(client, cfg).await?;
 
-    let response = request(&client, propfind_method(), url, &cfg)
+    let response = request(client, propfind_method(), url, cfg)
         .header("Depth", "1")
         .header(reqwest::header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(PROPFIND_BODY)
@@ -594,7 +674,18 @@ pub async fn webdav_list_remote(app: AppHandle) -> Result<Vec<RemoteBackupFile>,
     Ok(out)
 }
 
-/// 从云端下载指定备份并覆盖恢复
+/// 云端备份列表
+#[tauri::command]
+pub async fn webdav_list_remote(app: AppHandle) -> Result<Vec<RemoteBackupFile>, String> {
+    let cfg = load_config(&app)?;
+    let client = http_client()?;
+    list_remote(&client, &cfg).await
+}
+
+/// 从云端下载指定备份并合并恢复。
+///
+/// 注意：界面已不再直接调这条命令（统一走恢复向导：先取回本地 → 预检 → 勾选 → 合并），
+/// 保留它是为了兼容旧调用方；语义必须与向导一致，别改回整库覆盖。
 #[tauri::command]
 pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<BackupSummary, String> {
     validate_name(&name)?;
@@ -627,6 +718,9 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
         let outcome = crate::backup_restore_merge_for_webdav(app.clone(), app.state::<AppState>(), temp.to_string_lossy().to_string());
         let _ = tokio::fs::remove_file(&temp).await;
+        if let Err(error) = &outcome {
+            crate::log_error!("从云端恢复「{name}」失败：{error}");
+        }
         outcome
     }
     .await;
@@ -671,7 +765,10 @@ pub fn webdav_list_local(app: AppHandle) -> Result<Vec<LocalBackupFile>, String>
     Ok(out)
 }
 
-/// 从本地备份目录恢复：按扩展名分派 JSON / SQLite
+/// 从本地备份目录恢复：按扩展名分派 JSON / SQLite，**两者都是合并语义**。
+///
+/// 注意：界面已不再直接调这条命令（统一走恢复向导，能预检和勾选），
+/// 保留它是为了兼容旧的调用方 / 脚本；语义必须与向导保持一致，别改回整库替换。
 #[tauri::command]
 pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummary, String> {
     validate_name(&name)?;
@@ -682,13 +779,17 @@ pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummar
     }
     let lower = name.to_ascii_lowercase();
     // `.gz`（以及老的 `.json.gz`）也走 JSON 合并恢复：解压在 load_backup_doc 里按魔数自动完成
-    if is_json_backup(&name) {
+    let result = if is_json_backup(&name) {
         crate::backup_restore_merge_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else if lower.ends_with(".db") || lower.ends_with(".sqlite") {
-        crate::backup_import_sqlite_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
+        crate::backup_import_sqlite_merge_for_webdav(app.clone(), app.state::<AppState>(), path.to_string_lossy().to_string())
     } else {
         Err("只支持 .json / .gz / .db / .sqlite 备份".to_string())
+    };
+    if let Err(error) = &result {
+        crate::log_error!("从本地恢复「{name}」失败：{error}");
     }
+    result
 }
 
 #[tauri::command]
@@ -822,7 +923,7 @@ pub fn spawn_auto_backup(app: AppHandle) {
         tokio::time::sleep(Duration::from_secs(20)).await;
         loop {
             if let Err(error) = auto_backup_tick(&app).await {
-                eprintln!("[fastnote] 自动备份失败：{error}");
+                crate::log_error!("自动备份失败：{error}");
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
@@ -909,14 +1010,13 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
                 app.clone(),
             );
             let upload = match exported {
-                Ok(_) => match tokio::fs::read(&temp).await {
-                    Ok(bytes) => put_file(&client, &cfg, &name, bytes).await,
-                    Err(e) => Err(format!("读取临时备份文件失败：{e}")),
-                },
+                Ok(_) => put_file(&client, &cfg, &name, &temp).await,
                 Err(e) => Err(e),
             };
             let _ = tokio::fs::remove_file(&temp).await;
             upload?;
+            // 上传成功后再清云端旧自动备份：清理失败不影响这次备份的结果
+            prune_remote(&client, &cfg).await;
             done.push(name);
         }
         Ok::<_, String>(done.join("、"))
@@ -927,12 +1027,16 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
 
     match result {
         Ok(files) => {
+            crate::log_info!("自动备份完成：{files}");
             let stamp = Local::now().to_rfc3339();
             record_meta(app, LAST_BACKUP_KEY, &stamp);
             record_meta(app, LAST_FILE_KEY, &files);
             record_meta(app, LAST_ERROR_KEY, "");
         }
-        Err(error) => record_auto_error(app, &error),
+        Err(error) => {
+            crate::log_error!("自动备份失败：{error}");
+            record_auto_error(app, &error);
+        }
     }
     Ok(())
 }

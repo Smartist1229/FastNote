@@ -376,8 +376,10 @@ export const DEFAULT_WEBDAV_SETTINGS: WebdavSettings = {
   autoIntervalHours: 1,
   /** 默认同时备份到本地与云端 */
   autoTarget: "both",
-  /** 本地自动备份最多保留 10 份（云端不限制） */
+  /** 本地自动备份最多保留 10 份 */
   autoMaxLocal: 10,
+  /** 云端自动备份最多保留 10 份：云端不会自动清理的话，文件数只增不减 */
+  autoMaxCloud: 10,
   /** 默认带图片：备份完整优先，嫌大可以关 */
   includeAttachments: true,
   /** 默认带根密码材料：换机恢复要靠它解锁，同时它也是可离线验证的靶子 */

@@ -61,6 +61,7 @@ const RANGE_BY_KEY: Record<string, readonly [number, number]> = {
   "general.autoLockMinutes": [0, 120],
   "webdav.autoIntervalHours": [1, 720],
   "webdav.autoMaxLocal": [1, 200],
+  "webdav.autoMaxCloud": [1, 200],
 };
 
 /**

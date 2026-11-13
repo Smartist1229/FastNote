@@ -66,3 +66,16 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
         Ok(())
     }
 }
+
+/* ---------------- 日志目录 ---------------- */
+
+/**
+ * 日志目录（安装目录下的 `log`，不可写时在数据目录下）。
+ *
+ * 前端拿到路径后交给 `open_app_folder` 打开 —— 那个命令的允许范围本来就覆盖
+ * exe 同级与数据目录，日志目录一定在里面。
+ */
+#[tauri::command]
+pub fn log_dir() -> String {
+    crate::logger::dir().to_string_lossy().to_string()
+}

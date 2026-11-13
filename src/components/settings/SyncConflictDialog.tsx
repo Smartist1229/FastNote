@@ -3,7 +3,7 @@
  *
  * 三个出口都不静默丢数据：
  * - 保留本地：不恢复，当前数据原样保留；
- * - 保留云端：先自动生成本地安全快照，再覆盖恢复；
+ * - 保留云端：先自动生成本地安全快照，再进入统一恢复向导（可勾选内容、合并写入）；
  * - 另存为副本：当前数据不动，把选中的备份复制到本地备份目录，之后再手动恢复。
  */
 import { Modal } from "@/components/common/Modal";
@@ -77,7 +77,7 @@ export const SyncConflictDialog: React.FC<{
       </div>
 
       <p className="mt-3 text-[11px] leading-relaxed text-faint">
-        {t("用备份覆盖本地前会自动留一份安全快照；另存为副本不改动当前数据。")}
+        {t("用备份恢复前会先留一份本地安全快照，接着可以挑要恢复的内容；另存为副本不改动当前数据。")}
       </p>
 
       <div className="mt-4 flex flex-wrap items-center justify-end gap-2">

@@ -250,7 +250,7 @@ export const EncryptDialog: React.FC<{
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={t(mode === "note" ? "加密笔记" : "加密分组")}>
       <div className="space-y-3.5" onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}>
-        <p className="text-[12.5px] leading-relaxed text-body">{t("笔记标题、所属分组名、创建/更新时间和密码提示不加密；正文、标签与历史版本以密文保存。")}</p>
+        <p className="text-[12.5px] leading-relaxed text-body">{t("笔记标题、所属分组名、创建/更新时间与密码提示不加密；正文、标签与历史版本以密文保存；图片按明文存放在数据目录，不随笔记加密。")}</p>
         {mode === "category" && noteCount !== undefined && (
           <p className="text-[12px] leading-relaxed text-body">
             {t("将加密该分组内 {count} 篇笔记（不含回收站）", { count: noteCount })}

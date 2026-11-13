@@ -50,7 +50,7 @@ pub fn spawn_worker(app: AppHandle) {
             continue;
         }
         if let Err(e) = run_once(&app, &spec) {
-            eprintln!("[semantic] 索引失败：{e}");
+            crate::log_error!("语义索引失败：{e}");
             let _ = set_meta(&app, "last_error", &e);
             emit_progress(&app, 0, 0, false, Some(&e));
             std::thread::sleep(ERROR_BACKOFF);
@@ -111,7 +111,7 @@ fn run_once(app: &AppHandle, spec: &ModelSpec) -> Result<(), String> {
         for note in &batch {
             let chunked = split_note(&note.title, &note.content);
             if chunked.truncated {
-                eprintln!("[semantic] 笔记 {} 超过分块上限，已截断", note.id);
+                crate::log_warn!("笔记 {} 超过分块上限，已截断", note.id);
             }
             let texts: Vec<String> = chunked
                 .chunks

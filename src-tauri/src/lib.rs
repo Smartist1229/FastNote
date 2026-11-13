@@ -14,6 +14,7 @@ mod download;
 mod encryption;
 mod fingerprint;
 mod i18n;
+mod logger;
 mod models;
 mod opener;
 mod plugins;
@@ -333,6 +334,19 @@ struct AppLocaleState(Mutex<String>);
 pub fn run() {
     let context = tauri::generate_context!();
 
+    /*
+     * 日志要在所有事情之前起来：后面任何一步失败（数据库、插件、窗口）都得留下证据。
+     * 版本取 tauri.conf.json 的（与安装包 / updater 一致）；conf 里留空时才是 Cargo 的 crate 版本。
+     */
+    logger::init(
+        context
+            .config()
+            .version
+            .as_deref()
+            .unwrap_or(env!("CARGO_PKG_VERSION")),
+    );
+    logger::install_panic_hook();
+
     // WebView2 缓存补清：必须赶在 Builder 之前。配置文件里的主窗口是在 `run()`
     // 里创建的，那时 `Default/Cache` 已被内核打开，再删就只能删一半。
     // 这里只处理上次点了清理却没删干净的那部分，没有登记时是空操作。
@@ -466,6 +480,7 @@ pub fn run() {
             set_app_locale,
             set_tray_enabled,
             set_autostart_enabled,
+            log_dir,
             should_show_on_startup,
             semantic::semantic_status,
             semantic::semantic_download_model,
@@ -688,7 +703,7 @@ pub fn run() {
             let tray_on = read_setting_bool(app.handle(), "app.config.general.trayEnabled", true);
             if tray_on {
                 if let Err(e) = create_tray(app.handle()) {
-                    eprintln!("创建托盘图标失败：{}", e);
+                    crate::log_error!("创建托盘图标失败：{e}");
                 }
             }
 

@@ -71,12 +71,16 @@ pub(crate) fn backup_restore_merge_for_webdav(
     )
 }
 
-pub(crate) fn backup_import_sqlite_for_webdav(
+/// SQLite 版「合并恢复」：与 `webdav_restore_local` 的 JSON 分支同一套语义（不清表）。
+///
+/// 列表里一个 `.gz` 合并、一个 `.db` 整库替换，是过去最容易踩的语义分叉；
+/// 现在两条都收口到 `apply_backup_merge`，格式只决定怎么读文件。
+pub(crate) fn backup_import_sqlite_merge_for_webdav(
     app: AppHandle,
     state: State<AppState>,
     path: String,
 ) -> Result<BackupSummary, String> {
-    import_sqlite_backup(app, state, path)
+    import_sqlite_selected(app, state, path, BackupSelection::default())
 }
 
 /// 备份里的图片条目：只带「被引用到的」（正文 + 历史快照），base64 内联。
@@ -809,12 +813,15 @@ pub fn export_backup(
     // `.gz` 结尾的写压缩：JSON 里全是重复的键名与中文正文，deflate 后通常只剩 1/5~1/10，
     // 直接决定一份备份能不能塞进 WebDAV 服务的单文件上限。
     // 压缩后再 pretty 没有意义（还白白多生成一份大字符串），所以走紧凑序列化。
-    let text = if is_gzip_path(&path) {
-        serde_json::to_string(&doc).map_err(|e| e.to_string())?
-    } else {
-        serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
-    };
-    write_backup_text(&path, &text)?;
+    // 直接序列化进文件（`.gz` 紧凑、明文 pretty），不再先 to_string
+    write_backup_json(&path, &doc)?;
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    // 体积进日志：用户说「备份怎么这么大/这么小」时，这是第一个要看的数据
+    crate::log_info!(
+        "导出备份 {path}（{} 篇笔记 · {:.1} MB · 只备份笔记={notes_only}）",
+        summary.notes,
+        size as f64 / 1_048_576.0
+    );
     Ok(summary)
 }
 
@@ -823,23 +830,80 @@ pub(crate) fn is_gzip_path(path: &str) -> bool {
     path.to_ascii_lowercase().ends_with(".gz")
 }
 
-/// 写备份文件：`.gz` 走 gzip（deflate），其余plain JSON
-pub(crate) fn write_backup_text(path: &str, text: &str) -> Result<(), String> {
-    use std::io::Write;
+/// 备份落盘的唯一出口：**先写同目录的 `.part`，落盘后再 rename**。
+///
+/// 直接写目标路径有两个致命窗口：
+/// 1. 写到一半断电 / 磁盘满 / 进程被杀 → 目标路径留下半截文件；
+/// 2. `File::create` 是「先清空再写」，所以同名旧备份会在开写那一刻就蒸发，
+///    失败后两头空 —— 恢复前的安全快照（`fastnote-safety-`）最怕这个。
+///
+/// rename 在同一文件系统内是原子的：目标要么是完整的旧文件，要么是完整的新文件。
+/// 因此 `.part` **必须与目标同目录**：跨盘 rename 在 Windows 上直接失败。
+fn write_backup_atomic(
+    path: &str,
+    write: impl FnOnce(&mut dyn std::io::Write) -> Result<(), String>,
+) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("写入备份文件失败：{e}");
-    if !is_gzip_path(path) {
-        std::fs::write(path, text).map_err(failed)?;
-        return Ok(());
+    let target = std::path::Path::new(path);
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("backup");
+    let temp = dir.join(format!(".{name}.{}.part", std::process::id()));
+
+    let outcome = (|| -> Result<(), String> {
+        let file = std::fs::File::create(&temp).map_err(failed)?;
+        let mut buffered = std::io::BufWriter::new(file);
+        if is_gzip_path(path) {
+            // 6 级：文本上比 9 级只多几个百分点，快一倍以上
+            let mut encoder = flate2::write::GzEncoder::new(
+                &mut buffered,
+                flate2::Compression::new(6),
+            );
+            write(&mut encoder)?;
+            encoder.finish().map_err(failed)?;
+        } else {
+            write(&mut buffered)?;
+        }
+        /*
+         * 先 flush 再 sync_all：rename 只保证**目录项**原子，不保证数据已经落盘。
+         * 少了这句，断电后可能得到「文件名对、内容为空」——比半截文件更难查。
+         */
+        let file = buffered.into_inner().map_err(|e| failed(e.into_error()))?;
+        file.sync_all().map_err(failed)?;
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
     }
-    let file = std::fs::File::create(path).map_err(failed)?;
-    // 6 级：文本上比 9 级只多几个百分点，快一倍以上，亿级笔记量也等得起
-    let mut encoder = flate2::write::GzEncoder::new(
-        std::io::BufWriter::new(file),
-        flate2::Compression::new(6),
-    );
-    encoder.write_all(text.as_bytes()).map_err(failed)?;
-    encoder.finish().map_err(failed)?;
-    Ok(())
+    std::fs::rename(&temp, target).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("替换备份文件失败：{e}")
+    })
+}
+
+/// 写备份文件（JSON 版）：**直接序列化进目标流**，不再先拼出一份完整字符串。
+///
+/// 一份 300 MB 的备份，`to_string` 会再复制一份（连同 `Value` 树，峰值能摸到 1 GB），
+/// 走 `to_writer` 只占序列化缓冲。压缩备份用紧凑格式——pretty 在 gzip 之后没有意义。
+pub(crate) fn write_backup_json<T: Serialize>(path: &str, doc: &T) -> Result<(), String> {
+    let pretty = !is_gzip_path(path);
+    write_backup_atomic(path, |w| {
+        let failed = |e: serde_json::Error| format!("序列化备份失败：{e}");
+        if pretty {
+            serde_json::to_writer_pretty(w, doc)
+        } else {
+            serde_json::to_writer(w, doc)
+        }
+        .map_err(failed)
+    })
 }
 
 /// 读备份文件：按内容魔数判断是否 gzip，老的明文 JSON 备份照样能读
@@ -873,6 +937,7 @@ pub fn import_backup(app: AppHandle, state: State<AppState>, path: String) -> Re
     if doc.get("format").and_then(|v| v.as_str()) != Some(BACKUP_FORMAT) {
         return Err("这不是 FastNote 的备份文件".to_string());
     }
+    check_backup_version(&doc)?;
     let data = doc
         .get("data")
         .ok_or_else(|| "备份文件内容不完整（缺少 data）".to_string())?;
@@ -1321,6 +1386,21 @@ pub struct BackupPreflight {
 }
 
 /// 读 JSON 备份并做格式校验
+/// 备份版本校验：比当前程序新就直接拒绝。
+///
+/// 不校验的后果不是「报错」，而是「报告成功」—— serde 会忽略不认识的字段、
+/// 缺失字段走默认值：未来版本改了某个字段的语义后，旧程序恢复出来的数据是错的，
+/// 界面却显示「恢复完成 N 篇笔记」。宁可当场拒绝，让用户去升级。
+pub(crate) fn check_backup_version(doc: &Value) -> Result<(), String> {
+    let version = doc.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+    if version > BACKUP_VERSION as i64 {
+        return Err(format!(
+            "这份备份来自更新版本的 FastNote（备份版本 {version}，当前支持 {BACKUP_VERSION}），请先升级软件再恢复"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn load_backup_doc(path: &str) -> Result<Value, String> {
     let text = read_backup_text(path)?;
     let doc: Value =
@@ -1328,6 +1408,7 @@ pub(crate) fn load_backup_doc(path: &str) -> Result<Value, String> {
     if doc.get("format").and_then(|v| v.as_str()) != Some(BACKUP_FORMAT) {
         return Err("这不是 FastNote 的备份文件".to_string());
     }
+    check_backup_version(&doc)?;
     Ok(doc)
 }
 
@@ -1870,6 +1951,17 @@ pub(crate) fn apply_backup_merge(
     tx.commit().map_err(|e| e.to_string())?;
     semantic::invalidate(&state.semantic);
 
+    // 恢复是「一年用一次、那次必须查得清」的操作：条数写进日志，事后能对上账
+    crate::log_info!(
+        "恢复完成：笔记 {} · 分组 {} · 服务商 {} · 会话 {} · 消息 {} · 设置 {} · 本地保留 {}",
+        summary.notes,
+        summary.categories,
+        summary.providers,
+        summary.sessions,
+        summary.messages,
+        summary.settings,
+        summary.preserved
+    );
     Ok(summary)
 }
 
@@ -4417,19 +4509,57 @@ mod backup_gzip_tests {
             .to_string();
         // 用真实备份的结构（重复键名 + 中文正文）：payload 太小的话 gzip 头比数据还长
         let body = "中文正文".repeat(2000);
-        let text = format!(
-            r#"{{"format":"fastnote-backup","data":{{"notes":[{{"content":"{body}"}}]}}}}"#
-        );
-        write_backup_text(&path, &text).expect("写入失败");
+        let doc = json!({
+            "format": BACKUP_FORMAT,
+            "version": BACKUP_VERSION,
+            "data": { "notes": [{ "content": body }] },
+        });
+        write_backup_json(&path, &doc).expect("写入失败");
 
         // 文件确实是 gzip（魔数 1f 8b），否则等于没压缩
         let bytes = std::fs::read(&path).expect("读取失败");
         assert_eq!(&bytes[..2], &[0x1f, 0x8b], "应按 gzip 写出");
-        assert!(bytes.len() < text.len(), "压缩后必须更小");
 
-        assert_eq!(read_backup_text(&path).expect("读回失败"), text);
-        // 老备份是明文 JSON，同一个读取入口要照样认
-        assert_eq!(backup_text_from_bytes(text.as_bytes()).expect("明文失败"), text);
+        let text = read_backup_text(&path).expect("读回失败");
+        assert!(bytes.len() < text.len(), "压缩后必须更小");
+        // 写进去和读回来必须是同一份数据
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("解析失败"),
+            doc
+        );
+        // 老备份是明文 JSON，同一个读取入口照样要认
+        assert_eq!(
+            backup_text_from_bytes(text.as_bytes()).expect("明文失败"),
+            text
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 原子写：失败时不能动已存在的目标文件，成功时不能留下 `.part` 残渣
+    #[test]
+    fn atomic_write_keeps_old_file_on_failure() {
+        let dir = std::env::temp_dir();
+        let path = dir
+            .join(format!("fastnote-atomic-test-{}.gz", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        write_backup_json(&path, &json!({ "old": true })).expect("首写失败");
+        let before = std::fs::read(&path).expect("读取失败");
+
+        // 写到一半报错 → 目标文件必须还是旧内容
+        let failed = write_backup_atomic(&path, |_w| Err("模拟中断".to_string()));
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path).expect("读取失败"), before);
+
+        // 不留 `.part`
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("列目录失败")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains("fastnote-atomic-test") && n.ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件：{leftovers:?}");
 
         let _ = std::fs::remove_file(&path);
     }

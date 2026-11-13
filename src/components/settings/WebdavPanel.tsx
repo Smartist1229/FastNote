@@ -21,6 +21,7 @@ import { useToast } from "@/components/common/Toast";
 import { useConfirm } from "@/components/common/ConfirmDialog";
 import { SyncConflictDialog } from "@/components/settings/SyncConflictDialog";
 import type { SyncConflictInfo } from "@/components/settings/SyncConflictDialog";
+import { RestoreDialog } from "@/features/settings/RestoreDialog";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { flushThemeSettings } from "@/stores/themeStore";
 import { formatBytes } from "@/lib/text/format";
@@ -210,6 +211,16 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
   /** 非空时弹出冲突选择框：本地数据比所选备份新，不直接覆盖 */
   const [conflict, setConflict] = useState<SyncConflictInfo | null>(null);
   const [conflictBusy, setConflictBusy] = useState<"keepCloud" | "saveCopy" | null>(null);
+  /**
+   * 非空时打开统一的恢复向导（预检 → 勾选 → 合并）。
+   *
+   * WebDAV 面板不再自己决定恢复语义：云端与本地、JSON 与 SQLite 全部走同一条路，
+   * 只有 `.fnbak` 例外（密文包必须整库覆盖，而且不在上面这两个列表里）。
+   */
+  const [restoreTarget, setRestoreTarget] = useState<{
+    path: string;
+    format: "json" | "sqlite";
+  } | null>(null);
   const aliveRef = useRef(true);
 
   // 外部恢复设置（如导入备份）后同步草稿
@@ -357,42 +368,41 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
     }
   };
 
-  /** 恢复前先冲掉主题防抖写入，否则旧主题会在恢复后回写覆盖备份里的主题 */
-  const performRestore = async (
-    source: "remote" | "local",
-    name: string,
-    skipConfirm: boolean,
-  ) => {
-    if (!skipConfirm) {
-      const formatLabel = source === "remote" ? t("云端备份") : t("本地备份");
-      const ok = await confirm({
-        title: t("从备份恢复"),
-        message: t("恢复会把{formatLabel}「{name}」合并进当前数据：同一条内容用备份里的版本覆盖，本地独有的内容保留。\n\n加密笔记若需原设备根密码，请存为本地副本后用「选择文件」恢复。", { formatLabel: formatLabel, name: name }),
-        confirmText: t("合并并恢复"),
-        danger: true,
-      });
-      if (!ok) return;
-    }
-
-    setBusy(source === "remote" ? "restoreRemote" : "restoreLocal");
+  /**
+   * 统一恢复入口：一切恢复都走「预检 → 勾选 → 合并」。
+   *
+   * 过去这里直接调 `webdav_restore_*`：`.json` 是合并、`.db` 是整库替换，
+   * 同一个列表里两个文件、同一个「恢复」按钮，语义完全不同，用户看不出来。
+   * 现在统一交给 RestoreDialog：格式只决定走 JSON 还是 SQLite 的预检命令。
+   *
+   * 云端文件没有本地路径，而预检要读文件，所以先拉一份到本地备份目录
+   * （它会以 `fastnote-copy-*` 出现在本地列表里，可以复用、也可以自己删）。
+   */
+  const beginRestore = async (source: "remote" | "local", name: string) => {
+    const format = /\.(db|sqlite)$/i.test(name) ? "sqlite" : "json";
     try {
+      const dir = status?.backup_dir ?? (await webdavApi.getBackupDir());
+      let path = `${dir}/${name}`;
+      if (source === "remote") {
+        setBusy("restoreRemote");
+        const copyName = await webdavApi.saveBackupCopy("remote", name);
+        path = `${dir}/${copyName}`;
+        await refreshLocal();
+      }
+      // 主题是防抖写入的：先冲掉内存里的旧值，否则 reload 前的最后一次写入会把备份里的主题盖回去
       await flushThemeSettings();
-      const summary =
-        source === "remote"
-          ? await webdavApi.restoreRemoteBackup(name)
-          : await webdavApi.restoreLocalBackup(name);
-      showToast(t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes }), "success");
-      window.setTimeout(() => window.location.reload(), 800);
+      setRestoreTarget({ path, format });
     } catch (e) {
-      setBusy(null);
       showToast(t("恢复失败：{value1}", { value1: errorText(e) }), "error");
+    } finally {
+      setBusy(null);
     }
   };
 
   /**
    * 恢复入口：先比较「本地最新改动时间」与「备份创建时间」。
-   * 本地更新说明这份备份落后于本机数据，直接覆盖会丢改动，因此改为弹冲突选择框。
-   * 拿不到本地状态（命令失败 / 无笔记）时不拦截，退回原来的覆盖确认。
+   * 本地更新说明这份备份落后于本机数据，直接恢复会丢改动，因此改为弹冲突选择框。
+   * 拿不到本地状态（命令失败 / 无笔记）时不拦截，直接进恢复向导。
    */
   const restore = async (source: "remote" | "local", name: string) => {
     setBusy("syncCheck");
@@ -414,7 +424,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         };
       }
     } catch {
-      // 状态读不到就按老流程走，不能因为检查失败挡住恢复
+      // 状态读不到就按正常流程走，不能因为检查失败挡住恢复
     } finally {
       setBusy(null);
     }
@@ -422,13 +432,13 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
       setConflict(found);
       return;
     }
-    await performRestore(source, name, false);
+    await beginRestore(source, name);
   };
 
   /** 保留本地：什么都不做，只关掉对话框 */
   const handleKeepLocal = () => setConflict(null);
 
-  /** 保留云端：覆盖前先留一份本地安全快照，快照失败就放弃恢复 */
+  /** 用备份恢复：先留一份本地安全快照，再打开恢复向导让用户挑内容 */
   const handleKeepCloud = async () => {
     if (!conflict) return;
     const target = conflict;
@@ -442,7 +452,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
     }
     setConflictBusy(null);
     setConflict(null);
-    await performRestore(target.source, target.backupName, true);
+    await beginRestore(target.source, target.backupName);
   };
 
   /** 另存为副本：当前数据不动，把选中的备份复制到本地备份目录 */
@@ -475,7 +485,6 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
   const notesOnly = settings.notesOnly !== false;
   const autoBusy = busy !== null;
   const busyLabel = (label: string) => (busy !== null ? t("处理中…") : label);
-
   return (
     <div className="space-y-3">
       <p className="text-[11px] leading-relaxed text-faint">{t("把备份存到自己的 WebDAV（Nextcloud、群晖、坚果云、Alist 等），上传前自动 gzip 压缩。")}</p>
@@ -706,7 +715,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs text-body">{t("本地最多保留")}</p>
-                  <p className="mt-0.5 text-[10px] text-faint">{t("超出后删除最早的自动备份；云端备份不清理。")}</p>
+                  <p className="mt-0.5 text-[10px] text-faint">{t("超出后删除最早的自动备份。")}</p>
                 </div>
                 <NumberField
                   value={settings.autoMaxLocal}
@@ -714,6 +723,22 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
                   max={200}
                   unit={t("份")}
                   onChange={(v) => onAppSettingChange("webdav", "autoMaxLocal", v)}
+                />
+              </div>
+            )}
+
+            {target !== "local" && (
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-body">{t("云端最多保留")}</p>
+                  <p className="mt-0.5 text-[10px] text-faint">{t("超出后删除最早的自动备份；手动上传的备份不清理。")}</p>
+                </div>
+                <NumberField
+                  value={settings.autoMaxCloud ?? DEFAULT_WEBDAV_SETTINGS.autoMaxCloud}
+                  min={1}
+                  max={200}
+                  unit={t("份")}
+                  onChange={(v) => onAppSettingChange("webdav", "autoMaxCloud", v)}
                 />
               </div>
             )}
@@ -749,7 +774,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
           <div className="min-w-0">
             <p className="text-xs font-medium text-body">{t("从云端恢复")}</p>
-            <p className="mt-0.5 text-[11px] text-faint">{t("列出云端备份，选一份合并回本地。")}</p>
+            <p className="mt-0.5 text-[11px] text-faint">{t("列出云端备份，取回本地后先勾选内容再恢复。")}</p>
           </div>
           <button
             type="button"
@@ -825,6 +850,22 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         onSaveCopy={() => void handleSaveCopy()}
         onClose={() => {
           if (conflictBusy === null) setConflict(null);
+        }}
+      />
+
+      {/* 统一恢复向导：预检 → 勾选分区/分组/笔记 → 合并写入 */}
+      <RestoreDialog
+        isOpen={restoreTarget !== null}
+        path={restoreTarget?.path ?? null}
+        format={restoreTarget?.format ?? "json"}
+        onClose={() => setRestoreTarget(null)}
+        onDone={(summary) => {
+          setRestoreTarget(null);
+          showToast(
+            t("恢复完成：{notes} 篇笔记，界面即将刷新", { notes: summary.notes }),
+            "success",
+          );
+          window.setTimeout(() => window.location.reload(), 800);
         }}
       />
 

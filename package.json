@@ -10,7 +10,8 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "demo:editor": "vite --port 5200",
-    "test": "vitest run"
+    "test": "vitest run",
+    "version:sync": "node scripts/sync-version.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.12.4",

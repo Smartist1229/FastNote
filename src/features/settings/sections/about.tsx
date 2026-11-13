@@ -12,6 +12,7 @@ import {
   shortUrl,
 } from "@/config/app/about";
 import { openExternalLink } from "@/lib/app/externalLink";
+import { getLogDir, openAppFolder } from "@/api/system/system";
 import { checkForUpdates, openUpdateDialog, useUpdater } from "@/stores/updaterStore";
 import { formatSpeed } from "@/lib/text/format";
 import { useI18n } from "@/i18n";
@@ -54,8 +55,16 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
     };
   }, []);
 
-  const handleAuthorClick = () => {
-    if (!onRequestRootPasswordChange) return;
+  /** 打开日志目录：路径由后端算（安装目录 log，不可写时在数据目录）。打不开就算了，不打断操作 */
+  const openLogDir = async () => {
+    try {
+      await openAppFolder(await getLogDir());
+    } catch {
+      /* 目录不存在或没有权限：日志本身不影响使用 */
+    }
+  };
+
+  const handleAuthorClick = () => {    if (!onRequestRootPasswordChange) return;
     const now = Date.now();
     const clicks = authorClicksRef.current.filter((at) => now - at < 2000);
     clicks.push(now);
@@ -135,6 +144,18 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
             className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
           >
             {t("打开更新地址")}
+          </button>
+        </div>
+
+        {/* 日志目录：出问题时把这里的文件发过来，比「你重试一下」有用 */}
+        <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+          <span className="text-faint">{t("日志目录")}</span>
+          <button
+            type="button"
+            onClick={() => void openLogDir()}
+            className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+          >
+            {t("打开日志目录")}
           </button>
         </div>
 
