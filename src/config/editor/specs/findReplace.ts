@@ -1,0 +1,112 @@
+/**
+ * 编辑器设置 · 查找替换组。
+ *
+ * 数据表拆自 `editorSettingSpecs.ts`：一个分组一个文件，改某一组时不用在 1100 行里上下找；
+ * 顺序由主文件的展开顺序决定，这里的元素顺序就是弹窗里的排列顺序。
+ */
+import type { EditorSettingSpec } from "../editorSettingSpecs";
+
+export const FIND_REPLACE_SPECS: EditorSettingSpec[] = [
+  {
+    field: "searchEnabled",
+    group: "查找替换",
+    kind: "toggle",
+    title: "启用查找",
+    desc: "启用右上角悬浮查找 / 替换框与 Ctrl/⌘+F、Ctrl/⌘+H。",
+    keywords: "查找 搜索 替换 ctrl f search find",
+  },
+  {
+    field: "searchShowReplace",
+    group: "查找替换",
+    kind: "toggle",
+    title: "Ctrl/⌘+F 带替换行",
+    desc: "Ctrl/⌘+F 打开查找框时同时展开替换输入框。",
+    keywords: "替换 展开 replace 查找 ctrl f h",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchCaseSensitive",
+    group: "查找替换",
+    kind: "toggle",
+    title: "默认区分大小写",
+    desc: "打开查找框时「区分大小写」是否默认点亮（框内随时可切换）。",
+    keywords: "查找 大小写 case sensitive 搜索",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchRegex",
+    group: "查找替换",
+    kind: "toggle",
+    title: "默认使用正则",
+    desc: "打开查找框时「使用正则表达式」是否默认点亮。",
+    keywords: "查找 正则 regex 表达式 搜索",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchHighlightAll",
+    group: "查找替换",
+    kind: "toggle",
+    title: "高亮全部命中",
+    desc: "编辑区标出所有匹配；关闭后只高亮当前那一个。",
+    keywords: "查找 高亮 命中 highlight 搜索",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchHighlightPreview",
+    group: "查找替换",
+    kind: "toggle",
+    title: "阅读视图也高亮命中",
+    desc: "阅读视图里同样标出匹配（替换始终以编辑区为准，预览侧只负责画）。分栏视图只高亮编辑侧，预览侧不铺。",
+    keywords: "查找 高亮 预览 阅读 命中 preview highlight 搜索",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchRegexReplace",
+    group: "查找替换",
+    kind: "toggle",
+    title: "默认正则替换",
+    desc: "打开查找框时「替换串按正则展开」是否默认点亮：替换串里原样写下的查找正则会被换成整个命中。只在正则模式下有意义。",
+    keywords: "替换 正则 展开 regex replace 查找",
+    hiddenWhen: (s) => !s.searchEnabled || !s.searchRegex,
+  },
+  {
+    field: "searchLoop",
+    group: "查找替换",
+    kind: "toggle",
+    title: "查找循环",
+    desc: "跳到最后一个后再按「下一个」时回到开头。",
+    keywords: "查找 循环 回绕 loop 搜索",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchSeedFromSelection",
+    group: "查找替换",
+    kind: "toggle",
+    title: "选中文字带入查找框",
+    desc: "打开查找框时，把编辑器里选中的文字直接填进查找框。",
+    keywords: "查找 选区 选中 带入 selection 搜索",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchMaxMatches",
+    group: "查找替换",
+    kind: "number",
+    title: "最大命中数",
+    desc: "最多统计并高亮多少个匹配，避免超大文档卡顿。",
+    keywords: "查找 命中 上限 max matches 搜索",
+    min: 100,
+    max: 20000,
+    step: 100,
+    unit: "个",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+  {
+    field: "searchBlockHostFind",
+    group: "查找替换",
+    kind: "toggle",
+    title: "拦截浏览器原生查找",
+    desc: "焦点在编辑器里时，挡掉 WebView 自带的查找条与 F3 等快捷键，避免和编辑器的查找框同时弹出来。",
+    keywords: "原生 查找条 浏览器 find F3 拦截 block",
+    hiddenWhen: (s) => !s.searchEnabled,
+  },
+];
