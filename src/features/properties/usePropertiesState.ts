@@ -4,6 +4,7 @@
  * 属性窗自己不发请求：只在目标笔记变化时拉一次标签与历史，之后的增删改
  * 都让 Rust 回传最新列表覆盖本地 state。
  */
+import { logAction } from "@/lib/app/actionLog";
 import { useEffect, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { Category, ExternalTextFile, Note, NoteHistoryEntry, Tag } from "@/interface/note/note";
@@ -158,6 +159,7 @@ export function usePropertiesState({
   const handleAddTags = async (note: Note, names: string[]) => {
     try {
       const next = await tagsApi.addNoteTags(note.id, names, "user");
+      logAction("tag.add", names.join(", "));
       setNoteTags(next);
       showToast(names.length > 1
         ? t("已添加 {count} 个标签", { count: names.length })
@@ -171,6 +173,7 @@ export function usePropertiesState({
     try {
       // 不传 source：用户在自己的属性窗里操作，看到的都是自己能删的（AI 标签没有删除按钮）
       const next = await tagsApi.removeNoteTags(note.id, [name]);
+      logAction("tag.remove", name);
       setNoteTags(next);
       showToast(t("已移除标签「{name}」", { name }), "success");
     } catch (error) {
@@ -182,6 +185,7 @@ export function usePropertiesState({
   const handleRenameTag = async (id: number, name: string) => {
     try {
       await tagsApi.renameTag(id, name);
+      logAction("tag.rename", name);
       const noteId = propertiesTargetLive?.kind === "note" ? propertiesTargetLive.note.id : null;
       if (noteId != null) setNoteTags(await tagsApi.listNoteTags(noteId));
       showToast(t("已重命名标签"), "success");

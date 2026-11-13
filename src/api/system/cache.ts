@@ -79,3 +79,20 @@ export const webviewUsage = async (): Promise<WebviewUsage> => {
 export const cleanWebviewCache = async (sites: boolean): Promise<WebviewCleanReport> => {
   return await invoke<WebviewCleanReport>("clean_webview_cache", { sites });
 };
+
+/** 日志占用：可清理的（今天之前）与必须保留的（今天） */
+export interface LogUsage {
+  oldBytes: number;
+  oldFiles: number;
+  todayBytes: number;
+}
+
+/** 统计日志占用（`log_usage`）：今天的日志只展示、不参与清理 */
+export const logUsage = async (): Promise<LogUsage> => {
+  return await invoke<LogUsage>('log_usage');
+};
+
+/** 删除今天之前的日志（`clear_old_logs`），返回释放的字节数 */
+export const clearOldLogs = async (): Promise<number> => {
+  return await invoke<number>('clear_old_logs');
+};

@@ -19,8 +19,11 @@ import {
   clearCache,
   webviewUsage,
   cleanWebviewCache,
+  logUsage,
+  clearOldLogs,
   type CacheUsage,
   type WebviewUsage,
+  type LogUsage,
 } from "@/api/system/cache";
 import { attachmentsUsage, gcAttachments, type AttachmentUsage } from "@/api/system/attachments";
 import { getSemanticStatus } from "@/api/ai/semantic";
@@ -69,12 +72,20 @@ export const CleaningPanel: React.FC = () => {
   const [cache, setCache] = useState<CacheUsage | null>(null);
   const [webview, setWebview] = useState<WebviewUsage | null>(null);
   const [usage, setUsage] = useState<AttachmentUsage | null>(null);
+  const [logs, setLogs] = useState<LogUsage | null>(null);
 
-  const [scanning, setScanning] = useState({ cache: false, webview: false, images: false });
-  const [busy, setBusy] = useState<"cache" | "webview" | "sites" | "images" | "all" | null>(null);
+  const [scanning, setScanning] = useState({
+    cache: false,
+    webview: false,
+    images: false,
+    log: false,
+  });
+  const [busy, setBusy] = useState<
+    "cache" | "webview" | "sites" | "images" | "log" | "all" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
 
-  const scanningAny = scanning.cache || scanning.webview || scanning.images;
+  const scanningAny = scanning.cache || scanning.webview || scanning.images || scanning.log;
   const busyAny = busy !== null;
 
   /* ---------------- 扫描 ---------------- */
@@ -115,9 +126,21 @@ export const CleaningPanel: React.FC = () => {
     }
   }, []);
 
+  const scanLog = useCallback(async () => {
+    setScanning((s) => ({ ...s, log: true }));
+    try {
+      setLogs(await logUsage());
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setScanning((s) => ({ ...s, log: false }));
+    }
+  }, []);
+
   const handleScanAll = async () => {
-    // 三个互不依赖，并发扫；浏览器那项最慢，但另外两项会先出结果
-    await Promise.all([scanCache(), scanWebview(), scanImages()]);
+    // 互不依赖，并发扫；浏览器那项最慢，但另外几项会先出结果
+    await Promise.all([scanCache(), scanWebview(), scanImages(), scanLog()]);
   };
 
   /* ---------------- 单项清理 ---------------- */
@@ -244,10 +267,44 @@ export const CleaningPanel: React.FC = () => {
     }
   };
 
+  /**
+   * 清理日志：**只删今天之前的**。
+   *
+   * 今天的文件正在被这条操作自己写入，删了会丢当前会话的记录；
+   * 所以这里连确认框里都把「今天的不动」写出来，避免用户以为清了个干净。
+   */
+  const handleClearLogs = async () => {
+    const ok = await confirm({
+      title: t("清理日志"),
+      message: t(
+        "只删除今天之前的日志文件，今天的日志会保留（它正在写入）。日志只用于排查问题，删除不影响笔记与设置。",
+      ),
+      confirmText: t("开始清理"),
+      danger: true,
+    });
+    if (!ok) return;
+
+    setBusy("log");
+    try {
+      const freed = await clearOldLogs();
+      showToast(
+        freed > 0
+          ? t("已清理日志，释放 {size}", { size: formatBytes(freed) })
+          : t("没有可清理的日志"),
+        "success",
+      );
+      await scanLog();
+    } catch (e) {
+      showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /* ---------------- 全部清理 ---------------- */
 
   /**
-   * 三项依次执行，不并发：`clear_cache` 与 `gc_attachments` 都要拿数据库锁，
+   * 四项依次执行，不并发：`clear_cache` 与 `gc_attachments` 都要拿数据库锁，
    * 同时发只会互相等，顺序调用反而更快，进度也可预期。
    *
    * 这里**不包含站点数据**：那是会掉登录态的操作，必须由用户单独确认。
@@ -256,7 +313,7 @@ export const CleaningPanel: React.FC = () => {
     const ok = await confirm({
       title: t("清理全部"),
       message: t(
-        "会依次清空语义索引与临时残留、清除 WebView2 缓存、删除落盘超过 {days} 天且没人引用的图片。前两项都可以重建，图片删除后无法恢复。站点数据与各网站登录状态不受影响。",
+        "会依次清空语义索引与临时残留、清除 WebView2 缓存、清理今天之前的日志、删除落盘超过 {days} 天且没人引用的图片。前两项都可以重建，图片删除后无法恢复。站点数据与各网站登录状态不受影响。",
         { days: GRACE_DAYS },
       ),
       confirmText: t("开始清理"),
@@ -268,23 +325,25 @@ export const CleaningPanel: React.FC = () => {
     try {
       const cacheReport = await clearCache();
       const webviewReport = await cleanWebviewCache(false);
+      const logFreed = await clearOldLogs();
       const imageReport = await gcAttachments(GRACE_DAYS);
 
       const cacheFreed = cacheReport.dbFreed + cacheReport.tempFreed;
-      const total = cacheFreed + webviewReport.freed + imageReport.freed;
+      const total = cacheFreed + webviewReport.freed + logFreed + imageReport.freed;
 
-      let message = t("共释放 {size}：缓存 {size2} · 浏览器 {size3} · 图片 {size4}", {
+      let message = t("共释放 {size}：缓存 {size2} · 浏览器 {size3} · 日志 {size4} · 图片 {size5}", {
         size: formatBytes(total),
         size2: formatBytes(cacheFreed),
         size3: formatBytes(webviewReport.freed),
-        size4: formatBytes(imageReport.freed),
+        size4: formatBytes(logFreed),
+        size5: formatBytes(imageReport.freed),
       });
       if (webviewReport.pending) {
         message += ` · ${t("部分浏览器缓存文件正被使用，已登记在下次启动时继续清理")}`;
       }
 
       showToast(message, "success");
-      await Promise.all([scanCache(), scanWebview(), scanImages()]);
+      await Promise.all([scanCache(), scanWebview(), scanImages(), scanLog()]);
     } catch (e) {
       showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
     } finally {
@@ -296,7 +355,7 @@ export const CleaningPanel: React.FC = () => {
 
   /** 卡片右上角：未扫是「扫描」，扫过是「重新扫描」，扫描中显示状态 */
   const scanButton = (
-    key: "cache" | "webview" | "images",
+    key: "cache" | "webview" | "images" | "log",
     scanned: boolean,
     run: () => Promise<void>,
   ) => (
@@ -474,6 +533,42 @@ export const CleaningPanel: React.FC = () => {
             disabled={usage === null || scanningAny || busyAny}
           >
             {busy === "images" ? t("清理中…") : t("清理未使用的图片")}
+          </button>
+        </Actions>
+      </Card>
+
+      <Card title={t("日志")} action={scanButton("log", logs !== null, scanLog)}>
+        {scanning.log ? (
+          <p className="text-[11px] text-faint">{t("统计中…")}</p>
+        ) : logs === null ? (
+          notScanned
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[19px] font-medium tabular-nums text-body">
+                {formatBytes(logs.oldBytes)}
+              </span>
+              <span className="text-[11px] text-faint">{t("可清理")}</span>
+              <span className="ml-auto text-[11px] tabular-nums text-faint">
+                {t("{count} 个文件", { count: logs.oldFiles })}
+              </span>
+            </div>
+            <p className="mt-1.5 text-[10.5px] leading-relaxed text-faint">
+              {t("今天的日志 {size} 会保留（正在写入）；清理只删今天之前的。", {
+                size: formatBytes(logs.todayBytes),
+              })}
+            </p>
+          </>
+        )}
+
+        <Actions>
+          <button
+            type="button"
+            className={PRIMARY_BTN}
+            onClick={() => void handleClearLogs()}
+            disabled={logs === null || scanningAny || busyAny}
+          >
+            {busy === "log" ? t("清理中…") : t("清理旧日志")}
           </button>
         </Actions>
       </Card>

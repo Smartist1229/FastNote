@@ -9,6 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "@/App";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
+import { logFrontend } from "@/api/system/system";
 import { applyTheme, readCachedTheme } from "@/lib/theme/theme";
 import { setResolvedThemeMode } from "@/lib/theme/themeRuntime";
 import { DEFAULT_THEME_SETTINGS } from "@/config/theme/themes";
@@ -117,6 +118,32 @@ document.addEventListener("mouseup", endScrollbarDrag, true);
 window.addEventListener("blur", endScrollbarDrag);
 
 // StrictMode 只在开发期额外跑一遍 effect；ErrorBoundary 兜住渲染期异常
+/*
+ * 前端异常也要进日志。没有这一层的话，「白屏 / 点了没反应」这件事在后端日志里
+ * 是一片干净——用户能说的只有「它坏了」，我们连哪一行都不知道。
+ *
+ * - `error`：未捕获的运行时错误。图片/脚本加载失败也会冒到 window，
+ *   但 event.message 为空，跳过（不是代码问题，写日志只会变噪音）。
+ * - `unhandledrejection`：async 里没人 catch 的拒绝，最常见的一类"静默失效"。
+ */
+if (isTauri()) {
+  window.addEventListener("error", (event) => {
+    if (!event.message) return;
+    const where = event.filename
+      ? `${event.filename}:${event.lineno}:${event.colno}`
+      : "unknown";
+    const stack = (event.error as Error | undefined)?.stack ?? "";
+    void logFrontend("error", `${event.message} @ ${where}\n${stack}`);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason as { stack?: string } | undefined;
+    void logFrontend(
+      "error",
+      `unhandled promise rejection: ${reason?.stack ?? String(event.reason)}`,
+    );
+  });
+}
+
 /*
  * 首帧前先着色：主题存在数据库里，读库是异步的，赶不上第一帧；
  * 这里用上一轮的 localStorage 快照先刷一遍，深色用户不会看到一瞬白屏。

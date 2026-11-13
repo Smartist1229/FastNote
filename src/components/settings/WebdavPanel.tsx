@@ -1,3 +1,4 @@
+import { logAction } from "@/lib/app/actionLog";
 import { t, useI18n, getLocale } from "@/i18n";
 /**
  * 设置 · 备份与恢复 · WebDAV 云同步。
@@ -318,6 +319,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         password: typedPassword ? password : undefined,
         folder: folder.trim() || DEFAULT_WEBDAV_SETTINGS.folder,
       });
+      logAction("webdav.test", folder.trim() || DEFAULT_WEBDAV_SETTINGS.folder);
       showToast(message.startsWith("连接成功：")
         ? t("连接成功：{path}", { path: message.slice("连接成功：".length) })
         : t(message), "success");
@@ -461,6 +463,7 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
     setConflictBusy("saveCopy");
     try {
       const copyName = await webdavApi.saveBackupCopy(conflict.source, conflict.backupName);
+      logAction("backup.save_copy", conflict.backupName);
       setConflict(null);
       showToast(t("已另存为副本：{value1}", { value1: copyName }), "success");
       await refreshLocal();

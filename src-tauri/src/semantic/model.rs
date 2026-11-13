@@ -513,7 +513,7 @@ pub fn migrate_legacy(app: &AppHandle) {
             continue;
         }
         if let Err(e) = move_dir(&src, &dst) {
-            crate::log_error!("迁移模型 {} 失败：{e}", spec.id);
+            crate::log_error!("failed to migrate model {}: {e}", spec.id);
         }
     }
     // 搬空后顺手删掉空壳；还有其他文件时 remove_dir 会失败，忽略即可

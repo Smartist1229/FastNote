@@ -25,7 +25,6 @@ mod updater;
 mod webdav;
 
 use autostart::{launched_from_autostart, read_single_instance_enabled, sync_autostart_shortcut};
-use db::init_database;
 use tray::{create_tray, show_main_window};
 
 pub use models::*;
@@ -459,6 +458,7 @@ pub fn run() {
             export_sqlite_backup,
             import_sqlite_backup,
             export_encrypted_backup,
+            export_diagnostics,
             import_encrypted_backup,
             webdav::webdav_status,
             webdav::webdav_set_password,
@@ -481,6 +481,9 @@ pub fn run() {
             set_tray_enabled,
             set_autostart_enabled,
             log_dir,
+            log_frontend,
+            log_user_action,
+            take_recovery_notice,
             should_show_on_startup,
             semantic::semantic_status,
             semantic::semantic_download_model,
@@ -555,6 +558,8 @@ pub fn run() {
             // 清理缓存
             cache_usage,
             clear_cache,
+            log_usage,
+            clear_old_logs,
             // WebView2 缓存（每个网页视图一份 profile）
             webview_usage,
             clean_webview_cache,
@@ -568,34 +573,8 @@ pub fn run() {
 
             let db_path = data_dir.join(DB_FILE_NAME);
 
-            let conn = Connection::open(db_path).expect("failed to open database");
-            /*
-             * 连接级参数。全库只有一个可写连接（`AppState::conn` 里的 Mutex），
-             * 但手动保存、AI 工具写入、历史快照、语义索引 worker 都要抢它，
-             * 默认的 rollback journal 加上没有超时，会让"正在写"直接返回 SQLITE_BUSY。
-             *
-             * - WAL：读不挡写、写不挡读，自动保存期间列表查询不会被卡住；
-             *   代价是多出 -wal / -shm 两个附属文件。备份不受影响：快照走 `VACUUM INTO`
-             *   （见 build_sqlite_snapshot，与日志模式无关，且生成后会切回 DELETE 单文件），
-             *   webdav 也是先快照再上传，不直接拷活库。
-             * - synchronous=NORMAL：WAL 下的推荐值，断电最多丢最后一个事务、不会坏库；
-             *   默认 FULL 会让每次 500ms 防抖的自动保存都 fsync 一次。
-             * - busy_timeout：等锁最多 5 秒再报错，而不是立刻把 SQLITE_BUSY 抛给界面。
-             * - secure_delete：删除/覆盖加密前的明文行时清零旧页。
-             *   **WAL 下被覆盖的页会留在 -wal 里直到 checkpoint**，所以"落盘即净"的路径
-             *   必须显式 checkpoint：加解密后统一走 encryption.rs 的 `scrub()` →
-             *   `wal_checkpoint(TRUNCATE)`，空闲时 `crypto_scrub_flush` 再做一次
-             *   checkpoint + VACUUM，把明文页真正抹掉。改加密流程时别绕开这两个入口。
-             * - temp_store=MEMORY：VACUUM / 排序的临时结构留在内存，不落磁盘临时目录。
-             */
-            let _ = conn.execute_batch(
-                "PRAGMA journal_mode = WAL;
-                 PRAGMA synchronous = NORMAL;
-                 PRAGMA busy_timeout = 5000;
-                 PRAGMA secure_delete = ON;
-                 PRAGMA temp_store = MEMORY;",
-            );
-            init_database(&conn).expect("failed to initialize database");
+            // 打开 + 自检 + 升级前备份 + 损坏兜底，细节见 db::open_database 的注释
+            let conn = db::open_database(&data_dir, &db_path, &app.package_info().version.to_string());
 
             let state = AppState {
                 conn: Mutex::new(conn),
@@ -647,6 +626,11 @@ pub fn run() {
             semantic::spawn_worker(app.handle().clone());
             // 内置插件首次运行种到 <exe>/plugin/（有标记则跳过），失败不阻断启动
             plugins::seed_builtin_plugins(app.handle());
+            // 启动步骤写进日志：出「启动慢 / 卡在某一步」时能对着时间线看
+            crate::log_info!(
+                "startup complete: database {}, background tasks ready (auto backup / semantic index / builtin plugins)",
+                db_path.display()
+            );
 
             let window = app
                 .get_webview_window("main")
@@ -703,7 +687,7 @@ pub fn run() {
             let tray_on = read_setting_bool(app.handle(), "app.config.general.trayEnabled", true);
             if tray_on {
                 if let Err(e) = create_tray(app.handle()) {
-                    crate::log_error!("创建托盘图标失败：{e}");
+                    crate::log_error!("failed to create tray icon: {e}");
                 }
             }
 

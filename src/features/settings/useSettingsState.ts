@@ -33,6 +33,7 @@ import { setLanguage, t as translateNow, useI18n } from "@/i18n";
 import { setLinkOpenTarget } from "@/lib/app/externalLink";
 import { schedulePeriodicCheck, scheduleStartupCheck } from "@/stores/updaterStore";
 import { useToast } from "@/components/common/Toast";
+import { logSettingChange } from "@/lib/app/actionLog";
 
 /** 启动读库后需要同步的其它域运行时状态（由 App 注入，避免循环依赖） */
 export interface SettingsRuntime {
@@ -148,6 +149,8 @@ export function useSettingsState({ confirm, runtime }: UseSettingsStateParams) {
     (category: keyof AppSettings, field: string, value: boolean | number | string) => {
       setAppSettings((prev) => ({ ...prev, [category]: { ...prev[category], [field]: value } }));
       saveAppSetting(category as never, field as never, value as never);
+      // 设置变更也进日志（防抖记最终值）：用户说「改了设置之后就不对」时能对上时间线
+      logSettingChange(`${category}.${field}`, String(value));
       // 笔记列表排序需要立刻反映到运行时状态，否则要刷新后才会生效
       if (category === "view") {
         if (field === "sortBy") runtime.setSortBy(value as string);

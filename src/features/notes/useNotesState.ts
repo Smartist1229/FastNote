@@ -4,6 +4,7 @@
  *
  * notes 始终是全量列表：分组抽屉、收藏视图、搜索都从它派生，切分组不重新请求。
  */
+import { logAction, SAVE_THROTTLE_MS } from "@/lib/app/actionLog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { Category, ExternalTextFile, Note, NoteHistoryEntry } from "@/interface/note/note";
@@ -163,6 +164,7 @@ export function useNotesState({
         targetCategory,
         defaultNoteAiAccess,
       );
+      logAction("note.create", note.title);
       setNotes((prev) => [...prev, note]);
       setSelectedNote(note);
       setSelectedCategoryId(targetCategory);
@@ -178,6 +180,7 @@ export function useNotesState({
   const handleSavePreviewToCategory = async (categoryId: string | null, title: string, content: string) => {
     try {
       const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
+      logAction("note.save_preview", title);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
@@ -206,6 +209,7 @@ export function useNotesState({
     saveQueueRef.current = saveQueueRef.current.then(async () => {
       try {
         await notesApi.updateNote(id, title, content, categoryId);
+        logAction("note.save", title, { key: `save-${id}`, throttleMs: SAVE_THROTTLE_MS });
         const now = new Date().toISOString();
         setNotes((prev) =>
           prev.map((n) => (n.id === id ? { ...n, title, content, category_id: categoryId, updated_at: now } : n))
@@ -239,6 +243,7 @@ export function useNotesState({
     if (!confirmed) return;
     try {
       await notesApi.moveToTrash(noteId);
+      logAction("note.trash", selectedNote.title);
       await loadData();
       setSelectedNote((current) => (current?.id === noteId ? null : current));
       showToast(t("删除成功！"), "success");
@@ -264,6 +269,7 @@ export function useNotesState({
     if (!confirmed) return;
     try {
       await notesApi.moveToTrash(note.id);
+      logAction("note.trash", note.title);
       await loadData();
       if (selectedNote?.id === note.id) setSelectedNote(null);
       showToast(t("删除成功！"), "success");
@@ -277,6 +283,7 @@ export function useNotesState({
   const handleTogglePin = async (note: Note) => {
     try {
       await notesApi.pinNote(note.id, !note.is_pinned);
+      logAction(note.is_pinned ? "note.unpin" : "note.pin", note.title);
       await loadData();
       showToast(note.is_pinned ? t("已取消收藏") : t("已收藏"), "success");
     } catch {
@@ -293,6 +300,7 @@ export function useNotesState({
     if (note.ai_access === level) return;
     try {
       await notesApi.setNoteAiAccess(note.id, level);
+      logAction("note.ai_access", `${note.title} → ${level}`);
       setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, ai_access: level } : n)));
       setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, ai_access: level } : prev));
       showToast(t("「{name}」的 AI 访问已设为{level}", {
@@ -308,6 +316,7 @@ export function useNotesState({
     if (note.category_id === categoryId) return;
     try {
       await notesApi.updateNote(note.id, note.title, note.content, categoryId);
+      logAction("note.move", `${note.title} -> ${categoryId ?? "(ungrouped)"}`);
       await loadData();
       setSelectedCategoryId(categoryId);
       showToast(t("移动成功"), "success");
@@ -320,6 +329,7 @@ export function useNotesState({
   const handleRenameNote = async (note: Note, title: string) => {
     try {
       await notesApi.updateNote(note.id, title, note.content, note.category_id);
+      logAction("note.rename", title);
       setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, title } : n)));
       if (selectedNoteRef.current?.id === note.id) {
         setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, title } : prev));

@@ -357,7 +357,7 @@ pub fn get_ai_providers(state: State<AppState>) -> Result<Vec<AiProvider>, Strin
             match decrypt_secret(&conn, &provider.api_key) {
                 Ok(plain) => provider.api_key = plain,
                 Err(e) => {
-                    crate::log_error!("服务商 {} 的 API Key 解密失败：{e}", provider.id);
+                    crate::log_error!("failed to decrypt API key for provider {}: {e}", provider.id);
                     provider.api_key = String::new();
                 }
             }
@@ -443,7 +443,7 @@ pub(crate) fn get_ai_provider(id: i64, state: &State<AppState>) -> Result<AiProv
         match decrypt_secret(&conn, &provider.api_key) {
             Ok(plain) => provider.api_key = plain,
             Err(e) => {
-                crate::log_error!("服务商 {} 的 API Key 解密失败：{e}", provider.id);
+                crate::log_error!("failed to decrypt API key for provider {}: {e}", provider.id);
                 provider.api_key = String::new();
             }
         }

@@ -11,6 +11,7 @@
  * - abortRef + runIdRef 标识轮次：旧循环在检查点静默退出，且不能释放新一轮的发送锁。
  * - 确认弹窗的 Promise 必须 settle（按钮、关面板、切会话、停止、超时），否则整轮卡死。
  */
+import { logAction } from "@/lib/app/actionLog";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 import { emitAppEvent, onAppEvent } from "@/shared/bus";
 import { t as translate, useI18n } from "@/i18n";
@@ -1538,6 +1539,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
     if (!activeProvider?.id || !activeModel) { showToast(t("请先在设置中勾选可用模型"), "error"); return; }
     const myRun = ++runIdRef.current;
     turnStartedAtRef.current = Date.now();
+    // 只记「谁 + 多长」，不记提问内容：日志可能被用户发出来，正文不该出现在里面
+    logAction("ai.send", `${activeProvider?.name ?? ""}/${activeModel} · ${prompt.length} chars`, {
+      throttleMs: 0,
+    });
     /*
      * 每轮新提问都重置"这个模型会不会写思考"的判断。
      * 该判断一旦为 false 就不再按住抢答、也不再重试；但模型表现会随上下文变化，
@@ -1578,6 +1583,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
   };
 
   const handleStop = () => {
+    logAction("ai.stop", undefined, { throttleMs: 0 });
     abortRef.current = true;
     // 真正断开后端的流：不 abort 的话 Rust 会一直读到模型说完，token 照常计费
     roundAbortRef.current?.abort();

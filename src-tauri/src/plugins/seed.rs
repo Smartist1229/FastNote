@@ -122,7 +122,7 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
     let root = match plugins_root() {
         Ok(root) => root,
         Err(e) => {
-            crate::log_warn!("内置插件未初始化：{e}");
+            crate::log_warn!("builtin plugin not initialized: {e}");
             return;
         }
     };
@@ -142,7 +142,7 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
     // 首次启动只在目录不存在时创建；目录已存在但不含标记时保留用户内容，只补标记。
     if force || !target.is_dir() {
         if let Err(e) = write_demo_plugin(&target) {
-            crate::log_error!("写入内置插件失败：{e}");
+            crate::log_error!("failed to write builtin plugin: {e}");
             if !force {
                 return; // 非强制模式：不写标记，下次启动重试
             }
@@ -150,7 +150,7 @@ pub fn seed_builtin_plugins(app: &AppHandle) {
         }
     }
     if let Err(e) = std::fs::write(&marker, b"seeded") {
-        crate::log_error!("写入内置插件标记失败：{e}");
+        crate::log_error!("failed to write builtin plugin marker: {e}");
     }
 }
 
@@ -206,7 +206,7 @@ fn remove_legacy_word_count(root: &Path) {
         && manifest.version == "0.1.0"
     {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
-            crate::log_warn!("清理旧内置插件失败：{e}");
+            crate::log_warn!("failed to clean up old builtin plugins: {e}");
         }
     }
 }

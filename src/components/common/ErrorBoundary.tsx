@@ -1,6 +1,7 @@
 import { Component, ErrorInfo } from "react";
 import type { ErrorBoundaryProps, ErrorBoundaryState } from "@/interface/app/ui";
 import { useI18n } from "@/i18n";
+import { logFrontend } from "@/api/system/system";
 
 /** The class boundary cannot subscribe with hooks; its fallback can. */
 const ErrorFallback = ({ error, onDismiss }: { error: Error; onDismiss: () => void }) => {
@@ -52,6 +53,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   /** 保留组件栈打到控制台：界面上只显示 error.stack，定位仍更依赖这里 */
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("界面渲染出错：", error, info.componentStack);
+    // 同时写进日志文件：用户截图发过来的往往只有「界面遇到了一个错误」这一句
+    void logFrontend(
+      "error",
+      `render error: ${error.stack || error.message}\ncomponent stack: ${info.componentStack ?? ""}`,
+    );
   }
 
   render() {

@@ -4,6 +4,7 @@
  *
  * loadData 由 notes 域提供，通过 ref 调用，避免两个域互相 import。
  */
+import { logAction } from "@/lib/app/actionLog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Category } from "@/interface/note/note";
 import type { EncryptionScope } from "@/interface/system/encryption";
@@ -85,6 +86,7 @@ export function useCategoriesState({
     }
     try {
       await categoriesApi.createCategory(trimmed, defaultCategoryAiAccess);
+      logAction("group.create", trimmed);
       await loadDataRef.current();
       showToast(t("已创建分组「{name}」", { name: trimmed }), "success");
     } catch (error) {
@@ -106,6 +108,7 @@ export function useCategoriesState({
   const handleRenameCategory = async (category: Category, name: string) => {
     try {
       await categoriesApi.updateCategory(category.id, name);
+      logAction("group.rename", name);
       await loadDataRef.current();
       showToast(t("已更新分组名称"), "success");
     } catch {
@@ -118,6 +121,7 @@ export function useCategoriesState({
     if (category.ai_access === level) return;
     try {
       await categoriesApi.setCategoryAiAccess(category.id, level);
+      logAction("group.ai_access", `${category.name} -> ${level}`);
       setCategories((prev) => prev.map((c) => (c.id === category.id ? { ...c, ai_access: level } : c)));
       showToast(t("「{name}」的 AI 访问已设为{level}", {
         name: category.name, level: t(AI_ACCESS_LABELS[level]),
@@ -135,6 +139,7 @@ export function useCategoriesState({
     if (!deletingCategory) return;
     try {
       await categoriesApi.deleteCategory(deletingCategory.id, deleteCategoryNotes);
+      logAction("group.delete", deletingCategory?.name ?? "");
       if (selectedCategoryId === deletingCategory.id) { setSelectedCategoryId(null); }
       await loadDataRef.current();
       setShowDeleteCategoryModal(false);

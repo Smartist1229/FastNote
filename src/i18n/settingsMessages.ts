@@ -211,8 +211,12 @@ export const settingsMessages: Record<string, string> = {
   "正在安装": "Installing",
   "更新地址": "Update source",
   "打开更新地址": "Open update page",
-  "日志目录": "Log folder",
+  "上次启动时数据库文件损坏，已重建为空库。原文件保留为 {value1}，可在备份设置里恢复数据。": "The database file was corrupted on last launch and has been recreated empty. The original file is kept as {value1}; you can restore data from a backup.",
+  "日志与诊断": "Logs & diagnostics",
   "打开日志目录": "Open log folder",
+  "导出诊断包": "Export diagnostics",
+  "诊断包已导出：{value1}": "Diagnostics exported: {value1}",
+  "导出诊断包失败：{value1}": "Could not export diagnostics: {value1}",
   "自动检查更新": "Automatic update checks",
   "自动检查更新间隔": "Automatic update check interval",
   "5 分钟": "5 min",
@@ -981,12 +985,23 @@ export const settingsMessages: Record<string, string> = {
     "Not scanned yet. Use Scan in the top-right corner to measure usage.",
   "上次清理还有残留，下次启动会继续。":
     "Some files were left last time; cleanup continues on next launch.",
-  "共释放 {size}：缓存 {size2} · 浏览器 {size3} · 图片 {size4}":
-    "Freed {size}: cache {size2} · browser {size3} · images {size4}",
+  "共释放 {size}：缓存 {size2} · 浏览器 {size3} · 日志 {size4} · 图片 {size5}":
+    "Freed {size}: cache {size2} · browser {size3} · logs {size4} · images {size5}",
   "部分浏览器缓存文件正被使用，已登记在下次启动时继续清理":
     "Some browser cache files are in use; they will be cleaned up on next launch",
-  "会依次清空语义索引与临时残留、清除 WebView2 缓存、删除落盘超过 {days} 天且没人引用的图片。前两项都可以重建，图片删除后无法恢复。站点数据与各网站登录状态不受影响。":
-    "This clears the semantic index and temp leftovers, then the WebView2 caches, then images older than {days} days that nothing references. The first two are rebuildable; deleted images are gone for good. Site data and website logins are not touched.",
+  "会依次清空语义索引与临时残留、清除 WebView2 缓存、清理今天之前的日志、删除落盘超过 {days} 天且没人引用的图片。前两项都可以重建，图片删除后无法恢复。站点数据与各网站登录状态不受影响。":
+    "This clears the semantic index and temp leftovers, then the WebView2 caches, then logs older than today, then images older than {days} days that nothing references. The first two are rebuildable; deleted images are gone for good. Site data and website logins are not touched.",
+  /* 日志清理：只删今天之前的 */
+  "日志": "Logs",
+  "{count} 个文件": "{count} files",
+  "清理旧日志": "Clear old logs",
+  "清理日志": "Clear logs",
+  "今天的日志 {size} 会保留（正在写入）；清理只删今天之前的。":
+    "Today's log ({size}) is kept because it is being written; only older files are removed.",
+  "只删除今天之前的日志文件，今天的日志会保留（它正在写入）。日志只用于排查问题，删除不影响笔记与设置。":
+    "Only log files from before today are removed; today's log stays because it is being written. Logs are diagnostic only — notes and settings are untouched.",
+  "已清理日志，释放 {size}": "Logs cleared, freed {size}",
+  "没有可清理的日志": "No old logs to clear",
   "开始清理": "Start cleanup",
   "语义索引是笔记的向量副本，可以随时重建；临时残留是恢复备份前留下的整库快照，正常退出会自己删掉，崩溃才会剩下。":
     "The semantic index is a vector copy of your notes and can be rebuilt at any time. Temp leftovers are full database snapshots taken before a restore — a normal exit removes them, a crash leaves them behind.",

@@ -81,7 +81,7 @@ pub fn init(version: &str) {
     emit(
         "INFO",
         &format!(
-            "===== FastNote v{version} 启动 · {} {} =====",
+            "===== FastNote v{version} starting · {} {} =====",
             std::env::consts::OS,
             std::env::consts::ARCH
         ),
@@ -207,10 +207,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    /// 清理面板的判据：只有「今天之前」的日志算可清理，今天那份永远保留
+    #[test]
+    fn only_older_days_count_as_old() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 13).expect("日期");
+        assert!(is_old_log_name("fastnote-2026-11-12.log", today));
+        assert!(is_old_log_name("fastnote-2020-01-01.log", today));
+        assert!(!is_old_log_name("fastnote-2026-11-13.log", today), "今天的不能算旧");
+        assert!(!is_old_log_name("fastnote-2026-11-14.log", today));
+        assert!(!is_old_log_name("notes.txt", today));
+        assert!(!is_old_log_name("fastnote-bad.log", today));
+    }
+
     /// 过期日志必须被清掉，当天的必须留着（文件名里的日期就是判据，不看 mtime）
     #[test]
-    fn prune_removes_expired_files_only() {
-        let dir = temp_dir("prune");
+    fn prune_removes_expired_files_only() {        let dir = temp_dir("prune");
         let today = Local::now().date_naive();
         let old = today - Duration::days(KEEP_DAYS + 1);
 
@@ -229,4 +241,67 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/* ---------------- 清理面板用：只删「今天之前」的日志 ---------------- */
+
+/// 文件名是不是「今天之前」的日志。
+///
+/// 判据只看文件名里的日期：拷进来的文件 mtime 是新的，看 mtime 会漏删。
+/// 今天的那份永远不算——它可能正被这条清理命令自己写着。
+fn is_old_log_name(name: &str, today: NaiveDate) -> bool {
+    let Some(stamp) = name
+        .strip_prefix(FILE_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".log"))
+    else {
+        return false;
+    };
+    let Ok(date) = NaiveDate::parse_from_str(stamp, "%Y-%m-%d") else {
+        return false;
+    };
+    date < today
+}
+
+/// 今天之前的日志文件（按文件名里的日期判断，不看 mtime —— 拷过来的文件 mtime 是新的）
+pub fn old_log_files() -> Vec<(PathBuf, u64)> {
+    let dir = dir();
+    let today = Local::now().date_naive();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_old_log_name(&name, today) {
+                return None;
+            }
+            let size = entry.metadata().ok()?.len();
+            Some((entry.path(), size))
+        })
+        .collect()
+}
+
+/// 删除今天之前的日志，返回（释放字节, 删除份数）。
+///
+/// **今天的不动**：那份文件可能正被这条命令自己写着，删了会丢当前会话的日志。
+pub fn prune_before_today() -> (u64, usize) {
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    for (path, size) in old_log_files() {
+        if std::fs::remove_file(&path).is_ok() {
+            bytes += size;
+            files += 1;
+        }
+    }
+    (bytes, files)
+}
+
+/// 今天已写入的字节数（清理面板要展示「今天的会保留」）
+pub fn today_bytes() -> u64 {
+    let path = dir().join(format!(
+        "{FILE_PREFIX}{}.log",
+        Local::now().date_naive().format("%Y-%m-%d")
+    ));
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }

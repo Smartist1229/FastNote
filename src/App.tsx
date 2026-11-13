@@ -22,6 +22,7 @@ import { useSearchHistory } from "@/hooks/useSearchHistory";
 import { UpdateDialog } from "@/components/common/UpdateDialog";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
+import { takeRecoveryNotice } from "@/api/system/system";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { flushThemeSettings } from "@/stores/themeStore";
 import * as tagsApi from "@/api/note/tags";
@@ -96,6 +97,26 @@ function AppContent() {
     pluginHost.setToastDispatcher((message, type) => showToast(message, type));
     void pluginHost.init();
   }, []);
+
+  /**
+   * 上次启动时数据库损坏被重建过 → 提示一次（后端取走即清空，不会反复弹）。
+   *
+   * 这条提示只有在「真的发生了」时才出现：用户看到的是空库 + 原文件保留的位置，
+   * 而不是一个凭空打不开的应用。
+   */
+  useEffect(() => {
+    void takeRecoveryNotice()
+      .then((file) => {
+        if (!file) return;
+        showToast(
+          t("上次启动时数据库文件损坏，已重建为空库。原文件保留为 {value1}，可在备份设置里恢复数据。", {
+            value1: file,
+          }),
+          "error",
+        );
+      })
+      .catch(() => undefined);
+  }, [showToast, t]);
 
   /** 纯 UI 局部状态：侧栏折叠 / 唤出把手 / 侧栏视图 */
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);

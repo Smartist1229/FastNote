@@ -119,7 +119,7 @@ pub(crate) fn sync_autostart_shortcut(app: &AppHandle) {
     if read_setting_bool(app, "app.config.general.autostart", false) {
         if !shortcut.exists() {
             if let Err(e) = write_autostart_shortcut(&shortcut) {
-                crate::log_error!("创建开机启动快捷方式失败：{e}");
+                crate::log_error!("failed to create autostart shortcut: {e}");
             }
         }
     } else if shortcut.exists() {

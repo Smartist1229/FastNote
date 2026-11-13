@@ -12,7 +12,10 @@ import {
   shortUrl,
 } from "@/config/app/about";
 import { openExternalLink } from "@/lib/app/externalLink";
-import { getLogDir, openAppFolder } from "@/api/system/system";
+import { exportDiagnostics, getLogDir, openAppFolder } from "@/api/system/system";
+import { errorText } from "@/lib/app/errorText";
+import { useToast } from "@/components/common/Toast";
+import { save } from "@tauri-apps/plugin-dialog";
 import { checkForUpdates, openUpdateDialog, useUpdater } from "@/stores/updaterStore";
 import { formatSpeed } from "@/lib/text/format";
 import { useI18n } from "@/i18n";
@@ -31,6 +34,7 @@ const UPDATE_CHECK_INTERVAL_OPTIONS: EnumOption[] = [
 
 export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }) => {
   const { t } = useI18n();
+  const { showToast } = useToast();
   const { appSettings, setApp, onRequestRootPasswordChange } = ctx;
   const updater = useUpdater();
 
@@ -61,6 +65,25 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
       await openAppFolder(await getLogDir());
     } catch {
       /* 目录不存在或没有权限：日志本身不影响使用 */
+    }
+  };
+
+  /**
+   * 导出诊断包：环境信息 + 最近两份日志，**不含数据库与笔记正文**。
+   *
+   * 这是给普通用户的出口 —— 「打开日志目录然后自己压缩再发给我」等于没有出口。
+   */
+  const handleExportDiagnostics = async () => {
+    try {
+      const path = await save({
+        defaultPath: `fastnote-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      });
+      if (!path) return;
+      await exportDiagnostics(path);
+      showToast(t("诊断包已导出：{value1}", { value1: path }), "success");
+    } catch (e) {
+      showToast(t("导出诊断包失败：{value1}", { value1: errorText(e) }), "error");
     }
   };
 
@@ -149,14 +172,23 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
 
         {/* 日志目录：出问题时把这里的文件发过来，比「你重试一下」有用 */}
         <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
-          <span className="text-faint">{t("日志目录")}</span>
-          <button
-            type="button"
-            onClick={() => void openLogDir()}
-            className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
-          >
-            {t("打开日志目录")}
-          </button>
+          <span className="text-faint">{t("日志与诊断")}</span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void openLogDir()}
+              className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+            >
+              {t("打开日志目录")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExportDiagnostics()}
+              className="text-primary-600 hover:text-primary-700 hover:underline transition-colors"
+            >
+              {t("导出诊断包")}
+            </button>
+          </div>
         </div>
 
         {updater.phase === "current" && (

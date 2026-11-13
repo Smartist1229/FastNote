@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use zeroize::{Zeroizing, Zeroize};
 use crate::{AppState, encrypt_secret, decrypt_secret, is_encrypted};
 use crate::semantic;
@@ -818,7 +818,7 @@ pub fn export_backup(
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     // 体积进日志：用户说「备份怎么这么大/这么小」时，这是第一个要看的数据
     crate::log_info!(
-        "导出备份 {path}（{} 篇笔记 · {:.1} MB · 只备份笔记={notes_only}）",
+        "exported backup {path} ({} notes, {:.1} MB, notes_only={notes_only})",
         summary.notes,
         size as f64 / 1_048_576.0
     );
@@ -1953,7 +1953,7 @@ pub(crate) fn apply_backup_merge(
 
     // 恢复是「一年用一次、那次必须查得清」的操作：条数写进日志，事后能对上账
     crate::log_info!(
-        "恢复完成：笔记 {} · 分组 {} · 服务商 {} · 会话 {} · 消息 {} · 设置 {} · 本地保留 {}",
+        "restore done: notes {} · groups {} · providers {} · sessions {} · messages {} · settings {} · preserved {}",
         summary.notes,
         summary.categories,
         summary.providers,
@@ -3817,8 +3817,7 @@ pub struct NoteFormatSpec {
 }
 
 /// 按顺序写进 zip；EPUB 要求 mimetype 必须是第一个条目且不压缩，这里按名字特殊处理
-pub(crate) fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), String> {
-    use std::io::Write as _;
+pub(crate) fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), String> {    use std::io::Write as _;
     use zip::write::SimpleFileOptions;
     use zip::CompressionMethod;
 
@@ -3841,6 +3840,99 @@ pub(crate) fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), Str
 
     zip.finish().map_err(|e| format!("生成压缩包失败：{e}"))?;
     Ok(())
+}
+
+/// 导出诊断包：环境信息 + 最近两份日志，打成 zip。
+///
+/// **不含数据库、不含笔记正文** —— 只取日志文本、文件大小、条数这类数字。
+/// 有它，用户报「备份失败 / 白屏」时点一下把 zip 发过来就够排障；
+/// 没有它，用户唯一的出口是「打开日志目录然后自己压缩」，等于没有出口。
+#[tauri::command]
+pub fn export_diagnostics(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<String, String> {
+    let log_dir = crate::logger::dir();
+    let data_dir = crate::resolve_data_dir(app.path().app_data_dir().ok());
+
+    let mut report = String::new();
+    report.push_str("FastNote diagnostics\n");
+    report.push_str(&format!("generated at: {}\n", Local::now().to_rfc3339()));
+    report.push_str(&format!("version: {}\n", app.package_info().version));
+    report.push_str(&format!(
+        "platform: {} {}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    report.push_str(&format!("data dir: {}\n", data_dir.display()));
+    report.push_str(&format!("log dir: {}\n", log_dir.display()));
+
+    if let Ok(meta) = std::fs::metadata(data_dir.join("fastnote.db")) {
+        report.push_str(&format!(
+            "database size: {:.1} MB\n",
+            meta.len() as f64 / 1_048_576.0
+        ));
+    }
+
+    /*
+     * 规模 + 最近一次云备份的状态：这两项能直接区分
+     * 「库里东西太多传不上去」和「网络 / 账号 / 权限问题」。
+     */
+    if let Ok(conn) = state.conn.lock() {
+        let notes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes WHERE is_deleted = 0", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+        let categories: i64 = conn
+            .query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))
+            .unwrap_or(0);
+        report.push_str(&format!("notes: {notes} · groups: {categories}\n"));
+        for key in [
+            "webdav.lastAutoBackupAt",
+            "webdav.lastAutoFile",
+            "webdav.lastAutoError",
+        ] {
+            if let Ok(value) = conn.query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            ) {
+                report.push_str(&format!("{key}：{value}\n"));
+            }
+        }
+    }
+
+    let mut entries = vec![ZipEntry {
+        name: "diagnostics.txt".to_string(),
+        content: report.into_bytes(),
+    }];
+
+    // 最近两份日志：够覆盖「刚才出的事」，又不至于把包撑到几十兆
+    let mut logs: Vec<std::path::PathBuf> = std::fs::read_dir(&log_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|file| file.extension().is_some_and(|ext| ext == "log"))
+        .collect();
+    logs.sort();
+    for log_path in logs.iter().rev().take(2) {
+        let Some(name) = log_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if let Ok(bytes) = std::fs::read(log_path) {
+            entries.push(ZipEntry {
+                name: format!("logs/{name}"),
+                content: bytes,
+            });
+        }
+    }
+
+    write_zip_file(&path, &entries)?;
+    crate::log_info!("exported diagnostics: {path} ({} log files)", logs.len().min(2));
+    Ok(path)
 }
 
 /// Markdown → HTML 片段

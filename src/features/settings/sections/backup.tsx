@@ -1,5 +1,6 @@
 /* 备份与恢复：JSON / SQLite / 加密容器三种整库备份，恢复时覆盖当前数据。 */
 
+import { logAction } from "@/lib/app/actionLog";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -111,6 +112,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
           )
         : await exportBackup(path, backupIncludeApiKey, backupIncludeWebdav);
       setLastExport({ summary, path });
+      logAction("backup.export", `${isSqlite ? "sqlite" : "json"} · ${summary.notes} notes`);
       const extras = [
         backupIncludeApiKey ? (isSqlite ? t("本机加密 Key") : "API Key") : "",
         backupIncludeWebdav ? t("WebDAV 配置") : "",
@@ -137,6 +139,7 @@ export const BackupSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }
     try {
       const summary = await exportEncryptedBackup(path, passphrase);
       setLastExport({ summary, path });
+      logAction("backup.export_encrypted", `${summary.notes} notes`);
       showToast(t("已导出加密备份：{notes} 篇笔记（含加密笔记与密钥元数据）", { notes: summary.notes }), "success");
     } finally {
       setBackupBusy(null);

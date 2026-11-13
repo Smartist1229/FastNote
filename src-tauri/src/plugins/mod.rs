@@ -57,7 +57,7 @@ pub fn plugin_list_installed(_app: AppHandle) -> Vec<PluginManifest> {
     let dir = match plugins_root() {
         Ok(dir) => dir,
         Err(e) => {
-            crate::log_error!("插件目录解析失败：{e}");
+            crate::log_error!("failed to resolve plugin directory: {e}");
             return Vec::new();
         }
     };
@@ -86,7 +86,11 @@ pub fn plugin_install_zip(
     }
     let dir_name = resolve_target_dir_name(&dir, &opened.manifest);
     let target = dir.join(&dir_name);
-    install_opened(opened, &target, &dir_name)
+    let installed = install_opened(opened, &target, &dir_name);
+    if let Ok(manifest) = &installed {
+        crate::log_info!("installed plugin: {} ({})", manifest.name, dir_name);
+    }
+    installed
 }
 
 /// 插件目录路径：确保目录存在后返回字符串。
@@ -107,7 +111,9 @@ pub fn plugin_uninstall(_app: AppHandle, dir_name: String) -> Result<(), String>
     if !target.exists() {
         return Ok(());
     }
-    std::fs::remove_dir_all(&target).map_err(|e| format!("卸载插件失败：{e}"))
+    std::fs::remove_dir_all(&target).map_err(|e| format!("卸载插件失败：{e}"))?;
+    crate::log_info!("uninstalled plugin: {dir_name}");
+    Ok(())
 }
 
 /// 读取插件目录内的文本资源（main.js / style.css 等）。

@@ -1,0 +1,28 @@
+# 统一行尾：源码一律 LF。
+#
+# 原因不是审美：本地与 CI 的脚本都用「按行/按字符串查找 + 替换」的方式改源码，
+# CRLF 会让匹配静默失败（踩过：批量改 AIChatPanel.tsx 时全部 MISS，没有任何报错）。
+# 之前仓库里 66 个文件是 CRLF、231 个是 LF，混着来，每次写脚本都得先问一句「这文件是哪一种」。
+#
+# Windows 的批处理与 PowerShell 脚本保持 CRLF（老工具链对 LF 的 bat 不友好）。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：不参与行尾转换，也不做文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.onnx binary
+*.zip binary
+*.gz binary
+*.exe binary
+*.dll binary

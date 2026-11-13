@@ -432,7 +432,7 @@ async fn prune_remote(client: &Client, cfg: &Config) {
     auto.sort_by(|a, b| b.name.cmp(&a.name));
     for file in auto.into_iter().skip(max) {
         if let Err(error) = delete_file(client, cfg, &file.name).await {
-            crate::log_warn!("清理云端备份失败 {}：{error}", file.name);
+            crate::log_warn!("failed to prune cloud backup {}: {error}", file.name);
         }
     }
 }
@@ -501,16 +501,16 @@ async fn cloud_backup(
     let result = match summary {
         Ok(summary) => match put_file(client, cfg, &name, &temp).await {
             Ok(()) => {
-                crate::log_info!("云备份上传成功：{name}（{} 篇笔记）", summary.notes);
+                crate::log_info!("cloud backup uploaded: {name} ({} notes)", summary.notes);
                 Ok(CloudBackupResult { file: name, summary })
             }
             Err(e) => {
-                crate::log_error!("云备份上传失败：{name}：{e}");
+                crate::log_error!("cloud backup upload failed: {name}: {e}");
                 Err(e)
             }
         },
         Err(e) => {
-            crate::log_error!("云备份导出失败：{e}");
+            crate::log_error!("cloud backup export failed: {e}");
             Err(e)
         }
     };
@@ -603,6 +603,7 @@ pub async fn webdav_test(
     }
     let client = http_client()?;
     let url = ensure_folder(&client, &cfg).await?;
+    crate::log_info!("webdav connection ok: {} (user {})", url.path(), cfg.username);
     Ok(format!("连接成功：{}", url.path()))
 }
 
@@ -719,7 +720,7 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
         let outcome = crate::backup_restore_merge_for_webdav(app.clone(), app.state::<AppState>(), temp.to_string_lossy().to_string());
         let _ = tokio::fs::remove_file(&temp).await;
         if let Err(error) = &outcome {
-            crate::log_error!("从云端恢复「{name}」失败：{error}");
+            crate::log_error!("restore from cloud failed for {name}: {error}");
         }
         outcome
     }
@@ -787,7 +788,7 @@ pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummar
         Err("只支持 .json / .gz / .db / .sqlite 备份".to_string())
     };
     if let Err(error) = &result {
-        crate::log_error!("从本地恢复「{name}」失败：{error}");
+        crate::log_error!("restore from local failed for {name}: {error}");
     }
     result
 }
@@ -923,7 +924,7 @@ pub fn spawn_auto_backup(app: AppHandle) {
         tokio::time::sleep(Duration::from_secs(20)).await;
         loop {
             if let Err(error) = auto_backup_tick(&app).await {
-                crate::log_error!("自动备份失败：{error}");
+                crate::log_error!("automatic backup failed: {error}");
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
@@ -1027,14 +1028,14 @@ async fn auto_backup_tick(app: &AppHandle) -> Result<(), String> {
 
     match result {
         Ok(files) => {
-            crate::log_info!("自动备份完成：{files}");
+            crate::log_info!("automatic backup done: {files}");
             let stamp = Local::now().to_rfc3339();
             record_meta(app, LAST_BACKUP_KEY, &stamp);
             record_meta(app, LAST_FILE_KEY, &files);
             record_meta(app, LAST_ERROR_KEY, "");
         }
         Err(error) => {
-            crate::log_error!("自动备份失败：{error}");
+            crate::log_error!("automatic backup failed: {error}");
             record_auto_error(app, &error);
         }
     }

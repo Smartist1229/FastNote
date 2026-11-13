@@ -290,3 +290,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+/* ---------------- 日志 ---------------- */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogUsage {
+    /// 可清理的部分：今天之前的所有日志
+    pub old_bytes: u64,
+    pub old_files: usize,
+    /// 今天的日志：只展示，清理时跳过（它可能正被写入）
+    pub today_bytes: u64,
+}
+
+/// 统计日志占用（只算本软件自己写的 `fastnote-YYYY-MM-DD.log`）
+#[tauri::command]
+pub fn log_usage() -> LogUsage {
+    let old = crate::logger::old_log_files();
+    LogUsage {
+        old_bytes: old.iter().map(|(_, size)| *size).sum(),
+        old_files: old.len(),
+        today_bytes: crate::logger::today_bytes(),
+    }
+}
+
+/// 删除今天之前的日志，返回释放的字节数。今天的日志一定保留。
+#[tauri::command]
+pub fn clear_old_logs() -> u64 {
+    let (bytes, files) = crate::logger::prune_before_today();
+    crate::log_info!("cleared old logs: {files} files, freed {:.1} MB", bytes as f64 / 1_048_576.0);
+    bytes
+}
