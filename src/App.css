@@ -343,6 +343,33 @@ kbd,
   user-select: text;
 }
 
+/*
+ * AI 回复绝不能把面板撑宽。
+ * 消息区是 `overflow-y: auto`，按 CSS 规则另一轴会变成 auto —— 只要有元素宽于容器，
+ * 整个对话区底部就会冒出一条横向滚动条（长路径、命令输出、宽表格都会触发）。
+ * 代码块与表格各自在内部滚（.mde-code-body / .mde-table-wrap 都有 overflow），
+ * 这里只负责保证「宽度不会超出容器」。min-width: 0 是必需的：
+ * 父级一旦是 flex/grid 子项，默认 min-width: auto 会让内容参与宽度计算。
+ */
+.ai-markdown {
+  min-width: 0;
+  max-width: 100%;
+}
+.ai-markdown .mde-root,
+.ai-markdown .mde-body,
+.ai-markdown .mde-panes,
+.ai-markdown .mde-preview-pane,
+.ai-markdown .mde-preview,
+.ai-markdown .mde-preview-content {
+  min-width: 0;
+  max-width: 100%;
+}
+.ai-markdown .mde-code-wrap,
+.ai-markdown .mde-code,
+.ai-markdown .mde-table-wrap {
+  max-width: 100%;
+}
+
 /* 局部临时开放选中（例如错误详情、需要复制的日志） */
 .selectable {
   user-select: text !important;

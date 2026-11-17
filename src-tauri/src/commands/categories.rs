@@ -99,7 +99,7 @@ pub fn update_category(id: String, name: String, state: State<AppState>) -> Resu
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_category(
     app: tauri::AppHandle,
     id: String,

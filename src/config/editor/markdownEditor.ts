@@ -367,6 +367,13 @@ export const buildAiRenderConfig = (
 ): DeepPartial<MarkdownEditorConfig> => ({
   locale,
   mode: { defaultMode: "render", available: [], showSwitch: false },
+  /*
+   * 连字**永远关**，不跟随「编辑器 → 字体连字」设置。
+   * AI 回复里常有 ASCII 表格（`├───┼───┤`）与命令输出，开启连字后等宽字体
+   * 会把 `├─`、`->`、`==` 合成别的形状，竖线对不齐、行宽被撑开，整块表格看着就是歪的。
+   * 只影响 AI 气泡，笔记编辑器仍按用户设置走。
+   */
+  editor: { fontLigatures: false },
   preview: {
     debounce: 0,
     highlight: settings.highlight,

@@ -128,6 +128,25 @@ export interface NoteSearchHit {
  * `invalid` 表示"开了正则但查询词不是合法正则"——用来在界面上给一句提示，
  * 而不是让用户在只会得到零结果的输入框前干瞪眼。
  */
+/**
+ * 正文「折叠空白 + 转小写」的缓存。
+ *
+ * 搜索是**每敲一个字符扫一遍全部笔记**：`collapseWhitespace` 要遍历整篇正文再新建字符串，
+ * 几百篇笔记时单次就是几十毫秒，连续输入会明显掉帧。按 Note 对象缓存结果，
+ * 内容没变就直接复用；笔记保存后是新对象，旧条目由 WeakMap 自动回收。
+ */
+const collapsedCache = new WeakMap<Note, { source: string; plain: string; lower: string }>();
+
+const collapsedFor = (note: Note): { plain: string; lower: string } => {
+  const cached = collapsedCache.get(note);
+  // 比一次 source 引用：既挡住「同对象但正文被换成新字符串」，也挡住原地改内容
+  if (cached && cached.source === note.content) return cached;
+  const plain = collapseWhitespace(note.content);
+  const entry = { source: note.content, plain, lower: plain.toLowerCase() };
+  collapsedCache.set(note, entry);
+  return entry;
+};
+
 export const searchNotes = (
   notes: Note[],
   query: string,
@@ -141,8 +160,9 @@ export const searchNotes = (
   const hits: NoteSearchHit[] = [];
   for (const note of notes) {
     const hayTitle = useRegex ? note.title : note.title.toLowerCase();
-    // 正文在折叠空白后的版本上匹配：坐标与随后截取的片段同源
-    const hayContent = useRegex ? collapseWhitespace(note.content) : collapseWhitespace(note.content).toLowerCase();
+    // 正文在折叠空白后的版本上匹配：坐标与随后截取的片段同源（结果按笔记缓存，见 collapsedFor）
+    const collapsed = collapsedFor(note);
+    const hayContent = useRegex ? collapsed.plain : collapsed.lower;
     const titleRanges = findMatchRanges(matcher, hayTitle);
     const contentRanges = findMatchRanges(matcher, hayContent);
     if (titleRanges.length === 0 && contentRanges.length === 0) continue;

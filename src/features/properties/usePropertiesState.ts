@@ -70,7 +70,8 @@ export function usePropertiesState({
   const propertiesNoteId = propertiesTarget?.kind === "note" ? propertiesTarget.note.id : null;
   useEffect(() => {
     if (propertiesNoteId === null) {
-      setNoteTags([]);
+      // 已经空了就别再 set 一次：关闭属性窗时这会让整棵 App 白重渲染一轮
+      setNoteTags((prev) => (prev.length === 0 ? prev : []));
       return;
     }
     let alive = true;
@@ -90,7 +91,7 @@ export function usePropertiesState({
   /** 历史版本与标签同源：目标笔记变化时重拉，关闭属性窗即清空 */
   useEffect(() => {
     if (propertiesNoteId === null) {
-      setNoteHistory([]);
+      setNoteHistory((prev) => (prev.length === 0 ? prev : []));
       return;
     }
     let alive = true;

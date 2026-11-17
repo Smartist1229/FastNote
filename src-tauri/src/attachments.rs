@@ -160,7 +160,7 @@ fn parse_rel_path(rel: &str) -> Option<(String, String)> {
 /// 解析开销与内存峰值都不可接受。mime 与宽高放在请求头里（`InvokeOptions.headers`）。
 ///
 /// 重复粘贴同一张图不会重复写盘（`created_at` 也不刷新），前端拿到的 path 永远一致。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_attachment(
     app: AppHandle,
     state: State<AppState>,
@@ -276,7 +276,7 @@ pub fn get_attachment_meta(
 }
 
 /// 占用统计：张数与总体积
-#[tauri::command]
+#[tauri::command(async)]
 pub fn attachments_usage(state: State<AppState>) -> Result<AttachmentUsage, String> {
     let conn = state
         .conn

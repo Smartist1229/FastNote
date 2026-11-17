@@ -45,7 +45,7 @@ pub(crate) fn write_zip_file(path: &str, entries: &[ZipEntry]) -> Result<(), Str
 /// **不含数据库、不含笔记正文** —— 只取日志文本、文件大小、条数这类数字。
 /// 有它，用户报「备份失败 / 白屏」时点一下把 zip 发过来就够排障；
 /// 没有它，用户唯一的出口是「打开日志目录然后自己压缩」，等于没有出口。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_diagnostics(
     app: AppHandle,
     state: State<AppState>,

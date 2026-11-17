@@ -15,7 +15,7 @@ use super::history::should_snapshot_history;
 use super::history::prune_note_history;
 use super::history::HISTORY_KIND_AUTO;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_note(
     title: String,
     content: String,
@@ -90,7 +90,7 @@ pub fn create_note(
 }
 
 /// 查询笔记列表（含正文）。正文随列表一起返回，AI 读未打开的笔记也无需额外请求。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_notes(
     category_id: Option<String>,
     sort_by: String,
@@ -150,7 +150,7 @@ pub fn get_notes(
 }
 
 /// 读取单条笔记（含正文），供编辑器保存前的兜底校验/按 id 取用。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_note(id: String, state: State<AppState>) -> Result<Note, String> {
     let conn = state.conn.lock().unwrap();
 
@@ -172,7 +172,7 @@ pub fn get_note(id: String, state: State<AppState>) -> Result<Note, String> {
     Ok(note)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_note(
     id: String,
     title: String,
@@ -341,7 +341,7 @@ fn require_plugin_permission(plugin_id: &str, need: &str) -> Result<(), String> 
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_create_note(
     title: String,
     content: Option<String>,
@@ -419,7 +419,7 @@ pub fn plugin_create_note(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_update_note(
     note_id: String,
     title: Option<String>,
@@ -469,7 +469,7 @@ pub fn plugin_update_note(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_delete_note(
     note_id: String,
     plugin_id: String,

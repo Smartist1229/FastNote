@@ -359,7 +359,7 @@ pub(crate) fn list_tags_by_ids(conn: &Connection, ids: Vec<i64>) -> Result<Vec<T
 }
 
 /** 按标签找笔记（多对多的反面：给这个词，捞所有带它的笔记） */
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_notes_by_tag(name: String, state: State<AppState>) -> Result<Vec<Note>, String> {
     let name = name.trim().to_string();
     if name.is_empty() {

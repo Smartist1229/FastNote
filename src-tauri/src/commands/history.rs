@@ -634,7 +634,7 @@ pub struct NoteHistoryEntry {
 }
 
 /// 某篇笔记的历史版本，新的在前。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_note_history(note_id: String, state: State<AppState>) -> Result<Vec<NoteHistoryEntry>, String> {
     let conn = state.conn.lock().unwrap();
     let (enc_mode, category_id): (i64, Option<String>) = conn
@@ -706,7 +706,7 @@ pub fn clear_note_history(note_id: String, state: State<AppState>) -> Result<(),
 }
 
 /// 手动保存当前状态为历史版本；与最新一条内容相同时不重复写。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_note_history_version(
     note_id: String,
     app: AppHandle,
@@ -736,7 +736,7 @@ pub fn create_note_history_version(
 
 /// 打开笔记时记录会话基线：当前内容与最新历史不同才写，存成 `session` 版本。
 /// 这样长时间编辑里「这次打开时的样子」不会被自动保存的节流漏掉。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn snapshot_note_session(
     note_id: String,
     app: AppHandle,
@@ -800,7 +800,7 @@ pub fn set_note_history_pinned(
 
 /// 回滚到某个历史版本：目标版本和所有更新的版本一起删除，不生成新的历史。
 /// 回到更早的状态后，那些更新的版本已不属于当前分支，留着只会让列表越回滚越长。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rollback_note_history(entry_id: i64, state: State<AppState>) -> Result<Note, String> {
     let mut conn = state.conn.lock().unwrap();
     let now = Local::now().to_rfc3339();

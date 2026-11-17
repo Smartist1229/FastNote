@@ -52,7 +52,7 @@ use storage::{read_config_in, read_resource_in, validate_dir_name, write_config_
 
 /// 列出已安装插件：扫描 plugin/ 下每个子目录的 plugin.json，成功解析并校验的
 /// 填入 dirName（= 子目录名）；解析失败的目录跳过，不中断整体。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_list_installed(_app: AppHandle) -> Vec<PluginManifest> {
     let dir = match plugins_root() {
         Ok(dir) => dir,
@@ -68,7 +68,7 @@ pub fn plugin_list_installed(_app: AppHandle) -> Vec<PluginManifest> {
 
 /// 安装插件包（zip）：定位并校验 plugin.json 后按目录规则落盘，返回带 dirName 的清单。
 /// skip_confirm=true 时跳过权限白名单校验（供内部可信场景使用）；默认 false 严格校验。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_install_zip(
     app: AppHandle,
     zip_path: String,
@@ -104,7 +104,7 @@ pub fn plugin_folder_path() -> Result<String, String> {
 
 /// 卸载插件：校验目录名（实例键）后删除 <plugin>/<dirName>。
 /// 目录本就不存在时视为已卸载，返回成功。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_uninstall(_app: AppHandle, dir_name: String) -> Result<(), String> {
     validate_dir_name(&dir_name)?;
     let target = plugins_root()?.join(&dir_name);
@@ -118,7 +118,7 @@ pub fn plugin_uninstall(_app: AppHandle, dir_name: String) -> Result<(), String>
 
 /// 读取插件目录内的文本资源（main.js / style.css 等）。
 /// 防目录穿越：拒绝含 .. 的路径，并 canonicalize 复核解析结果仍在插件目录内。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_read_resource(
     _app: AppHandle,
     dir_name: String,
@@ -147,7 +147,7 @@ pub fn plugin_read_config(_app: AppHandle, dir_name: String) -> Result<Value, St
 
 /// 写入插件配置（plugin_write_config）：必须是 JSON 对象；只写 schema 声明的 key，
 /// 类型必须与 kind 对应；pretty JSON 原子落盘，不触发其他副作用。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_write_config(
     _app: AppHandle,
     dir_name: String,
@@ -190,7 +190,7 @@ pub fn plugin_icon_url(dir_name: String) -> Option<String> {
 /// 设置页的「安装演示插件」按钮走它（开发预览下「刷新」也会调用）：
 /// 每次都写最新一份，config.json 保留，这样开发期改完演示插件点一下刷新就能看到。
 /// 打包版刷新只重扫目录，不会触发这里的覆盖安装。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_install_demo(app: AppHandle) -> Result<(), String> {
     seed::install_demo_plugin(&app)
 }
@@ -215,7 +215,7 @@ fn ensure_plugin_permission(dir_name: &str, permission: &str) -> Result<std::pat
 /* ---------------- 插件私有表 ---------------- */
 
 /// 建表：表名自动加 `plugin_<目录名>__` 前缀，插件只能建自己的表
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_create_table(
     state: State<'_, AppState>,
     dir_name: String,
@@ -231,7 +231,7 @@ pub fn plugin_db_create_table(
 }
 
 /// 删表
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_drop_table(
     state: State<'_, AppState>,
     dir_name: String,
@@ -246,7 +246,7 @@ pub fn plugin_db_drop_table(
 }
 
 /// 列出本插件自己的表（返回去掉前缀的裸名）
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_tables(state: State<'_, AppState>, dir_name: String) -> Result<Vec<String>, String> {
     ensure_plugin_permission(&dir_name, "db.read_write")?;
     let conn = state
@@ -257,7 +257,7 @@ pub fn plugin_db_tables(state: State<'_, AppState>, dir_name: String) -> Result<
 }
 
 /// 插入一行，返回新行 id
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_insert(
     state: State<'_, AppState>,
     dir_name: String,
@@ -273,7 +273,7 @@ pub fn plugin_db_insert(
 }
 
 /// 查询（等值过滤 + 排序 + 分页）
-#[tauri::command]
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn plugin_db_query(
     state: State<'_, AppState>,
@@ -303,7 +303,7 @@ pub fn plugin_db_query(
 }
 
 /// 更新（必须带过滤条件），返回影响行数
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_update(
     state: State<'_, AppState>,
     dir_name: String,
@@ -320,7 +320,7 @@ pub fn plugin_db_update(
 }
 
 /// 删除（必须带过滤条件），返回影响行数
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_delete(
     state: State<'_, AppState>,
     dir_name: String,
@@ -528,7 +528,7 @@ pub fn plugin_reactivate(app: AppHandle, dir_name: String) -> Result<(), String>
 
 /// 删除某个插件的全部私有表（卸载时用户选择「删除表」才调用）。
 /// 宿主操作，不要求插件声明 db.read_write；返回删掉的表数量。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_db_drop_all(state: State<'_, AppState>, dir_name: String) -> Result<usize, String> {
     validate_dir_name(&dir_name)?;
     let conn = state
@@ -705,7 +705,7 @@ pub fn plugin_fs_root(app: AppHandle, dir_name: String) -> Result<String, String
 }
 
 /// 列目录（按名字排序，默认根目录）
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_fs_list(
     app: AppHandle,
     dir_name: String,
@@ -731,7 +731,7 @@ pub fn plugin_fs_list(
 }
 
 /// 读文本文件（UTF-8，超过上限报错）
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_fs_read(app: AppHandle, dir_name: String, rel_path: String) -> Result<String, String> {
     ensure_plugin_permission(&dir_name, "fs.read_write")?;
     let path = plugin_fs_path(&app, &dir_name, &rel_path)?;
@@ -750,7 +750,7 @@ pub fn plugin_fs_read(app: AppHandle, dir_name: String, rel_path: String) -> Res
 }
 
 /// 写文本文件（自动创建父目录），返回写入字节数
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_fs_write(
     app: AppHandle,
     dir_name: String,
@@ -785,7 +785,7 @@ pub fn plugin_fs_write(
 }
 
 /// 删除文件或空目录
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plugin_fs_remove(app: AppHandle, dir_name: String, rel_path: String) -> Result<(), String> {
     ensure_plugin_permission(&dir_name, "fs.read_write")?;
     let path = plugin_fs_path(&app, &dir_name, &rel_path)?;

@@ -1,6 +1,7 @@
 export const appMessages: Record<string, string> = {
   // 删除 / 撤销
   "最近使用": "Recently used",
+  "显示全部 {count} 个版本": "Show all {count} versions",
   "已移入回收站": "Moved to trash",
   "已恢复": "Restored",
   "恢复失败，请到回收站重试": "Restore failed. Please retry from the trash",

@@ -731,7 +731,7 @@ pub async fn webdav_restore_remote(app: AppHandle, name: String) -> Result<Backu
 }
 
 /// 本地备份列表：自动备份目录里的 JSON / SQLite 文件
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webdav_list_local(app: AppHandle) -> Result<Vec<LocalBackupFile>, String> {
     let dir = backup_dir(&app)?;
     let mut out = Vec::new();
@@ -770,7 +770,7 @@ pub fn webdav_list_local(app: AppHandle) -> Result<Vec<LocalBackupFile>, String>
 ///
 /// 注意：界面已不再直接调这条命令（统一走恢复向导，能预检和勾选），
 /// 保留它是为了兼容旧的调用方 / 脚本；语义必须与向导保持一致，别改回整库替换。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummary, String> {
     validate_name(&name)?;
     let dir = backup_dir(&app)?;
@@ -793,7 +793,7 @@ pub fn webdav_restore_local(app: AppHandle, name: String) -> Result<BackupSummar
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webdav_backup_dir(app: AppHandle) -> Result<String, String> {
     Ok(backup_dir(&app)?.to_string_lossy().to_string())
 }
@@ -806,7 +806,7 @@ pub struct LocalDataState {
 }
 
 /// 本地数据概况：恢复前判断是否存在比备份更新的本地改动。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webdav_local_state(app: AppHandle) -> Result<LocalDataState, String> {
     let state = app.state::<AppState>();
     let conn = state
@@ -827,7 +827,7 @@ pub fn webdav_local_state(app: AppHandle) -> Result<LocalDataState, String> {
 }
 
 /// 覆盖前给当前数据留一份安全快照，返回文件名。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn webdav_snapshot_local(app: AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
     begin(&state.webdav)?;

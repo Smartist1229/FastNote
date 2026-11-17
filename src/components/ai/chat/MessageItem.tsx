@@ -118,7 +118,10 @@ export const ChatMessageRow = memo(function ChatMessageRow({
     const segments = splitContent(msg.content);
     return (
       <div data-chat-anchor="true" className="group/msg flex flex-col items-end animate-fade-in" style={{ animationDelay: delay }}>
-        <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-surface-alt text-body max-w-[85%]">
+        {/* overflow-wrap:anywhere 是必需的：`whitespace-pre-wrap` 只在空格 / CJK 处断行，
+            用户粘进来的 ASCII 表格（├───┼───┤）、长路径、命令行都会被当成一个不可断的词，
+            直接从气泡右侧溢出去，把整个对话区撑出横向滚动条。 */}
+        <div className="selectable rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap bg-surface-alt text-body max-w-[85%] break-words [overflow-wrap:anywhere]">
           {segments.map((segment, i) => (
             segment.kind === "text"
               ? <span key={i}>{segment.text}</span>
@@ -182,7 +185,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                     </span>
                     <Icon name="ai-chevron-right" className={"w-3 h-3 flex-shrink-0 transition-transform " + (thoughtOpen ? "rotate-90" : "")} />
                   </button>
-                  {thoughtOpen && (<div className="thinking-body chat-scrollbar mt-0.5 px-3 py-2 bg-app rounded-lg text-xs text-muted leading-relaxed whitespace-pre-wrap border border-line-soft">{msgThinking}</div>)}
+                  {thoughtOpen && (<div className="thinking-body chat-scrollbar mt-0.5 px-3 py-2 bg-app rounded-lg text-xs text-muted leading-relaxed whitespace-pre-wrap border border-line-soft break-words [overflow-wrap:anywhere]">{msgThinking}</div>)}
                 </div>
               ) : null}
               {/* 子折叠 2…N：每次工具调用一条，默认不展开，点击可看调用 JSON 与执行结果 */}

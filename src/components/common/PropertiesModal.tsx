@@ -306,6 +306,22 @@ export const PropertiesModal: React.FC<{
   const [confirmClear, setConfirmClear] = useState(false);
   /** 正在对比的历史版本：弹层展示「该版本 → 当前内容」的逐行差异 */
   const [diffEntry, setDiffEntry] = useState<NoteHistoryEntry | null>(null);
+  /**
+   * 历史版本是否展开全部。
+   * 长期使用的笔记能有上百条版本，一次性全挂上去的话：「打开」要排上百行、
+   * 「关闭」要拆同一棵树，两头都会顿一下。默认只渲染最近几条，要看更多再展开。
+   */
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+
+  /** 默认展开的版本条数：够看清最近改动，又不会让打开 / 关闭都卡在节点增删上 */
+  const HISTORY_PREVIEW_COUNT = 12;
+  const visibleHistory = historyExpanded ? history : history.slice(0, HISTORY_PREVIEW_COUNT);
+
+  /** 换一篇笔记 / 分组就收回展开状态，否则下次打开会直接是长列表 */
+  const historyScopeKey = note?.id ?? category?.id ?? null;
+  useEffect(() => {
+    setHistoryExpanded(false);
+  }, [historyScopeKey]);
 
   /** 新建草稿提交：支持逗号 / 顿号 / 分号 / 空格分隔一次加多个，已存在的词跳过 */
   const commitTagDraft = () => {
@@ -721,7 +737,7 @@ export const PropertiesModal: React.FC<{
             </p>
           ) : (
             <div className="max-h-[200px] overflow-y-auto -mx-1">
-              {history.map((entry) => (
+              {visibleHistory.map((entry) => (
                 <div
                   key={entry.id}
                   className="flex items-center gap-2 px-1 py-1.5 rounded-md hover:bg-surface-alt transition-colors"
@@ -850,6 +866,17 @@ export const PropertiesModal: React.FC<{
                   )}
                 </div>
               ))}
+              {history.length > HISTORY_PREVIEW_COUNT && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryExpanded((value) => !value)}
+                  className="mt-1 w-full rounded-md py-1 text-[11px] text-faint transition-colors hover:bg-surface-alt hover:text-body"
+                >
+                  {historyExpanded
+                    ? t("收起")
+                    : t("显示全部 {count} 个版本", { count: history.length })}
+                </button>
+              )}
             </div>
           )}
         </div>

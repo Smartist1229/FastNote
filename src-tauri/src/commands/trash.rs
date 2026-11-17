@@ -61,7 +61,7 @@ pub fn restore_note(id: String, state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_trash_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
     let conn = state.conn.lock().unwrap();
 

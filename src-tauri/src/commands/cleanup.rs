@@ -169,7 +169,8 @@ fn index_usage(conn: &Connection) -> Result<(i64, i64), String> {
 
 /* ---------------- 命令 ---------------- */
 
-#[tauri::command]
+/// 必须 async：要扫临时目录并统计数据库 / 索引占用，同步命令会把主线程连同锁一起占住。
+#[tauri::command(async)]
 pub fn cache_usage(app: AppHandle, state: State<AppState>) -> Result<CacheUsage, String> {
     let (index_chunks, index_bytes) = {
         let conn = state
@@ -315,7 +316,7 @@ pub fn log_usage() -> LogUsage {
 }
 
 /// 删除今天之前的日志，返回释放的字节数。今天的日志一定保留。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_old_logs() -> u64 {
     let (bytes, files) = crate::logger::prune_before_today();
     crate::log_info!("cleared old logs: {files} files, freed {:.1} MB", bytes as f64 / 1_048_576.0);

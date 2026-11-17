@@ -49,7 +49,7 @@ pub fn get_chat_sessions(state: State<AppState>) -> Result<Vec<AiChatSession>, S
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_chat_messages(
     session_id: i64,
     state: State<AppState>,
@@ -76,7 +76,7 @@ pub fn get_chat_messages(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_chat_message(
     session_id: i64,
     role: String,

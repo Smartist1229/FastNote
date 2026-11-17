@@ -434,7 +434,7 @@ pub async fn semantic_import_model(
         .map(|spec| spec.id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn semantic_rebuild_index(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let conn = state
