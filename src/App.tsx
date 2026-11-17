@@ -8,7 +8,11 @@ import type { AiAccessLevel } from "@/interface/ai/aiAccess";
 import type { EncryptionScope } from "@/interface/system/encryption";
 import { EncryptDialog, RootChangeDialog, RootSetupDialog, UnlockDialog } from "@/components/common/EncryptionDialogs";
 import { Sidebar } from "@/components/layout/Sidebar";
-import { NoteRenameProvider, type NoteRenameApi } from "@/components/layout/noteRename";
+import {
+  InlineRenameProvider,
+  type InlineRenameApi,
+  type InlineRenameTarget,
+} from "@/components/layout/inlineRename";
 import type { Note } from "@/interface/note/note";
 import { hasOpenModalLayer } from "@/lib/app/modalLayer";
 import { setPlainKeyInEditable } from "@/features/shortcuts/runtime";
@@ -120,10 +124,14 @@ function AppContent() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRevealHandleVisible, setIsRevealHandleVisible] = useState(false);
   const [sidebarView, setSidebarView] = useState<'groups' | 'favorites'>('groups');
-  /** 正在就地改名的笔记 id：F2、右键「重命名笔记」、行内输入框三处入口共用 */
-  const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
-  /** 改名动作的实现（放在 ref 里，让 Context 值只随 renamingNoteId 变化） */
-  const renameImplRef = useRef<Omit<NoteRenameApi, "renamingNoteId">>({
+  /**
+   * 正在就地改名的目标（笔记或分组，互斥）。
+   * F2、右键「重命名」、行内输入框三处入口共用同一份状态——分成两个状态的话
+   * 同时为真时会出现两个输入框。
+   */
+  const [renameTarget, setRenameTarget] = useState<InlineRenameTarget | null>(null);
+  /** 改名动作的实现（放在 ref 里，让 Context 值只随 renameTarget 变化） */
+  const renameImplRef = useRef<Omit<InlineRenameApi, "target">>({
     start: () => {},
     commit: () => {},
     cancel: () => {},
@@ -197,7 +205,6 @@ function AppContent() {
     selectedCategoryId: categories.selectedCategoryId,
     setSelectedCategoryId: categories.setSelectedCategoryId,
     setExpandedDrawer: categories.setExpandedDrawer,
-    selectedNote: tabs.selectedNote,
     selectedNoteRef: tabs.selectedNoteRef,
     setSelectedNote: tabs.setSelectedNote,
     notesRef,
@@ -348,40 +355,51 @@ function AppContent() {
   const { selectedNote, editorNote, overlayActive } = tabs;
 
   /**
-   * 就地改名的三个动作。实现放 ref、Context 值只随 `renamingNoteId` 变化：
+   * 就地改名的三个动作。实现放 ref、Context 值只随 `renameTarget` 变化：
    * 否则每次 App 重渲染（打字、保存、列表刷新）都会让侧栏每一行跟着重渲染。
    */
   renameImplRef.current = {
-    start: (note: Note) => {
+    start: (target: InlineRenameTarget) => {
       /*
-       * 只在「这一行确实看不见」时才动抽屉：
+       * 笔记：只在「这一行确实看不见」时才动抽屉——
        * - 侧栏被折叠 → 先展开，否则输入框在屏幕外；
        * - 已经展开着「全部笔记」→ 所有行都露着，别把用户塞回分组视图；
        * - 展开的正是它所在分组 → 保持。
+       * 分组：标题行无论如何都在，不用动抽屉。
        */
-      if (isSidebarCollapsed) setIsSidebarCollapsed(false);
-      const target = note.category_id === null ? "uncategorized" : note.category_id;
-      const current = categories.expandedDrawer;
-      if (current !== target && current !== "all") categories.setExpandedDrawer(target);
-      setRenamingNoteId(note.id);
+      if (target.kind === "note") {
+        if (isSidebarCollapsed) setIsSidebarCollapsed(false);
+        const drawerKey = target.note.category_id === null ? "uncategorized" : target.note.category_id;
+        const current = categories.expandedDrawer;
+        if (current !== drawerKey && current !== "all") categories.setExpandedDrawer(drawerKey);
+      } else if (isSidebarCollapsed) {
+        setIsSidebarCollapsed(false);
+      }
+      setRenameTarget(target);
     },
-    commit: (note: Note, title: string) => {
-      setRenamingNoteId(null);
-      const next = title.trim();
-      // 空标题与「没改动」都不写库：留个空标题等于把笔记变成无名条目
-      if (!next || next === note.title) return;
-      void notes.handleRenameNote(note, next);
+    commit: (target: InlineRenameTarget, value: string) => {
+      setRenameTarget(null);
+      const next = value.trim();
+      // 空名与「没改动」都不写库：留个空标题等于把笔记 / 分组变成无名条目
+      if (!next) return;
+      if (target.kind === "note") {
+        if (next === target.note.title) return;
+        void notes.handleRenameNote(target.note, next);
+      } else {
+        if (next === target.category.name) return;
+        void categories.handleRenameCategory(target.category, next);
+      }
     },
-    cancel: () => setRenamingNoteId(null),
+    cancel: () => setRenameTarget(null),
   };
-  const renameApi = useMemo<NoteRenameApi>(
+  const renameApi = useMemo<InlineRenameApi>(
     () => ({
-      renamingNoteId,
-      start: (note) => renameImplRef.current.start(note),
-      commit: (note, title) => renameImplRef.current.commit(note, title),
+      target: renameTarget,
+      start: (target) => renameImplRef.current.start(target),
+      commit: (target, value) => renameImplRef.current.commit(target, value),
       cancel: () => renameImplRef.current.cancel(),
     }),
-    [renamingNoteId],
+    [renameTarget],
   );
 
   /**
@@ -505,7 +523,7 @@ function AppContent() {
     if (!selectedNote || hasOpenModalLayer()) return;
     // 搜索结果里不提供改名：结果行可能同时出现在多个分组里，改名入口只留给真实列表
     if (notes.searchQuery.trim().length > 0) return;
-    renameImplRef.current.start(selectedNote);
+    renameImplRef.current.start({ kind: "note", note: selectedNote });
   });
   /**
    * Delete 只删「笔记列表中选中的那篇」。焦点在编辑器 / 输入框里时不触发
@@ -513,7 +531,8 @@ function AppContent() {
    */
   useShortcutAction("app.deleteNote", () => {
     if (!selectedNote || hasOpenModalLayer()) return;
-    void notes.handleDeleteNoteFromSidebar(selectedNote);
+    // 裸键删除不弹确认：进回收站是可逆的，提示条上有「撤销」，比确认框快一步
+    void notes.handleDeleteNoteFromSidebar(selectedNote, { skipConfirm: true });
   });
 
   /**
@@ -529,9 +548,12 @@ function AppContent() {
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
 
-  /** 搜索词 / 侧栏视图一变，正在改名的行可能已经不在列表里：直接退出改名，避免「输入框不见了但状态还在」 */
+  /**
+   * 搜索词 / 侧栏视图一变，正在改名的笔记行可能已经不在列表里：
+   * 直接退出笔记改名，避免「输入框不见了但状态还在」。分组头不受搜索影响，保持不动。
+   */
   useEffect(() => {
-    setRenamingNoteId(null);
+    setRenameTarget((prev) => (prev?.kind === "note" ? null : prev));
   }, [notes.searchQuery, sidebarView]);
 
   // 生产环境屏蔽原生右键菜单；开发环境保留，方便审查元素
@@ -551,7 +573,7 @@ function AppContent() {
         {/* 侧边栏：分组 + 笔记抽屉式融合（可折叠） */}
         <div className={`sidebar-shell ${isSidebarCollapsed ? 'is-collapsed' : ''}`}>
           {/* 就地改名状态下发给笔记行：四个渲染点共用同一份，不必层层传 props */}
-          <NoteRenameProvider value={renameApi}>
+          <InlineRenameProvider value={renameApi}>
             <Sidebar
               categories={categories.categories}
               notes={notes.notes}
@@ -585,7 +607,6 @@ function AppContent() {
               onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
               isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
               onCreateCategory={categories.handleCreateCategory}
-              onEditCategory={categories.handleEditCategory}
               onDeleteCategory={categories.handleDeleteCategory}
               onCreateNote={notes.handleCreateNote}
               onMoveToCategory={notes.handleMoveNoteToCategory}
@@ -610,7 +631,7 @@ function AppContent() {
               onLockCategory={encryption.handleLockCategory}
               onDecryptCategory={(category) => void encryption.requestUnlock("category", category.id, true)}
             />
-          </NoteRenameProvider>
+          </InlineRenameProvider>
         </div>
 
         {/* 侧边栏折叠后的唤出把手：鼠标移到左边缘时浮现 */}
@@ -774,7 +795,7 @@ function AppContent() {
       </div>
 
       {/* 分类弹窗 */}
-      <Modal isOpen={categories.showCategoryModal} onClose={() => categories.setShowCategoryModal(false)} title={categories.editingCategory ? t("编辑分类") : t("创建分类")}>
+      <Modal isOpen={categories.showCategoryModal} onClose={() => categories.setShowCategoryModal(false)} title={t("创建分类")}>
         <div className="space-y-4">
           <input
             type="text"
@@ -980,6 +1001,8 @@ function AppContent() {
             onClose={() => palette.setPaletteOpen(false)}
             onOpenNote={tabs.openNote}
             onLoadTagNotes={(tag) => tagsApi.listNotesByTag(tag.name)}
+            recentCommandIds={palette.recentCommandIds}
+            onCommandRun={palette.recordCommand}
           />
         </Suspense>
       )}

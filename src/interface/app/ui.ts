@@ -86,15 +86,22 @@ export interface PluginModalResult {
 export type ToastType = "success" | "error" | "info";
 
 /** 一条待展示的 toast；id 用时间戳，3 秒后按 id 从队列中移除 */
+/** 提示条上的一个动作按钮（如「撤销」）；点了就执行，并顺手关掉这条提示 */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface Toast {
   id: number;
   message: string;
   type: ToastType;
+  action?: ToastAction;
 }
 
-/** useToast 的返回值；type 缺省为 info */
+/** useToast 的返回值；type 缺省为 info，action 缺省没有按钮 */
 export interface ToastContextType {
-  showToast: (message: string, type?: ToastType) => void;
+  showToast: (message: string, type?: ToastType, action?: ToastAction) => void;
 }
 
 /** 通用弹窗容器 Props */

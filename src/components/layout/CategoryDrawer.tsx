@@ -8,62 +8,12 @@
  * DrawerNoteItem 上的 data-note-id 是 Sidebar 指针拖拽的锚点，不能去掉。
  */
 import { useI18n } from "@/i18n";
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Note } from "@/interface/note/note";
 import type { CategoryDrawerProps } from "@/interface/note/sidebar";
 import type { MatchRange, NoteSearchHit } from "@/lib/search/noteSearch";
 import { Icon } from '@/components/common/Icon';
-import { useNoteRename } from './noteRename';
-
-/**
- * 行内改名输入框：Enter 提交、Esc 取消、失焦按提交处理。
- *
- * Enter 会连带触发 blur，所以用 doneRef 保证只结算一次——
- * 否则「提交 + 失焦再提交一次」会多打一次 update_note。
- */
-const NoteRenameInput: React.FC<{
-  initial: string;
-  onCommit: (title: string) => void;
-  onCancel: () => void;
-}> = ({ initial, onCommit, onCancel }) => {
-  const [value, setValue] = useState(initial);
-  const doneRef = useRef(false);
-
-  const settle = (commit: boolean) => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    if (commit) onCommit(value.trim());
-    else onCancel();
-  };
-
-  return (
-    <input
-      autoFocus
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onFocus={(e) => e.currentTarget.select()}
-      // 点输入框不该被当成「点这一行」而把笔记重新打开一遍
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          settle(true);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          settle(false);
-        }
-      }}
-      onBlur={() => settle(true)}
-      /*
-       * 一行输入框，看起来就是「原来的标题变成可编辑」：仅一条主色细边框做提示，不加底色。
-       * 高度锁死 17px（与 h4 的 12.5px / leading-snug 一致）：含 1px 上下边框后内容区 15px，
-       * 所以字号降到 12px、行高 15px 才放得下——列表高度不因进入改名而变化。
-       */
-      className="h-[17px] w-full min-w-0 appearance-none rounded-[4px] border border-primary-400 bg-transparent px-1 text-[12px] font-medium leading-[15px] text-body outline-none"
-    />
-  );
-};
-
+import { InlineRenameInput, useInlineRename } from './inlineRename';
 
 /**
  * 抽屉内的单条笔记卡片；收藏视图也用它渲染扁平列表（此时 showIcon 为 true）。
@@ -116,8 +66,9 @@ export const DrawerNoteItem: React.FC<{
 }> = ({ note, isSelected, isFocused, onSelectNote, isVisible = true, showIcon = false, onContextMenu, hit }) => {
   const { t } = useI18n();
   const itemRef = useRef<HTMLDivElement>(null);
-  const rename = useNoteRename();
-  const isRenaming = rename !== null && rename.renamingNoteId === note.id && isVisible;
+  const rename = useInlineRename();
+  const isRenaming =
+    rename !== null && rename.target?.kind === "note" && rename.target.note.id === note.id && isVisible;
 
   // AI 打开笔记时聚焦高亮：延迟 60ms 再滚动，等抽屉展开动画把元素位置定下来，否则会滚偏
   useEffect(() => {
@@ -161,9 +112,9 @@ export const DrawerNoteItem: React.FC<{
             )}
             <span className={isRenaming ? "min-w-0 flex-1" : "truncate"}>
               {isRenaming ? (
-                <NoteRenameInput
+                <InlineRenameInput
                   initial={note.title}
-                  onCommit={(title) => rename?.commit(note, title)}
+                  onCommit={(value) => rename?.commit({ kind: "note", note }, value)}
                   onCancel={() => rename?.cancel()}
                 />
               ) : hit ? (
@@ -219,15 +170,29 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   const activeHeader =
     'text-body hover:bg-surface/80 hover:text-ink border-transparent hover:border-line/60';
 
+  /**
+   * 分组名就地改名：只对真实分组生效（「全部笔记 / 未分类 / 未归类」是虚拟分组，没有名字可改）。
+   *
+   * 改名时把标题行从 <button> 换成 <div>：input 属于交互内容，嵌在 button 里
+   * 点一下就会被当成「点了整行」，展开状态跟着乱跳。换成 div 后语义干净，
+   * onClick 里再补一道短路，保证改名时怎么点都不会收起分组。
+   */
+  const rename = useInlineRename();
+  const isRenaming =
+    !isAllNotes && !!category && rename?.target?.kind === "category" && rename.target.category.id === category.id;
+  const HeaderTag: React.ElementType = isRenaming ? "div" : "button";
+
   return (
     <div
       className="drawer-item"
       onContextMenu={(e) => onContextMenu(e, category)}
     >
       {/* 分组右键：笔记自己的右键会先 stopPropagation，冒泡到这里的只有标题区与空白处 */}
-      <button
-        type="button"
-        onClick={(e) => {
+      <HeaderTag
+        {...(isRenaming ? {} : { type: "button", "aria-expanded": open, "aria-controls": noteListId })}
+        onClick={(e: React.MouseEvent) => {
+          // 改名中不响应整行点击（输入框自己也 stopPropagation 了，这里是第二道保险）
+          if (isRenaming) return;
           // 点击"新建笔记"图标时只创建笔记，不切换展开状态
           if ((e.target as HTMLElement).closest('[data-drawer-action="create-note"]')) {
             e.stopPropagation();
@@ -236,10 +201,8 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
           }
           onToggle();
         }}
-        aria-expanded={open}
-        aria-controls={noteListId}
         className={`${headerBase} ${activeHeader}`}
-        title={open ? t("收起") : t("展开")}
+        title={isRenaming ? undefined : open ? t("收起") : t("展开")}
       >
         {/* 展开箭头 */}
         <Icon
@@ -254,9 +217,19 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
           className="w-4 h-4 flex-shrink-0 text-faint"
         />
 
-        <span className="text-[13px] leading-tight flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
-          {headerTitle ?? (isAllNotes ? t("全部笔记") : category?.name)}
-        </span>
+        {isRenaming && category ? (
+          <InlineRenameInput
+            initial={category.name}
+            // 高度与只读态一致（13px / leading-tight ≈ 16px），进入改名时分组头不跳
+            className="h-4 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-body outline-none"
+            onCommit={(value) => rename?.commit({ kind: "category", category }, value)}
+            onCancel={() => rename?.cancel()}
+          />
+        ) : (
+          <span className="text-[13px] leading-tight flex-1 overflow-hidden text-ellipsis whitespace-nowrap min-w-0 font-medium">
+            {headerTitle ?? (isAllNotes ? t("全部笔记") : category?.name)}
+          </span>
+        )}
 
         {/* 加密分组标记：只在锁定时显示，解锁后不残留；分组名始终是明文 */}
         {lockedEncrypted && (
@@ -289,7 +262,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
         <span className="badge text-[10px] flex-shrink-0 bg-surface-alt text-muted">
           {notes.length}
         </span>
-      </button>
+      </HeaderTag>
 
       {/* 展开区域 */}
       <div

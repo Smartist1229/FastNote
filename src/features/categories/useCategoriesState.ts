@@ -42,9 +42,8 @@ export function useCategoriesState({
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   /** 抽屉展开状态：'all' | 分组ID | 'uncategorized' | null（全部收起） */
   const [expandedDrawer, setExpandedDrawer] = useState<string | 'all' | 'uncategorized' | null>(null);
-  /** 分组新建/编辑共用弹窗：editingCategory 为 null 即新建 */
+  /** 新建分组弹窗：改名走侧栏就地编辑，弹窗只用于新建 */
   const [showCategoryModal, setShowCategoryModal] = useState(false);
-  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [categoryName, setCategoryName] = useState("");
   const [showDeleteCategoryModal, setShowDeleteCategoryModal] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
@@ -52,24 +51,16 @@ export function useCategoriesState({
 
   useEffect(() => { categoriesRef.current = categories; }, [categories]);
 
-  /** 打开新建分组弹窗：清空编辑态与输入值 */
+  /** 打开新建分组弹窗：清空输入值 */
   const handleCreateCategory = () => {
-    setEditingCategory(null);
     setCategoryName("");
-    setShowCategoryModal(true);
-  };
-
-  const handleEditCategory = (category: Category) => {
-    setEditingCategory(category);
-    setCategoryName(category.name);
     setShowCategoryModal(true);
   };
 
   const handleSaveCategory = async () => {
     if (!categoryName.trim()) return;
     try {
-      if (editingCategory) { await categoriesApi.updateCategory(editingCategory.id, categoryName); }
-      else { await categoriesApi.createCategory(categoryName, defaultCategoryAiAccess); }
+      await categoriesApi.createCategory(categoryName, defaultCategoryAiAccess);
       await loadDataRef.current();
       setShowCategoryModal(false);
     } catch (error) {
@@ -109,8 +100,10 @@ export function useCategoriesState({
     try {
       await categoriesApi.updateCategory(category.id, name);
       logAction("group.rename", name);
+      // 乐观更新：名字就在侧栏上，等一次读库才变会有明显滞后感
+      setCategories((prev) => prev.map((c) => (c.id === category.id ? { ...c, name } : c)));
       await loadDataRef.current();
-      showToast(t("已更新分组名称"), "success");
+      // 成功不弹提示：分组名就在侧栏上，改了当场看得见
     } catch {
       showToast(t("更新失败"), "error");
     }
@@ -195,7 +188,6 @@ export function useCategoriesState({
     setExpandedDrawer,
     showCategoryModal,
     setShowCategoryModal,
-    editingCategory,
     categoryName,
     setCategoryName,
     showDeleteCategoryModal,
@@ -204,7 +196,6 @@ export function useCategoriesState({
     deleteCategoryNotes,
     setDeleteCategoryNotes,
     handleCreateCategory,
-    handleEditCategory,
     handleSaveCategory,
     handleCreateCategoryNamed,
     handleDeleteCategory,

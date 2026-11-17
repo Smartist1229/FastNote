@@ -27,6 +27,7 @@ import {
   neighborOf,
   noteTabKey,
   planBatchClose,
+  planTabMove,
   removeTab,
   tabByKey,
   tabNote,
@@ -320,18 +321,15 @@ export function useEditorTabs({
   }, [closeKeys]);
 
   /**
-   * 拖拽排序：把 fromKey 挪到 toKey 的位置。
-   * 只改顺序，不动激活项——所以不需要跑锁回 / 写回那些副作用。
+   * 拖拽排序：把 fromKey 挪到第 insertAt 项**之前**（插入缝语义，0..len）。
+   *
+   * 收的是「缝」而不是「落在哪个标签上」：拖动过程中只画落点，松手才真正重排，
+   * 标签不会随指针抖动来回跳。只改顺序、不动激活项，所以不跑锁回 / 写回副作用。
    */
-  const moveTab = useCallback((fromKey: string, toKey: string) => {
+  const moveTab = useCallback((fromKey: string, insertAt: number) => {
     setState((prev) => {
-      const from = prev.tabs.findIndex((tab) => tab.key === fromKey);
-      const to = prev.tabs.findIndex((tab) => tab.key === toKey);
-      if (from < 0 || to < 0 || from === to) return prev;
-      const tabs = [...prev.tabs];
-      const [moved] = tabs.splice(from, 1);
-      tabs.splice(to, 0, moved);
-      return { tabs, activeKey: prev.activeKey };
+      const tabs = planTabMove(prev.tabs, fromKey, insertAt);
+      return tabs === prev.tabs ? prev : { tabs, activeKey: prev.activeKey };
     });
   }, []);
 

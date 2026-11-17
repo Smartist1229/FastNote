@@ -37,8 +37,8 @@ export interface EditorTabsProps {
   onCloseRight: (key: string) => void;
   /** 右键菜单：全部关闭 */
   onCloseAll: () => void;
-  /** 拖拽排序：把 fromKey 挪到 toKey 的位置 */
-  onMoveTab: (fromKey: string, toKey: string) => void;
+  /** 拖拽排序：把 fromKey 插到第 insertAt 项之前（0..标签数，末尾用标签数） */
+  onMoveTab: (fromKey: string, insertAt: number) => void;
 }
 
 /** 标签上显示的文字：笔记没标题时用「无标题」，其余类型共用自己的标题字段 */
@@ -84,6 +84,13 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
    */
   const dragRef = useRef<{ key: string; startX: number; active: boolean } | null>(null);
   const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  /**
+   * 插入位置提示：`index` 是「会插到第几个标签之前」（= 标签数表示插到最后），
+   * `x` 是竖线在滚动内容里的横坐标。只在拖动时出现，松手才真正重排——
+   * 拖动过程中如果实时换位，指针一抖标签就来回跳，看不出落点在哪。
+   */
+  const [dropHint, setDropHint] = useState<{ index: number; x: number } | null>(null);
+  const dropIndexRef = useRef<number | null>(null);
   /** 拖拽结束后浏览器还会补一个 click：吞掉它，否则一拖就顺带切了标签 */
   const suppressClickRef = useRef(false);
   /** 收起菜单时把命中项一起清掉：否则下次渲染还会按旧 key 算「左侧 / 右侧」置灰状态 */
@@ -124,6 +131,9 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
    * 捕获方案在 WebView2 里要先把指针绑到某个元素上，标签主体又是 <button>，
    * 容易在「按下的元素」和「捕获的元素」之间打转；window 监听没有这些前提，
    * 指针拖到编辑区、拖出窗口都能收到 move / up。
+   *
+   * 拖动期间**只更新落点提示**，松手才调 onMoveTab —— 实时交换会让标签在指针下
+   * 来回跳，用户看不出自己会插到哪。
    */
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -145,21 +155,39 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
       const stripRect = strip.getBoundingClientRect();
       if (event.clientX < stripRect.left + 24) strip.scrollLeft -= 12;
       else if (event.clientX > stripRect.right - 24) strip.scrollLeft += 12;
-      // 按几何位置找落点：被拖的标签自己也在候选里，靠 key 相同跳过
-      for (const el of Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-key]"))) {
-        const rect = el.getBoundingClientRect();
-        if (event.clientX < rect.left || event.clientX > rect.right) continue;
-        const overKey = el.dataset.tabKey;
-        if (overKey && overKey !== drag.key) moveTabRef.current(drag.key, overKey);
-        break;
+      const rows = Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-key]"));
+      if (rows.length === 0) return;
+      /*
+       * 落点按「指针越过哪条中线」算，而不是「指针压在哪一条上」：
+       * 前者在第一个标签左侧 / 最后一个标签右侧也有明确含义（插到最前 / 最后），
+       * 也不会出现「压在同一个标签上但想插到它前面」的歧义。
+       */
+      let index = rows.length;
+      for (let i = 0; i < rows.length; i += 1) {
+        const rect = rows[i].getBoundingClientRect();
+        if (event.clientX < rect.left + rect.width / 2) {
+          index = i;
+          break;
+        }
       }
+      const border =
+        index >= rows.length
+          ? rows[rows.length - 1].getBoundingClientRect().right
+          : rows[index].getBoundingClientRect().left;
+      // 竖线相对滚动内容定位：加回 scrollLeft，横向滚动时线会跟着走
+      const x = border - stripRect.left + strip.scrollLeft;
+      dropIndexRef.current = index;
+      setDropHint((prev) => (prev && prev.index === index && prev.x === x ? prev : { index, x }));
     };
     const onUp = () => {
-      if (!dragRef.current) return;
+      const drag = dragRef.current;
+      if (!drag) return;
+      const insertAt = dropIndexRef.current;
       dragRef.current = null;
+      dropIndexRef.current = null;
       setDraggingKey(null);
+      setDropHint(null);
       document.body.style.userSelect = "";
-      document.body.style.cursor = "";
       document.body.style.cursor = "";
       if (suppressClickRef.current) {
         // 拖完浏览器还会补一个 click，延后一拍再放开标记
@@ -167,6 +195,8 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
           suppressClickRef.current = false;
         }, 0);
       }
+      if (!drag.active || insertAt === null) return;
+      moveTabRef.current(drag.key, insertAt);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -177,7 +207,6 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
       window.removeEventListener("pointercancel", onUp);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-      document.body.style.cursor = "";
     };
   }, []);
 
@@ -186,7 +215,7 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
   return (
     <div
       ref={stripRef}
-      className="tabs-scroll flex h-9 shrink-0 select-none items-stretch overflow-x-auto overflow-y-hidden border-b border-line bg-app"
+      className="tabs-scroll relative flex h-9 shrink-0 select-none items-stretch overflow-x-auto overflow-y-hidden border-b border-line bg-app"
       role="tablist"
       aria-label={t("已打开的标签")}
     >
@@ -208,7 +237,7 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
               dragRef.current = { key: tab.key, startX: event.clientX, active: false };
             }}
             className={`group relative flex h-full min-w-[104px] max-w-[200px] shrink-0 items-center gap-1.5 border-r border-line pl-2.5 pr-1 transition-colors ${
-              draggingKey === tab.key ? "cursor-grabbing opacity-60" : ""
+              draggingKey === tab.key ? "cursor-grabbing opacity-40" : ""
             } ${isActive ? "bg-surface text-body" : "text-muted hover:bg-surface-alt hover:text-body"}`}
           >
             {/* 激活态指示线：贴顶 2px，与整块编辑区连成一体 */}
@@ -255,6 +284,18 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
           </div>
         );
       })}
+
+      {/*
+        插入位置指示线：拖动时贴在「会插进的那个缝」上，松手才真正换位。
+        transition-[left] 让它在相邻缝之间滑过去，比突然跳一格更容易跟上。
+      */}
+      {dropHint && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 top-0 z-10 w-[2px] -translate-x-1/2 rounded-full bg-primary-500 transition-[left] duration-100 ease-out"
+          style={{ left: dropHint.x }}
+        />
+      )}
 
       {menuKey !== null && (
         <ContextMenu

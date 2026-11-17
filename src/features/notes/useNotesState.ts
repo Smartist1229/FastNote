@@ -26,7 +26,7 @@ export interface UseNotesStateParams {
   selectedCategoryId: string | null;
   setSelectedCategoryId: Dispatch<SetStateAction<string | null>>;
   setExpandedDrawer: (value: string | 'all' | 'uncategorized' | null) => void;
-  selectedNote: Note | null;
+  /** 实时选中项：异步操作（删除撤销）要按「操作那一刻」的现场判断，不能用闭包快照 */
   selectedNoteRef: RefObject<Note | null>;
   setSelectedNote: Dispatch<SetStateAction<Note | null>>;
   notesRef: RefObject<Note[]>;
@@ -44,7 +44,6 @@ export function useNotesState({
   selectedCategoryId,
   setSelectedCategoryId,
   setExpandedDrawer,
-  selectedNote,
   selectedNoteRef,
   setSelectedNote,
   notesRef,
@@ -220,28 +219,66 @@ export function useNotesState({
     await saveQueueRef.current;
   };
 
-  /** 侧边栏右键删除：软删除进回收站，删的是当前打开的笔记时清空选中 */
-  const handleDeleteNoteFromSidebar = async (note: Note) => {
+  /** 正在删除中的笔记 id：按住 Delete 连发时挡住重复请求 */
+  const deletingIdsRef = useRef(new Set<string>());
+
+  /**
+   * 侧边栏 / 列表删除：软删除进回收站，并给一条带「撤销」的提示。
+   *
+   * `skipConfirm` 给 Delete 键用：那是一次可撤销的轻操作，弹框反而更碍事
+   * （确认框 → 确定 → 又后悔，比「直接删 → 撤销」多两步）。右键菜单仍走确认框，
+   * 因为那是用户主动翻菜单找到的，多半是真要删。
+   */
+  const handleDeleteNoteFromSidebar = async (note: Note, options?: { skipConfirm?: boolean }) => {
+    // 按住 Delete 会连发：同一篇在删完之前只处理一次，免得重复请求 + 弹一串提示
+    if (deletingIdsRef.current.has(note.id)) return;
     // 加密笔记同样可以进回收站：删除不碰明文，还原后密钥还在，照样能解
-    const confirmed = await confirm({
-      title: t("删除笔记"),
-      message:
-        note.enc_mode !== 0
-          ? t("这是加密笔记，删除会把它移入回收站（密钥一并保留，还原后仍可解密）。确定继续吗？")
-          : t("确定要将这条笔记移入回收站吗？"),
-      confirmText: t("移入回收站"),
-      danger: true,
-    });
-    if (!confirmed) return;
+    if (!options?.skipConfirm) {
+      const confirmed = await confirm({
+        title: t("删除笔记"),
+        message:
+          note.enc_mode !== 0
+            ? t("这是加密笔记，删除会把它移入回收站（密钥一并保留，还原后仍可解密）。确定继续吗？")
+            : t("确定要将这条笔记移入回收站吗？"),
+        confirmText: t("移入回收站"),
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
+    /**
+     * 删除那一刻它是不是正开着。
+     * 撤销要按这个恢复现场：删的是正在看的那篇，恢复后接着看它；
+     * 删的是列表里没打开的一条，恢复后只让它回到列表，不抢用户当前焦点。
+     */
+    const wasOpen = selectedNoteRef.current?.id === note.id;
+    deletingIdsRef.current.add(note.id);
     try {
       await notesApi.moveToTrash(note.id);
       logAction("note.trash", note.title);
       await loadData();
-      if (selectedNote?.id === note.id) setSelectedNote(null);
-      showToast(t("删除成功！"), "success");
+      if (wasOpen) setSelectedNote(null);
+      showToast(t("已移入回收站"), "success", {
+        label: t("撤销"),
+        onClick: () => {
+          void (async () => {
+            try {
+              await notesApi.restoreNote(note.id);
+              await loadData();
+              // 只还原删除前的现场：当时开着才重新打开
+              if (wasOpen) setSelectedNote(note);
+              logAction("note.restore", note.title);
+              showToast(t("已恢复"), "success");
+            } catch {
+              showToast(t("恢复失败，请到回收站重试"), "error");
+            }
+          })();
+        },
+      });
       void pluginContributions.emitHook("note-delete", { noteId: note.id });
     } catch {
       showToast(t("删除失败"), "error");
+    } finally {
+      deletingIdsRef.current.delete(note.id);
     }
   };
 
@@ -300,7 +337,7 @@ export function useNotesState({
       if (selectedNoteRef.current?.id === note.id) {
         setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, title } : prev));
       }
-      showToast(t("已更新笔记标题"), "success");
+      // 成功不弹提示：改名是就地发生的，标题已经在眼前变了，再弹一条只是噪音
     } catch {
       showToast(t("重命名失败，请重试"), "error");
     }

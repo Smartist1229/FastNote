@@ -6,6 +6,7 @@ import {
   neighborOf,
   noteTabKey,
   planBatchClose,
+  planTabMove,
   removeTab,
   tabByKey,
   tabToNote,
@@ -202,5 +203,39 @@ describe("planBatchClose 批量关闭", () => {
   it("全部关闭 → 回欢迎页", () => {
     const plan = planBatchClose(state(["a", "b"], "a"), ["a", "b"]);
     expect(plan.nextActiveKey).toBeNull();
+  });
+});
+
+describe("planTabMove 拖拽重排", () => {
+  const keys = (tabs: EditorTab[]) => tabs.map((tab) => tab.key);
+
+  it("往后拖：插到第 3 项之前 = 落在第 2 位（先摘自己再插，下标要回退一位）", () => {
+    // [a,b,c] 把 a 拖到 c 的右半边 → 插入缝 3（末尾）
+    expect(keys(planTabMove(state(["a", "b", "c"], "a").tabs, "a", 3))).toEqual(["b", "c", "a"]);
+  });
+
+  it("往前拖：插入缝 0 → 落到最前", () => {
+    expect(keys(planTabMove(state(["a", "b", "c"], "a").tabs, "c", 0))).toEqual(["c", "a", "b"]);
+  });
+
+  it("插到自己原位置（前后两个缝）都算没动，返回原引用", () => {
+    const tabs = state(["a", "b", "c"], "a").tabs;
+    expect(planTabMove(tabs, "b", 1)).toBe(tabs);
+    expect(planTabMove(tabs, "b", 2)).toBe(tabs);
+  });
+
+  it("相邻往后挪一格真的会动", () => {
+    expect(keys(planTabMove(state(["a", "b", "c"], "a").tabs, "a", 2))).toEqual(["b", "a", "c"]);
+  });
+
+  it("越界下标被夹到两端，不抛错", () => {
+    const tabs = state(["a", "b"], "a").tabs;
+    expect(keys(planTabMove(tabs, "a", 99))).toEqual(["b", "a"]);
+    expect(keys(planTabMove(tabs, "b", -5))).toEqual(["b", "a"]);
+  });
+
+  it("找不到来源标签时原样返回", () => {
+    const tabs = state(["a", "b"], "a").tabs;
+    expect(planTabMove(tabs, "zzz", 0)).toBe(tabs);
   });
 });

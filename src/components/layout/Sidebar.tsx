@@ -24,7 +24,7 @@ import { Icon } from '@/components/common/Icon';
 import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/app/contextMenus';
 import type { GroupMenuKind } from '@/config/app/contextMenus';
 import { buildNoteMatcher, findMatchRanges, searchNotes, type NoteSearchHit } from '@/lib/search/noteSearch';
-import { useNoteRename } from '@/components/layout/noteRename';
+import { useInlineRename } from '@/components/layout/inlineRename';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 import { openUpdateDialog, useUpdater } from '@/stores/updaterStore';
 /** 排序选项：value 直接作为后端排序字段使用 */
@@ -96,7 +96,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onExportGroup,
   onSaveNote,
   onCreateCategory,
-  onEditCategory,
   onDeleteCategory,
   onCreateNote,
   onMoveToCategory,
@@ -115,8 +114,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDecryptCategory,
 }) => {
   const { t } = useI18n();
-  /** 就地改名：右键菜单与 F2 走同一个入口（Provider 在 App 里包住侧栏） */
-  const renameNote = useNoteRename();
+  /** 就地改名：笔记与分组共用一条通道，右键菜单与 F2 都落到这里（Provider 在 App 里包住侧栏） */
+  const inlineRename = useInlineRename();
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
   const { showToast } = useToast();
   /** 启动静默检查到的新版本：底栏出一个「更新」按钮，点开才展示更新说明（跳过过的版本不再提示） */
@@ -345,7 +344,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         });
       },
       onRename: () => {
-        if (target.kind === 'category') onEditCategory(target.category);
+        // 分组名就地改，与笔记标题同一条路（不再弹「编辑分组」窗）
+        if (target.kind === 'category') inlineRename?.start({ kind: 'category', category: target.category });
       },
       onCreateCategory,
       onDelete: () => {
@@ -373,7 +373,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     buildNoteMenu(note, categories, {
       onOpenNote: () => onSelectNote(note),
       // 搜索结果里不给改名：这些行可能同时出现在多个结果分组里，改名入口只留给真实列表
-      onRenameNote: renameNote && !isSearching ? () => renameNote.start(note) : undefined,
+      onRenameNote: inlineRename && !isSearching ? () => inlineRename.start({ kind: "note", note }) : undefined,
       onSaveNote: () => onSaveNote(note),
       onMoveToCategory: (categoryId) => onMoveToCategory(note, categoryId),
       onTogglePin: () => onTogglePin(note),

@@ -99,7 +99,6 @@ export interface SidebarProps {
   /** 右键菜单「保存笔记」：等价于编辑器里的 Ctrl+S（导出到文件） */
   onSaveNote: (note: Note) => void;
   onCreateCategory: () => void;
-  onEditCategory: (category: Category) => void;
   onDeleteCategory: (category: Category) => void;
   onCreateNote: (categoryId: string | null) => void;
   onMoveToCategory: (note: Note, categoryId: string | null) => void;

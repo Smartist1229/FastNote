@@ -62,12 +62,19 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
    * 因此这里单独维护，切换格式时不会把压缩包的顺序也改掉。
    */
   const [ebookOrder, setEbookOrder] = useState<string[]>([]);
-  /** 拖拽中的笔记 / 当前悬停的目标行，仅用于视觉反馈 */
+  /** 正在拖的那一篇（只用来把它压暗） */
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  /**
+   * 插入位置提示：`index` 是「会插到第几行之前」的下标（= 行数表示插到最后），
+   * `y` 是指示线在滚动内容里的纵坐标。用一条会滑动的线表达落点，
+   * 比高亮目标行（还要用户自己推演插在前还是后）直观得多。
+   */
+  const [dropHint, setDropHint] = useState<{ index: number; y: number } | null>(null);
   // 指针事件回调里要读最新值，state 在同一轮事件中可能还没刷新
   const dragRef = useRef<{ pointerId: number; startY: number; active: boolean; noteId: string } | null>(null);
-  const dragOverRef = useRef<string | null>(null);
+  const dropIndexRef = useRef<number | null>(null);
+  /** 章节列表的滚动容器：算插入线坐标要以它为基准 */
+  const listRef = useRef<HTMLDivElement>(null);
 
   // 每次打开都回到默认选项，避免上次的选择让人困惑
   useEffect(() => {
@@ -87,9 +94,9 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
     setEbookOrder(sorted.map((n) => n.id));
     setSelectedIds(new Set(sorted.map((n) => n.id)));
     setDraggingId(null);
-    setDragOverId(null);
+    setDropHint(null);
     dragRef.current = null;
-    dragOverRef.current = null;
+    dropIndexRef.current = null;
   }, [target]);
 
   const isZip = mode === 'zip';
@@ -141,14 +148,33 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
       drag.active = true;
       setDraggingId(drag.noteId);
     }
-    const row = document
-      .elementFromPoint(event.clientX, event.clientY)
-      ?.closest<HTMLElement>('[data-ebook-drag-id]');
-    const raw = row?.dataset.ebookDragId;
-    const overId = raw ?? null;
-    const next = overId !== null && overId !== drag.noteId ? overId : null;
-    dragOverRef.current = next;
-    setDragOverId(next);
+    const list = listRef.current;
+    if (!list) return;
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-ebook-row]'));
+    if (rows.length === 0) return;
+    const listRect = list.getBoundingClientRect();
+    // 拖到上下边缘时自动滚一屏：列表限高 48，长列表否则永远拖不到远处
+    if (event.clientY < listRect.top + 16) list.scrollTop -= 8;
+    else if (event.clientY > listRect.bottom - 16) list.scrollTop += 8;
+    /*
+     * 落点按「指针越过哪一行的中线」算，而不是「指针压在哪一行上」：
+     * 前者在第 0 行上方 / 最后一行下方也有明确含义（插到最前 / 最后），
+     * 也不会出现「压在同一行但想插到它前面」的歧义。
+     */
+    let index = rows.length;
+    for (let i = 0; i < rows.length; i += 1) {
+      const rect = rows[i].getBoundingClientRect();
+      if (event.clientY < rect.top + rect.height / 2) {
+        index = i;
+        break;
+      }
+    }
+    const border = index >= rows.length
+      ? rows[rows.length - 1].getBoundingClientRect().bottom
+      : rows[index].getBoundingClientRect().top;
+    const y = border - listRect.top + list.scrollTop;
+    dropIndexRef.current = index;
+    setDropHint((prev) => (prev && prev.index === index && prev.y === y ? prev : { index, y }));
   };
 
   const endEbookDrag = (event: React.PointerEvent<HTMLElement>) => {
@@ -158,15 +184,18 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    const targetId = dragOverRef.current;
-    dragOverRef.current = null;
+    const insertAt = dropIndexRef.current;
+    dropIndexRef.current = null;
     setDraggingId(null);
-    setDragOverId(null);
-    if (!drag.active || targetId === null || targetId === drag.noteId) return;
+    setDropHint(null);
+    if (!drag.active || insertAt === null) return;
     setEbookOrder((prev) => {
       const from = prev.indexOf(drag.noteId);
-      const to = prev.indexOf(targetId);
-      if (from < 0 || to < 0 || from === to) return prev;
+      if (from < 0) return prev;
+      // 先摘掉自己再插：落点在它后面时，下标要回退一位
+      let to = insertAt > from ? insertAt - 1 : insertAt;
+      to = Math.max(0, Math.min(to, prev.length - 1));
+      if (to === from) return prev;
       const next = [...prev];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
@@ -336,16 +365,19 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
             </span>
           </div>
 
-          <div className="max-h-48 overflow-y-auto border border-line rounded-lg bg-app">
+          <div
+            ref={listRef}
+            className="relative max-h-48 overflow-y-auto border border-line rounded-lg bg-app"
+          >
             {orderedNotes.map((note, index) => {
               const checked = selectedIds.has(note.id);
               return (
                 <div
                   key={note.id}
-                  data-ebook-drag-id={isZip ? undefined : note.id}
+                  data-ebook-row={isZip ? undefined : ''}
                   className={`flex items-center gap-2 px-2.5 py-1.5 text-xs transition-colors first:rounded-t-lg last:rounded-b-lg ${
-                    draggingId === note.id ? 'opacity-50 bg-primary-50' : 'hover:bg-surface-alt'
-                  } ${dragOverId === note.id ? 'bg-primary-50 ring-1 ring-inset ring-primary-300' : ''}`}
+                    draggingId === note.id ? 'opacity-40' : 'hover:bg-surface-alt'
+                  }`}
                 >
                   {/* 电子书可拖动排序；压缩包保持创建时间顺序，不显示手柄 */}
                   {!isZip && (
@@ -416,6 +448,20 @@ export const ExportCategoryModal: React.FC<ExportCategoryModalProps> = ({ target
                 </div>
               );
             })}
+
+            {/*
+              插入位置指示线：跟着落点在行与行之间滑动（transition-[top]），
+              两端各一个圆点，明确「会插进这个缝里」。只在拖动时出现。
+            */}
+            {dropHint && (
+              <div
+                className="pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded-full bg-primary-500 transition-[top] duration-150 ease-out"
+                style={{ top: dropHint.y }}
+              >
+                <span className="absolute -left-0.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-primary-500 ring-2 ring-surface" />
+                <span className="absolute -right-0.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-primary-500 ring-2 ring-surface" />
+              </div>
+            )}
           </div>
         </div>
 

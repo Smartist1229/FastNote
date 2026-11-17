@@ -5,7 +5,7 @@
  * 标签列表只在面板打开时拉一次。paletteNonce 让每次打开都重新挂载，
  * 免得上次的查询词、选中项、标签筛选残留。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { Category, Note, Tag } from "@/interface/note/note";
 import type { PropertiesTarget } from "@/interface/app/ui";
@@ -21,6 +21,24 @@ import { useI18n } from "@/i18n";
 import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { pluginHost } from "@/plugins/host";
 import { pluginContributions } from "@/plugins/contributions";
+
+/** 最近执行过的命令 id，只在本地记（跨会话保留，不需要进数据库） */
+const RECENT_COMMAND_KEY = "fastnote.palette.recent";
+/** 最多记几条：再多人就不会往下看了，只是把常用命令顶到前面 */
+const RECENT_COMMAND_MAX = 5;
+
+/** 读本地记录；损坏或不可用时当作「没有最近使用」 */
+const readRecentCommands = (): string[] => {
+  try {
+    const raw = localStorage.getItem(RECENT_COMMAND_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === "string").slice(0, RECENT_COMMAND_MAX);
+  } catch {
+    return [];
+  }
+};
 
 export interface UsePaletteParams {
   categories: Category[];
@@ -120,6 +138,29 @@ export function usePalette({
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("jump");
   const [paletteNonce, setPaletteNonce] = useState(0);
   const [paletteTags, setPaletteTags] = useState<Tag[]>([]);
+  /**
+   * 最近执行过的命令（新的在前）。
+   *
+   * 面板每次打开都会按 nonce 重新挂载，所以这份记录不能放在面板里——
+   * 放在这里，面板只负责「按 id 把命令提到最前面」。
+   */
+  const [recentCommandIds, setRecentCommandIds] = useState<string[]>(readRecentCommands);
+  const recentCommandIdsRef = useRef(recentCommandIds);
+
+  /** 记一次命令执行：去重后插到最前，超出上限截断，并写回本地 */
+  const recordCommand = useCallback((commandId: string) => {
+    const next = [commandId, ...recentCommandIdsRef.current.filter((id) => id !== commandId)].slice(
+      0,
+      RECENT_COMMAND_MAX,
+    );
+    recentCommandIdsRef.current = next;
+    setRecentCommandIds(next);
+    try {
+      localStorage.setItem(RECENT_COMMAND_KEY, JSON.stringify(next));
+    } catch {
+      // 本地存储不可用（隐私模式等）只是下次不记得，不影响本次使用
+    }
+  }, []);
 
   /** 打开命令面板；每次打开换一个 key，避免上次的查询词与选中项残留 */
   const openPalette = useCallback((mode: PaletteMode) => {
@@ -607,5 +648,7 @@ export function usePalette({
     paletteCommands,
     paletteTabHints,
     openPalette,
+    recentCommandIds,
+    recordCommand,
   };
 }

@@ -1,4 +1,9 @@
 export const appMessages: Record<string, string> = {
+  // 删除 / 撤销
+  "最近使用": "Recently used",
+  "已移入回收站": "Moved to trash",
+  "已恢复": "Restored",
+  "恢复失败，请到回收站重试": "Restore failed. Please retry from the trash",
   // 标签栏（命令面板 + 右键菜单）
   "标签": "Tabs",
   "切换到标签：{name}": "Switch to tab: {name}",
@@ -71,7 +76,6 @@ export const appMessages: Record<string, string> = {
   "已永久删除": "Permanently deleted",
   "已创建分组「{name}」": "Created group “{name}”",
   "创建分组失败：{error}": "Could not create the group: {error}",
-  "已更新分组名称": "Group name updated",
   "更新失败": "Update failed",
   "已取消收藏": "Removed from favorites",
   "已收藏": "Added to favorites",
@@ -83,7 +87,6 @@ export const appMessages: Record<string, string> = {
   "完全": "Full access",
   "移动成功": "Moved successfully",
   "移动失败": "Could not move the note",
-  "已更新笔记标题": "Note title updated",
   "重命名失败，请重试": "Could not rename. Please try again.",
   "回滚失败：{error}": "Could not roll back: {error}",
   "已回滚到所选历史版本（该版本及更新的版本已删除）": "Rolled back to the selected version (that version and newer versions have been deleted)",

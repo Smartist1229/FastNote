@@ -98,6 +98,10 @@ export interface CommandPaletteProps {
   onOpenNote: (note: Note) => void;
   /** 按标签取笔记（选中标签后在本面板内列出来） */
   onLoadTagNotes: (tag: Tag) => Promise<Note[]>;
+  /** 最近执行过的命令 id（新的在前）；只在没有查询词时用于置顶 */
+  recentCommandIds?: string[];
+  /** 某条命令真的执行了（用来更新「最近使用」，只填 token 不执行时不该调用） */
+  onCommandRun?: (commandId: string) => void;
 }
 
 type Row =
@@ -171,6 +175,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onClose,
   onOpenNote,
   onLoadTagNotes,
+  recentCommandIds,
+  onCommandRun,
 }) => {
   const { locale, t } = useI18n();
   // Only command metadata is localized; tokens, arguments, and user note/tag data stay intact.
@@ -320,10 +326,32 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         }))
         .filter((item): item is { command: PaletteCommand; hit: NonNullable<ReturnType<typeof fuzzyMatch>> } => item.hit !== null)
         .sort((a, b) => (q ? b.hit.score - a.hit.score : 0));
+      /*
+       * 最近使用：只在**没有查询词**时置顶。
+       * 有查询词时用户是在找特定命令，这时按分类正常排更可预期；
+       * 而且同一命令若同时出现在「最近使用」和原分类里，搜索结果的重复项很碍眼。
+       */
+      const recentCommands: PaletteCommand[] = [];
+      if (!q && recentCommandIds?.length) {
+        for (const id of recentCommandIds) {
+          const command = commands.find((item) => item.id === id);
+          if (command) recentCommands.push(command);
+        }
+        if (recentCommands.length) {
+          group("g-cmd-recent", t("最近使用"));
+          for (const command of recentCommands) {
+            push({ kind: "command", id: command.id, command }, command.id);
+          }
+        }
+      }
+      const recentSet = new Set(recentCommands.map((command) => command.id));
+
       // 按分数排序后同一分类会分散在多处：先归拢再输出，保证每个分类只出一个标题。
       // 这同时避免了 `g-cmd-分类` 作为 key 重复出现——重复 key 会让 React 在列表变短时留下旧节点。
       const buckets = new Map<string, PaletteCommand[]>();
       for (const { command } of scored) {
+        // 已经在「最近使用」里露过面的不再重复出现
+        if (recentSet.has(command.id)) continue;
         const bucket = buckets.get(command.group);
         if (bucket) bucket.push(command);
         else buckets.set(command.group, [command]);
@@ -342,7 +370,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       return next !== undefined && next.kind !== "group";
     });
     return { rows: visible, selectable: keys };
-  }, [mode, q, tokenQuery, tagFilter, tagNotes, isTagMode, tagQuery, tags, notes, jump.hits, commands, currentNoteId, t]);
+  }, [
+    mode, q, tokenQuery, tagFilter, tagNotes, isTagMode, tagQuery, tags, notes,
+    jump.hits, commands, currentNoteId, recentCommandIds, t,
+  ]);
 
   /** 结果变少（异步扫描、标签加载完）时把选中项拉回范围内，否则 Enter 会落到空处 */
   useEffect(() => {
@@ -362,6 +393,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         if (row.command.disabled) return;
         // 二级命令的选项本身就是完整指令，选中即执行
         onClose();
+        onCommandRun?.(row.command.id);
         row.command.run(row.subcommand.value);
         return;
       }
@@ -378,12 +410,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           // 先关面板再执行：命令多半会开另一个窗口（设置 / 文件对话框），
           // 面板留在下面会挡住刚打开的东西
           onClose();
+          onCommandRun?.(row.command.id);
           row.command.run(parsed.arg || undefined);
           return;
         }
         // 无参数命令：从列表里选中即执行，不需要再按一次 Enter
         if (!needsInput) {
           onClose();
+          onCommandRun?.(row.command.id);
           row.command.run();
           return;
         }

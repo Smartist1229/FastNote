@@ -5,12 +5,19 @@
  * showToast 用 useCallback 固定引用，可以安全放进依赖数组。
  */
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, ReactNode } from "react";
-import type { Toast, ToastContextType, ToastType } from "@/interface/app/ui";
+import type { Toast, ToastAction, ToastContextType, ToastType } from "@/interface/app/ui";
 import { Icon } from "@/components/common/Icon";
 import { useI18n } from "@/i18n";
 
 /** 单条提示的存活时间（ms） */
 const TOAST_DURATION_MS = 3000;
+
+/**
+ * 带动作按钮时的存活时间。
+ * 3 秒够读完一句话，但不够「意识到删错了 → 找到撤销 → 点中」，
+ * 所以有按钮的提示单独给长一倍多——短了等于没有这个按钮。
+ */
+const TOAST_ACTION_DURATION_MS = 6500;
 
 /** 离场动画时长（ms）：到期前这么久开始淡出 */
 const TOAST_LEAVE_MS = 200;
@@ -118,15 +125,18 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
     scheduleToast(id, left);
   }, [scheduleToast]);
 
-  const showToast = useCallback((message: string, type: ToastType = "info") => {
-    const id = ++toastSeq;
-    setToasts((prev) => {
-      const next = [...prev, { id, message, type, leaving: false }];
-      // updater 保持纯函数：这里只做裁剪，定时器在下面注册
-      return next.length > TOAST_MAX_VISIBLE ? next.slice(next.length - TOAST_MAX_VISIBLE) : next;
-    });
-    scheduleToast(id, TOAST_DURATION_MS);
-  }, [scheduleToast]);
+  const showToast = useCallback(
+    (message: string, type: ToastType = "info", action?: ToastAction) => {
+      const id = ++toastSeq;
+      setToasts((prev) => {
+        const next = [...prev, { id, message, type, action, leaving: false }];
+        // updater 保持纯函数：这里只做裁剪，定时器在下面注册
+        return next.length > TOAST_MAX_VISIBLE ? next.slice(next.length - TOAST_MAX_VISIBLE) : next;
+      });
+      scheduleToast(id, action ? TOAST_ACTION_DURATION_MS : TOAST_DURATION_MS);
+    },
+    [scheduleToast],
+  );
 
   // Provider 卸载时清掉全部定时器
   useEffect(() => {
@@ -174,10 +184,29 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
                 >
                   <Icon name={tone.icon} className="w-3.5 h-3.5" />
                 </span>
-                {/* 右侧 pr-4 只为给关闭按钮留出贴边位置，不是整卡留白 */}
-                <span className="selectable min-w-0 pr-4 text-[13px] font-medium leading-[1.5] text-body break-words">
+                {/* 右侧 pr-4 只为给关闭按钮留出贴边位置，不是整卡留白；有动作按钮时让位给它 */}
+                <span
+                  className={`selectable min-w-0 text-[13px] font-medium leading-[1.5] text-body break-words ${
+                    toast.action ? "pr-0" : "pr-4"
+                  }`}
+                >
                   {t(toast.message)}
                 </span>
+                {toast.action && (
+                  <button
+                    type="button"
+                    data-editor-blur-ignore="true"
+                    onClick={() => {
+                      // 先执行再关：动作里可能又要弹一条提示（如「已恢复」），顺序反了会被这条的移除影响
+                      toast.action?.onClick();
+                      removeToast(toast.id);
+                    }}
+                    // 右侧留出关闭按钮的位置（按钮绝对定位在 right-2.5、宽 20px）
+                    className="mr-4 flex-none rounded-md px-1.5 py-0.5 text-[13px] font-semibold text-primary-600 transition-colors hover:bg-primary-50 hover:text-primary-700"
+                  >
+                    {t(toast.action.label)}
+                  </button>
+                )}
               </div>
               <button
                 type="button"

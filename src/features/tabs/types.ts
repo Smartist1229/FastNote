@@ -80,6 +80,24 @@ export const removeTab = (state: TabsState, key: string): TabsState => {
   return { tabs, activeKey: nextActive?.key ?? null };
 };
 
+/**
+ * 拖拽重排：把 fromKey 挪到「第 insertAt 项之前」（0..len，len 表示末尾）。
+ *
+ * 参数是**插入缝**的下标，不是最终位置：往下拖时先摘掉自己会让目标下标前移一位，
+ * 这里统一换算，避免「往下拖一格原地不动」这个经典 off-by-one。
+ * 位置没变时返回原数组引用，调用方可以据此跳过 setState。
+ */
+export const planTabMove = (tabs: EditorTab[], fromKey: string, insertAt: number): EditorTab[] => {
+  const from = tabs.findIndex((tab) => tab.key === fromKey);
+  if (from < 0) return tabs;
+  const to = Math.max(0, Math.min(insertAt > from ? insertAt - 1 : insertAt, tabs.length - 1));
+  if (to === from) return tabs;
+  const next = [...tabs];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+};
+
 /** 关掉某个标签后应该激活谁：与 removeTab 的规则保持一致 */
 export const neighborOf = (tabs: EditorTab[], key: string): EditorTab | null => {
   const index = tabs.findIndex((tab) => tab.key === key);
