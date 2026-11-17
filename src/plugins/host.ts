@@ -46,7 +46,7 @@ import { startPluginSandbox, type PluginSandbox } from "./sandbox";
 import { compareVersions } from "./version";
 import * as registry from "./registry";
 import type { PluginSettingsSection } from "./registry";
-import type { PluginContext, PluginCurrentNote, PluginHook } from "./types";
+import type { PluginContext, PluginCurrentNote, PluginHook, PluginTabInfo } from "./types";
 import { errorText } from "@/lib/app/errorText";
 
 /** 启用状态在 app_settings 表里的持久化键 */
@@ -212,8 +212,43 @@ const dispatchToast = (message: string, type: ToastType = "info"): void => {
  */
 let currentNoteProvider: (() => PluginCurrentNote | null) | null = null;
 
+/**
+ * 解析 `ctx.ui.mount` 的字符串选择器。
+ *
+ * 多标签下每个「看过的」编辑面板都留在 DOM 里（隐藏的只是 visibility），所以
+ * `".editor-container"`、`"[data-plugin-hook='editor-stats']"` 这类选择器会命中多个元素，
+ * 而 `querySelector` 只给第一个——很可能是第一个标签的隐藏面板，插件挂上去用户看不见。
+ *
+ * 规则：多命中时优先取激活面板（`[data-active="true"]`）里的那个，否则退回第一个。
+ * 原有单面板时的行为完全不变。
+ */
+const pickMountHost = (selector: string): Element | null => {
+  const matched = Array.from(document.querySelectorAll(selector));
+  if (matched.length <= 1) return matched[0] ?? null;
+  return matched.find((el) => el.closest('[data-active="true"]')) ?? matched[0];
+};
+
 export const setCurrentNoteProvider = (fn: (() => PluginCurrentNote | null) | null): void => {
   currentNoteProvider = fn;
+};
+
+/**
+ * 标签栏桥接：由 App 注册，插件侧的 ctx.tabs 只是薄薄一层转发。
+ *
+ * 放在桥里而不是让 host 直接 import 标签域：host 是模块级单例（插件激活早于 React 树），
+ * 而且关闭标签要跑「外部文件写回 / 加密锁回」这些必须留在 UI 层旁的副作用。
+ */
+export interface PluginTabsBridge {
+  list(): PluginTabInfo[];
+  activate(target: string): boolean;
+  close(target: string): boolean;
+  open(noteId: string): boolean;
+}
+
+let tabsBridge: PluginTabsBridge | null = null;
+
+export const setTabsBridge = (bridge: PluginTabsBridge | null): void => {
+  tabsBridge = bridge;
 };
 
 /* ---------------- AI 设置桥接 ---------------- */
@@ -393,6 +428,11 @@ export const createPluginContext = (
     if (!hasWrite) throw new Error(`插件未声明 notes.write 权限`);
   };
 
+  /** 读 API 前置校验：ctx.tabs 需要知道笔记 id / 标题，按 notes.read 放行 */
+  const guardRead = (): void => {
+    if (!hasRead) throw new Error(`插件未声明 notes.read 权限`);
+  };
+
   /** AI tool 权限守卫：未声明 ai.tool 时拒绝注册 */
   const guardAiTool = (): void => {
     if (!hasAiTool) throw new Error(`插件未声明 ai.tool 权限`);
@@ -510,8 +550,9 @@ export const createPluginContext = (
      * 插件停用 / 卸载时宿主会摘掉，界面恢复原样。
      */
     mount: (target, node) => {
+      // 字符串选择器走 pickMountHost：多标签下同一个选择器会命中多个面板
       const host =
-        typeof target === "string" ? document.querySelector(target) : (target as Element | null);
+        typeof target === "string" ? pickMountHost(target) : (target as Element | null);
       if (!host) throw new Error(`挂载点不存在：${String(target)}`);
       host.appendChild(node);
       const remove = (): void => {
@@ -546,6 +587,28 @@ export const createPluginContext = (
     remove: async (id) => {
       guardWrite();
       await invoke("plugin_delete_note", { noteId: id, pluginId: dirName });
+    },
+  },
+  /**
+   * 标签栏：只改「哪几篇开着」，不碰正文。
+   * 关闭走用户点 × 的同一条路（外部文件先写回、加密笔记按规则锁回），插件不需要自己处理。
+   */
+  tabs: {
+    list: async () => {
+      guardRead();
+      return tabsBridge?.list() ?? [];
+    },
+    activate: async (target) => {
+      guardRead();
+      return tabsBridge?.activate(String(target)) ?? false;
+    },
+    close: async (target) => {
+      guardRead();
+      return tabsBridge?.close(String(target)) ?? false;
+    },
+    open: async (noteId) => {
+      guardRead();
+      return tabsBridge?.open(String(noteId)) ?? false;
     },
   },
   /**
@@ -1266,6 +1329,7 @@ export const pluginHost = {
   setToastDispatcher,
   setAiSettingsBridge,
   setCurrentNoteProvider,
+  setTabsBridge,
   setPluginEnabled,
   setConfig,
   pluginTables,

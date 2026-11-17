@@ -128,6 +128,18 @@ export interface PluginNetResponse {
   truncated: boolean;
 }
 
+/** 标签栏里的一个标签（ctx.tabs.list() 的返回项） */
+export interface PluginTabInfo {
+  /** 标签身份，可直接回传给 activate / close */
+  key: string;
+  /** note = 笔记，external = 电脑文件，temp = AI 预览，history = 历史版本 */
+  kind: "note" | "external" | "temp" | "history";
+  /** 笔记标签的 note id；其它类型为 null */
+  noteId: string | null;
+  title: string;
+  active: boolean;
+}
+
 /** 插件运行上下文：`activate(ctx)` 拿到的那份 */
 export interface FastNoteContext {
   /** 插件目录名（实例键） */
@@ -182,6 +194,14 @@ export interface FastNoteContext {
     create(input: { title?: string; content?: string; categoryId?: string | null }): Promise<{ id: string }>;
     update(id: string, patch: { title?: string; content?: string }): Promise<void>;
     remove(id: string): Promise<void>;
+  };
+  /** 标签栏（需要 notes.read）：只改「哪几篇开着」，不碰正文 */
+  tabs: {
+    list(): Promise<PluginTabInfo[]>;
+    /** target 可以传标签 key，也可以直接传笔记 id */
+    activate(target: string): Promise<boolean>;
+    close(target: string): Promise<boolean>;
+    open(noteId: string): Promise<boolean>;
   };
   editor: {
     insertText(text: string): boolean | Promise<boolean>;

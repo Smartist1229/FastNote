@@ -233,6 +233,45 @@ export const pluginShortcutCombos = (dirName: string): string[] =>
 /* ---------------- 键盘监听 ---------------- */
 
 /**
+ * 裸键（无修饰的 Delete / F2 等）在输入区里是否也派发。
+ *
+ * 默认不派发：编辑器里 Delete 是删字、输入框里 F2 什么也不该发生。
+ * 例外是「用户刚在笔记列表里点了某一行」——那时编辑器可能已经被自动聚焦，
+ * 但用户的心智仍在列表上，Delete / F2 应当作用在列表选中的那一条。
+ * 由 UI 层在列表点击时打开，用户一旦敲字或在正文区按下鼠标就关掉。
+ */
+let plainKeyInEditable = false;
+
+export const setPlainKeyInEditable = (on: boolean): void => {
+  plainKeyInEditable = on;
+};
+
+/**
+ * 表单控件（输入框 / 文本域 / 下拉）：裸键永远让路，没有任何例外——
+ * F2 改名框、命令面板搜索框、AI 输入框里按 Delete 都是删字，绝不能删笔记。
+ */
+function isFormField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+/**
+ * 焦点是否落在可输入的地方（表单控件，或 contenteditable 编辑器）。
+ * 纯主键的动作要避开这些地方，否则 Delete、F2 会抢掉输入区自己的语义。
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+/** 不带 ctrl / alt / meta 的「裸键」：Delete、F2、字母键这类 */
+const isPlainKey = (event: KeyboardEvent): boolean =>
+  !event.ctrlKey && !event.altKey && !event.metaKey;
+
+/**
  * 窗口捕获阶段的按键分发。
  *
  * - `isComposing` 直接放行：输入法正在组词时按的键属于输入法；
@@ -263,6 +302,19 @@ function handleKeyDown(event: KeyboardEvent) {
      */
     const handledBySystem = spec?.owner === "host" && spec.scope === "global" && systemHandlesGlobal(combo);
     if (spec?.owner === "host" && !handledBySystem && state.handlers.has(actionId)) {
+      /*
+       * 裸键（Delete / F2 …）在输入区里让路：编辑器删字、搜索框退格、重命名框输入
+       * 都是它们自己的语义。分两级：
+       * - 表单控件里**一律**不派发（改名框、命令面板、AI 输入框都算）；
+       * - contenteditable 只在「刚从笔记列表点过来」时放行（见 plainKeyInEditable），
+       *   因为点开笔记后编辑器会自动抢焦点，而用户此刻的心智还在列表上。
+       * 这里只拦宿主动作，不动插件——插件键位一直就是这个行为。
+       */
+      if (isPlainKey(event)) {
+        if (isFormField(event.target)) return;
+        // F2 这类「正文里本来就没别的作用」的动作由 config 显式放行
+        if (!plainKeyInEditable && !spec.allowInEditable && isEditableTarget(event.target)) return;
+      }
       if (dispatchShortcutAction(actionId, event)) event.preventDefault();
       return;
     }

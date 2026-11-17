@@ -27,6 +27,20 @@ export interface PluginCurrentNote {
   isLocked: boolean;
 }
 
+/** 标签栏里的一个标签（只读快照，插件据此做导航 / 统计） */
+export interface PluginTabInfo {
+  /** 标签身份，可直接回传给 activate / close */
+  key: string;
+  /** note = 笔记，external = 电脑文件，temp = AI 预览，history = 历史版本 */
+  kind: "note" | "external" | "temp" | "history";
+  /** 笔记标签的 note id；其它类型为 null */
+  noteId: string | null;
+  /** 标签上显示的文字 */
+  title: string;
+  /** 是否是当前正在看的那个 */
+  active: boolean;
+}
+
 /** 笔记右键菜单贡献：when 不传则始终可见 */
 export interface PluginMenuItem {
   id: string;
@@ -121,6 +135,11 @@ export interface PluginContext {
      * 往宿主界面的某个元素里挂一个节点（装饰、状态块、工具条都靠它）。
      * target 传选择器或元素；返回移除函数，并自动登记到 onDispose——
      * 插件停用 / 卸载时宿主会摘掉，界面恢复原样。
+     *
+     * **多标签**：每个打开过的标签都留着自己的编辑面板（隐藏的只是不可见），
+     * 所以 `.editor-container` 这类选择器会命中多个。宿主在多个命中里优先选
+     * 激活面板（`[data-active="true"]`）内的那个，其余情况取第一个。
+     * 想明确指定「当前那个」时，用 `[data-active="true"] .editor-container` 这种写法。
      */
     mount(target: string | Element, node: Node): () => void;
   };
@@ -231,7 +250,8 @@ export interface PluginContext {
     /** 按笔记 id 读正文；锁定的加密笔记返回空串 */
     getContent(id: string): Promise<string>;
     /**
-     * 当前编辑器里打开的笔记（外部文件 / 未选中时为 null）。
+     * 当前编辑器里打开的笔记。以下情况返回 null：
+     * 未选中、正在看电脑文件、AI 预览标签、历史版本预览标签。
      * 需要 manifest 声明 notes.read。
      */
     getCurrent(): PluginCurrentNote | null;
@@ -255,7 +275,27 @@ export interface PluginContext {
      */
     remove(id: string): Promise<void>;
   };
-  /** 被动订阅笔记生命周期事件；钩子是异步非阻塞的，handler 抛错只记日志不阻断流程 */
+  /**
+   * 被动订阅笔记生命周期事件；钩子是异步非阻塞的，handler 抛错只记日志不阻断流程。
+   * `onNoteSwitch` 在**切换标签**时同样会触发（标签是「正在看哪篇」的唯一来源）。
+   */
+  /**
+   * 标签栏（编辑区打开的多篇笔记）。需要 manifest 声明 notes.read。
+   *
+   * 与 `notes.*` 的分工：`notes` 管**数据**（读正文、建笔记），`tabs` 只管**视图**
+   * （哪几篇开着、正在看哪篇）。关闭标签等同用户点 ×：电脑文件会先写回磁盘、
+   * 加密笔记按「切走即锁回」的规则处理，不需要插件自己操心。
+   */
+  tabs: {
+    /** 当前打开的标签，按标签栏顺序 */
+    list(): Promise<PluginTabInfo[]>;
+    /** 激活某个标签：target 传 key 或笔记 id；找不到返回 false */
+    activate(target: string): Promise<boolean>;
+    /** 关闭某个标签：target 传 key 或笔记 id；找不到返回 false */
+    close(target: string): Promise<boolean>;
+    /** 把一条笔记打开成标签（已经打开则激活它）；笔记不存在时返回 false */
+    open(noteId: string): Promise<boolean>;
+  };
   hooks: {
     onNoteCreate(cb: (payload: { note: Note; isExternal: boolean }) => void | Promise<void>): void;
     onNoteSave(cb: (payload: { noteId: string; content: string; savedAt: string }) => void | Promise<void>): void;

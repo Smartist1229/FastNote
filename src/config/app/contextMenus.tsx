@@ -96,6 +96,8 @@ export interface GroupMenuHandlers {
 /** 笔记菜单需要的回调：由调用方按当前笔记拼好 */
 export interface NoteMenuHandlers {
   onOpenNote: () => void;
+  /** 就地改名（与 F2 同一个入口）；缺省时不显示这一项 */
+  onRenameNote?: () => void;
   onSaveNote: () => void;
   onMoveToCategory: (categoryId: string | null) => void;
   onTogglePin: () => void;
@@ -235,6 +237,14 @@ export const buildNoteMenu = (
       onClick: handlers.onOpenNote,
     },
   ];
+  // 改名不碰正文、也不受加密限制（标题始终是明文），所以放在打开之后、加密判断之外
+  if (handlers.onRenameNote) {
+    items.push({
+      label: translate("重命名"),
+      icon: <Icon name="sidebar-edit" className="w-4 h-4" />,
+      onClick: handlers.onRenameNote,
+    });
+  }
   if (!encrypted) {
     items.push({
       label: translate("保存笔记"),
@@ -345,3 +355,54 @@ export const buildNoteMenu = (
   }
   return items;
 };
+
+/**
+ * 编辑区标签栏的右键菜单：关闭 / 关闭其他 / 关闭左侧 / 关闭右侧 / 全部关闭。
+ *
+ * 与笔记菜单分开写：标签是「视图」，不是数据，所以这里没有删除、没有属性，
+ * 也没有加密相关项。三个「关闭 xx」在没有对应标签时置灰，而不是隐藏——
+ * 菜单项忽有忽无比置灰更容易让人以为点错了地方。
+ */
+export interface TabMenuHandlers {
+  onClose: () => void;
+  onCloseOthers: () => void;
+  onCloseLeft: () => void;
+  onCloseRight: () => void;
+  onCloseAll: () => void;
+  hasLeft: boolean;
+  hasRight: boolean;
+  hasOthers: boolean;
+}
+
+export const buildTabMenu = (handlers: TabMenuHandlers): ContextMenuItem[] => [
+  {
+    label: translate("关闭标签"),
+    icon: <Icon name="modal-close" className="w-4 h-4" />,
+    onClick: handlers.onClose,
+  },
+  divider(),
+  {
+    label: translate("关闭其他标签"),
+    icon: <Icon name="sidebar-close" className="w-4 h-4" />,
+    onClick: handlers.onCloseOthers,
+    disabled: !handlers.hasOthers,
+  },
+  {
+    label: translate("关闭左侧标签"),
+    icon: <Icon name="sidebar-chevron-left" className="w-4 h-4" />,
+    onClick: handlers.onCloseLeft,
+    disabled: !handlers.hasLeft,
+  },
+  {
+    label: translate("关闭右侧标签"),
+    icon: <Icon name="sidebar-chevron-right" className="w-4 h-4" />,
+    onClick: handlers.onCloseRight,
+    disabled: !handlers.hasRight,
+  },
+  divider(),
+  {
+    label: translate("全部关闭"),
+    icon: <Icon name="sidebar-trash" className="w-4 h-4" />,
+    onClick: handlers.onCloseAll,
+  },
+];

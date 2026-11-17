@@ -24,6 +24,7 @@ import { Icon } from '@/components/common/Icon';
 import { buildGroupMenu, buildNoteMenu, isSearchGroupKind } from '@/config/app/contextMenus';
 import type { GroupMenuKind } from '@/config/app/contextMenus';
 import { buildNoteMatcher, findMatchRanges, searchNotes, type NoteSearchHit } from '@/lib/search/noteSearch';
+import { useNoteRename } from '@/components/layout/noteRename';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 import { openUpdateDialog, useUpdater } from '@/stores/updaterStore';
 /** 排序选项：value 直接作为后端排序字段使用 */
@@ -114,6 +115,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDecryptCategory,
 }) => {
   const { t } = useI18n();
+  /** 就地改名：右键菜单与 F2 走同一个入口（Provider 在 App 里包住侧栏） */
+  const renameNote = useNoteRename();
   const { menuPos, handleContextMenu, closeMenu } = useContextMenu();
   const { showToast } = useToast();
   /** 启动静默检查到的新版本：底栏出一个「更新」按钮，点开才展示更新说明（跳过过的版本不再提示） */
@@ -369,6 +372,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const buildNoteContextMenu = (note: Note): ContextMenuItem[] =>
     buildNoteMenu(note, categories, {
       onOpenNote: () => onSelectNote(note),
+      // 搜索结果里不给改名：这些行可能同时出现在多个结果分组里，改名入口只留给真实列表
+      onRenameNote: renameNote && !isSearching ? () => renameNote.start(note) : undefined,
       onSaveNote: () => onSaveNote(note),
       onMoveToCategory: (categoryId) => onMoveToCategory(note, categoryId),
       onTogglePin: () => onTogglePin(note),
@@ -429,7 +434,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleNotePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest('button')) return; // 点删除等按钮不算拖拽
+    if (target.closest('button')) return; // 点按钮不算拖拽
+    // 就地改名时在标题上按下鼠标是「选中文字」，不能起手拖拽（否则整行跟着指针跑，字选不了）
+    if (target.closest('input, textarea, [contenteditable="true"]')) return;
     const noteEl = target.closest('[data-note-id]') as HTMLElement | null;
     if (!noteEl) return;
     const id = noteEl.dataset.noteId;
@@ -886,8 +893,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 focusNoteId={focusNoteId}
                 onToggle={() => toggleSearchGroup('all')}
                 onSelectNote={onSelectNote}
-                onDeleteNote={onDeleteNote}
-                onTogglePin={onTogglePin}
                 onCreateNote={() => { }}
                 onContextMenu={(e) => {
                   groupMenuRef.current = { kind: 'search-all', name: '全部搜索结果', notes: searchMatches };
@@ -907,8 +912,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 focusNoteId={focusNoteId}
                 onToggle={() => toggleSearchGroup('title')}
                 onSelectNote={onSelectNote}
-                onDeleteNote={onDeleteNote}
-                onTogglePin={onTogglePin}
                 onCreateNote={() => { }}
                 onContextMenu={(e) => {
                   groupMenuRef.current = { kind: 'search-title', name: '标题命中', notes: titleMatches };
@@ -928,8 +931,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 focusNoteId={focusNoteId}
                 onToggle={() => toggleSearchGroup('content')}
                 onSelectNote={onSelectNote}
-                onDeleteNote={onDeleteNote}
-                onTogglePin={onTogglePin}
                 onCreateNote={() => { }}
                 onContextMenu={(e) => {
                   groupMenuRef.current = { kind: 'search-content', name: '正文命中', notes: contentMatches };
@@ -951,8 +952,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   focusNoteId={focusNoteId}
                   onToggle={() => toggleSearchGroup('semantic')}
                   onSelectNote={onSelectNote}
-                  onDeleteNote={onDeleteNote}
-                  onTogglePin={onTogglePin}
                   onCreateNote={() => { }}
                   onContextMenu={(e) => {
                     groupMenuRef.current = { kind: 'search-semantic', name: '语义相关', notes: semanticMatches };
@@ -986,8 +985,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   isSelected={selectedNoteId === note.id}
                   isFocused={focusNoteId === note.id}
                   onSelectNote={onSelectNote}
-                  onDeleteNote={onDeleteNote}
-                  onTogglePin={onTogglePin}
                   showIcon
                   onContextMenu={handleNoteContextMenu}
                 />
@@ -1006,8 +1003,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               focusNoteId={focusNoteId}
               onToggle={() => onToggleDrawer('all')}
               onSelectNote={onSelectNote}
-              onDeleteNote={onDeleteNote}
-              onTogglePin={onTogglePin}
               onCreateNote={() => onCreateNote(null)}
               onContextMenu={(e) => {
                 groupMenuRef.current = { kind: 'all', name: '全部笔记', notes };
@@ -1023,8 +1018,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
               focusNoteId={focusNoteId}
               onToggle={() => onToggleDrawer('uncategorized')}
               onSelectNote={onSelectNote}
-              onDeleteNote={onDeleteNote}
-              onTogglePin={onTogglePin}
               onNoteContextMenu={handleNoteContextMenu}
               onContextMenu={(e) => {
                 groupMenuRef.current = { kind: 'uncategorized', name: '未分类', notes: uncategorizedNotes };
@@ -1039,8 +1032,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 focusNoteId={focusNoteId}
                 onToggle={() => onToggleDrawer(ORPHAN_GROUP_ID)}
                 onSelectNote={onSelectNote}
-                onDeleteNote={onDeleteNote}
-                onTogglePin={onTogglePin}
                 onNoteContextMenu={handleNoteContextMenu}
               />
             )}
@@ -1076,14 +1067,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     focusNoteId={focusNoteId}
                     onToggle={() => onToggleDrawer(category.id)}
                     onSelectNote={onSelectNote}
-                    onDeleteNote={onDeleteNote}
                     onCreateNote={() => onCreateNote(category.id)}
                     onContextMenu={(e) => {
                       groupMenuRef.current = { kind: 'category', category, notes: ownNotes };
                       handleContextMenu(e);
                     }}
                     onNoteContextMenu={handleNoteContextMenu}
-                    onTogglePin={onTogglePin}
                 />
                 </div>
               );

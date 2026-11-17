@@ -102,7 +102,7 @@ zip 允许两种布局：`plugin.json` 在根目录；或压缩包里只有一�
 
 | 权限标识符 | 说明 | 依赖的 API |
 |---|---|---|
-| `notes.read` | 读取笔记正文（锁定笔记返回空串） | `ctx.notes.getContent` |
+| `notes.read` | 读取笔记正文（锁定笔记返回空串）；标签栏里的笔记 id / 标题也走这条 | `ctx.notes.getContent`、`ctx.tabs.*` |
 | `notes.write` | 创建 / 更新 / 删除笔记（source_plugin 沙箱，见 §6） | `ctx.notes.create` / `update` / `remove` |
 | `config.read_write` | 读写插件自身配置 | `ctx.config.values` / `set` |
 | `editor.insert` | 编辑器光标处插入文本 | `editor.insertText(text)` |
@@ -238,7 +238,7 @@ interface PluginContext {
   notes: {
     /** 按笔记 id（UUID 字符串）读正文；锁定的加密笔记返回空串 */
     getContent(id: string): Promise<string>;
-    /** 当前编辑器打开的笔记（不含正文）；外部文件 / 临时草稿 / 未选中返回 null */
+    /** 当前编辑器打开的笔记（不含正文）；电脑文件 / AI 预览 / 历史版本标签、未选中时返回 null */
     getCurrent(): PluginCurrentNote | null;
     /** 创建归属于本插件的笔记（source_plugin = 本插件 dirName），返回新笔记的 UUID */
     create(title: string, content?: string, categoryId?: number | null): Promise<string>;
@@ -246,6 +246,17 @@ interface PluginContext {
     update(id: string, title?: string, content?: string): Promise<void>;
     /** 软删除本插件创建的笔记（只有 source_plugin 匹配允许删除） */
     remove(id: string): Promise<void>;
+  };
+  /** 标签栏（需 notes.read）：只改「哪几篇开着」，不碰正文（见 §5.21） */
+  tabs: {
+    /** 按标签栏顺序返回全部标签 */
+    list(): Promise<PluginTabInfo[]>;
+    /** 激活标签：target 传 key 或笔记 id */
+    activate(target: string): Promise<boolean>;
+    /** 关闭标签：等同用户点 ×（外部文件先写回、加密笔记按规则锁回） */
+    close(target: string): Promise<boolean>;
+    /** 把一条笔记打开成标签（已打开则激活） */
+    open(noteId: string): Promise<boolean>;
   };
   /** 被动订阅笔记生命周期事件；钩子异步非阻塞，handler 抛错只记日志不阻断流程 */
   hooks: {
@@ -297,6 +308,35 @@ type ToastType = "success" | "error" | "info";
 ```
 
 ## 5. 扩展点 API
+
+### 5.0 多标签模式要注意的事
+
+编辑区是标签式的：**同一时刻可以打开多篇笔记**，每一篇都留着自己的编辑面板（没在看的那个只是不可见，
+节点仍在 DOM 里）。对插件的影响只有三处：
+
+**1）`ctx.ui.mount(选择器)` 可能命中多个元素**
+
+宿主在多个命中里优先取激活面板（`[data-active="true"]`）内的那个，否则取第一个。
+不确定时，选择器写死到激活面板上：
+
+```js
+ctx.ui.mount('[data-active="true"] .editor-container', card);   // 只挂到「正在看的那一篇」
+```
+
+**2）`ctx.notes.getCurrent()` 在非笔记标签下返回 `null`**
+
+正在看电脑文件、AI 预览、历史版本预览时都返回 `null`（这些标签没有可写的笔记实体）。
+需要"当前是哪篇笔记"时，请处理 `null` 分支，不要假设永远有值。
+
+**3）`ctx.hooks.onNoteSwitch` 在切标签时也会触发**
+
+标签是"正在看哪篇"的唯一来源，所以点标签栏切过去同样算一次 note-switch，
+`oldNoteId / newNoteId` 的语义不变。
+
+其余都不受影响：编辑器工具栏每个面板各渲染一份（只有激活的可见可点）、
+快捷键注册仍是宿主单点分发、`ctx.notes.create/update/remove` 与窗口 / db / net / bus 都与标签无关。
+
+**需要操作标签本身**（列出、切换、打开、关闭）时用 `ctx.tabs`，见 §5.21。
 
 ### 5.1 笔记右键菜单 `ctx.menu.note`
 
@@ -1074,7 +1114,41 @@ ctx.bus.emit("myplugin.refresh", { reason: "manual" });
 - 订阅自动登记到清理契约：停用 / 卸载 / 重激活时宿主退订，插件不用手动 `off()`；
 - topic 不做命名空间强制，但**建议加插件前缀**，回调第二个参数是发送方 `dirName`。
 
-### 5.21 沙箱运行时（`"runtime": "sandbox"`）
+### 5.21 标签栏 `ctx.tabs`（需 `notes.read`）
+
+编辑区是标签式的：同一时刻可以打开多篇笔记。`ctx.tabs` 只做**视图**操作（哪几篇开着、正在看哪篇），
+不碰正文；要读内容仍然走 `ctx.notes.getContent`。
+
+```js
+// 列出所有打开的标签
+for (const tab of await ctx.tabs.list()) {
+  // { key, kind: "note" | "external" | "temp" | "history", noteId, title, active }
+}
+
+// 切换：key 和笔记 id 都能传
+await ctx.tabs.activate("note:8f3a…");
+await ctx.tabs.activate("8f3a…");          // 同一个标签
+
+// 把一篇笔记打开成标签（已经打开就激活它，不会重复开）
+await ctx.tabs.open(noteId);
+
+// 关闭：等同用户点 ×，电脑文件会先写回磁盘，加密笔记按「切走即锁回」处理
+await ctx.tabs.close(noteId);
+```
+
+| 方法 | 说明 | 返回 |
+|---|---|---|
+| `list()` | 按标签栏顺序返回全部标签 | `PluginTabInfo[]` |
+| `activate(target)` | 激活标签；`target` 传 key 或笔记 id | `boolean`，找不到为 `false` |
+| `close(target)` | 关闭标签；`target` 传 key 或笔记 id | `boolean`，找不到为 `false` |
+| `open(noteId)` | 打开成标签（已打开则激活） | `boolean`，笔记不存在为 `false` |
+
+**注意**：
+- 关标签会真的把「用户开着的那个」关掉，别在用户没要求的场景里批量清理；
+- 只有笔记标签带 `noteId`，电脑文件 / AI 预览 / 历史版本标签的 `noteId` 是 `null`；
+- 沙箱插件里这些都是异步 RPC，必须 `await`。
+
+### 5.22 沙箱运行时（`"runtime": "sandbox"`）
 
 默认插件跑在主页面里（`inpage`），能力全开但没有安全边界：它能碰宿主 DOM、读宿主 localStorage，
 甚至绕开 `ctx` 直接 `invoke`。想让插件「只能通过接口申请能力」，在 `plugin.json` 里声明：

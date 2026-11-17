@@ -580,6 +580,26 @@ textarea:focus-visible {
   background: var(--color-border-strong);
 }
 
+/* ---------- 编辑区标签栏横向滚动条 ---------- */
+/* 标签开得多时只在标签栏内部横向滚动，不挤压编辑区；滚动条做窄，避免吃掉标签高度 */
+.tabs-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+.tabs-scroll::-webkit-scrollbar {
+  height: 5px;
+}
+.tabs-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tabs-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: calc(var(--radius-md) * 0.375);
+}
+.tabs-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
 /* ---------- 侧边栏折叠与唤出把手 ---------- */
 /* 宽度走 --sidebar-w：侧边栏组件拖拽右边缘时改写它。
    宽度必须挂在外壳而不是内层——折叠动画是外壳 width → 0，内层若是 auto 就无法过渡。 */
@@ -771,7 +791,7 @@ textarea:focus-visible {
 /* ---------- 编辑器容器骨架 ---------- */
 .editor-container { position: relative; }
 /* 编辑器层：包住 NoteEditor，使其撑满内容区 */
-.editor-layer { height: 100%; }
+/* 编辑层不再需要固定高度：标签栏 + 面板由 flex 分配，面板自己是 absolute inset-0 */
 
 /* ---------- Modal 入场动画：同样用 backwards，避免弹层长期留在合成层 ---------- */
 .modal-overlay {
@@ -892,24 +912,6 @@ body.is-dragging-panel * {
   background: var(--color-bg);
 }
 
-/* ---------- 标题输入：静默无框，hover 才显出输入框 ---------- */
-.title-input {
-  background: transparent;
-  border: 1.5px solid transparent;
-  border-radius: var(--radius-lg);
-  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
-}
-.title-input:hover {
-  border-color: var(--color-border);
-  background: var(--color-surface);
-}
-.title-input:focus {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  outline: none;
-}
-
 /* ---------- 工具栏图标按钮 ---------- */
 .toolbar-btn {
   display: flex;
@@ -930,6 +932,13 @@ body.is-dragging-panel * {
 }
 .toolbar-btn:active {
   background: var(--color-border);
+}
+
+/* 编辑区工具栏比别处更紧凑一档：整条 34px，内层按钮跟着缩到 28px，
+   否则 32px 的按钮塞进 34px 的条里上下只剩 1px，看着是「顶满」而不是「留有呼吸」。 */
+.editor-toolbar .toolbar-btn {
+  width: 28px;
+  height: 28px;
 }
 
 /* ---------- 计数徽章 ---------- */
@@ -1934,8 +1943,8 @@ body.is-dragging-panel * {
 }
 
 /* 拖拽期间关掉普通 hover：否则子元素的 hover 底色会盖住落点高亮，且拖到笔记上会误触发 hover。
-   选中态的笔记（note-selected-bg）必须排除：它是「深色渐变 + 白字」的反色高亮，
-   把背景剥掉后就只剩白字贴白底，整行看起来一片白（拖动笔记经过自己时必现）。 */
+   选中态的笔记（note-selected-bg）必须排除：它是选中底色，被剥掉后整行像是没选中
+   （拖动别的笔记经过它时必现）。 */
 .drawer-dragging .drawer-note:hover:not(.note-selected-bg) {
   background-color: transparent !important;
   background-image: none !important;

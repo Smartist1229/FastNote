@@ -26,6 +26,16 @@ export const buildLayoutRows = ({ appSettings, setApp }: SettingsRowsContext): S
     value: appSettings.layout.welcomeRecentList,
     onChange: (v) => setApp("layout", "welcomeRecentList", v),
   },
+  {
+    section: "layout",
+    kind: "toggle",
+    badges: badges("startup"),
+    title: "启动时恢复上次打开的标签",
+    desc: "记住关闭软件时开着的标签，下次启动按原顺序恢复。只恢复笔记与电脑文件；AI 预览、历史版本和锁定中的加密笔记不恢复。",
+    keywords: "标签 标签页 tab tabs 恢复 记住 打开 启动 restore reopen session",
+    value: appSettings.layout.restoreTabs,
+    onChange: (v) => setApp("layout", "restoreTabs", v),
+  },
   // 依赖 enableAI：关闭 AI 能力时不出现这个「启动时打开面板」的开关
   ...(appSettings.general.enableAI
     ? [

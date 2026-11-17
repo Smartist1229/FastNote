@@ -7,7 +7,8 @@
 import { logAction } from "@/lib/app/actionLog";
 import { useEffect, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import type { Category, ExternalTextFile, Note, NoteHistoryEntry, Tag } from "@/interface/note/note";
+import type { Category, Note, NoteHistoryEntry, Tag } from "@/interface/note/note";
+import type { EditorTab } from "@/features/tabs/types";
 import type { PropertiesTarget } from "@/interface/app/ui";
 import type { NoteEditorActions } from "@/interface/note/editor";
 import * as notesApi from "@/api/note/notes";
@@ -22,10 +23,10 @@ export interface UsePropertiesStateParams {
   setNotes: Dispatch<SetStateAction<Note[]>>;
   setSelectedNote: Dispatch<SetStateAction<Note | null>>;
   selectedNote: Note | null;
-  historyPreview: NoteHistoryEntry | null;
-  tempNote: { id: string; title: string; content: string } | null;
-  externalFile: ExternalTextFile | null;
-  setHistoryPreview: Dispatch<SetStateAction<NoteHistoryEntry | null>>;
+  /** 当前激活的编辑器标签：判断「这篇是否正开在编辑器里」用（决定要不要丢弃草稿） */
+  activeTab: EditorTab | null;
+  /** 打开一个历史版本标签（只读预览） */
+  openHistoryTab: (entry: NoteHistoryEntry) => void;
   editorActionsRef: RefObject<NoteEditorActions | null>;
   saveQueueRef: RefObject<Promise<void>>;
 }
@@ -36,10 +37,8 @@ export function usePropertiesState({
   setNotes,
   setSelectedNote,
   selectedNote,
-  historyPreview,
-  tempNote,
-  externalFile,
-  setHistoryPreview,
+  activeTab,
+  openHistoryTab,
   editorActionsRef,
   saveQueueRef,
 }: UsePropertiesStateParams) {
@@ -114,16 +113,16 @@ export function usePropertiesState({
    */
   const applyHistoryRollback = async (entry: NoteHistoryEntry): Promise<boolean> => {
     try {
-      // 只丢弃「编辑器里正显示这篇笔记」时的草稿；编辑别的笔记 / 外部文件时不能动它。
+      // 只丢弃「编辑器里正显示这篇笔记」时的草稿；编辑别的笔记 / 其它标签时不能动它。
       // 随后等保存队列落地：否则排队中的保存会排在回滚之后，把刚回滚的内容又写回去。
-      const editingTarget =
-        !historyPreview && !tempNote && !externalFile && selectedNote?.id === entry.note_id;
+      const editingTarget = activeTab?.kind === "note" && selectedNote?.id === entry.note_id;
       if (editingTarget) editorActionsRef.current?.discardPendingEdits();
       await saveQueueRef.current;
       const updated = await notesApi.rollbackNoteHistory(entry.id);
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
       setSelectedNote((prev) => (prev && prev.id === updated.id ? updated : prev));
       setNoteHistory(await notesApi.getNoteHistory(updated.id));
+      showToast(t("已回滚到所选历史版本（该版本及更新的版本已删除）"), "success");
       return true;
     } catch (error) {
       showToast(t("回滚失败：{error}", { error: errorText(error) }), "error");
@@ -132,24 +131,14 @@ export function usePropertiesState({
   };
 
   const handleRollbackNoteHistory = async (entry: NoteHistoryEntry) => {
-    if (await applyHistoryRollback(entry)) {
-      showToast(t("已回滚到所选历史版本（该版本及更新的版本已删除）"), "success");
-    }
+    // 成功提示在 applyHistoryRollback 里统一给：属性窗与历史版本标签共用同一条路径
+    await applyHistoryRollback(entry);
   };
 
-  /** 属性窗「预览」：关掉属性窗，用伪笔记在编辑器里只读展示这个版本 */
+  /** 属性窗「预览」：关掉属性窗，把这个版本开成只读标签 */
   const handlePreviewHistory = (entry: NoteHistoryEntry) => {
-    setHistoryPreview(entry);
+    openHistoryTab(entry);
     setPropertiesTarget(null);
-  };
-
-  /** 顶部提示条里的回滚：成功才退出预览，失败留在预览里方便重试 */
-  const handleRollbackFromPreview = async () => {
-    if (!historyPreview) return;
-    if (await applyHistoryRollback(historyPreview)) {
-      setHistoryPreview(null);
-      showToast(t("已回滚到所选历史版本（该版本及更新的版本已删除）"), "success");
-    }
   };
 
   /* ---------------- 标签 ----------------
@@ -255,7 +244,8 @@ export function usePropertiesState({
     handleRenameTag,
     handleRollbackNoteHistory,
     handlePreviewHistory,
-    handleRollbackFromPreview,
+    /** 历史版本标签顶部提示条里的回滚：成功返回 true，由调用方关闭该标签 */
+    applyHistoryRollback,
     handleDeleteNoteHistory,
     handleClearNoteHistory,
     handleCreateNoteHistoryVersion,

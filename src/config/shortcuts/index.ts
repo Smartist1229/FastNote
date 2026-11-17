@@ -46,6 +46,12 @@ export interface ShortcutActionSpec {
   /** 补充说明：生效前提、易混点 */
   note?: string;
   owner: ShortcutOwner;
+  /**
+   * 裸键（无修饰）是否允许在 contenteditable（编辑器正文）里生效，默认否。
+   * 只给「在正文里本来就没有别的作用」的动作用，例如 F2 改名；
+   * Delete 这类绝不能开，否则打字时就删了笔记。
+   */
+  allowInEditable?: boolean;
   /** 缺省表示始终可用；返回 false 时面板置灰并显示 offHint */
   available?: (settings: AppSettings) => boolean;
   offHint?: string;
@@ -71,6 +77,8 @@ const HOST_ACTIONS: ShortcutActionSpec[] = [
   { id: "app.jump", default: "mod+p", scope: "app", group: "app", label: "快速跳转", note: "按标题与正文搜索笔记", owner: "host" },
   { id: "app.command", default: "mod+shift+p", scope: "app", group: "app", label: "命令面板", note: "新建、排序、主题、设置…", owner: "host" },
   { id: "app.newNote", default: "mod+n", scope: "app", group: "app", label: "新建笔记", note: "在当前分组里新建一篇空笔记", owner: "host" },
+  { id: "app.renameNote", default: "f2", scope: "app", group: "app", label: "重命名", note: "在笔记列表里选中一篇后按 F2，就地改名（输入框里不生效）", owner: "host", allowInEditable: true },
+  { id: "app.deleteNote", default: "delete", scope: "app", group: "app", label: "删除选中笔记", note: "在笔记列表中选中后按 Delete，移入回收站；编辑器里打字时不会触发", owner: "host" },
   { id: "app.save", default: "mod+s", scope: "app", group: "app", label: "保存 / 导出当前笔记", note: "编辑电脑上的文件时直接写回原文件", owner: "host" },
   { id: "app.settings", default: "mod+,", scope: "app", group: "app", label: "打开设置", owner: "host" },
   { id: "app.toggleSidebar", default: "mod+\\", scope: "app", group: "app", label: "折叠 / 展开侧栏", owner: "host" },

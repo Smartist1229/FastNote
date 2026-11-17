@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import type { Category, ExternalTextFile, Note, NoteHistoryEntry } from "@/interface/note/note";
+import type { Category, ExternalTextFile, Note } from "@/interface/note/note";
 import type { ConfirmOptions } from "@/interface/app/ui";
 import type { EncryptionScope } from "@/interface/system/encryption";
 import type { AiAccessLevel } from "@/interface/ai/aiAccess";
@@ -18,12 +18,8 @@ import { t as translateNow, useI18n } from "@/i18n";
 import { useToast } from "@/components/common/Toast";
 
 export interface UseExternalFilesParams {
-  externalFileRef: RefObject<ExternalTextFile | null>;
-  externalFileIdRef: RefObject<number>;
-  flushExternalRef: RefObject<(() => void) | null>;
-  setTempNote: Dispatch<SetStateAction<{ id: string; title: string; content: string } | null>>;
-  setHistoryPreview: Dispatch<SetStateAction<NoteHistoryEntry | null>>;
-  setExternalFile: Dispatch<SetStateAction<ExternalTextFile | null>>;
+  /** 打开一个电脑文件标签（同路径只留一个，重复打开即激活）；伪 id 由标签域分配 */
+  openExternalTab: (file: Omit<ExternalTextFile, "id">) => void;
   pushRecentFile: (path: string, name: string) => void;
   categoriesRef: RefObject<Category[]>;
   requestUnlockRef: { current: (scope: EncryptionScope, id: string, permanent?: boolean) => void };
@@ -36,12 +32,7 @@ export interface UseExternalFilesParams {
 }
 
 export function useExternalFiles({
-  externalFileRef,
-  externalFileIdRef,
-  flushExternalRef,
-  setTempNote,
-  setHistoryPreview,
-  setExternalFile,
+  openExternalTab,
   pushRecentFile,
   categoriesRef,
   requestUnlockRef,
@@ -60,43 +51,29 @@ export function useExternalFiles({
   /** 是否有系统文件正拖拽在窗口上方（用于显示落点提示） */
   const [isFileDragActive, setIsFileDragActive] = useState(false);
 
-  /** 打开电脑上的文本文件：读失败（非文本/过大）只 toast 报错，不进入外部文件模式 */
+  /**
+   * 打开电脑上的文本文件：读失败（非文本/过大）只 toast 报错，不建标签。
+   * 不再手动 flush 上一个文件——切标签时标签域会把离开的那个先写回。
+   */
   const openExternalFile = useCallback(async (path: string) => {
-    // 换文件前先把上一份的待写入 flush 掉（此时回调仍指向旧路径）
-    flushExternalRef.current?.();
     try {
       const file = await notesApi.readTextFile(path);
-      externalFileIdRef.current += 1;
-      // 打开文件是最新的用户动作：先收起 AI 预览与历史预览，笔记作为底层保留
-      setTempNote(null);
-      setHistoryPreview(null);
-      setExternalFile({ id: `external:${externalFileIdRef.current}`, ...file });
+      openExternalTab(file);
       // 读成功了才记进最近列表：打不开的文件不值得占一个位置
       pushRecentFile(path, file.name);
     } catch (e) {
       // 文件拖拽监听持有这个回调：全局翻译读取最新语言，不因切换语言重新注册监听。
       showToast(typeof e === "string" ? e : translateNow("打开文件失败"), "error");
     }
-  }, [showToast, pushRecentFile, flushExternalRef, externalFileIdRef, setTempNote, setHistoryPreview, setExternalFile]);
+  }, [showToast, pushRecentFile, openExternalTab]);
 
-  /** 关闭电脑文件：先 flush 写入，再露出下面一层（原笔记，或欢迎页） */
-  const handleCloseExternalFile = useCallback(() => {
-    flushExternalRef.current?.();
-    setExternalFile(null);
-  }, [flushExternalRef, setExternalFile]);
-
-  /** 外部文件另存为笔记：写库后切到新笔记，叠放层一并清空 */
+  /** 外部文件另存为笔记：写库后打开新笔记标签（文件标签由编辑面板关闭） */
   const handleSaveExternalToNote = async (categoryId: string | null, title: string, content: string) => {
-    // 另存前先触发一次写回，把最后一点改动交给原文件（不等待完成）
-    flushExternalRef.current?.();
     try {
       const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
-      setTempNote(null);
-      setHistoryPreview(null);
-      setExternalFile(null);
       setSelectedNote(note);
       showToast(t("已保存为笔记"), "success");
       emitAppEvent("fastnote-data-changed");
@@ -107,12 +84,14 @@ export function useExternalFiles({
     }
   };
 
-  /** 写回磁盘：编辑器 500ms 防抖后调用；失败由 NoteEditor 捕获并显示保存错误 */
-  const handleWriteExternal = useCallback(async (content: string) => {
-    const target = externalFileRef.current;
-    if (!target) return;
-    await notesApi.writeTextFile(target.path, content);
-  }, [externalFileRef]);
+  /**
+   * 写回磁盘：编辑器 500ms 防抖后调用。
+   * 路径由调用方（标签自己的 file.path）传入——多标签下不能读「当前打开的文件」。
+   * 失败由 NoteEditor 捕获并显示保存错误。
+   */
+  const handleWriteExternal = useCallback(async (path: string, content: string) => {
+    await notesApi.writeTextFile(path, content);
+  }, []);
 
   /** 拖文件到分组：确认后把文件内容导入为该分组下的一条笔记 */
   const handleDropFileToCategory = useCallback(async (path: string, categoryId: string) => {
@@ -205,7 +184,6 @@ export function useExternalFiles({
     hoverDropCategoryId,
     isFileDragActive,
     openExternalFile,
-    handleCloseExternalFile,
     handleSaveExternalToNote,
     handleWriteExternal,
     handleDropFileToCategory,

@@ -22,9 +22,6 @@ export interface CategoryDrawerProps {
   focusNoteId: string | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
-  onDeleteNote: (note: Note) => void;
-  /** 切换收藏（置顶）状态 */
-  onTogglePin: (note: Note) => void;
   onCreateNote: () => void;
   onContextMenu: (e: React.MouseEvent, category: Category | null) => void;
   onNoteContextMenu: (e: React.MouseEvent, note: Note) => void;

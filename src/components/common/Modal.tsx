@@ -36,8 +36,10 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
   const widthClass = width == null ? `w-full ${SIZE_CLASS[size]}` : "";
 
   return (
+    // 标记「有一层弹窗挂着」：裸键动作（Delete / F2）据此让路，不在弹窗背后动笔记
     <div
       data-editor-blur-ignore="true"
+      data-modal-layer="true"
       className={
         floating
           ? "fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"

@@ -56,6 +56,20 @@ export interface UsePaletteParams {
   exportNoteRef: RefObject<(() => void) | null>;
   setPropertiesTarget: Dispatch<SetStateAction<PropertiesTarget | null>>;
   editorActionsRef: RefObject<NoteEditorActions | null>;
+  /** 标签栏快照与操作：切换 / 关闭都以「当前激活标签」为基准 */
+  tabsApi: PaletteTabsApi;
+}
+
+/** 命令面板需要的标签能力（由 App 从标签域拼出来，面板不直接依赖 features/tabs） */
+export interface PaletteTabsApi {
+  items: { key: string; title: string; active: boolean }[];
+  activeKey: string | null;
+  activate: (key: string) => void;
+  close: (key: string) => void;
+  closeOthers: (key: string) => void;
+  closeLeft: (key: string) => void;
+  closeRight: (key: string) => void;
+  closeAll: () => void;
 }
 
 export function usePalette({
@@ -91,6 +105,7 @@ export function usePalette({
   exportNoteRef,
   setPropertiesTarget,
   editorActionsRef,
+  tabsApi,
 }: UsePaletteParams) {
   const { t } = useI18n();
 
@@ -471,6 +486,92 @@ export function usePalette({
           disabled: !searchQuery,
           disabledReason: t("当前没有搜索关键词"),
           run: () => setSearchQuery(""),
+        },
+
+        /* ---------- 标签 ---------- */
+        // 每个打开的标签一条；token 用序号（标题是任意文字，做不了指令名）
+        ...tabsApi.items.map<PaletteCommand>((tab, index) => ({
+          id: `tab.switch.${tab.key}`,
+          token: `tab_${index + 1}`,
+          title: t("切换到标签：{name}", { name: tab.title }),
+          hint: tab.active ? t("已经在这个标签上") : t("切到这一篇"),
+          group: t("标签"),
+          icon: "sidebar-note",
+          keywords: `tab 标签 切换 switch ${tab.title}`,
+          disabled: tab.active,
+          disabledReason: t("已经在这个标签上"),
+          run: () => tabsApi.activate(tab.key),
+        })),
+        {
+          id: "tab.close",
+          token: "close_tab",
+          title: t("关闭当前标签"),
+          hint: t("关掉正在看的这个标签"),
+          group: t("标签"),
+          icon: "modal-close",
+          keywords: "close tab 关闭 标签",
+          disabled: tabsApi.activeKey === null,
+          disabledReason: t("没有打开的标签"),
+          run: () => {
+            if (tabsApi.activeKey) tabsApi.close(tabsApi.activeKey);
+          },
+        },
+        {
+          id: "tab.closeOthers",
+          token: "close_other_tabs",
+          title: t("关闭其他标签"),
+          hint: t("只留下当前标签"),
+          group: t("标签"),
+          icon: "sidebar-close",
+          keywords: "close others 关闭 其他 标签",
+          disabled: tabsApi.items.length <= 1,
+          disabledReason: t("只开着一个标签"),
+          run: () => {
+            if (tabsApi.activeKey) tabsApi.closeOthers(tabsApi.activeKey);
+          },
+        },
+        {
+          id: "tab.closeLeft",
+          token: "close_left_tabs",
+          title: t("关闭左侧标签"),
+          hint: t("关掉当前标签左边的全部"),
+          group: t("标签"),
+          icon: "sidebar-chevron-left",
+          keywords: "close left 关闭 左侧 左边 标签",
+          disabled: tabsApi.items.findIndex((tab) => tab.active) <= 0,
+          disabledReason: t("左边没有标签"),
+          run: () => {
+            if (tabsApi.activeKey) tabsApi.closeLeft(tabsApi.activeKey);
+          },
+        },
+        {
+          id: "tab.closeRight",
+          token: "close_right_tabs",
+          title: t("关闭右侧标签"),
+          hint: t("关掉当前标签右边的全部"),
+          group: t("标签"),
+          icon: "sidebar-chevron-right",
+          keywords: "close right 关闭 右侧 右边 标签",
+          disabled: (() => {
+            const index = tabsApi.items.findIndex((tab) => tab.active);
+            return index < 0 || index >= tabsApi.items.length - 1;
+          })(),
+          disabledReason: t("右边没有标签"),
+          run: () => {
+            if (tabsApi.activeKey) tabsApi.closeRight(tabsApi.activeKey);
+          },
+        },
+        {
+          id: "tab.closeAll",
+          token: "close_all_tabs",
+          title: t("全部关闭标签"),
+          hint: t("关掉所有标签，回到欢迎页"),
+          group: t("标签"),
+          icon: "sidebar-trash",
+          keywords: "close all 关闭 全部 标签 tabs",
+          disabled: tabsApi.items.length === 0,
+          disabledReason: t("没有打开的标签"),
+          run: () => tabsApi.closeAll(),
         },
 
         /* ---------- 插件 ---------- */

@@ -24,13 +24,13 @@ import { useToast } from "@/components/common/Toast";
 
 /** 加密笔记首次插图时提示「图片是明文」的一次性标记（localStorage） */
 const ATTACHMENT_PLAINTEXT_NOTICE = "fastnote.notice.attachmentPlaintext";
-import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { AiSparkleIcon } from "@/components/common/icons";
 import { Icon } from "@/components/common/Icon";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
 import { pluginContributions, usePluginContributions, type PluginEditorToolbarEntry } from "@/plugins/contributions";
 import { pluginHost } from "@/plugins/host";
 import type { EditorToolbarContext } from "@/plugins/types";
+import { setPlainKeyInEditable } from "@/features/shortcuts/runtime";
 
 /** 按需加载：编辑器带解析器与样式，首屏不必打包进来 */
 const MarkdownEditor = lazy(() =>
@@ -54,9 +54,9 @@ const countContent = (text: string): { chars: number; lines: number } => ({
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
   editable = true,
+  isActive = true,
   historyPreview,
   onSave,
-  onDelete,
   onCursorOffsetChange,
   editorSettings,
   shortcutBindings,
@@ -85,10 +85,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [content]);
   /** 由 externalFilePath 派生：该模式下标题只读、内容写回原文件而不写库 */
   const isExternal = externalFilePath != null;
-  /** 只读：外部文件模式的标题、历史版本预览，或宿主显式关闭编辑 */
+  /** 只读：外部文件模式、历史版本预览，或宿主显式关闭编辑 */
   const isReadOnly = !editable || isExternal;
-  /** 输入法组合中：拼音等未上屏的中间态不该触发保存 */
-  const isComposingRef = useRef(false);
+  /**
+   * 当前标签是否可见（多标签下同一个编辑器组件会有多个实例）。
+   * 隐藏实例不能再抢焦点、也不能覆盖激活实例上报的光标位置。
+   */
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
   /** 当前明暗模式与主题令牌：编辑器的配色由这两者换算，它不会自己去读 CSS 变量 */
   const resolvedThemeMode = useResolvedThemeMode();
   const themeTokens = useActiveThemeTokens();
@@ -112,7 +116,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const latestTitleRef = useRef("");
   const latestContentRef = useRef("");
   const latestCategoryIdRef = useRef<string | null>(null);
-  const titleInputRef = useRef<HTMLInputElement>(null);
   /** 保存状态机：isSaving 串行化写库；hasPendingSave 表示写入期间又改了，写完要补一轮 */
   const isSavingRef = useRef(false);
   const hasPendingSaveRef = useRef(false);
@@ -331,6 +334,24 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   /**
+   * 卸载前补写：关闭标签会把编辑器整个卸载，`note` 变 null 的那条布局 effect 不会跑，
+   * 光靠它的话「打完字 500ms 内关标签」会丢掉最后几个字。
+   * 顺带清掉防抖计时器，避免卸载后还有一次多余的写库。
+   */
+  const flushRef = useRef(flushPendingSave);
+  flushRef.current = flushPendingSave;
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      flushRef.current(currentNoteIdRef.current);
+    },
+    [],
+  );
+
+  /**
    * 保持编辑器在宿主 UI 交互时不失焦：在 mousedown 的默认行为触发 blur 之前，
    * 用捕获阶段拦截点击——若目标属于宿主自定义 UI（带 data-editor-blur-ignore="true"），
    * 立即 preventDefault 阻止原生失焦，并同步 refocus，让插件 insertText 依赖的
@@ -343,6 +364,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   useLayoutEffect(() => {
     if (!keepFocusOnHostClick) return;
     const handler = (e: MouseEvent) => {
+      // 隐藏标签实例不参与：否则点一下宿主 UI 会被后台标签的编辑器抢走焦点
+      if (!isActiveRef.current) return;
       if (!(e.target instanceof Element)) return;
       if (!e.target.closest('[data-editor-blur-ignore="true"]')) return;
       /*
@@ -375,7 +398,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   useLayoutEffect(() => {
     if (note) {
       if (lastNoteIdRef.current !== note.id) {
-        const oldId = lastNoteIdRef.current;
         // 先把上一篇没存完的输入补写掉，再切换（用切换前的 id，不能用 note.id）
         flushPendingSave(lastNoteIdRef.current);
         // 显式 blur：清掉旧光标，避免切到新笔记后 selection 还残留在旧位置
@@ -402,13 +424,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           window.clearTimeout(saveTimerRef.current);
           saveTimerRef.current = null;
         }
-        // 内容更新完后 rAF refocus 到新笔记，让 selection 回到文首
+        /*
+         * 内容更新完后 rAF refocus 到新笔记，让 selection 回到文首。
+         * 注意：这会把焦点从侧栏列表上带走，所以「刚从列表点开」的那一下要由
+         * `setPlainKeyInEditable` 兜住 Delete / F2 —— 详见 features/shortcuts/runtime。
+         */
         requestAnimationFrame(() => editorApiRef.current?.focus());
-        void pluginContributions.emitHook("note-switch", { oldNoteId: oldId, newNoteId: note.id });
       }
     } else {
       // 关闭笔记（note 变 null）也要把未落盘的输入补写掉
-      const oldId = lastNoteIdRef.current;
       flushPendingSave(lastNoteIdRef.current);
       currentNoteIdRef.current = null;
       setTitle("");
@@ -417,9 +441,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       latestContentRef.current = "";
       latestCategoryIdRef.current = null;
       lastNoteIdRef.current = null;
-      if (oldId !== null) {
-        void pluginContributions.emitHook("note-switch", { oldNoteId: oldId, newNoteId: null });
-      }
     }
   }, [note, t]);
 
@@ -443,14 +464,36 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [note?.title, note?.content, note?.id, onCursorOffsetChange]);
 
   /**
-   * 保存：走宿主的 `app.save` 动作（默认 mod+s，可在设置里改）。
-   * 不再自己挂 window keydown —— 那样改键位对它无效，也会和插件抢同一个键。
-   * 外部文件模式立即写回磁盘，普通笔记走导出/保存链路。
+   * 保存键（`app.save`，默认 mod+s）不再由编辑器注册：多标签下每个实例都注册会互相顶掉，
+   * 后挂载的隐藏标签会抢走这一个键。改由宿主统一分发到「激活标签」的句柄
+   * （见 features/tabs/activeEditor：外部文件走写回，其余走导出/保存链路）。
+   *
+   * 切回本标签时补报一次光标偏移：内容没变时同步 effect 不会触发，
+   * 不补报的话 AI 插入文本会沿用上一个标签的光标位置。
    */
-  useShortcutAction("app.save", () => {
-    if (isExternalRef.current) void saveNowRef.current();
-    else void handleExport();
-  });
+  useEffect(() => {
+    if (!isActive) return;
+    onCursorOffsetChange?.(latestContentRef.current.length);
+  }, [isActive, onCursorOffsetChange]);
+
+  /**
+   * 切走时主动 blur：`visibility:hidden` 之后输入焦点不该继续留在这一篇上，
+   * 否则敲键盘会「写进看不见的标签」。
+   * 只在本编辑器的容器里还有焦点时才动手——新标签可能已经先抢到焦点了。
+   */
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isActive) return;
+    const active = document.activeElement;
+    if (
+      editorApiRef.current &&
+      containerRef.current &&
+      active instanceof HTMLElement &&
+      containerRef.current.contains(active)
+    ) {
+      editorApiRef.current.blur();
+    }
+  }, [isActive]);
 
   /**
    * 立即落盘，两条分支：
@@ -467,7 +510,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
-      if (isComposingRef.current || isSavingRef.current) {
+      if (isSavingRef.current) {
         hasPendingSaveRef.current = true;
         return;
       }
@@ -499,10 +542,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (saveTimerRef.current !== null) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
-    }
-    if (isComposingRef.current) {
-      hasPendingSaveRef.current = true;
-      return;
     }
     if (isSavingRef.current) {
       hasPendingSaveRef.current = true;
@@ -553,10 +592,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [onSave, showToast, t]);
 
-  /** saveNow 的 ref：供 keydown 在定义顺序更早的位置调用 */
-  const saveNowRef = useRef<() => void>(() => {});
-  useEffect(() => { saveNowRef.current = saveNow; }, [saveNow]);
-
   /** 把「立即写回电脑文件」交给外部（切换/关闭文件前 flush） */
   useEffect(() => {
     onRegisterFlushExternal?.(() => {
@@ -577,13 +612,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }, 500);
   }, [saveNow]);
 
-  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newTitle = e.target.value;
-    setTitle(newTitle);
-    latestTitleRef.current = newTitle;
-    if (!isComposingRef.current) scheduleSave();
-  };
-
   const handleContentChange = (value: string) => {
     const newContent = value || "";
     // 编辑器把外部传入的 value 同步回去时也会回调一次 onChange，这不是用户编辑；
@@ -593,14 +621,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     latestContentRef.current = newContent;
     // 编辑器内部光标位置不透出给外部，插入/AI 引用统一以文末作为锚点
     onCursorOffsetChange?.(newContent.length);
-    if (!isComposingRef.current) scheduleSave();
-  };
-
-  const handleCompositionStart = () => {
-    isComposingRef.current = true;
-  };
-  const handleCompositionEnd = () => {
-    isComposingRef.current = false;
+    // 一旦真的开始写，列表意图就结束了：Delete 该回到「删字」
+    setPlainKeyInEditable(false);
     scheduleSave();
   };
 
@@ -789,42 +811,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         </div>
       )}
-      {/* 标题栏 */}
-      <div className="px-4 py-3 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <input
-            ref={titleInputRef}
-            type="text"
-            value={title}
-            onChange={handleTitleChange}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleCompositionEnd}
-            readOnly={isReadOnly}
-            placeholder={t("输入笔记标题...")}
-            title={
-              historyPreview
-                ? t("历史版本预览不可编辑")
-                : isExternal
-                  ? t("标题即电脑上的文件名，不可修改")
-                  : undefined
-            }
-            className="title-input flex-1 px-4 py-2.5 text-lg font-semibold text-ink placeholder:text-faint bg-transparent"
-          />
-          {!isTemporary && !isExternal && !historyPreview && (
-            <button
-              onClick={onDelete}
-              className="toolbar-btn hover:bg-danger-soft! hover:text-danger!"
-              title={t("删除笔记")}
-            >
-              <Icon name="editor-trash" className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 工具栏 */}
-      <div data-editor-blur-ignore="true" className="px-4 py-1.5 border-b border-line-soft/80 flex-shrink-0 bg-app/50">
-        <div className="flex items-center gap-2 min-w-0">
+      {/*
+        工具栏：标题行已移除（标题在标签栏上显示、在侧栏 F2 就地改名），这里就是编辑区第一行。
+        底色跟随编辑区（不用窗口底色的浅色带），再压一条发丝线，视觉上属于「编辑区」而不是第二条头部。
+      */}
+      <div data-editor-blur-ignore="true" className="editor-toolbar px-3 h-[34px] border-b border-line-soft flex-shrink-0 flex items-center bg-surface">
+        <div className="flex items-center gap-2 min-w-0 w-full">
           {/* ① 固定左组：保存状态 + AI + 导出 + 复制，永不滚动 */}
           <div className="flex items-center gap-1 shrink-0">
             {/* 保存状态：临时预览 / 电脑文件模式下换成「保存到分组」按钮 */}
@@ -980,7 +972,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
       {/* 编辑器 */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        <div className="editor-container h-full">
+        <div ref={containerRef} className="editor-container h-full">
           <Suspense
             fallback={
               <div className="h-full flex items-center justify-center text-sm text-faint">

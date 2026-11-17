@@ -353,6 +353,8 @@ export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
   aiPanelOpen: false,
   /** 欢迎页显示「最近更新」与「最近打开的文件」列表（默认显示） */
   welcomeRecentList: true,
+  /** 启动时恢复上次打开的标签（默认关：多数场景下用户希望从空白开始） */
+  restoreTabs: false,
 };
 
 /* ---------- View ---------- */

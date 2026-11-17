@@ -1044,4 +1044,8 @@ export const settingsMessages: Record<string, string> = {
   "点击工具栏、侧边栏或插件按钮时保持编辑器光标不丢，插件插入文本不失败。": "Keeps the editor caret when clicking toolbar / sidebar / plugin buttons, so plugin text insertion works.",
   "欢迎页显示最近列表": "Show recent lists on welcome page",
   "未打开笔记时，欢迎页显示「最近更新」与「最近打开的文件」。": "When no note is open, the welcome page shows recent updates and recently opened files.",
+  "启动时恢复上次打开的标签": "Restore open tabs on startup",
+  "记住关闭软件时开着的标签，下次启动按原顺序恢复。只恢复笔记与电脑文件；AI 预览、历史版本和锁定中的加密笔记不恢复。": "Remembers the tabs open when you quit and reopens them in the same order next launch. Only notes and computer files are restored; AI previews, history versions and locked encrypted notes are not.",
+  "已打开的标签": "Open tabs",
+  "关闭标签": "Close tab",
 };

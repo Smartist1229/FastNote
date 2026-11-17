@@ -108,7 +108,7 @@ export const TOOL_DEFS: AiToolDef[] = [
   { name: "renameCategory", desc: "重命名分组", args: { categoryId: "分组ID", name: "新名称" }, needsConfirm: true },
   { name: "deleteCategory", desc: "删除分组；deleteNotes=true 只是把组内笔记移入回收站（可恢复），从不永久删除；不确定时用 false（仅解除归属）", args: { categoryId: "分组ID", deleteNotes: "是否同时把组内笔记移入回收站(可选,默认false)" }, needsConfirm: true },
   { name: "moveNote", desc: "移动笔记到其他分组", args: { noteId: "笔记ID", categoryId: "目标分组ID" }, needsConfirm: true },
-  { name: "selectNote", desc: "打开并切换到指定笔记（用户说“打开”时必须用它）", args: { noteId: "笔记ID" }, needsConfirm: false },
+  { name: "selectNote", desc: "打开并切换到指定笔记（在标签栏打开它，不会关掉用户别的标签；用户说“打开”时必须用它）", args: { noteId: "笔记ID" }, needsConfirm: false },
   { name: "listTags", desc: "列出全部标签及各标签的笔记数", args: {}, needsConfirm: false },
   { name: "getNoteTags", desc: "读取某篇笔记的标签（每条带 source：user=用户自己加的，ai=你加的）", args: { noteId: "笔记ID" }, needsConfirm: false },
   { name: "findNotesByTag", desc: "按标签查找笔记（跨分组按主题找，最快的方式）", args: { tagName: "标签名", limit: "条数(可选,默认20)" }, needsConfirm: false },

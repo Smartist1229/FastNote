@@ -43,12 +43,16 @@ export interface EditorHistoryPreview {
 export interface NoteEditorProps {
   /** 当前笔记；null = 没有打开任何笔记（显示欢迎页） */
   note: Note | null;
+  /**
+   * 本编辑器是否位于当前激活的标签（默认 true）。
+   * 多标签下同一个组件有多个实例同时挂载，隐藏实例不能抢焦点、不能上报光标。
+   */
+  isActive?: boolean;
   /** 是否允许编辑（默认 true）；false 时标题与正文都只读 */
   editable?: boolean;
   /** 历史版本预览：传了即进入只读预览并显示顶部提示条 */
   historyPreview?: EditorHistoryPreview;
   onSave: (id: string, title: string, content: string, categoryId: string | null) => Promise<void>;
-  onDelete: () => void;
   /** 上报正文末尾偏移（AI 插入文本时的定位基准） */
   onCursorOffsetChange?: (offset: number) => void;
   /**

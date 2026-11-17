@@ -417,6 +417,12 @@ export interface LayoutSettings {
   aiPanelOpen: boolean;
   /** 欢迎页是否显示「最近更新」与「最近打开的文件」两个列表 */
   welcomeRecentList: boolean;
+  /**
+   * 启动时是否恢复上次打开的标签（默认关）。
+   * 只恢复笔记与电脑文件；AI 预览是临时内容、历史版本要重新拉列表，都不恢复。
+   * 锁着的加密笔记同样不恢复——启动就连弹解锁框没有意义。
+   */
+  restoreTabs: boolean;
 }
 
 /** 笔记列表视图：排序字段与方向（透传给 get_notes） */

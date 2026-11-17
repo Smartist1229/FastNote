@@ -8,15 +8,67 @@
  * DrawerNoteItem 上的 data-note-id 是 Sidebar 指针拖拽的锚点，不能去掉。
  */
 import { useI18n } from "@/i18n";
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Note } from "@/interface/note/note";
 import type { CategoryDrawerProps } from "@/interface/note/sidebar";
 import type { MatchRange, NoteSearchHit } from "@/lib/search/noteSearch";
 import { Icon } from '@/components/common/Icon';
+import { useNoteRename } from './noteRename';
+
+/**
+ * 行内改名输入框：Enter 提交、Esc 取消、失焦按提交处理。
+ *
+ * Enter 会连带触发 blur，所以用 doneRef 保证只结算一次——
+ * 否则「提交 + 失焦再提交一次」会多打一次 update_note。
+ */
+const NoteRenameInput: React.FC<{
+  initial: string;
+  onCommit: (title: string) => void;
+  onCancel: () => void;
+}> = ({ initial, onCommit, onCancel }) => {
+  const [value, setValue] = useState(initial);
+  const doneRef = useRef(false);
+
+  const settle = (commit: boolean) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    if (commit) onCommit(value.trim());
+    else onCancel();
+  };
+
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      // 点输入框不该被当成「点这一行」而把笔记重新打开一遍
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          settle(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          settle(false);
+        }
+      }}
+      onBlur={() => settle(true)}
+      /*
+       * 一行输入框，看起来就是「原来的标题变成可编辑」：仅一条主色细边框做提示，不加底色。
+       * 高度锁死 17px（与 h4 的 12.5px / leading-snug 一致）：含 1px 上下边框后内容区 15px，
+       * 所以字号降到 12px、行高 15px 才放得下——列表高度不因进入改名而变化。
+       */
+      className="h-[17px] w-full min-w-0 appearance-none rounded-[4px] border border-primary-400 bg-transparent px-1 text-[12px] font-medium leading-[15px] text-body outline-none"
+    />
+  );
+};
+
 
 /**
  * 抽屉内的单条笔记卡片；收藏视图也用它渲染扁平列表（此时 showIcon 为 true）。
- * 删除 / 收藏按钮都要 stopPropagation——否则会连带触发整行的"打开笔记"。
+ * 行内只有「打开 / 右键菜单」两种操作：删除、收藏、改名都收进右键菜单，
+ * 免得每一行都挂两个 hover 才出现的图标。
  */
 /**
  * 把一段文本按命中区间切成「普通 / 命中」交替的片段数组。
@@ -47,10 +99,13 @@ export const DrawerNoteItem: React.FC<{
   isSelected: boolean;
   isFocused: boolean;
   onSelectNote: (note: Note) => void;
-  onDeleteNote: (note: Note) => void;
-  /** 切换收藏（置顶）状态 */
-  onTogglePin?: (note: Note) => void;
-  /** 收藏聚合视图：在标题前显示星标图标 */
+  /**
+   * 这一行是否在展开着的抽屉里。同一条笔记同时存在于「全部笔记」和它所属分组的抽屉里，
+   * 收起的那个只是高度为 0（节点仍在）。改名框只应出现在看得见的那一行——
+   * 否则两行各挂一个输入框，隐藏那个被 blur 后会立刻提交并把改名状态清掉。
+   */
+  isVisible?: boolean;
+  /** 收藏聚合视图：在标题前显示笔记图标 */
   showIcon?: boolean;
   onContextMenu?: (e: React.MouseEvent, note: Note) => void;
   /**
@@ -58,9 +113,11 @@ export const DrawerNoteItem: React.FC<{
    * 只在搜索视图传入——非搜索视图不给，省掉每条笔记都走一次分段。
    */
   hit?: NoteSearchHit;
-}> = ({ note, isSelected, isFocused, onSelectNote, onDeleteNote, onTogglePin, showIcon = false, onContextMenu, hit }) => {
+}> = ({ note, isSelected, isFocused, onSelectNote, isVisible = true, showIcon = false, onContextMenu, hit }) => {
   const { t } = useI18n();
   const itemRef = useRef<HTMLDivElement>(null);
+  const rename = useNoteRename();
+  const isRenaming = rename !== null && rename.renamingNoteId === note.id && isVisible;
 
   // AI 打开笔记时聚焦高亮：延迟 60ms 再滚动，等抽屉展开动画把元素位置定下来，否则会滚偏
   useEffect(() => {
@@ -75,11 +132,11 @@ export const DrawerNoteItem: React.FC<{
     <div
       ref={itemRef}
       data-note-id={note.id}
-      onClick={() => onSelectNote(note)}
+      onClick={isRenaming ? undefined : () => onSelectNote(note)}
       onContextMenu={(e) => onContextMenu?.(e, note)}
       className={`drawer-note group/note relative pl-3 pr-2 py-1 rounded-lg cursor-pointer border transition-all duration-200 ${
         isSelected
-          ? 'bg-gradient-to-r from-primary-500 to-primary-600 note-selected-bg border-transparent'
+          ? 'bg-primary-100 note-selected-bg border-primary-200'
           : note.is_pinned
             ? 'bg-primary-50/70 hover:bg-primary-50 border-primary-100'
             : 'border-transparent hover:bg-surface/80 hover:border-line/60'
@@ -89,76 +146,40 @@ export const DrawerNoteItem: React.FC<{
         {showIcon && (
           <Icon
             name="sidebar-note"
-            className={`w-3 h-3 flex-shrink-0 ${isSelected ? 'text-on-accent' : 'text-primary-400'}`}
+            className="w-3 h-3 flex-shrink-0 text-primary-400"
           />
         )}
         <div className="flex-1 min-w-0">
-          <h4
-            className={`flex items-center gap-1 text-[12.5px] font-medium truncate leading-snug ${
-              isSelected ? 'text-on-accent' : 'text-body'
-            }`}
-          >
+          <h4 className="flex items-center gap-1 text-[12.5px] font-medium truncate leading-snug text-body">
             {/* 加密标记：只在锁定时显示，解锁后不残留；标题始终是明文 */}
             {note.is_locked && (
               <Icon
                 name="security-sealed"
-                className={`w-3 h-3 flex-shrink-0 ${isSelected ? 'text-on-accent/80' : 'text-faint'}`}
+                className="w-3 h-3 flex-shrink-0 text-faint"
                 title={t('已加密（已锁定）')}
               />
             )}
-            <span className="truncate">
-              {hit
-                ? highlightSegments(note.title || t("无标题"), hit.titleRanges)
-                : note.title || t("无标题")}
+            <span className={isRenaming ? "min-w-0 flex-1" : "truncate"}>
+              {isRenaming ? (
+                <NoteRenameInput
+                  initial={note.title}
+                  onCommit={(title) => rename?.commit(note, title)}
+                  onCancel={() => rename?.cancel()}
+                />
+              ) : hit ? (
+                highlightSegments(note.title || t("无标题"), hit.titleRanges)
+              ) : (
+                note.title || t("无标题")
+              )}
             </span>
           </h4>
           {/* 搜索视图才有的上下文行：大部分命中都在正文中间，只显示标题等于没告诉用户为什么命中 */}
           {hit && !hit.titleOnly && hit.snippet && (
-            <p
-              className={`mt-0.5 text-[10.5px] leading-snug truncate ${
-                isSelected ? 'text-on-accent/80' : 'text-faint'
-              }`}
-            >
+            <p className="mt-0.5 text-[10.5px] leading-snug truncate text-faint">
               {highlightSegments(hit.snippet, hit.snippetRanges)}
             </p>
           )}
         </div>
-        {/* 加密笔记不能进回收站（临时解锁也不允许），不提供删除入口 */}
-        {note.enc_mode === 0 && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDeleteNote(note);
-            }}
-            className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center opacity-0 group-hover/note:opacity-100 transition-all ${
-              isSelected
-                ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
-                : 'text-faint-soft hover:bg-danger-soft hover:text-danger'
-            }`}
-            title={t("移到回收站")}
-          >
-            <Icon name="sidebar-trash" className="w-3 h-3" />
-          </button>
-        )}        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin?.(note);
-          }}
-          className={`flex-shrink-0 w-6 h-6 p-1 rounded-md flex items-center justify-center transition-all ${
-            note.is_pinned
-              ? isSelected
-                ? 'text-on-accent hover:bg-surface/20'
-                : 'text-primary-500 hover:bg-primary-100'
-              : `opacity-0 group-hover/note:opacity-100 ${
-                  isSelected
-                    ? 'text-on-accent/70 hover:bg-surface/20 hover:text-on-accent'
-                    : 'text-faint-soft hover:bg-primary-50 hover:text-primary-500'
-                }`
-          }`}
-          title={note.is_pinned ? t("取消收藏") : t("收藏")}
-        >
-          <Icon name={note.is_pinned ? 'sidebar-star-filled' : 'sidebar-star'} className="w-3 h-3" />
-        </button>
       </div>
     </div>
   );
@@ -177,8 +198,6 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
   focusNoteId,
   onToggle,
   onSelectNote,
-  onDeleteNote,
-  onTogglePin,
   onCreateNote,
   onContextMenu,
   onNoteContextMenu,
@@ -291,8 +310,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
                     isSelected={selectedNoteId === note.id}
                     isFocused={focusNoteId === note.id}
                     onSelectNote={onSelectNote}
-                    onDeleteNote={onDeleteNote}
-                    onTogglePin={onTogglePin}
+                    isVisible={open}
                     onContextMenu={onNoteContextMenu}
                     hit={hits?.get(note.id)}
                   />
@@ -314,8 +332,6 @@ export const UncategorizedDrawer: React.FC<{
   focusNoteId: string | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
-  onDeleteNote: (note: Note) => void;
-  onTogglePin?: (note: Note) => void;
   onNoteContextMenu?: (e: React.MouseEvent, note: Note) => void;
   /** 分组右键菜单（未分类属于默认分组，同样有菜单） */
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -326,8 +342,6 @@ export const UncategorizedDrawer: React.FC<{
   focusNoteId,
   onToggle,
   onSelectNote,
-  onDeleteNote,
-  onTogglePin,
   onNoteContextMenu,
   onContextMenu,
 }) => {
@@ -375,8 +389,7 @@ export const UncategorizedDrawer: React.FC<{
                     isSelected={selectedNoteId === note.id}
                     isFocused={focusNoteId === note.id}
                     onSelectNote={onSelectNote}
-                    onDeleteNote={onDeleteNote}
-                    onTogglePin={onTogglePin}
+                    isVisible={open}
                     onContextMenu={onNoteContextMenu}
                   />
                 ))}
@@ -400,8 +413,6 @@ export const ChildNotesDrawer: React.FC<{
   focusNoteId: string | null;
   onToggle: () => void;
   onSelectNote: (note: Note) => void;
-  onDeleteNote: (note: Note) => void;
-  onTogglePin?: (note: Note) => void;
   onNoteContextMenu?: (e: React.MouseEvent, note: Note) => void;
 }> = ({
   notes,
@@ -410,8 +421,6 @@ export const ChildNotesDrawer: React.FC<{
   focusNoteId,
   onToggle,
   onSelectNote,
-  onDeleteNote,
-  onTogglePin,
   onNoteContextMenu,
 }) => {
   const { t } = useI18n();
@@ -446,8 +455,7 @@ export const ChildNotesDrawer: React.FC<{
                   isSelected={selectedNoteId === note.id}
                   isFocused={focusNoteId === note.id}
                   onSelectNote={onSelectNote}
-                  onDeleteNote={onDeleteNote}
-                  onTogglePin={onTogglePin}
+                  isVisible={open}
                   onContextMenu={onNoteContextMenu}
                 />
               ))}

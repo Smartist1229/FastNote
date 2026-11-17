@@ -2,12 +2,16 @@
  * FastNote 根组件：只做外壳布局与各业务域 hook 的装配；领域状态全部在 src/features/** 内。
  * 跨域前向引用通过 ref 桥接（见下方 refs），副作用时机与拆分前完全一致。
  */
-import { lazy, Suspense, useState, useEffect, useCallback, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "@/App.css";
 import type { AiAccessLevel } from "@/interface/ai/aiAccess";
 import type { EncryptionScope } from "@/interface/system/encryption";
 import { EncryptDialog, RootChangeDialog, RootSetupDialog, UnlockDialog } from "@/components/common/EncryptionDialogs";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { NoteRenameProvider, type NoteRenameApi } from "@/components/layout/noteRename";
+import type { Note } from "@/interface/note/note";
+import { hasOpenModalLayer } from "@/lib/app/modalLayer";
+import { setPlainKeyInEditable } from "@/features/shortcuts/runtime";
 import { Modal } from "@/components/common/Modal";
 import type { NoteEditorActions } from "@/interface/note/editor";
 import { ToastProvider, useToast } from "@/components/common/Toast";
@@ -32,22 +36,23 @@ import { useSettingsState, type SettingsRuntime } from "@/features/settings/useS
 import { useAiState } from "@/features/ai/useAiState";
 import { useAiNoteActions } from "@/features/ai/useAiNoteActions";
 import { useCategoriesState } from "@/features/categories/useCategoriesState";
-import { useNoteSelection } from "@/features/noteSelection/useNoteSelection";
+import { useEditorTabs } from "@/features/tabs/useEditorTabs";
+import { activeTabEditor, setActiveEditorKey, tabFlush } from "@/features/tabs/activeEditor";
+import { tabTitleOf } from "@/features/tabs/types";
+import { EditorTabs } from "@/components/layout/EditorTabs";
 import { useNotesState } from "@/features/notes/useNotesState";
 import { usePropertiesState } from "@/features/properties/usePropertiesState";
 import { useTrashState } from "@/features/trash/useTrashState";
 import { useEncryptionState } from "@/features/encryption/useEncryptionState";
 import { useExternalFiles } from "@/features/externalFiles/useExternalFiles";
 import { useExportState } from "@/features/export/useExportState";
-import { usePalette } from "@/features/palette/usePalette";
+import { usePalette, type PaletteTabsApi } from "@/features/palette/usePalette";
 import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { applyShortcutOverrides } from "@/features/shortcuts/runtime";
 
 /** 编辑器依赖 CodeMirror，体积较大：懒加载让首屏先出侧栏与欢迎页，Suspense 负责占位 */
-const NoteEditor = lazy(() =>
-  import("@/components/editor/NoteEditor").then((module) => ({
-    default: module.NoteEditor,
-  }))
+const EditorPane = lazy(() =>
+  import("@/components/editor/EditorPane").then((module) => ({ default: module.EditorPane })),
 );
 
 /**
@@ -72,14 +77,7 @@ const ExportCategoryModal = lazy(() =>
   }))
 );
 
-/** 历史版本时间：按界面语言显示本地时间到分钟；非法值原样返回。 */
-const formatHistoryTime = (iso: string, locale: string): string => {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(locale, {
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  });
-};
+/** 历史版本时间格式化随编辑面板一起放到了 EditorPane（那里才知道标签的语言环境） */
 
 function AppContent() {
   const { locale, t } = useI18n();
@@ -122,13 +120,29 @@ function AppContent() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isRevealHandleVisible, setIsRevealHandleVisible] = useState(false);
   const [sidebarView, setSidebarView] = useState<'groups' | 'favorites'>('groups');
+  /** 正在就地改名的笔记 id：F2、右键「重命名笔记」、行内输入框三处入口共用 */
+  const [renamingNoteId, setRenamingNoteId] = useState<string | null>(null);
+  /** 改名动作的实现（放在 ref 里，让 Context 值只随 renamingNoteId 变化） */
+  const renameImplRef = useRef<Omit<NoteRenameApi, "renamingNoteId">>({
+    start: () => {},
+    commit: () => {},
+    cancel: () => {},
+  });
 
-  /** 编辑器命令式动作与光标偏移：只在 AI 插入 / 命令面板时读取，用 ref 避免逐字重渲染 */
-  const editorActionsRef = useRef<NoteEditorActions | null>(null);
+  /**
+   * 编辑器命令式动作：按标签存放在模块里（见 features/tabs/activeEditor），
+   * 这里用 getter 形状的 ref 读取，`current` 每次取都是激活标签的那一份——
+   * 多标签下后挂载的隐藏实例不会把它顶掉，也不必等一次重渲染才更新。
+   */
+  const editorActionsRef = useMemo<{ current: NoteEditorActions | null }>(
+    () => ({
+      get current() {
+        return activeTabEditor()?.actions ?? null;
+      },
+    }),
+    [],
+  );
   const editorCursorOffsetRef = useRef(0);
-  const registerEditorActions = useCallback((actions: NoteEditorActions | null) => {
-    editorActionsRef.current = actions;
-  }, []);
   const handleCursorOffsetChange = useCallback((offset: number) => {
     editorCursorOffsetRef.current = offset;
   }, []);
@@ -162,7 +176,12 @@ function AppContent() {
     lockOnceUnlockedRef,
     defaultCategoryAiAccess: ai.defaultCategoryAiAccess,
   });
-  const selection = useNoteSelection({
+  /**
+   * 编辑区标签：笔记 / 电脑文件 / AI 预览 / 历史版本各占一个标签。
+   * 它对外仍暴露 `selectedNote` / `setSelectedNote` / `editorNote` / `overlayActive`，
+   * 其余域（加密、笔记、属性、AI）据此继续工作，不必知道标签的存在。
+   */
+  const tabs = useEditorTabs({
     setSelectedCategoryId: categories.setSelectedCategoryId,
     setExpandedDrawer: categories.setExpandedDrawer,
     requestUnlockRef,
@@ -170,6 +189,7 @@ function AppContent() {
     flashFocusRef,
     notesRef,
     pendingUnlockNoteRef,
+    restoreEnabled: settings.appSettings.layout.restoreTabs,
   });
   const notes = useNotesState({
     setCategories: categories.setCategories,
@@ -177,16 +197,11 @@ function AppContent() {
     selectedCategoryId: categories.selectedCategoryId,
     setSelectedCategoryId: categories.setSelectedCategoryId,
     setExpandedDrawer: categories.setExpandedDrawer,
-    selectedNote: selection.selectedNote,
-    selectedNoteRef: selection.selectedNoteRef,
-    setSelectedNote: selection.setSelectedNote,
+    selectedNote: tabs.selectedNote,
+    selectedNoteRef: tabs.selectedNoteRef,
+    setSelectedNote: tabs.setSelectedNote,
     notesRef,
     requestUnlockRef,
-    externalFileRef: selection.externalFileRef,
-    flushExternalRef: selection.flushExternalRef,
-    setTempNote: selection.setTempNote,
-    setHistoryPreview: selection.setHistoryPreview,
-    setExternalFile: selection.setExternalFile,
     defaultNoteAiAccess: ai.defaultNoteAiAccess,
     applyAppSetting: settings.applyAppSetting,
     confirm,
@@ -199,27 +214,92 @@ function AppContent() {
   aiPanelOpenSetterRef.current = ai.setAiPanelOpen;
   sidebarCollapsedSetterRef.current = setIsSidebarCollapsed;
 
-  // 插件的 ctx.notes.getCurrent()：只暴露真实笔记（外部文件 / 临时草稿 / 未选中一律 null）
+  /**
+   * 「当前编辑器」指向激活标签：命令面板、Ctrl+S、侧栏右键「保存笔记」都从这里取。
+   * 动作本身按标签存在模块里，这里只需把激活 key 同步过去。
+   */
+  setActiveEditorKey(tabs.activeKey);
+
+  /**
+   * 标签与笔记列表对齐：后台标签保存后列表变了，切回来若还用旧快照会把内容顶回去；
+   * 笔记被删除或被加密锁定，对应标签也要跟着消失（明文副本不该留在标签栏里）。
+   */
+  useEffect(() => {
+    if (!notes.dataLoaded) return;
+    tabs.syncNotes(notes.notes);
+  }, [notes.notes, notes.dataLoaded, tabs.syncNotes]);
+
+  /** 首次加载完成后恢复上次的标签（设置「启动时恢复标签」打开时才恢复） */
+  useEffect(() => {
+    if (!notes.dataLoaded || !settings.appSettingsLoaded) return;
+    tabs.restoreTabs(notes.notes);
+  }, [notes.dataLoaded, notes.notes, settings.appSettingsLoaded, tabs.restoreTabs]);
+
+  // 插件的 ctx.notes.getCurrent()：只暴露真实笔记（电脑文件 / AI 预览 / 未选中一律 null）
   useEffect(() => {
     pluginHost.setCurrentNoteProvider(() => {
-      if (selection.externalFileRef.current) return null;
-      const note = selection.selectedNoteRef.current;
+      if (tabs.activeTab?.kind !== "note") return null;
+      const note = tabs.selectedNoteRef.current;
       if (!note) return null;
       return { id: note.id, title: note.title, isLocked: Boolean(note.is_locked) };
     });
     return () => pluginHost.setCurrentNoteProvider(null);
-  }, [selection.externalFileRef, selection.selectedNoteRef]);
+  }, [tabs.activeTab?.kind, tabs.selectedNoteRef]);
+
+  /**
+   * 插件侧的 ctx.tabs：只做转发，真正的副作用（外部文件写回 / 加密锁回 / 换激活项）
+   * 都留在标签域里，插件不需要也不应该关心。
+   */
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  useEffect(() => {
+    const findTab = (target: string) => {
+      const current = tabsRef.current;
+      return (
+        current.tabs.find((tab) => tab.key === target) ??
+        current.tabs.find((tab) => tab.kind === "note" && tab.note.id === target) ??
+        null
+      );
+    };
+    pluginHost.setTabsBridge({
+      list: () =>
+        tabsRef.current.tabs.map((tab) => ({
+          key: tab.key,
+          kind: tab.kind,
+          noteId: tab.kind === "note" ? tab.note.id : null,
+          title: tabTitleOf(tab),
+          active: tab.key === tabsRef.current.activeKey,
+        })),
+      activate: (target) => {
+        const tab = findTab(target);
+        if (!tab) return false;
+        tabsRef.current.activateTab(tab.key);
+        return true;
+      },
+      close: (target) => {
+        const tab = findTab(target);
+        if (!tab) return false;
+        tabsRef.current.closeTab(tab.key);
+        return true;
+      },
+      open: (noteId) => {
+        const note = notesRef.current.find((item) => item.id === noteId);
+        if (!note) return false;
+        tabsRef.current.openNote(note);
+        return true;
+      },
+    });
+    return () => pluginHost.setTabsBridge(null);
+  }, []);
 
   const properties = usePropertiesState({
     notes: notes.notes,
     categories: categories.categories,
     setNotes: notes.setNotes,
-    setSelectedNote: selection.setSelectedNote,
-    selectedNote: selection.selectedNote,
-    historyPreview: selection.historyPreview,
-    tempNote: selection.tempNote,
-    externalFile: selection.externalFile,
-    setHistoryPreview: selection.setHistoryPreview,
+    setSelectedNote: tabs.setSelectedNote,
+    selectedNote: tabs.selectedNote,
+    activeTab: tabs.activeTab,
+    openHistoryTab: tabs.openHistoryTab,
     editorActionsRef,
     saveQueueRef: notes.saveQueueRef,
   });
@@ -229,15 +309,15 @@ function AppContent() {
     setNotes: notes.setNotes,
     categories: categories.categories,
     setCategories: categories.setCategories,
-    selectedNoteRef: selection.selectedNoteRef,
-    setSelectedNote: selection.setSelectedNote,
+    selectedNoteRef: tabs.selectedNoteRef,
+    setSelectedNote: tabs.setSelectedNote,
     setSelectedCategoryId: categories.setSelectedCategoryId,
     setExpandedDrawer: categories.setExpandedDrawer,
     loadData: notes.loadData,
     showTrashModal: trash.showTrashModal,
     setTrashNotes: trash.setTrashNotes,
     setPropertiesTarget: properties.setPropertiesTarget,
-    openNote: selection.openNote,
+    openNote: tabs.openNote,
     pendingUnlockNoteRef,
     autoLockMinutes: settings.appSettings.general.autoLockMinutes,
   });
@@ -245,51 +325,118 @@ function AppContent() {
   lockOnceUnlockedRef.current = encryption.lockOnceUnlocked;
 
   const externalFiles = useExternalFiles({
-    externalFileRef: selection.externalFileRef,
-    externalFileIdRef: selection.externalFileIdRef,
-    flushExternalRef: selection.flushExternalRef,
-    setTempNote: selection.setTempNote,
-    setHistoryPreview: selection.setHistoryPreview,
-    setExternalFile: selection.setExternalFile,
+    openExternalTab: tabs.openExternalTab,
     pushRecentFile,
     categoriesRef: categories.categoriesRef,
     requestUnlockRef,
     defaultNoteAiAccess: ai.defaultNoteAiAccess,
     setNotes: notes.setNotes,
-    setSelectedNote: selection.setSelectedNote,
+    setSelectedNote: tabs.setSelectedNote,
     setSelectedCategoryId: categories.setSelectedCategoryId,
     setExpandedDrawer: categories.setExpandedDrawer,
     confirm,
   });
   const aiActions = useAiNoteActions({
-    selectedNoteRef: selection.selectedNoteRef,
-    setSelectedNote: selection.setSelectedNote,
+    selectedNoteRef: tabs.selectedNoteRef,
+    setSelectedNote: tabs.setSelectedNote,
     setNotes: notes.setNotes,
     handleSaveNote: notes.handleSaveNote,
     editorCursorOffsetRef,
   });
-  const exportState = useExportState({ selectedNote: selection.selectedNote });
+  const exportState = useExportState({ selectedNote: tabs.selectedNote });
 
-  const { selectedNote, editorNote, overlayActive, externalFile, historyPreview } = selection;
+  const { selectedNote, editorNote, overlayActive } = tabs;
 
   /**
-   * 当前笔记的生效档位 = min(笔记, 所属分组)；没有打开笔记时按"完全"处理（不限制面板本身）。
+   * 就地改名的三个动作。实现放 ref、Context 值只随 `renamingNoteId` 变化：
+   * 否则每次 App 重渲染（打字、保存、列表刷新）都会让侧栏每一行跟着重渲染。
+   */
+  renameImplRef.current = {
+    start: (note: Note) => {
+      /*
+       * 只在「这一行确实看不见」时才动抽屉：
+       * - 侧栏被折叠 → 先展开，否则输入框在屏幕外；
+       * - 已经展开着「全部笔记」→ 所有行都露着，别把用户塞回分组视图；
+       * - 展开的正是它所在分组 → 保持。
+       */
+      if (isSidebarCollapsed) setIsSidebarCollapsed(false);
+      const target = note.category_id === null ? "uncategorized" : note.category_id;
+      const current = categories.expandedDrawer;
+      if (current !== target && current !== "all") categories.setExpandedDrawer(target);
+      setRenamingNoteId(note.id);
+    },
+    commit: (note: Note, title: string) => {
+      setRenamingNoteId(null);
+      const next = title.trim();
+      // 空标题与「没改动」都不写库：留个空标题等于把笔记变成无名条目
+      if (!next || next === note.title) return;
+      void notes.handleRenameNote(note, next);
+    },
+    cancel: () => setRenamingNoteId(null),
+  };
+  const renameApi = useMemo<NoteRenameApi>(
+    () => ({
+      renamingNoteId,
+      start: (note) => renameImplRef.current.start(note),
+      commit: (note, title) => renameImplRef.current.commit(note, title),
+      cancel: () => renameImplRef.current.cancel(),
+    }),
+    [renamingNoteId],
+  );
+
+  /**
+   * AI 面板眼里的「当前笔记」：激活标签是笔记就用它；预览 / 历史版本标签本身没有可写的正文，
+   * 但档位要按**来源笔记**算——否则打开一篇「禁止 AI」笔记的预览，面板会从禁止退回完全可用。
+   */
+  const aiContextNote: Note | null = (() => {
+    if (selectedNote) return selectedNote;
+    const tab = tabs.activeTab;
+    if (tab?.kind === "temp" && tab.sourceNoteId) {
+      return notes.notes.find((note) => note.id === tab.sourceNoteId) ?? null;
+    }
+    if (tab?.kind === "history") {
+      return notes.notes.find((note) => note.id === tab.entry.note_id) ?? null;
+    }
+    return null;
+  })();
+
+  /**
+   * 当前笔记的生效档位 = min(笔记, 所属分组)；没有可用笔记时按"完全"处理（不限制面板本身）。
    * 加密内容不参与 AI：不论档位如何都按 0 处理。
    */
-  const currentNoteAiLevel: AiAccessLevel = !selectedNote
+  const currentNoteAiLevel: AiAccessLevel = !aiContextNote
     ? 2
-    : selectedNote.enc_mode !== 0
+    : aiContextNote.enc_mode !== 0
       ? 0
       : ((Math.min(
-          selectedNote.ai_access,
-          selectedNote.category_id !== null
-            ? categories.categories.find((c) => c.id === selectedNote.category_id)?.ai_access ?? 2
+          aiContextNote.ai_access,
+          aiContextNote.category_id !== null
+            ? categories.categories.find((c) => c.id === aiContextNote.category_id)?.ai_access ?? 2
             : 2,
         ) as AiAccessLevel) ?? 2);
 
   /** AI 面板是否应丢掉笔记上下文：叠放层激活，或当前笔记是加密内容（加密内容不参与 AI） */
   const aiNoteContextBlocked =
     overlayActive || (selectedNote != null && selectedNote.enc_mode !== 0);
+
+  /**
+   * 命令面板用的标签快照与操作。标题空白的笔记统一显示「无标题」，
+   * 免得命令列表里出现一条没有名字的「切换到标签：」。
+   */
+  const paletteTabsApi: PaletteTabsApi = {
+    items: tabs.tabs.map((tab) => ({
+      key: tab.key,
+      title: tabTitleOf(tab).trim() || t("无标题"),
+      active: tab.key === tabs.activeKey,
+    })),
+    activeKey: tabs.activeKey,
+    activate: tabs.activateTab,
+    close: tabs.closeTab,
+    closeOthers: tabs.closeOtherTabs,
+    closeLeft: tabs.closeTabsToLeft,
+    closeRight: tabs.closeTabsToRight,
+    closeAll: tabs.closeAllTabs,
+  };
 
   const palette = usePalette({
     categories: categories.categories,
@@ -324,6 +471,7 @@ function AppContent() {
     exportNoteRef: exportState.exportNoteRef,
     setPropertiesTarget: properties.setPropertiesTarget,
     editorActionsRef,
+    tabsApi: paletteTabsApi,
   });
 
   /**
@@ -342,6 +490,49 @@ function AppContent() {
   useShortcutAction("app.toggleAi", () => {
     if (settings.appSettings.general.enableAI) ai.toggleAiPanel();
   });
+  /**
+   * 保存键由宿主统一分发到激活标签：编辑器自己注册会被后挂载的隐藏标签顶掉。
+   * 电脑文件写回原文件，其余（笔记 / AI 预览 / 历史版本）走导出到文件。
+   */
+  useShortcutAction("app.save", () => {
+    const active = tabs.activeTab;
+    if (active?.kind === "external") tabFlush(active.key)?.();
+    else exportState.exportNoteRef.current?.();
+  });
+
+  useShortcutAction("app.renameNote", () => {
+    // 每次都重新进入：改名状态卡住时（比如那一行被搜索过滤掉了）再按一次就能重来
+    if (!selectedNote || hasOpenModalLayer()) return;
+    // 搜索结果里不提供改名：结果行可能同时出现在多个分组里，改名入口只留给真实列表
+    if (notes.searchQuery.trim().length > 0) return;
+    renameImplRef.current.start(selectedNote);
+  });
+  /**
+   * Delete 只删「笔记列表中选中的那篇」。焦点在编辑器 / 输入框里时不触发
+   * （那是删字，由快捷键运行时统一挡掉），有弹窗挂着也不触发。
+   */
+  useShortcutAction("app.deleteNote", () => {
+    if (!selectedNote || hasOpenModalLayer()) return;
+    void notes.handleDeleteNoteFromSidebar(selectedNote);
+  });
+
+  /**
+   * 「列表意图」跟随鼠标落点：最后一下点在笔记行上 → 裸键（Delete / F2）作用在列表；
+   * 点到别处（正文、搜索框、命令面板…）立刻收回。放在捕获阶段，先清后由行点击重设。
+   */
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest("[data-note-id]")) setPlainKeyInEditable(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+
+  /** 搜索词 / 侧栏视图一变，正在改名的行可能已经不在列表里：直接退出改名，避免「输入框不见了但状态还在」 */
+  useEffect(() => {
+    setRenamingNoteId(null);
+  }, [notes.searchQuery, sidebarView]);
 
   // 生产环境屏蔽原生右键菜单；开发环境保留，方便审查元素
   useEffect(() => {
@@ -359,60 +550,67 @@ function AppContent() {
       <div className="relative flex flex-1 overflow-hidden">
         {/* 侧边栏：分组 + 笔记抽屉式融合（可折叠） */}
         <div className={`sidebar-shell ${isSidebarCollapsed ? 'is-collapsed' : ''}`}>
-          <Sidebar
-            categories={categories.categories}
-            notes={notes.notes}
-            allNotesCount={notes.allNotesCount}
-            selectedCategoryId={categories.selectedCategoryId}
-            selectedNoteId={selectedNote?.id || null}
-            expandedDrawer={categories.expandedDrawer}
-            focusNoteId={notes.focusNoteId}
-            searchQuery={notes.searchQuery}
-            onSearchQueryChange={notes.setSearchQuery}
-            useRegex={settings.appSettings.general.noteSearchRegex}
-            onRegexChange={(v) => settings.applyAppSetting("general", "noteSearchRegex", v)}
-            semanticEnabled={settings.appSettings.general.semanticSearch}
-            semanticIndexing={settings.semanticIndexing}
-            onCommitSearch={pushSearchQuery}
-            searchHistory={searchHistory}
-            onRemoveSearchHistory={removeSearchQuery}
-            onClearSearchHistory={clearSearchHistory}
-            sortBy={notes.sortBy}
-            onSortByChange={notes.handleSortByChange}
-            sortOrder={notes.sortOrder}
-            onToggleSortOrder={notes.handleToggleSortOrder}
-            onSelectNote={selection.openNote}
-            onToggleDrawer={categories.toggleDrawer}
-            onToggleCollapse={() => setIsSidebarCollapsed(true)}
-            isCollapsed={isSidebarCollapsed}
-            onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
-            isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
-            onCreateCategory={categories.handleCreateCategory}
-            onEditCategory={categories.handleEditCategory}
-            onDeleteCategory={categories.handleDeleteCategory}
-            onCreateNote={notes.handleCreateNote}
-            onMoveToCategory={notes.handleMoveNoteToCategory}
-            onDeleteNote={notes.handleDeleteNoteFromSidebar}
-            onOpenTrash={trash.handleOpenTrash}
-            onShowNoteProperties={(note) => properties.setPropertiesTarget({ kind: "note", note })}
-            onShowCategoryProperties={(category) => properties.setPropertiesTarget({ kind: "category", category })}
-            onShowGroupProperties={(name, noteCount) => properties.setPropertiesTarget({ kind: "group", name, noteCount })}
-            onOpenSettings={() => settings.openSettings("general")}
-            onExportGroup={exportState.setExportTarget}
-            onSaveNote={exportState.handleExportNoteFromMenu}
-            onNotesUpdated={notes.loadData}
-            hoverDropCategoryId={externalFiles.hoverDropCategoryId}
-            isFileDragActive={externalFiles.isFileDragActive}
-            view={sidebarView}
-            onViewChange={setSidebarView}
-            onTogglePin={notes.handleTogglePin}
-            onEncryptNote={encryption.handleEncryptNote}
-            onLockNote={encryption.handleLockNote}
-            onDecryptNote={(note) => void encryption.requestUnlock("note", note.id, true)}
-            onEncryptCategory={encryption.handleEncryptCategory}
-            onLockCategory={encryption.handleLockCategory}
-            onDecryptCategory={(category) => void encryption.requestUnlock("category", category.id, true)}
-          />
+          {/* 就地改名状态下发给笔记行：四个渲染点共用同一份，不必层层传 props */}
+          <NoteRenameProvider value={renameApi}>
+            <Sidebar
+              categories={categories.categories}
+              notes={notes.notes}
+              allNotesCount={notes.allNotesCount}
+              selectedCategoryId={categories.selectedCategoryId}
+              selectedNoteId={selectedNote?.id || null}
+              expandedDrawer={categories.expandedDrawer}
+              focusNoteId={notes.focusNoteId}
+              searchQuery={notes.searchQuery}
+              onSearchQueryChange={notes.setSearchQuery}
+              useRegex={settings.appSettings.general.noteSearchRegex}
+              onRegexChange={(v) => settings.applyAppSetting("general", "noteSearchRegex", v)}
+              semanticEnabled={settings.appSettings.general.semanticSearch}
+              semanticIndexing={settings.semanticIndexing}
+              onCommitSearch={pushSearchQuery}
+              searchHistory={searchHistory}
+              onRemoveSearchHistory={removeSearchQuery}
+              onClearSearchHistory={clearSearchHistory}
+              sortBy={notes.sortBy}
+              onSortByChange={notes.handleSortByChange}
+              sortOrder={notes.sortOrder}
+              onToggleSortOrder={notes.handleToggleSortOrder}
+              onSelectNote={(note) => {
+                // 从列表里选笔记：记下「用户此刻在列表上」，随后编辑器自动拿走焦点也不影响裸键
+                setPlainKeyInEditable(true);
+                tabs.openNote(note);
+              }}
+              onToggleDrawer={categories.toggleDrawer}
+              onToggleCollapse={() => setIsSidebarCollapsed(true)}
+              isCollapsed={isSidebarCollapsed}
+              onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
+              isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
+              onCreateCategory={categories.handleCreateCategory}
+              onEditCategory={categories.handleEditCategory}
+              onDeleteCategory={categories.handleDeleteCategory}
+              onCreateNote={notes.handleCreateNote}
+              onMoveToCategory={notes.handleMoveNoteToCategory}
+              onDeleteNote={notes.handleDeleteNoteFromSidebar}
+              onOpenTrash={trash.handleOpenTrash}
+              onShowNoteProperties={(note) => properties.setPropertiesTarget({ kind: "note", note })}
+              onShowCategoryProperties={(category) => properties.setPropertiesTarget({ kind: "category", category })}
+              onShowGroupProperties={(name, noteCount) => properties.setPropertiesTarget({ kind: "group", name, noteCount })}
+              onOpenSettings={() => settings.openSettings("general")}
+              onExportGroup={exportState.setExportTarget}
+              onSaveNote={exportState.handleExportNoteFromMenu}
+              onNotesUpdated={notes.loadData}
+              hoverDropCategoryId={externalFiles.hoverDropCategoryId}
+              isFileDragActive={externalFiles.isFileDragActive}
+              view={sidebarView}
+              onViewChange={setSidebarView}
+              onTogglePin={notes.handleTogglePin}
+              onEncryptNote={encryption.handleEncryptNote}
+              onLockNote={encryption.handleLockNote}
+              onDecryptNote={(note) => void encryption.requestUnlock("note", note.id, true)}
+              onEncryptCategory={encryption.handleEncryptCategory}
+              onLockCategory={encryption.handleLockCategory}
+              onDecryptCategory={(category) => void encryption.requestUnlock("category", category.id, true)}
+            />
+          </NoteRenameProvider>
         </div>
 
         {/* 侧边栏折叠后的唤出把手：鼠标移到左边缘时浮现 */}
@@ -443,63 +641,29 @@ function AppContent() {
           </>
         )}
 
-        {/* 主内容区：编辑器 + AI 面板（AI 面板作为 flex 兄弟节点，永远挤压而不遮挡） */}
+        {/* 主内容区：标签栏 + 编辑器 + AI 面板（AI 面板作为 flex 兄弟节点，永远挤压而不遮挡） */}
         <div className="relative flex-1 flex overflow-hidden min-w-0">
-          <div className="relative flex-1 bg-surface min-w-0 overflow-hidden">
-            <Suspense
-              fallback={
-                <div className="h-full flex flex-col items-center justify-center gap-3">
-                  <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
-                  <p className="text-sm text-faint">{t("正在加载编辑器...")}</p>
-                </div>
-              }
-            >
-              {/* 编辑器与欢迎页互斥：没有可展示的笔记时才出欢迎页，AI 面板不受影响 */}
-              {editorNote ? (
-                <div className="editor-layer">
-                  {/* 预览层激活时不传外部文件路径，避免把 AI 内容写回磁盘 */}
-                  <NoteEditor
-                    note={editorNote}
-                    editable={historyPreview === null}
-                    historyPreview={
-                      historyPreview
-                        ? {
-                            savedAt: formatHistoryTime(historyPreview.saved_at, locale),
-                            onRollback: () => void properties.handleRollbackFromPreview(),
-                            onExit: () => selection.setHistoryPreview(null),
-                          }
-                        : undefined
-                    }
-                    isTemporary={selection.tempNote != null && historyPreview === null}
-                    onCloseTemporary={selection.handleCloseTemporary}
-                    categories={categories.categories}
-                    onSaveToCategory={notes.handleSavePreviewToCategory}
-                    onSave={notes.handleSaveNote}
-                    onDelete={notes.handleDeleteNote}
-                    onCursorOffsetChange={handleCursorOffsetChange}
-                    editorSettings={settings.appSettings.editor}
-                    shortcutBindings={settings.appSettings.shortcuts}
-                    onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
-                    isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
-                    onRegisterExport={exportState.registerExportNote}
-                    externalFilePath={historyPreview || selection.tempNote ? null : externalFile?.path ?? null}
-                    onSaveExternal={externalFiles.handleWriteExternal}
-                    onSaveExternalToNote={externalFiles.handleSaveExternalToNote}
-                    onCloseExternal={externalFiles.handleCloseExternalFile}
-                    onRegisterFlushExternal={selection.registerFlushExternal}
-                    onRegisterActions={registerEditorActions}
-                    enableAI={settings.appSettings.general.enableAI}
-                  />
-                  {/* 选中文本浮出的 AI 工具条：纯浮层，不改编辑器内部结构；加密笔记不参与 AI */}
-                  {settings.appSettings.general.enableAI && selectedNote?.enc_mode === 0 && (
-                    <SelectionAiToolbar
-                      onAddToChat={ai.handleSelectionAddRef}
-                      noteId={selectedNote?.id ?? null}
-                      noteTitle={selectedNote?.title || ""}
-                    />
-                  )}
-                </div>
-              ) : (
+          <div className="relative flex-1 bg-surface min-w-0 overflow-hidden flex flex-col">
+            {/* 标签栏：没有标签时（欢迎页）整条不出现 */}
+            <EditorTabs
+              tabs={tabs.tabs}
+              activeKey={tabs.activeKey}
+              onActivate={(key) => {
+                tabs.activateTab(key);
+                // 点标签栏是「准备接着写」的信号：把焦点送进编辑器。
+                // 从侧栏点开笔记则不抢焦点，留给列表（Delete / F2 要作用在列表上）。
+                requestAnimationFrame(() => activeTabEditor()?.actions?.focus());
+              }}
+              onClose={tabs.closeTab}
+              onCloseOthers={tabs.closeOtherTabs}
+              onCloseLeft={tabs.closeTabsToLeft}
+              onCloseRight={tabs.closeTabsToRight}
+              onCloseAll={tabs.closeAllTabs}
+              onMoveTab={tabs.moveTab}
+            />
+            {/* 编辑层：标签面板绝对定位叠在同一块区域里，切换只切可见性 */}
+            <div className="relative flex-1 min-h-0">
+              {tabs.tabs.length === 0 ? (
                 <WelcomeDashboard
                   totalNotes={notes.notes.length}
                   categoryCount={categories.categories.length}
@@ -512,12 +676,58 @@ function AppContent() {
                   onCreateNote={() => notes.handleCreateNote()}
                   onOpenTrash={trash.handleOpenTrash}
                   onOpenTextFile={externalFiles.handleOpenTextFileDialog}
-                  onSelectNote={selection.openNote}
+                  onSelectNote={tabs.openNote}
                   onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
                   isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
                 />
+              ) : (
+                <Suspense
+                  fallback={
+                    <div className="h-full flex flex-col items-center justify-center gap-3">
+                      <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-500 rounded-full animate-spin" />
+                      <p className="text-sm text-faint">{t("正在加载编辑器...")}</p>
+                    </div>
+                  }
+                >
+                  {/*
+                   * 每个标签一个编辑器实例，首次激活才挂载、之后保持挂载（隐藏而非销毁）：
+                   * 切回来时滚动位置、撤销历史、视图模式都还在，不会像单实例换内容那样被重置。
+                   */}
+                  {tabs.tabs.map((tab) => (
+                    <EditorPane
+                      key={tab.key}
+                      tab={tab}
+                      isActive={tab.key === tabs.activeKey}
+                      categories={categories.categories}
+                      editorSettings={settings.appSettings.editor}
+                      shortcutBindings={settings.appSettings.shortcuts}
+                      enableAI={settings.appSettings.general.enableAI}
+                      isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
+                      onToggleAiPanel={
+                        settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined
+                      }
+                      onSaveNote={notes.handleSaveNote}
+                      onCursorOffsetChange={handleCursorOffsetChange}
+                      onSavePreviewToCategory={notes.handleSavePreviewToCategory}
+                      onWriteExternal={externalFiles.handleWriteExternal}
+                      onSaveExternalToNote={externalFiles.handleSaveExternalToNote}
+                      onRollbackHistory={properties.applyHistoryRollback}
+                      onCloseTab={() => tabs.closeTab(tab.key)}
+                    />
+                  ))}
+                </Suspense>
               )}
-            </Suspense>
+              {/* 选中文本浮出的 AI 工具条：纯浮层，不改编辑器内部结构；加密笔记不参与 AI */}
+              {settings.appSettings.general.enableAI &&
+                tabs.activeTab?.kind === "note" &&
+                selectedNote?.enc_mode === 0 && (
+                  <SelectionAiToolbar
+                    onAddToChat={ai.handleSelectionAddRef}
+                    noteId={selectedNote?.id ?? null}
+                    noteTitle={selectedNote?.title || ""}
+                  />
+                )}
+            </div>
           </div>
 
           {/* AI 面板与编辑器是 flex 兄弟：展开时挤压编辑区而非覆盖；
@@ -542,7 +752,9 @@ function AppContent() {
                 onOpenAiMemory={() => settings.openSettings("memory")}
                 onInsertText={aiActions.handleAiInsertText}
                 onReplaceContent={aiActions.handleAiReplaceContent}
-                onOpenInEditor={selection.handleOpenInEditor}
+                onOpenInEditor={(title, content) =>
+                  tabs.handleOpenInEditor(title, content, aiContextNote?.id ?? null)
+                }
                 onOpenProviderSettings={() => {
                   settings.openSettings("provider");
                   aiApi.getAiProviders().then((list) => {
@@ -553,7 +765,7 @@ function AppContent() {
                   });
                 }}
                 enableAI={settings.appSettings.general.enableAI}
-                isExternalFile={!!externalFile && !overlayActive}
+                isExternalFile={tabs.activeTab?.kind === "external"}
                 pendingNoteRef={ai.pendingNoteRef}
               />
             </Suspense>
@@ -766,7 +978,7 @@ function AppContent() {
             tabHints={palette.paletteTabHints}
             currentNoteId={selectedNote?.id ?? null}
             onClose={() => palette.setPaletteOpen(false)}
-            onOpenNote={selection.openNote}
+            onOpenNote={tabs.openNote}
             onLoadTagNotes={(tag) => tagsApi.listNotesByTag(tag.name)}
           />
         </Suspense>

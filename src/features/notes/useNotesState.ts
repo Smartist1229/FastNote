@@ -7,7 +7,7 @@
 import { logAction, SAVE_THROTTLE_MS } from "@/lib/app/actionLog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import type { Category, ExternalTextFile, Note, NoteHistoryEntry } from "@/interface/note/note";
+import type { Category, Note } from "@/interface/note/note";
 import type { ConfirmOptions } from "@/interface/app/ui";
 import type { EncryptionScope } from "@/interface/system/encryption";
 import type { AiAccessLevel } from "@/interface/ai/aiAccess";
@@ -15,6 +15,7 @@ import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
 import * as notesApi from "@/api/note/notes";
 import * as categoriesApi from "@/api/note/categories";
 import { emitAppEvent, onAppEvent } from "@/shared/bus";
+import { activeTabEditor } from "@/features/tabs/activeEditor";
 import { pluginContributions } from "@/plugins/contributions";
 import { useI18n } from "@/i18n";
 import { useToast } from "@/components/common/Toast";
@@ -30,11 +31,6 @@ export interface UseNotesStateParams {
   setSelectedNote: Dispatch<SetStateAction<Note | null>>;
   notesRef: RefObject<Note[]>;
   requestUnlockRef: { current: (scope: EncryptionScope, id: string, permanent?: boolean) => void };
-  externalFileRef: RefObject<ExternalTextFile | null>;
-  flushExternalRef: RefObject<(() => void) | null>;
-  setTempNote: Dispatch<SetStateAction<{ id: string; title: string; content: string } | null>>;
-  setHistoryPreview: Dispatch<SetStateAction<NoteHistoryEntry | null>>;
-  setExternalFile: Dispatch<SetStateAction<ExternalTextFile | null>>;
   /** 新建笔记时套用的 AI 档位（来自 AI 设置） */
   defaultNoteAiAccess: AiAccessLevel;
   /** 排序落库后同步运行时状态（设置域提供） */
@@ -53,11 +49,6 @@ export function useNotesState({
   setSelectedNote,
   notesRef,
   requestUnlockRef,
-  externalFileRef,
-  flushExternalRef,
-  setTempNote,
-  setHistoryPreview,
-  setExternalFile,
   defaultNoteAiAccess,
   applyAppSetting,
   confirm,
@@ -69,6 +60,11 @@ export function useNotesState({
   const [notes, setNotes] = useState<Note[]>([]);
   /** 「全部笔记」计数，与 notes 同源，仅供侧边栏展示 */
   const [allNotesCount, setAllNotesCount] = useState<number>(0);
+  /**
+   * 首次加载是否已完成：恢复上次标签要等它——空库和「还没加载」都会得到空数组，
+   * 分不清就会把上次的标签当成「笔记已删除」清掉。
+   */
+  const [dataLoaded, setDataLoaded] = useState(false);
   /** 排序状态：与 appSettings.view 同步，改动经 handleSortByChange 落库并触发重载 */
   const [sortBy, setSortBy] = useState<string>("created_at");
   const [sortOrder, setSortOrder] = useState<string>("asc");
@@ -124,6 +120,7 @@ export function useNotesState({
         const updatedNote = allNotes.find((note) => note.id === currentSelectedNote.id);
         setSelectedNote(updatedNote ?? null);
       }
+      setDataLoaded(true);
     } catch (error) {
       console.error("Failed to load data:", error);
     }
@@ -138,7 +135,12 @@ export function useNotesState({
   // 让零依赖回调始终能拿到最新值
   useEffect(() => { notesRef.current = notes; }, [notes, notesRef]);
 
-  /** 新建笔记并选中；省略 categoryId 用当前分组，title 省略时叫「无标题」 */
+  /**
+   * 新建笔记并选中；省略 categoryId 用当前分组，title 省略时叫「无标题」。
+   *
+   * 只开一个笔记标签，不再清理其它标签：电脑文件与 AI 预览现在是独立标签，
+   * 新建笔记不该把它们关掉（旧版那套叠放语义已经是历史）。
+   */
   const handleCreateNote = async (categoryId?: string | null, title?: string) => {
     const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
     // 锁着的加密分组不能写入：先解锁，解锁后用户再点一次新建
@@ -149,14 +151,6 @@ export function useNotesState({
         return;
       }
     }
-    // 新建笔记：撤掉上层叠着的电脑文件 / AI 预览
-    if (externalFileRef.current) {
-      flushExternalRef.current?.();
-      externalFileRef.current = null;
-    }
-    setTempNote(null);
-    setHistoryPreview(null);
-    setExternalFile(null);
     try {
       const note = await notesApi.createNote(
         title?.trim() || t("无标题"),
@@ -171,12 +165,15 @@ export function useNotesState({
       setExpandedDrawer(targetCategory === null ? 'uncategorized' : targetCategory);
       emitAppEvent("fastnote-data-changed");
       void pluginContributions.emitHook("note-create", { note, isExternal: false });
+      // 新建完之后用户一定是想开始写：把焦点送进新标签的编辑器。
+      // （从侧栏点开已有笔记不走这里，焦点留在列表上，Delete / F2 才好用）
+      requestAnimationFrame(() => activeTabEditor()?.actions?.focus());
     } catch (error) {
       console.error("Failed to create note:", error);
     }
   };
 
-  /** 临时预览（AI 回复）另存为真实笔记：写库后打开它，叠放层一并清空 */
+  /** 临时预览（AI 回复）另存为真实笔记：写库后打开它；预览标签由调用方关闭 */
   const handleSavePreviewToCategory = async (categoryId: string | null, title: string, content: string) => {
     try {
       const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
@@ -184,9 +181,6 @@ export function useNotesState({
       setNotes((prev) => [...prev, note]);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
-      setTempNote(null);
-      setHistoryPreview(null);
-      setExternalFile(null);
       setSelectedNote(note);
       showToast(t("已保存为笔记"), "success");
       emitAppEvent("fastnote-data-changed");
@@ -224,34 +218,6 @@ export function useNotesState({
       }
     });
     await saveQueueRef.current;
-  };
-
-  /** 删除当前笔记：软删除进回收站，刷新列表后清空选中 */
-  const handleDeleteNote = async () => {
-    if (!selectedNote) return;
-    const noteId = selectedNote.id;
-    // 加密笔记也能删除：删除不碰明文，密钥原样保留，还原后仍可解密
-    const confirmed = await confirm({
-      title: t("删除笔记"),
-      message:
-        selectedNote.enc_mode !== 0
-          ? t("这是加密笔记，删除会把它移入回收站（密钥一并保留，还原后仍可解密）。确定继续吗？")
-          : t("确定要将这条笔记移入回收站吗？"),
-      confirmText: t("移入回收站"),
-      danger: true,
-    });
-    if (!confirmed) return;
-    try {
-      await notesApi.moveToTrash(noteId);
-      logAction("note.trash", selectedNote.title);
-      await loadData();
-      setSelectedNote((current) => (current?.id === noteId ? null : current));
-      showToast(t("删除成功！"), "success");
-      void pluginContributions.emitHook("note-delete", { noteId });
-    } catch (error) {
-      console.error("Failed to delete note:", error);
-      showToast(t("删除失败，请重试"), "error");
-    }
   };
 
   /** 侧边栏右键删除：软删除进回收站，删的是当前打开的笔记时清空选中 */
@@ -364,6 +330,7 @@ export function useNotesState({
     notes,
     setNotes,
     allNotesCount,
+    dataLoaded,
     sortBy,
     setSortBy,
     sortOrder,
@@ -379,7 +346,6 @@ export function useNotesState({
     handleCreateNote,
     handleSavePreviewToCategory,
     handleSaveNote,
-    handleDeleteNote,
     handleDeleteNoteFromSidebar,
     handleTogglePin,
     handleSetNoteAiAccess,
