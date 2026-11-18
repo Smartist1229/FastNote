@@ -36,6 +36,7 @@ import {
   type AiAccessRules,
 } from "@/lib/ai/aiAccess";
 import { useToast } from "@/components/common/Toast";
+import { beginAiActivity, endAiActivity } from "@/features/ai/aiActivity";
 import { ChatHeader } from "@/components/ai/chat/ChatHeader";
 import { MessageList } from "@/components/ai/chat/MessageList";
 import { ChatInput } from "@/components/ai/chat/ChatInput";
@@ -1550,6 +1551,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
      */
     thinkingCapableRef.current = true;
     sendLockRef.current = true;
+    // 整轮（含工具轮、等待确认）都算「AI 忙着」：这期间单击别的笔记不会顶掉预览标签
+    beginAiActivity();
     try {
       abortRef.current = false;
       // 先把用户消息落到界面，"思考中"指示由 isSending 驱动
@@ -1572,6 +1575,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ isOpen, noteTitle, not
       await loadSessions();
       try { emitAppEvent('fastnote-data-changed'); } catch {}
     } finally {
+      endAiActivity();
       // 只有"自己仍是当前轮次"时才释放锁：旧循环收尾不能把新一轮的锁放掉
       if (runIdRef.current === myRun) {
         sendLockRef.current = false;

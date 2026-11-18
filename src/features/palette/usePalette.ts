@@ -21,6 +21,8 @@ import { useI18n } from "@/i18n";
 import { useShortcutAction } from "@/features/shortcuts/useShortcutAction";
 import { pluginHost } from "@/plugins/host";
 import { pluginContributions } from "@/plugins/contributions";
+import { fuzzyMatch } from "@/lib/search/fuzzy";
+import { parseTabBatch, parseTabQuery } from "./tabArgs";
 
 /** 最近执行过的命令 id，只在本地记（跨会话保留，不需要进数据库） */
 const RECENT_COMMAND_KEY = "fastnote.palette.recent";
@@ -80,10 +82,19 @@ export interface UsePaletteParams {
 
 /** 命令面板需要的标签能力（由 App 从标签域拼出来，面板不直接依赖 features/tabs） */
 export interface PaletteTabsApi {
-  items: { key: string; title: string; active: boolean }[];
+  /** preview：预览标签（单击打开、会被下一篇单击顶掉）；kind 用来在列表里标出标签来源 */
+  items: {
+    key: string;
+    title: string;
+    active: boolean;
+    preview: boolean;
+    kind: "note" | "external" | "temp" | "history";
+  }[];
   activeKey: string | null;
   activate: (key: string) => void;
   close: (key: string) => void;
+  /** 预览标签转常驻（等价双击标签） */
+  pin: (key: string) => void;
   closeOthers: (key: string) => void;
   closeLeft: (key: string) => void;
   closeRight: (key: string) => void;
@@ -530,13 +541,156 @@ export function usePalette({
         },
 
         /* ---------- 标签 ---------- */
+        /*
+         * `tab` 是「一个入口 + 参数」的指令（VS Code 那种），选项是运行时数据，
+         * 所以走 `list` 动态生成，而不是 `subcommands` 的静态表：
+         *   tab                → 列全部标签，回车切过去
+         *   tab 周报           → 同上，按标题过滤
+         *   tab close          → 第一行「关闭当前标签」，其余列出全部供选择
+         *   tab close 周报     → 只列匹配的，回车关掉那条
+         *   tab close others   → 批量关闭（others / left / right / all）
+         *   tab pin            → 把预览标签转成常驻
+         */
+        {
+          id: "tab.manage",
+          token: "tab",
+          aliases: ["tabs"],
+          title: t("标签：切换 / 关闭"),
+          hint: t("tab 周报 切过去 · tab close 周报 关掉它 · tab close 关当前"),
+          group: t("标签页"),
+          icon: "sidebar-note",
+          keywords: "tab tabs 标签 切换 switch close 关闭 pin 固定 钉住",
+          emptyHint: (arg) => {
+            const { verb, rest } = parseTabQuery(arg);
+            if (rest) return t("没有匹配「{query}」的结果", { query: rest });
+            return verb === "pin" ? t("当前没有临时标签") : t("没有打开的标签");
+          },
+          list: (raw) => {
+            const { verb, rest } = parseTabQuery(raw);
+            const items = tabsApi.items;
+            const kindLabel = (kind: PaletteTabsApi["items"][number]["kind"]) =>
+              kind === "external"
+                ? t("电脑文件")
+                : kind === "temp"
+                  ? t("AI 预览")
+                  : kind === "history"
+                    ? t("历史版本")
+                    : t("笔记");
+            /** 行尾那半句：优先说「当前 / 临时」，否则说标签来源 */
+            const stateHint = (tab: PaletteTabsApi["items"][number]) =>
+              tab.preview ? t("临时标签") : tab.active ? t("当前") : kindLabel(tab.kind);
+
+            if (verb === "close") {
+              const batch = parseTabBatch(rest);
+              if (batch) {
+                const label =
+                  batch === "others"
+                    ? t("关闭其他标签")
+                    : batch === "left"
+                      ? t("关闭左侧标签")
+                      : batch === "right"
+                        ? t("关闭右侧标签")
+                        : t("全部关闭标签");
+                return [
+                  {
+                    value: `batch:${batch}`,
+                    display: `close ${rest}`,
+                    title: label,
+                    hint: t("批量关闭，不再逐条确认"),
+                    icon: batch === "all" ? "sidebar-trash" : "modal-close",
+                  },
+                ];
+              }
+            }
+
+            // 关键词过滤：只比标题，标签栏上能看到的就只有标题
+            const filtered = rest
+              ? items
+                  .map((tab) => ({ tab, hit: fuzzyMatch(tab.title, rest) }))
+                  .filter(
+                    (
+                      row,
+                    ): row is {
+                      tab: PaletteTabsApi["items"][number];
+                      hit: NonNullable<ReturnType<typeof fuzzyMatch>>;
+                    } => row.hit !== null,
+                  )
+                  .sort((a, b) => b.hit.score - a.hit.score)
+                  .map((row) => row.tab)
+              : items;
+
+            if (verb === "pin") {
+              // 预览标签全局最多一条；没有时列表为空，空态文案会说明原因
+              return filtered
+                .filter((tab) => tab.preview)
+                .map((tab) => ({
+                  value: `pin:${tab.key}`,
+                  display: `pin ${tab.title}`,
+                  title: tab.title,
+                  hint: t("转成常驻标签，之后单击别的笔记不会替换它"),
+                  icon: "sidebar-star",
+                }));
+            }
+
+            if (verb === "close") {
+              const options = filtered.map((tab) => ({
+                value: `close:${tab.key}`,
+                display: `close ${tab.title}`,
+                title: tab.title,
+                hint: stateHint(tab),
+                icon: "modal-close",
+              }));
+              // 没写关键词时，第一行固定是「关闭当前标签」：直接回车就是关掉正在看的这个
+              if (!rest && tabsApi.activeKey) {
+                options.unshift({
+                  value: "closeCurrent",
+                  display: "close",
+                  title: t("关闭当前标签"),
+                  hint: t("关掉正在看的这个标签"),
+                  icon: "sidebar-close",
+                });
+              }
+              return options;
+            }
+
+            // 切换：无关键词时当前标签排最前（其余保持标签栏顺序），有关键词时按命中分排
+            const ordered = rest ? filtered : [...filtered].sort((a, b) => Number(b.active) - Number(a.active));
+            return ordered.map((tab) => ({
+              value: `switch:${tab.key}`,
+              display: tab.title,
+              title: tab.title,
+              hint: stateHint(tab),
+              icon: tab.kind === "note" ? "sidebar-note" : undefined,
+            }));
+          },
+          run: (arg) => {
+            if (!arg) return;
+            const sep = arg.indexOf(":");
+            const action = sep < 0 ? arg : arg.slice(0, sep);
+            const value = sep < 0 ? "" : arg.slice(sep + 1);
+            if (action === "closeCurrent") {
+              if (tabsApi.activeKey) tabsApi.close(tabsApi.activeKey);
+              return;
+            }
+            if (action === "batch") {
+              if (value === "all") tabsApi.closeAll();
+              else if (value === "others" && tabsApi.activeKey) tabsApi.closeOthers(tabsApi.activeKey);
+              else if (value === "left" && tabsApi.activeKey) tabsApi.closeLeft(tabsApi.activeKey);
+              else if (value === "right" && tabsApi.activeKey) tabsApi.closeRight(tabsApi.activeKey);
+              return;
+            }
+            if (action === "switch") tabsApi.activate(value);
+            else if (action === "close") tabsApi.close(value);
+            else if (action === "pin") tabsApi.pin(value);
+          },
+        },
         // 每个打开的标签一条；token 用序号（标题是任意文字，做不了指令名）
         ...tabsApi.items.map<PaletteCommand>((tab, index) => ({
           id: `tab.switch.${tab.key}`,
           token: `tab_${index + 1}`,
           title: t("切换到标签：{name}", { name: tab.title }),
           hint: tab.active ? t("已经在这个标签上") : t("切到这一篇"),
-          group: t("标签"),
+          group: t("标签页"),
           icon: "sidebar-note",
           keywords: `tab 标签 切换 switch ${tab.title}`,
           disabled: tab.active,
@@ -548,7 +702,7 @@ export function usePalette({
           token: "close_tab",
           title: t("关闭当前标签"),
           hint: t("关掉正在看的这个标签"),
-          group: t("标签"),
+          group: t("标签页"),
           icon: "modal-close",
           keywords: "close tab 关闭 标签",
           disabled: tabsApi.activeKey === null,
@@ -562,7 +716,7 @@ export function usePalette({
           token: "close_other_tabs",
           title: t("关闭其他标签"),
           hint: t("只留下当前标签"),
-          group: t("标签"),
+          group: t("标签页"),
           icon: "sidebar-close",
           keywords: "close others 关闭 其他 标签",
           disabled: tabsApi.items.length <= 1,
@@ -576,7 +730,7 @@ export function usePalette({
           token: "close_left_tabs",
           title: t("关闭左侧标签"),
           hint: t("关掉当前标签左边的全部"),
-          group: t("标签"),
+          group: t("标签页"),
           icon: "sidebar-chevron-left",
           keywords: "close left 关闭 左侧 左边 标签",
           disabled: tabsApi.items.findIndex((tab) => tab.active) <= 0,
@@ -590,7 +744,7 @@ export function usePalette({
           token: "close_right_tabs",
           title: t("关闭右侧标签"),
           hint: t("关掉当前标签右边的全部"),
-          group: t("标签"),
+          group: t("标签页"),
           icon: "sidebar-chevron-right",
           keywords: "close right 关闭 右侧 右边 标签",
           disabled: (() => {
@@ -607,7 +761,7 @@ export function usePalette({
           token: "close_all_tabs",
           title: t("全部关闭标签"),
           hint: t("关掉所有标签，回到欢迎页"),
-          group: t("标签"),
+          group: t("标签页"),
           icon: "sidebar-trash",
           keywords: "close all 关闭 全部 标签 tabs",
           disabled: tabsApi.items.length === 0,

@@ -83,6 +83,9 @@ const HOST_ACTIONS: ShortcutActionSpec[] = [
   { id: "app.settings", default: "mod+,", scope: "app", group: "app", label: "打开设置", owner: "host" },
   { id: "app.toggleSidebar", default: "mod+\\", scope: "app", group: "app", label: "折叠 / 展开侧栏", owner: "host" },
   { id: "app.toggleAi", default: "mod+shift+a", scope: "app", group: "app", label: "显示 / 隐藏 AI 面板", note: "需要先在设置里开启 AI", owner: "host", available: (s) => s.general.enableAI, offHint: "AI 已关闭" },
+  { id: "app.nextTab", default: "mod+tab", scope: "app", group: "app", label: "下一个标签", note: "按标签栏顺序循环切换", owner: "host" },
+  { id: "app.prevTab", default: "mod+shift+tab", scope: "app", group: "app", label: "上一个标签", note: "按标签栏顺序循环切换", owner: "host" },
+  { id: "app.closeTab", default: "mod+w", scope: "app", group: "app", label: "关闭当前标签", note: "只关编辑区标签，不会关窗口；外部文件会先写回磁盘", owner: "host" },
   { id: "app.toggleWindow", default: "mod+shift+space", scope: "global", group: "app", label: "全局唤起窗口", note: "任何程序在前台时都能把窗口叫出来 / 收回托盘", owner: "host" },
   { id: "app.quickNote", default: "mod+shift+n", scope: "global", group: "app", label: "全局速记", note: "唤起窗口并直接新建一篇笔记", owner: "host" },
 ];

@@ -1637,7 +1637,12 @@ const SourceEditorImpl = forwardRef<SourceEditorHandle, SourceEditorProps>(
         return;
       }
 
-      if (event.key === "Tab" && config.editor.tabKey !== "none") {
+      /*
+       * Ctrl/⌘ + Tab（以及 Ctrl+Shift+Tab）是宿主的「上一个 / 下一个标签」。
+       * 这里必须先把带修饰键的 Tab 放过去：宿主只在 window 捕获阶段 preventDefault、
+       * 不 stopPropagation，所以事件照样会走到这里，不挡的话切标签的同时正文还被缩进一次。
+       */
+      if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && config.editor.tabKey !== "none") {
         event.preventDefault();
         const state: EditState = { text, start, end };
         if (event.shiftKey) {

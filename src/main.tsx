@@ -47,6 +47,13 @@ const BLOCKED_NATIVE_SHORTCUTS = [
   { key: "-", code: "Minus" },
   { key: "_", code: "NumpadSubtract" },
   { key: "0", code: "Digit0" },
+  /*
+   * Ctrl/⌘ + W：WebView2 里可能是「关闭窗口」，不拦的话用户想关标签会关掉整个应用。
+   * 拦掉后由标签域的 app.closeTab 接手（见 config/shortcuts）。
+   * Ctrl/⌘ + Tab 同理：浏览器拿它切页签，这里没有页签可切，统一交给 app.nextTab / app.prevTab。
+   */
+  { key: "w", code: "KeyW" },
+  { key: "tab", code: "Tab" },
 ];
 
 const blockNativeShortcut = (e: KeyboardEvent) => {

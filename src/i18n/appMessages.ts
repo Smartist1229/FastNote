@@ -6,7 +6,13 @@ export const appMessages: Record<string, string> = {
   "已恢复": "Restored",
   "恢复失败，请到回收站重试": "Restore failed. Please retry from the trash",
   // 标签栏（命令面板 + 右键菜单）
-  "标签": "Tabs",
+  /*
+   * 这里**不能**写 `"标签": "Tabs"`：笔记的「标签」是全软件高频词（属性窗、恢复摘要、
+   * 命令面板的标签分组都用它），而且本文件在合并时排在 coreMessages / settingsMessages 之后，
+   * 一旦在这里覆盖成 Tabs，全英文界面下笔记标签全会显示成 Tabs。
+   * 标签页另起一个源词「标签页」，中文界面下也更准确。
+   */
+  "标签页": "Tabs",
   "切换到标签：{name}": "Switch to tab: {name}",
   "已经在这个标签上": "You are already on this tab",
   "切到这一篇": "Switch to this note",
@@ -22,7 +28,24 @@ export const appMessages: Record<string, string> = {
   "关掉所有标签，回到欢迎页": "Close every tab and go back to the welcome page",
   "没有打开的标签": "No open tabs",
   "关闭其他标签": "Close other tabs",
-  "临时标签，双击固定": "Preview tab — double-click to keep it",
+  "临时标签，双击固定": "Preview tab, double-click to keep it",
+  "标签：切换 / 关闭": "Tabs: switch / close",
+  "tab 周报 切过去 · tab close 周报 关掉它 · tab close 关当前":
+    "tab weekly switches · tab close weekly closes it · tab close closes the current one",
+  "临时标签": "Preview tab",
+  "电脑文件": "Text file",
+  "AI 预览": "AI preview",
+  "当前没有临时标签": "No preview tab right now",
+  "转成常驻标签，之后单击别的笔记不会替换它":
+    "Keep this tab so a later single click will not replace it",
+  "批量关闭，不再逐条确认": "Batch close, no per-tab confirmation",
+  "没有可选项": "Nothing to choose",
+  "没有匹配「{query}」的结果": "No results matching “{query}”",
+  "下一个标签": "Next tab",
+  "上一个标签": "Previous tab",
+  "按标签栏顺序循环切换": "Cycles through the tab strip",
+  "只关编辑区标签，不会关窗口；外部文件会先写回磁盘":
+    "Closes the editor tab only, not the window; open text files are written back first",
   "关闭左侧标签": "Close tabs to the left",
   "关闭右侧标签": "Close tabs to the right",
   "全部关闭": "Close all tabs",

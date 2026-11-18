@@ -446,10 +446,13 @@ function AppContent() {
       key: tab.key,
       title: tabTitleOf(tab).trim() || t("无标题"),
       active: tab.key === tabs.activeKey,
+      preview: tab.isPreview === true,
+      kind: tab.kind,
     })),
     activeKey: tabs.activeKey,
     activate: tabs.activateTab,
     close: tabs.closeTab,
+    pin: tabs.promoteTab,
     closeOthers: tabs.closeOtherTabs,
     closeLeft: tabs.closeTabsToLeft,
     closeRight: tabs.closeTabsToRight,
@@ -508,6 +511,10 @@ function AppContent() {
   useShortcutAction("app.toggleAi", () => {
     if (settings.appSettings.general.enableAI) ai.toggleAiPanel();
   });
+  /* 标签间切换与关闭：走标签域，加密守卫 / 外部文件写回都由它统一处理 */
+  useShortcutAction("app.nextTab", () => tabs.cycleTab(1));
+  useShortcutAction("app.prevTab", () => tabs.cycleTab(-1));
+  useShortcutAction("app.closeTab", () => tabs.closeActiveTab());
   /**
    * 保存键由宿主统一分发到激活标签：编辑器自己注册会被后挂载的隐藏标签顶掉。
    * 电脑文件写回原文件，其余（笔记 / AI 预览 / 历史版本）走导出到文件。

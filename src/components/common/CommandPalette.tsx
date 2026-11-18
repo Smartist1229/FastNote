@@ -44,6 +44,11 @@ export interface PaletteCommandArg {
 export interface PaletteSubcommand {
   /** 参数值，也是 `token value` 里的 value */
   value: string;
+  /**
+   * 行尾显示的参数写法（缺省用 value）。动态选项的 value 是内部编码（`close:note:abc`），
+   * 直接显示给用户没有意义，用这个换成 `close 周报` 这种可读形式。
+   */
+  display?: string;
   title: string;
   hint?: string;
   icon?: string;
@@ -67,6 +72,13 @@ export interface PaletteCommand {
   arg?: PaletteCommandArg;
   /** 二级命令的固定选项 */
   subcommands?: PaletteSubcommand[];
+  /**
+   * 动态选项（如 `tab 周报`）：参数变了选项就变，如「当前打开的标签」。
+   * 给了它就不再走 `subcommands` 的模糊过滤——筛选由它自己负责。
+   */
+  list?: (arg: string) => PaletteSubcommand[];
+  /** 动态选项为空时的提示；给函数就按当前参数算（如 `tab pin` 没有预览标签时提示不同） */
+  emptyHint?: string | ((arg: string) => string);
   title: string;
   /** 一句话说明（显示在标题下方） */
   hint?: string;
@@ -289,7 +301,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     } else if (tokenQuery) {
       const { command, arg } = tokenQuery;
-      if (command.subcommands?.length) {
+      if (command.list) {
+        /*
+         * 动态选项：候选集合由命令自己按参数算（标签是运行时数据，命令表里放不下）。
+         * 这里不再叠一层模糊过滤——它已经按 arg 算过了，再过滤会把这些行全筛掉。
+         */
+        const options = command.list(arg);
+        if (options.length) group(`g-cmd-${command.group}`, command.group);
+        for (const subcommand of options) {
+          const id = `s-${command.id}-${subcommand.value}`;
+          push({ kind: "subcommand", id, command, subcommand }, id);
+        }
+      } else if (command.subcommands?.length) {
         // 二级命令：只展示固定选项。没写参数时保留声明顺序，写了参数按匹配置信度排。
         const matched = command.subcommands
           .map((subcommand) => ({
@@ -400,12 +423,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       if (row.kind === "command") {
         if (row.command.disabled) return;
         const parsed = tokenQuery?.command.id === row.command.id ? tokenQuery : null;
-        const needsInput = Boolean(row.command.arg || row.command.subcommands?.length);
+        const needsInput = Boolean(row.command.arg || row.command.subcommands?.length || row.command.list);
 
         // 输入框已经是这条标准指令：无参数命令直接执行；有参数时参数齐了才执行
         if (parsed) {
           // 二级命令的选项以独立行展示，执行走上面的 subcommand 分支
-          if (row.command.subcommands?.length) return;
+          if (row.command.subcommands?.length || row.command.list) return;
           if (row.command.arg?.required && !parsed.arg) return;
           // 先关面板再执行：命令多半会开另一个窗口（设置 / 文件对话框），
           // 面板留在下面会挡住刚打开的东西
@@ -516,9 +539,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             ? t("没有匹配「{query}」的标签", { query: tagQuery })
             : t("还没有标签：在笔记属性里加一个试试")
           : t("没有找到匹配「{query}」的笔记", { query: q })
-      : tokenQuery?.command.subcommands?.length
-        ? t("没有匹配「{query}」的分区", { query: tokenQuery.arg })
-        : t("没有匹配「{query}」的命令", { query: q });
+      : tokenQuery?.command.list
+        ? // 动态选项的空态只有命令自己说得清（没有标签 / 没有临时标签 / 关键词没命中）
+          typeof tokenQuery.command.emptyHint === "function"
+          ? tokenQuery.command.emptyHint(tokenQuery.arg)
+          : tokenQuery.command.emptyHint ??
+            (tokenQuery.arg
+              ? t("没有匹配「{query}」的结果", { query: tokenQuery.arg })
+              : t("没有可选项"))
+        : tokenQuery?.command.subcommands?.length
+          ? t("没有匹配「{query}」的分区", { query: tokenQuery.arg })
+          : t("没有匹配「{query}」的命令", { query: q });
 
   return (
     <div
@@ -720,7 +751,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       </p>
                       <p className="mt-0.5 text-[11px] text-faint-soft truncate">
                         <span className="font-mono text-[10px] text-faint">
-                          {row.command.token} {row.subcommand.value}
+                          {row.command.token} {row.subcommand.display ?? row.subcommand.value}
                         </span>
                         {row.subcommand.hint && <span>{" · "}{row.subcommand.hint}</span>}
                       </p>

@@ -19,6 +19,7 @@ import type { ExternalTextFile, Note, NoteHistoryEntry } from "@/interface/note/
 import type { EncryptionScope } from "@/interface/system/encryption";
 import * as notesApi from "@/api/note/notes";
 import { onAppEvent } from "@/shared/bus";
+import { isAiBusy } from "@/features/ai/aiActivity";
 import { pluginContributions } from "@/plugins/contributions";
 import { dropTabEditor, pruneTabEditors, tabFlush } from "./activeEditor";
 import {
@@ -50,7 +51,8 @@ type PersistedKind = "note" | "external";
 interface PersistedTabs {
   activeKind: PersistedKind | "temp" | "history" | null;
   activeValue: string | null;
-  tabs: { kind: PersistedKind; value: string }[];
+  /** `preview` 是后加的字段：老记录没有它，按常驻处理 */
+  tabs: { kind: PersistedKind; value: string; preview?: boolean }[];
 }
 
 export interface UseEditorTabsParams {
@@ -70,10 +72,14 @@ export interface UseEditorTabsParams {
   restoreEnabled: boolean;
 }
 
-/** 标签身份 → 落盘值；不可落盘的类型返回 null */
-const persistValue = (tab: EditorTab): { kind: PersistedKind; value: string } | null => {
-  if (tab.kind === "note") return { kind: "note", value: tab.note.id };
-  if (tab.kind === "external") return { kind: "external", value: tab.file.path };
+/**
+ * 标签身份 → 落盘值；不可落盘的类型返回 null。
+ * 预览态一起存：重启后那条仍是「可以被顶掉」的临时标签，语义不断档。
+ */
+const persistValue = (tab: EditorTab): { kind: PersistedKind; value: string; preview: boolean } | null => {
+  const preview = tab.isPreview === true;
+  if (tab.kind === "note") return { kind: "note", value: tab.note.id, preview };
+  if (tab.kind === "external") return { kind: "external", value: tab.file.path, preview };
   return null;
 };
 
@@ -246,7 +252,13 @@ export function useEditorTabs({
     // 解锁回来这一趟沿用被打断时的意图，别把双击降级成预览
     const pending = pendingOpenModeRef.current;
     pendingOpenModeRef.current = null;
-    const pinned = (pending && pending.noteId === note.id ? pending.mode : requested) === "pinned";
+    /*
+     * AI 正在跑（流式输出 / 工具轮 / 等待确认）时一律按常驻打开：
+     * 这期间把当前预览标签顶掉，AI 那边刚要插入的这篇就没有编辑器可写了。
+     * 宁可多留一个标签，也不让用户觉得「AI 说写好了但没写」。
+     */
+    const pinned =
+      (pending && pending.noteId === note.id ? pending.mode : requested) === "pinned" || isAiBusy();
 
     const key = noteTabKey(note.id);
     const existing = tabByKey(stateRef.current, key);
@@ -293,6 +305,21 @@ export function useEditorTabs({
     const note = tabNote(target);
     if (note) snapshotSession(note.id);
   }, [closeKeys]);
+
+  /**
+   * 按标签栏顺序循环切换（Ctrl+Tab / Ctrl+Shift+Tab）：到两端回绕。
+   *
+   * 走 `activateTab` 而不是直接改 activeKey：那里有加密笔记的解锁守卫，
+   * 循环切到一篇锁着的加密笔记时行为和点标签完全一致（弹口令框，不硬切过去）。
+   */
+  const cycleTab = useCallback((delta: number) => {
+    const prev = stateRef.current;
+    if (prev.tabs.length === 0) return;
+    const index = prev.tabs.findIndex((tab) => tab.key === prev.activeKey);
+    const from = index < 0 ? 0 : index;
+    const next = prev.tabs[(from + delta + prev.tabs.length) % prev.tabs.length];
+    if (next) activateTab(next.key);
+  }, [activateTab]);
 
   /** 关闭标签：外部文件先写回；加密笔记按离开时的规则锁回 */
   const closeTab = useCallback((key: string) => {
@@ -640,7 +667,8 @@ export function useEditorTabs({
         const note = notes.find((n) => n.id === item.value);
         if (!note) continue;
         if (note.enc_mode !== 0 && note.is_locked) continue;
-        restored.push(makeNoteTab(note));
+        // 上次存的是预览态就还原成预览：重启后第一次单击仍会顶掉它，而不是越攒越多
+        restored.push(makeNoteTab(note, item.preview === true));
       } else {
         externalPaths.push(item.value);
       }
@@ -700,6 +728,7 @@ export function useEditorTabs({
       openNote,
       activateTab,
       promoteTab,
+      cycleTab,
       closeTab,
       closeActiveTab,
       closeOtherTabs,
@@ -726,6 +755,7 @@ export function useEditorTabs({
       openNote,
       activateTab,
       promoteTab,
+      cycleTab,
       closeTab,
       closeActiveTab,
       closeOtherTabs,
