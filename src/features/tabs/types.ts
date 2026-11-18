@@ -16,7 +16,18 @@ export type EditorTabKind = "note" | "external" | "temp" | "history";
 interface TabMeta {
   key: string;
   title: string;
+  /**
+   * 预览标签（单击侧栏打开的那个临时标签）：全局最多一个，下一次单击会被原地替换。
+   * 双击打开、编辑过、或本身就没有「身份可替换」的标签（电脑文件 / AI 预览 / 历史版本）一律为 false。
+   */
+  isPreview?: boolean;
 }
+
+/**
+ * 打开笔记的意图：单击 = 预览（可被下一次单击顶掉），双击 = 常驻。
+ * 名字用 pinned 而不是 permanent，避免和「置顶笔记」（is_pinned）混淆。
+ */
+export type NoteOpenMode = "preview" | "pinned";
 
 export interface NoteTab extends TabMeta {
   kind: "note";
@@ -131,6 +142,43 @@ export const planBatchClose = (
 /** 标签里挂着的真实笔记；其它类型一律 null（AI 面板、属性窗只认它） */
 export const tabNote = (tab: EditorTab | null | undefined): Note | null =>
   tab?.kind === "note" ? tab.note : null;
+
+/** 栏里当前的预览标签（只可能是笔记标签）：全局最多一个，单击新笔记时被它顶掉 */
+export const findPreviewTab = (tabs: EditorTab[]): NoteTab | null =>
+  tabs.find((tab): tab is NoteTab => tab.kind === "note" && tab.isPreview === true) ?? null;
+
+/**
+ * 新开一篇笔记时标签栏的走向。
+ *
+ * - 预览（单击）：顶掉已有的预览标签，**原位替换**——标签栏不会整体左移，
+ *   否则连点几篇笔记，鼠标下面的标签会一直跳；
+ * - 常驻（双击）：追加到末尾，和浏览器新开标签的习惯一致。
+ *
+ * `replacedKey` 交给调用方回收被顶掉那个标签的编辑器句柄（不回收等于泄漏一个挂载的编辑器）。
+ */
+export const planOpenNote = (
+  tabs: EditorTab[],
+  tab: NoteTab,
+): { tabs: EditorTab[]; replacedKey: string | null } => {
+  const stale = tab.isPreview ? findPreviewTab(tabs) : null;
+  if (!stale || stale.key === tab.key) return { tabs: [...tabs, tab], replacedKey: null };
+  const index = tabs.findIndex((item) => item.key === stale.key);
+  const next = [...tabs];
+  next[index] = tab;
+  return { tabs: next, replacedKey: stale.key };
+};
+
+/**
+ * 把标签从预览转成常驻（双击笔记 / 双击标签 / 编辑正文后自动转正）。
+ * 已经不是预览就返回原数组引用，调用方据此跳过 setState。
+ */
+export const pinTab = (tabs: EditorTab[], key: string): EditorTab[] => {
+  const index = tabs.findIndex((tab) => tab.key === key);
+  if (index < 0 || !tabs[index].isPreview) return tabs;
+  const next = [...tabs];
+  next[index] = { ...next[index], isPreview: false };
+  return next;
+};
 
 /** 伪笔记模板：与旧叠放层完全一致的字段，保证 NoteEditor 拿到的形状不变 */
 const pseudoNote = (

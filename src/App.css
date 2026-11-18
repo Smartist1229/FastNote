@@ -608,22 +608,24 @@ textarea:focus-visible {
 }
 
 /* ---------- 编辑区标签栏横向滚动条 ---------- */
-/* 标签开得多时只在标签栏内部横向滚动，不挤压编辑区；滚动条做窄，避免吃掉标签高度 */
-.tabs-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-}
+/* 标签开得多时只在标签栏内部横向滚动，不挤压编辑区。
+   高度压到 3px，平时透明、鼠标进入标签栏才显色：默认几乎看不见，不跟标签抢视线。
+   **不要加 scrollbar-width / scrollbar-color**——Chromium 一读到这两个标准属性就会
+   忽略 ::-webkit-scrollbar 整套规则，高度立刻回到系统默认（约 8px），比现在还粗。 */
 .tabs-scroll::-webkit-scrollbar {
-  height: 5px;
+  height: 3px;
 }
 .tabs-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 .tabs-scroll::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: calc(var(--radius-md) * 0.375);
+  background: transparent;
+  border-radius: 999px;
 }
-.tabs-scroll::-webkit-scrollbar-thumb:hover {
+.tabs-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+}
+.tabs-scroll:hover::-webkit-scrollbar-thumb:hover {
   background: var(--color-border-strong);
 }
 

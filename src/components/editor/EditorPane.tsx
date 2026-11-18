@@ -51,6 +51,8 @@ export interface EditorPaneProps {
   onRollbackHistory: (entry: NoteHistoryEntry) => Promise<boolean>;
   /** 关闭本标签（标题栏的关闭按钮、预览退出） */
   onCloseTab: () => void;
+  /** 本标签的笔记被真正编辑过：把预览标签转成常驻 */
+  onEdit: () => void;
 }
 
 export const EditorPane: React.FC<EditorPaneProps> = ({
@@ -69,6 +71,7 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
   onSaveExternalToNote,
   onRollbackHistory,
   onCloseTab,
+  onEdit,
 }) => {
   const { locale } = useI18n();
   /**
@@ -154,6 +157,8 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
         }}
         onCloseExternal={onCloseTab}
         onSave={onSaveNote}
+        /* 只有笔记标签需要「写一下就转正」：电脑文件 / AI 预览 / 历史版本本来就不会被单击顶掉 */
+        onEdit={tab.kind === "note" ? onEdit : undefined}
         onCursorOffsetChange={handleCursorOffset}
         editorSettings={editorSettings}
         shortcutBindings={shortcutBindings}

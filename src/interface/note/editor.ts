@@ -53,6 +53,12 @@ export interface NoteEditorProps {
   /** 历史版本预览：传了即进入只读预览并显示顶部提示条 */
   historyPreview?: EditorHistoryPreview;
   onSave: (id: string, title: string, content: string, categoryId: string | null) => Promise<void>;
+  /**
+   * 用户真的往正文里写了字（外部回填不算）。
+   * 标签域拿它把预览标签就地转成常驻——等到 500ms 防抖保存再转，
+   * 「写完立刻点开另一篇」这一下就可能把刚编辑过的标签顶掉了。
+   */
+  onEdit?: () => void;
   /** 上报正文末尾偏移（AI 插入文本时的定位基准） */
   onCursorOffsetChange?: (offset: number) => void;
   /**

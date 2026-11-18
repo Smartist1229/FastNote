@@ -596,10 +596,11 @@ function AppContent() {
               onSortByChange={notes.handleSortByChange}
               sortOrder={notes.sortOrder}
               onToggleSortOrder={notes.handleToggleSortOrder}
-              onSelectNote={(note) => {
-                // 从列表里选笔记：记下「用户此刻在列表上」，随后编辑器自动拿走焦点也不影响裸键
+              onSelectNote={(note, mode) => {
+                // 从列表里选笔记：记下「用户此刻在列表上」，随后编辑器自动拿走焦点也不影响裸键。
+                // mode 由行内的点击次数决定（单击预览 / 双击常驻），直接透传给标签域。
                 setPlainKeyInEditable(true);
-                tabs.openNote(note);
+                tabs.openNote(note, mode);
               }}
               onToggleDrawer={categories.toggleDrawer}
               onToggleCollapse={() => setIsSidebarCollapsed(true)}
@@ -675,6 +676,7 @@ function AppContent() {
                 // 从侧栏点开笔记则不抢焦点，留给列表（Delete / F2 要作用在列表上）。
                 requestAnimationFrame(() => activeTabEditor()?.actions?.focus());
               }}
+              onPromote={tabs.promoteTab}
               onClose={tabs.closeTab}
               onCloseOthers={tabs.closeOtherTabs}
               onCloseLeft={tabs.closeTabsToLeft}
@@ -734,6 +736,7 @@ function AppContent() {
                       onSaveExternalToNote={externalFiles.handleSaveExternalToNote}
                       onRollbackHistory={properties.applyHistoryRollback}
                       onCloseTab={() => tabs.closeTab(tab.key)}
+                      onEdit={() => tabs.promoteTab(tab.key)}
                     />
                   ))}
                 </Suspense>

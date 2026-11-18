@@ -57,6 +57,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   isActive = true,
   historyPreview,
   onSave,
+  onEdit,
   onCursorOffsetChange,
   editorSettings,
   shortcutBindings,
@@ -623,6 +624,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     onCursorOffsetChange?.(newContent.length);
     // 一旦真的开始写，列表意图就结束了：Delete 该回到「删字」
     setPlainKeyInEditable(false);
+    // 真的动笔了：让标签域把这条预览标签转成常驻（不回传内容，只报「编辑过」）
+    onEdit?.();
     scheduleSave();
   };
 

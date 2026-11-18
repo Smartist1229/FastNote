@@ -6,6 +6,9 @@
  * - 中键 / 点 × → 关闭（关闭时若有关联的加密态或外部文件写回，由标签域统一处理）；
  * - 滚轮 → 横向滚动（标签开得多时不必去拖那条细滚动条）。
  *
+ * 预览标签（侧栏单击打开、还没编辑过的）：标题用斜体、激活时背景更淡，一眼能看出「这条会被替换」。
+ * 双击它、或双击侧栏里同一篇笔记，就转成常驻标签。
+ *
  * 图标按标签类型区分：笔记 / 电脑文件 / AI 预览 / 历史版本，靠形状就能分清来源。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -28,6 +31,8 @@ export interface EditorTabsProps {
   tabs: EditorTab[];
   activeKey: string | null;
   onActivate: (key: string) => void;
+  /** 双击标签：把预览标签转成常驻标签（不会被下一次单击替换） */
+  onPromote: (key: string) => void;
   onClose: (key: string) => void;
   /** 右键菜单：关掉除它以外的全部 */
   onCloseOthers: (key: string) => void;
@@ -64,6 +69,7 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
   tabs,
   activeKey,
   onActivate,
+  onPromote,
   onClose,
   onCloseOthers,
   onCloseLeft,
@@ -221,15 +227,18 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
     >
       {tabs.map((tab) => {
         const isActive = tab.key === activeKey;
+        const isPreview = tab.isPreview === true;
         const title = titleOf(tab);
         return (
           <div
             key={tab.key}
             data-tab-key={tab.key}
+            data-preview={isPreview ? "true" : undefined}
             onContextMenu={(event) => {
               setMenuKey(tab.key);
               handleContextMenu(event);
             }}
+            onDoubleClick={() => onPromote(tab.key)}
             onPointerDown={(event) => {
               // 只有左键按在标签上才起手：关闭按钮要留给点击，中键是「关闭标签」的手势
               if (event.button !== 0) return;
@@ -240,14 +249,28 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
               draggingKey === tab.key ? "cursor-grabbing opacity-40" : ""
             } ${isActive ? "bg-surface text-body" : "text-muted hover:bg-surface-alt hover:text-body"}`}
           >
-            {/* 激活态指示线：贴顶 2px，与整块编辑区连成一体 */}
-            {isActive && <span className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-primary-500" />}
+            {/* 激活态指示线：贴顶 2px，与整块编辑区连成一体；预览标签用渐隐，暗示它是临时的 */}
+            {isActive ? (
+              <span
+                className={`pointer-events-none absolute inset-x-0 top-0 h-[2px] ${
+                  isPreview ? "bg-gradient-to-r from-primary-500/80 via-primary-500/40 to-transparent" : "bg-primary-500"
+                }`}
+              />
+            ) : (
+              /* 没被激活的预览标签也占住这条「指示线」：换成虚线，一眼就能看出它会随时被替换 */
+              isPreview && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-1.5 top-0 border-t border-dashed border-primary-300/80"
+                />
+              )
+            )}
             <button
               ref={isActive ? activeElRef : undefined}
               type="button"
               role="tab"
               aria-selected={isActive}
-              title={title}
+              title={isPreview ? `${title} — ${t("临时标签，双击固定")}` : title}
               onClick={() => {
                 if (suppressClickRef.current) return;
                 onActivate(tab.key);
@@ -262,9 +285,16 @@ export const EditorTabs: React.FC<EditorTabsProps> = ({
             >
               <Icon
                 name={KIND_ICON[tab.kind]}
-                className={`h-3.5 w-3.5 ${isActive ? "text-primary-500" : "text-faint"}`}
+                className={`h-3.5 w-3.5 ${isActive ? "text-primary-500" : "text-faint"} ${
+                  isPreview ? "opacity-70" : ""
+                }`}
               />
-              <span className="min-w-0 flex-1 truncate">{title}</span>
+              {/*
+                斜体是「预览标签」的标记，但斜体必须补一段右内边距：
+                倾斜后字形的右上角会越过内容盒，被 truncate 的 overflow:hidden 切掉一块
+                （短标题也会掉角，不是只有被省略号截断时才出现）。
+              */}
+              <span className={`min-w-0 flex-1 truncate ${isPreview ? "pr-1 italic" : ""}`}>{title}</span>
             </button>
             <button
               type="button"

@@ -26,7 +26,9 @@ import {
   historyTabKey,
   neighborOf,
   noteTabKey,
+  pinTab,
   planBatchClose,
+  planOpenNote,
   planTabMove,
   removeTab,
   tabByKey,
@@ -36,6 +38,7 @@ import {
   type EditorTab,
   type ExternalTab,
   type HistoryTab,
+  type NoteOpenMode,
   type NoteTab,
   type TabsState,
 } from "./types";
@@ -108,6 +111,11 @@ export function useEditorTabs({
   const externalSeqRef = useRef(0);
   /** 恢复只在首次拿到笔记列表后跑一次 */
   const restoredRef = useRef(false);
+  /**
+   * 被解锁流程打断的打开意图：加密笔记要先弹口令框，解锁成功后加密域会再调一次
+   * `openNote`，那时候已经分不清最初是单击还是双击了，这里替它记住。
+   */
+  const pendingOpenModeRef = useRef<{ noteId: string; mode: NoteOpenMode } | null>(null);
 
   const activeTab = tabByKey(state, state.activeKey);
   const selectedNote = tabNote(activeTab);
@@ -123,11 +131,12 @@ export function useEditorTabs({
 
   /* ---------------- 标签构造 ---------------- */
 
-  const makeNoteTab = (note: Note): NoteTab => ({
+  const makeNoteTab = (note: Note, isPreview = false): NoteTab => ({
     kind: "note",
     key: noteTabKey(note.id),
     title: note.title,
     note,
+    isPreview,
   });
 
   const makeExternalTab = (file: ExternalTextFile): ExternalTab => ({
@@ -212,42 +221,68 @@ export function useEditorTabs({
   };
 
   /**
-   * 打开笔记（侧栏点击、命令面板、AI selectNote 都走这里）：
-   * 已开过就激活那个标签，没开过就新建；同时把侧栏滚到它所在分组并高亮。
+   * 打开笔记（侧栏单击、命令面板、AI selectNote 都走这里）。
+   *
+   * 两种打开方式，用来防止标签栏无限膨胀：
+   * - `preview`（单击，默认）：预览标签。全局只留一个，下一篇单击会把**它**顶掉并留在原位，
+   *   所以连点十篇笔记也还是只多一个标签；
+   * - `pinned`（双击）：常驻标签，不会被替换；这篇本来作为预览开着就地转正。
+   *
+   * 已经开过的笔记一律不新建标签，只切过去 —— 否则「点回正在编辑的那篇」会多出一条重复标签，
+   * 两条标签各挂一个编辑器实例，同一篇笔记会被两份快照轮流写库。
    */
-  const openNote = useCallback((note: Note) => {
+  const openNote = useCallback((note: Note, requested: NoteOpenMode = "preview") => {
     // 锁着的加密内容没有正文：先解锁，成功后由 handleUnlockSubmit 再调回来
     if (note.enc_mode !== 0 && note.is_locked) {
       const groupScope = note.enc_mode === 2 && note.category_id !== null;
       pendingUnlockNoteRef.current = groupScope ? note.id : null;
+      pendingOpenModeRef.current = { noteId: note.id, mode: requested };
       void requestUnlockRef.current(
         groupScope ? "category" : "note",
         groupScope ? note.category_id! : note.id,
       );
       return;
     }
+    // 解锁回来这一趟沿用被打断时的意图，别把双击降级成预览
+    const pending = pendingOpenModeRef.current;
+    pendingOpenModeRef.current = null;
+    const pinned = (pending && pending.noteId === note.id ? pending.mode : requested) === "pinned";
+
     const key = noteTabKey(note.id);
+    const existing = tabByKey(stateRef.current, key);
+    // 已在栏里就沿用旧标签（连同它的预览态），新开才按意图决定是不是预览
+    const tab: NoteTab = existing?.kind === "note" ? existing : makeNoteTab(note, !pinned);
     // 已经在看这一篇：不必再跑一遍锁回/解锁守卫，直接留在原地
-    if (stateRef.current.activeKey !== key && !prepareSwitch({ kind: "note", key, title: note.title, note })) {
+    if (stateRef.current.activeKey !== key && !prepareSwitch(tab)) {
       // 目标笔记需要先解锁：解锁流程结束后会重新调回这里
       return;
     }
     setState((prev) => {
-      const index = prev.tabs.findIndex((tab) => tab.key === key);
+      const index = prev.tabs.findIndex((item) => item.key === key);
       if (index >= 0) {
-        // 已开过：只切激活项，不拿侧栏那份快照覆盖标签里的内容。
+        // 已开过：只切激活项（双击时顺带转正），不拿侧栏那份快照覆盖标签里的内容。
         // 快照的新鲜度由 syncNotes 统一负责——它只在笔记列表真的变了的时候才换，
         // 不会把用户正在编辑、还没落盘的内容顶回旧值。
-        if (prev.activeKey === key) return prev;
-        return { ...prev, activeKey: key };
+        const tabs = pinned ? pinTab(prev.tabs, key) : prev.tabs;
+        if (tabs === prev.tabs && prev.activeKey === key) return prev;
+        return { tabs, activeKey: key };
       }
-      return { tabs: [...prev.tabs, makeNoteTab(note)], activeKey: key };
+      // 被顶掉的预览标签的编辑器句柄由 pruneTabEditors 统一回收（标签集合一变就会跑）
+      return { tabs: planOpenNote(prev.tabs, tab).tabs, activeKey: key };
     });
     setSelectedCategoryId(note.category_id);
     setExpandedDrawer(note.category_id === null ? "uncategorized" : note.category_id);
     flashFocusRef.current(note.id);
     snapshotSession(note.id);
   }, [closeKeys, setSelectedCategoryId, setExpandedDrawer]);
+
+  /** 预览标签就地转常驻（双击标签、双击已打开的笔记、开始编辑正文都会走） */
+  const promoteTab = useCallback((key: string) => {
+    setState((prev) => {
+      const tabs = pinTab(prev.tabs, key);
+      return tabs === prev.tabs ? prev : { ...prev, tabs };
+    });
+  }, []);
 
   /** 点标签栏切换：与打开同样的加密守卫，但不改动分组抽屉与侧栏高亮 */
   const activateTab = useCallback((key: string) => {
@@ -466,10 +501,20 @@ export function useEditorTabs({
         }
         return { tabs: [...prev.tabs, makeNoteTab(next)], activeKey: key };
       }
+      /*
+       * 「写过了就转正」只认正文 / 标题真的变了：
+       * 这条路径上还有 loadData 的整表刷新（每次保存、AI 改库都会重载一次），
+       * 那些调用拿来的还是同一份内容，按「有人调用」就转正的话，
+       * 预览标签会在每次数据重载时莫名其妙变成常驻，预览机制就形同虚设了。
+       */
+      const edited =
+        current !== null && (next.title !== current.title || next.content !== current.content);
       return {
         ...prev,
         tabs: prev.tabs.map((tab) =>
-          tab.key === active.key ? { ...tab, note: next, title: next.title } : tab,
+          tab.key === active.key
+            ? { ...tab, note: next, title: next.title, isPreview: edited ? false : tab.isPreview }
+            : tab,
         ),
       };
     });
@@ -536,11 +581,15 @@ export function useEditorTabs({
   /**
    * 标签变化即写本地记录：只存身份，重启后再去库/磁盘取内容。
    *
-   * 关闭时不删记录：设置是异步读回来的，启动瞬间默认值就是 false，
-   * 照着它清一次会把上次的记录抹掉。真正的清理放在下面的「开关翻转」effect 里。
+   * **必须先等恢复跑过一次再写**：设置是异步读回来的，启动瞬间 `restoreEnabled` 还是默认的
+   * false，等它翻成 true 的那一帧，这个 effect 会带着「一个标签都没有」的初始状态先跑一遍，
+   * 把上次的记录洗成空数组——紧接着 App 的恢复 effect 再去读，自然什么都读不到。
+   *
+   * 关闭时不删记录：同样因为读回来是异步的，照着默认值清一次会把记录抹掉。
+   * 真正的清理放在下面「开关翻转」的 effect 里。
    */
   useEffect(() => {
-    if (!restoreEnabled) return;
+    if (!restoreEnabled || !restoredRef.current) return;
     try {
       const tabs: PersistedTabs["tabs"] = [];
       for (const tab of state.tabs) {
@@ -650,6 +699,7 @@ export function useEditorTabs({
       overlayActive,
       openNote,
       activateTab,
+      promoteTab,
       closeTab,
       closeActiveTab,
       closeOtherTabs,
@@ -675,6 +725,7 @@ export function useEditorTabs({
       overlayActive,
       openNote,
       activateTab,
+      promoteTab,
       closeTab,
       closeActiveTab,
       closeOtherTabs,

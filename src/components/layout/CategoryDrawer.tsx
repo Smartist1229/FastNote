@@ -48,7 +48,8 @@ export const DrawerNoteItem: React.FC<{
   note: Note;
   isSelected: boolean;
   isFocused: boolean;
-  onSelectNote: (note: Note) => void;
+  /** 单击 = 预览标签，双击 = 常驻标签（`mode` 由行内的点击次数决定，见 onClick） */
+  onSelectNote: (note: Note, mode?: "preview" | "pinned") => void;
   /**
    * 这一行是否在展开着的抽屉里。同一条笔记同时存在于「全部笔记」和它所属分组的抽屉里，
    * 收起的那个只是高度为 0（节点仍在）。改名框只应出现在看得见的那一行——
@@ -83,7 +84,13 @@ export const DrawerNoteItem: React.FC<{
     <div
       ref={itemRef}
       data-note-id={note.id}
-      onClick={isRenaming ? undefined : () => onSelectNote(note)}
+      /*
+       * 双击靠 `event.detail` 判断，而不是再挂一个 onDoubleClick：
+       * 第一次 click 已经把这篇按预览打开了（可能顺带顶掉上一个预览标签），
+       * 第二次 click 走到这里时把它转正即可。用 onDoubleClick 反而不可靠——
+       * 打开笔记会触发侧栏滚动高亮，行在两次点击之间挪位，dblclick 可能落到别处。
+       */
+      onClick={isRenaming ? undefined : (event) => onSelectNote(note, event.detail >= 2 ? "pinned" : "preview")}
       onContextMenu={(e) => onContextMenu?.(e, note)}
       className={`drawer-note group/note relative pl-3 pr-2 py-1 rounded-lg cursor-pointer border transition-all duration-200 ${
         isSelected
@@ -304,7 +311,7 @@ export const UncategorizedDrawer: React.FC<{
   selectedNoteId: string | null;
   focusNoteId: string | null;
   onToggle: () => void;
-  onSelectNote: (note: Note) => void;
+  onSelectNote: (note: Note, mode?: "preview" | "pinned") => void;
   onNoteContextMenu?: (e: React.MouseEvent, note: Note) => void;
   /** 分组右键菜单（未分类属于默认分组，同样有菜单） */
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -385,7 +392,7 @@ export const ChildNotesDrawer: React.FC<{
   selectedNoteId: string | null;
   focusNoteId: string | null;
   onToggle: () => void;
-  onSelectNote: (note: Note) => void;
+  onSelectNote: (note: Note, mode?: "preview" | "pinned") => void;
   onNoteContextMenu?: (e: React.MouseEvent, note: Note) => void;
 }> = ({
   notes,

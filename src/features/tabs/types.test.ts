@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { Note, NoteHistoryEntry } from "@/interface/note/note";
 import {
   externalTabKey,
+  findPreviewTab,
   historyTabKey,
   neighborOf,
   noteTabKey,
+  pinTab,
   planBatchClose,
+  planOpenNote,
   planTabMove,
   removeTab,
   tabByKey,
@@ -206,8 +209,7 @@ describe("planBatchClose 批量关闭", () => {
   });
 });
 
-describe("planTabMove 拖拽重排", () => {
-  const keys = (tabs: EditorTab[]) => tabs.map((tab) => tab.key);
+describe("planTabMove 拖拽重排", () => {  const keys = (tabs: EditorTab[]) => tabs.map((tab) => tab.key);
 
   it("往后拖：插到第 3 项之前 = 落在第 2 位（先摘自己再插，下标要回退一位）", () => {
     // [a,b,c] 把 a 拖到 c 的右半边 → 插入缝 3（末尾）
@@ -237,5 +239,46 @@ describe("planTabMove 拖拽重排", () => {
   it("找不到来源标签时原样返回", () => {
     const tabs = state(["a", "b"], "a").tabs;
     expect(planTabMove(tabs, "zzz", 0)).toBe(tabs);
+  });
+});
+
+describe("预览标签（单击替换 / 双击常驻）", () => {
+  const previewTab = (id: string): NoteTab => ({ ...noteTab(id), isPreview: true });
+
+  it("findPreviewTab 只认预览态的笔记标签", () => {
+    expect(findPreviewTab(state(["a"], "a").tabs)).toBeNull();
+    const tabs: EditorTab[] = [noteTab("a"), previewTab("b")];
+    expect(findPreviewTab(tabs)?.key).toBe("note:b");
+  });
+
+  it("新开的预览标签顶掉旧预览标签，且留在旧位置（标签栏不会整体左移）", () => {
+    const tabs: EditorTab[] = [noteTab("a"), previewTab("b"), noteTab("c")];
+    const plan = planOpenNote(tabs, previewTab("z"));
+    expect(plan.tabs.map((tab) => tab.key)).toEqual(["note:a", "note:z", "note:c"]);
+    expect(plan.replacedKey).toBe("note:b");
+    expect(plan.tabs[1].isPreview).toBe(true);
+  });
+
+  it("常驻标签永远追加到末尾，不顶掉任何预览标签", () => {
+    const tabs: EditorTab[] = [noteTab("a"), previewTab("b")];
+    const plan = planOpenNote(tabs, noteTab("z"));
+    expect(plan.tabs.map((tab) => tab.key)).toEqual(["note:a", "note:b", "note:z"]);
+    expect(plan.replacedKey).toBeNull();
+  });
+
+  it("没有预览标签时直接追加（编辑过就会转常驻，所以预览标签不是常驻的）", () => {
+    const plan = planOpenNote(state(["a"], "a").tabs, previewTab("b"));
+    // state() 的 key 就是传进去的字符串，这里只关心「新标签追加在末尾」
+    expect(plan.tabs.map((tab) => tab.key)).toEqual(["a", "note:b"]);
+    expect(plan.replacedKey).toBeNull();
+  });
+
+  it("pinTab 只改预览那一个，且不是预览时返回原引用", () => {
+    const tabs: EditorTab[] = [noteTab("a"), previewTab("b")];
+    const pinned = pinTab(tabs, "note:b");
+    expect(pinned[1].isPreview).toBe(false);
+    expect(pinned[0]).toBe(tabs[0]);
+    expect(pinTab(tabs, "note:a")).toBe(tabs);
+    expect(pinTab(tabs, "note:gone")).toBe(tabs);
   });
 });

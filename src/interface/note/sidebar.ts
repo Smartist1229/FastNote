@@ -21,7 +21,12 @@ export interface CategoryDrawerProps {
   /** 需要高亮并滚动到可视区的笔记（由 AI 打开笔记等操作触发） */
   focusNoteId: string | null;
   onToggle: () => void;
-  onSelectNote: (note: Note) => void;
+  /**
+   * 选中一篇笔记。`mode` 区分单击与双击：
+   * - `preview`（单击，默认）→ 打开成可被替换的预览标签，连点不会堆出一排标签；
+   * - `pinned`（双击）→ 打开成常驻标签。
+   */
+  onSelectNote: (note: Note, mode?: "preview" | "pinned") => void;
   onCreateNote: () => void;
   onContextMenu: (e: React.MouseEvent, category: Category | null) => void;
   onNoteContextMenu: (e: React.MouseEvent, note: Note) => void;
@@ -78,7 +83,8 @@ export interface SidebarProps {
   /** 排序方向（asc / desc，类型在此放宽为 string） */
   sortOrder: string;
   onToggleSortOrder: () => void;
-  onSelectNote: (note: Note) => void;
+  /** 选中笔记：`mode` 同 CategoryDrawerProps（单击预览 / 双击常驻） */
+  onSelectNote: (note: Note, mode?: "preview" | "pinned") => void;
   onDeleteNote: (note: Note) => void;
   /** 切换收藏（置顶）状态：收藏的笔记在分组内置顶，并出现在收藏视图 */
   onTogglePin: (note: Note) => void;

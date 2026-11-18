@@ -371,7 +371,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   /** 笔记菜单：交给 config/contextMenus 的构建函数 */
   const buildNoteContextMenu = (note: Note): ContextMenuItem[] =>
     buildNoteMenu(note, categories, {
-      onOpenNote: () => onSelectNote(note),
+      // 右键菜单里的「打开笔记」是个明确的动作，直接开成常驻标签，不用预览态去顶别的位置
+      onOpenNote: () => onSelectNote(note, "pinned"),
       // 搜索结果里不给改名：这些行可能同时出现在多个结果分组里，改名入口只留给真实列表
       onRenameNote: inlineRename && !isSearching ? () => inlineRename.start({ kind: "note", note }) : undefined,
       onSaveNote: () => onSaveNote(note),

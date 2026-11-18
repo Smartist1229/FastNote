@@ -22,6 +22,7 @@ export const appMessages: Record<string, string> = {
   "关掉所有标签，回到欢迎页": "Close every tab and go back to the welcome page",
   "没有打开的标签": "No open tabs",
   "关闭其他标签": "Close other tabs",
+  "临时标签，双击固定": "Preview tab — double-click to keep it",
   "关闭左侧标签": "Close tabs to the left",
   "关闭右侧标签": "Close tabs to the right",
   "全部关闭": "Close all tabs",
