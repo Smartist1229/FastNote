@@ -162,7 +162,7 @@ export const PluginsSection: React.FC<PluginsSectionProps> = ({ onOpenPluginSect
     });
 
     if (confirmed) {
-      // 点了安装：刷新插件列表（manifest 默认 enabled 由 Rust 端 plugin.json 的 defaultEnabled 决定）
+      // 落盘与列表重载已在 installZip 里完成（含激活），到这里才报成功
       showToast(t("已安装插件：{name}", { name: manifest.name }), "success");
     } else {
       // 点了取消：回滚——删除刚落盘的插件目录

@@ -229,7 +229,7 @@ export function usePalette({
           group: t("笔记"),
           icon: "sidebar-plus",
           keywords: "new note 新建 创建 create",
-          arg: { placeholder: t("笔记标题"), hint: t("省略则叫「无标题」") },
+          arg: { placeholder: t("笔记标题"), hint: t("省略则自动命名，稍后在列表里改名") },
           run: (title) => void handleCreateNote(undefined, title),
         },
         {
@@ -240,7 +240,7 @@ export function usePalette({
           group: t("笔记"),
           icon: "sidebar-folder-plus",
           keywords: "new category 分组 分类 创建 folder",
-          arg: { placeholder: t("分组名称"), hint: t("省略则打开新建弹窗") },
+          arg: { placeholder: t("分组名称"), hint: t("省略则自动命名，稍后在列表里改名") },
           run: (name) => void handleCreateCategoryNamed(name ?? ""),
         },
         {

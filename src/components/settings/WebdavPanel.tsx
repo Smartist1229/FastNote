@@ -320,19 +320,23 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
         folder: folder.trim() || DEFAULT_WEBDAV_SETTINGS.folder,
       });
       logAction("webdav.test", folder.trim() || DEFAULT_WEBDAV_SETTINGS.folder);
-      showToast(message.startsWith("连接成功：")
+      const successMessage = message.startsWith("连接成功：")
         ? t("连接成功：{path}", { path: message.slice("连接成功：".length) })
-        : t(message), "success");
-      // 连接验证通过就把新密码落库，避免测试成功但自动备份仍用旧密码
+        : t(message);
+      // 连接验证通过就把新密码落库，避免测试成功但自动备份仍用旧密码。
+      // 提示放到密码落库 / 状态刷新之后，别让「连接成功」先于实际收尾弹出来。
+      let passwordSaved = true;
       if (typedPassword) {
         try {
           await webdavApi.setWebdavPassword(password);
           setPassword("");
           await refreshStatus();
         } catch (e) {
+          passwordSaved = false;
           showToast(t("连接成功，但密码保存失败：{value1}", { value1: errorText(e) }), "error");
         }
       }
+      if (passwordSaved) showToast(successMessage, "success");
     } catch (e) {
       showToast(t("连接失败：{value1}", { value1: errorText(e) }), "error");
     } finally {
@@ -344,12 +348,18 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
     setBusy("backup");
     try {
       const result = await webdavApi.backupToWebdav(includeApiKeys, includeWebdav);
-      showToast(t("已上传 {file}（{notes} 篇笔记）", { file: result.file, notes: result.summary.notes }), "success");
-      await refreshStatus();
-      if (remoteFiles) {
-        const list = await webdavApi.listRemoteBackups();
-        if (aliveRef.current) setRemoteFiles(list);
+      // 备份已成功，后续的状态/列表刷新失败不该把结论改成「备份失败」；
+      // 但成功提示要等这些收尾做完再弹，免得 toast 先到、列表还是旧的。
+      try {
+        await refreshStatus();
+        if (remoteFiles) {
+          const list = await webdavApi.listRemoteBackups();
+          if (aliveRef.current) setRemoteFiles(list);
+        }
+      } catch {
+        // 刷新失败只影响列表展示，云端文件已经写入
       }
+      showToast(t("已上传 {file}（{notes} 篇笔记）", { file: result.file, notes: result.summary.notes }), "success");
     } catch (e) {
       showToast(t("云端备份失败：{value1}", { value1: errorText(e) }), "error");
       void refreshStatus();
@@ -465,8 +475,13 @@ export const WebdavPanel: React.FC<WebdavPanelProps> = ({
       const copyName = await webdavApi.saveBackupCopy(conflict.source, conflict.backupName);
       logAction("backup.save_copy", conflict.backupName);
       setConflict(null);
+      // 副本已经落地，刷新失败不该把结论改成「另存失败」；成功提示等刷新完再弹
+      try {
+        await refreshLocal();
+      } catch {
+        // 列表刷新失败只影响展示
+      }
       showToast(t("已另存为副本：{value1}", { value1: copyName }), "success");
-      await refreshLocal();
     } catch (e) {
       showToast(t("另存为副本失败：{value1}", { value1: errorText(e) }), "error");
     } finally {

@@ -29,6 +29,7 @@ import { getPreset, getTokenPair, getTokensForMode, hexToCss, normalizeHex, reso
 import { Icon } from "@/components/common/Icon";
 import { useToast } from "@/components/common/Toast";
 import { ColorPicker } from "@/components/settings/ColorPicker";
+import { flushThemeSettings } from "@/stores/themeStore";
 
 /* ---------- 局部小图标：太阳 / 月亮 / 跟随系统 ---------- */
 
@@ -236,8 +237,12 @@ const ThemePanelBase: React.FC<{
     onChange({ ...theme, presetId: CUSTOM_PRESET_ID, custom: next });
   };
 
-  /** 把当前配色存成一条命名主题（同名覆盖，最多 MAX_SAVED_THEMES 条） */
-  const saveCurrent = () => {
+  /**
+   * 把当前配色存成一条命名主题（同名覆盖，最多 MAX_SAVED_THEMES 条）。
+   * onChange 里的主题落库是 400ms 防抖的，所以先 await flush 再报成功——
+   * 否则「已保存」弹出来时库里其实还是旧值（关窗/退出前才补写）。
+   */
+  const saveCurrent = async () => {
     const name = savedName.trim() || t("我的主题 {value1}", { value1: theme.saved.length + 1 });
     const pair = getTokenPair(theme);
     const entry: SavedTheme = {
@@ -251,17 +256,19 @@ const ThemePanelBase: React.FC<{
     const saved = [entry, ...theme.saved.filter((colors) => colors.name !== entry.name)].slice(0, MAX_SAVED_THEMES);
     onChange({ ...theme, saved });
     setSavedName("");
+    await flushThemeSettings();
     showToast(t("已保存主题「{name}」", { name: entry.name }), "success");
   };
 
   /** 应用一条已保存主题：亮暗两套一起恢复，模式也恢复成保存时的选择 */
-  const applySaved = (entry: SavedTheme) => {
+  const applySaved = async (entry: SavedTheme) => {
     onChange({
       ...theme,
       mode: entry.mode,
       presetId: CUSTOM_PRESET_ID,
       custom: { light: entry.light, dark: entry.dark },
     });
+    await flushThemeSettings();
     showToast(t("已应用主题「{name}」", { name: entry.name }), "success");
   };
 
@@ -465,7 +472,7 @@ const ThemePanelBase: React.FC<{
             onChange={(e) => setSavedName(e.target.value)}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-              if (e.key === "Enter") saveCurrent();
+              if (e.key === "Enter") void saveCurrent();
             }}
             placeholder={t("给这套主题起个名字（可留空）")}
             maxLength={24}
@@ -473,7 +480,7 @@ const ThemePanelBase: React.FC<{
           />
           <button
             type="button"
-            onClick={saveCurrent}
+            onClick={() => void saveCurrent()}
             className="px-3 py-1.5 text-[11.5px] font-medium text-on-accent bg-primary-500 rounded-lg hover:bg-primary-600 transition-colors"
           >{t("保存主题")}</button>
         </div>
@@ -504,7 +511,7 @@ const ThemePanelBase: React.FC<{
                   </span>
                   <button
                     type="button"
-                    onClick={() => applySaved(entry)}
+                    onClick={() => void applySaved(entry)}
                     className="flex-shrink-0 px-2 py-0.5 text-[10.5px] font-medium text-primary-600 rounded-md hover:bg-primary-50 transition-colors"
                   >{t("应用")}</button>
                   <button

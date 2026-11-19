@@ -181,8 +181,9 @@ export const CleaningPanel: React.FC = () => {
         }
       }
 
-      showToast(message, "success");
+      // 先等占用重新扫完再报成功：清理完了但面板数字还是旧的，会让人以为没生效
       await scanCache();
+      showToast(message, "success");
     } catch (e) {
       showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
     } finally {
@@ -226,8 +227,8 @@ export const CleaningPanel: React.FC = () => {
         message += ` · ${t("部分文件正被使用，已登记在下次启动时继续清理")}`;
       }
 
-      showToast(message, "success");
       await scanWebview();
+      showToast(message, "success");
     } catch (e) {
       showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
     } finally {
@@ -250,16 +251,14 @@ export const CleaningPanel: React.FC = () => {
     setBusy("images");
     try {
       const report = await gcAttachments(GRACE_DAYS);
-      showToast(
-        report.removed > 0
-          ? t("已清理 {count} 个文件，释放 {size}", {
-              count: report.removed,
-              size: formatBytes(report.freed),
-            })
-          : t("没有可清理的图片"),
-        "success",
-      );
+      const message = report.removed > 0
+        ? t("已清理 {count} 个文件，释放 {size}", {
+            count: report.removed,
+            size: formatBytes(report.freed),
+          })
+        : t("没有可清理的图片");
       await scanImages();
+      showToast(message, "success");
     } catch (e) {
       showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
     } finally {
@@ -287,13 +286,11 @@ export const CleaningPanel: React.FC = () => {
     setBusy("log");
     try {
       const freed = await clearOldLogs();
-      showToast(
-        freed > 0
-          ? t("已清理日志，释放 {size}", { size: formatBytes(freed) })
-          : t("没有可清理的日志"),
-        "success",
-      );
+      const message = freed > 0
+        ? t("已清理日志，释放 {size}", { size: formatBytes(freed) })
+        : t("没有可清理的日志");
       await scanLog();
+      showToast(message, "success");
     } catch (e) {
       showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
     } finally {
@@ -342,8 +339,8 @@ export const CleaningPanel: React.FC = () => {
         message += ` · ${t("部分浏览器缓存文件正被使用，已登记在下次启动时继续清理")}`;
       }
 
-      showToast(message, "success");
       await Promise.all([scanCache(), scanWebview(), scanImages(), scanLog()]);
+      showToast(message, "success");
     } catch (e) {
       showToast(t("清理失败：{error}", { error: errorText(e) }), "error");
     } finally {

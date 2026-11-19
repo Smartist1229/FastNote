@@ -107,7 +107,7 @@ export interface SidebarProps {
   onCreateCategory: () => void;
   onDeleteCategory: (category: Category) => void;
   onCreateNote: (categoryId: string | null) => void;
-  onMoveToCategory: (note: Note, categoryId: string | null) => void;
+  onMoveToCategory: (note: Note, categoryId: string | null) => void | Promise<void>;
   onOpenTrash: () => void;
   /** 右键菜单「笔记属性」：打开只读属性弹窗 */
   onShowNoteProperties: (note: Note) => void;
@@ -115,7 +115,6 @@ export interface SidebarProps {
   onShowCategoryProperties: (category: Category) => void;
   /** 右键菜单「分组属性」：默认分组 / 搜索视图分组（虚拟分组）走这里 */
   onShowGroupProperties: (name: string, noteCount: number) => void;
-  onNotesUpdated: () => void;
   /** 系统文件拖拽经过时命中的分组 id（由主进程拖拽事件驱动的高亮） */
   hoverDropCategoryId?: string | null;
   /** 是否有系统文件正拖拽在窗口上方 */

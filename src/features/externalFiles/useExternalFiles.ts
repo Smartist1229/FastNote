@@ -13,7 +13,6 @@ import type { AiAccessLevel } from "@/interface/ai/aiAccess";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import * as notesApi from "@/api/note/notes";
-import { emitAppEvent } from "@/shared/bus";
 import { t as translateNow, useI18n } from "@/i18n";
 import { useToast } from "@/components/common/Toast";
 
@@ -25,6 +24,8 @@ export interface UseExternalFilesParams {
   requestUnlockRef: { current: (scope: EncryptionScope, id: string, permanent?: boolean) => void };
   defaultNoteAiAccess: AiAccessLevel;
   setNotes: Dispatch<SetStateAction<Note[]>>;
+  /** 「全部笔记」计数：新建笔记后就地 +1，不必再触发一次全量读回 */
+  setAllNotesCount: Dispatch<SetStateAction<number>>;
   setSelectedNote: Dispatch<SetStateAction<Note | null>>;
   setSelectedCategoryId: (value: string | null) => void;
   setExpandedDrawer: (value: string | 'all' | 'uncategorized' | null) => void;
@@ -38,6 +39,7 @@ export function useExternalFiles({
   requestUnlockRef,
   defaultNoteAiAccess,
   setNotes,
+  setAllNotesCount,
   setSelectedNote,
   setSelectedCategoryId,
   setExpandedDrawer,
@@ -71,12 +73,13 @@ export function useExternalFiles({
   const handleSaveExternalToNote = async (categoryId: string | null, title: string, content: string) => {
     try {
       const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
+      // 就地更新列表与计数，不再 emit → 全量读回；成功提示等所有状态落地后再弹
       setNotes((prev) => [...prev, note]);
+      setAllNotesCount((count) => count + 1);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
       setSelectedNote(note);
       showToast(t("已保存为笔记"), "success");
-      emitAppEvent("fastnote-data-changed");
     } catch (error) {
       console.error("Failed to save external file as note:", error);
       showToast(t("保存失败，请重试"), "error");
@@ -109,15 +112,17 @@ export function useExternalFiles({
     if (!ok) return;
     try {
       const file = await notesApi.readTextFile(path);
-      await notesApi.createNote(file.name, file.content, categoryId, defaultNoteAiAccess);
+      const note = await notesApi.createNote(file.name, file.content, categoryId, defaultNoteAiAccess);
+      // 同上：新建的笔记直接进内存列表，不靠一次全量刷新才看得见；提示放最后
+      setNotes((prev) => [...prev, note]);
+      setAllNotesCount((count) => count + 1);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId);
       showToast(translateNow("已导入到分组"), "success");
-      emitAppEvent("fastnote-data-changed");
     } catch (e) {
       showToast(typeof e === "string" ? e : translateNow("导入失败"), "error");
     }
-  }, [confirm, defaultNoteAiAccess, showToast, categoriesRef, requestUnlockRef, setSelectedCategoryId, setExpandedDrawer]);
+  }, [confirm, defaultNoteAiAccess, showToast, categoriesRef, requestUnlockRef, setNotes, setAllNotesCount, setSelectedCategoryId, setExpandedDrawer]);
 
   /** 欢迎页「打开文本文件」：系统文件选择框 → 按外部文件模式打开 */
   const handleOpenTextFileDialog = useCallback(async () => {

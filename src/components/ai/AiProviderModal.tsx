@@ -286,6 +286,10 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
     try {
       const checked = normalizeModelList(draftProvider);
       let savedId: number;
+      // 成功提示放到「重拉配置列表 + 收起表单」之后，别让 toast 比界面更新还早
+      const successMessage = draftProvider.id === 0
+        ? translate("AI 配置已保存")
+        : translate("AI 配置已更新");
       if (draftProvider.id === 0) {
         // 新建：把已勾选的模型一起写库，避免"先保存才能获取模型"的顺序问题
         const created = await aiApi.createAiProvider(
@@ -298,11 +302,9 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
         );
         savedId = created.id;
         onSelectedProviderChange(created.id);
-        showToast(translate("AI 配置已保存"), "success");
       } else {
         await aiApi.updateAiProvider({ ...draftProvider, enabled_models: checked });
         savedId = draftProvider.id;
-        showToast(translate("AI 配置已更新"), "success");
       }
 
       // 写入已成功，后续刷新失败不应再报"保存失败"
@@ -320,6 +322,7 @@ export const AiProviderSettings: React.FC<AiProviderModalProps> = ({
       setModels((prev) => mergeModelList(normalizeModelList(saved), prev));
       closeForm();
 
+      showToast(successMessage, "success");
       return saved;
     } catch (error) {
       console.error("保存 AI 配置失败:", error);

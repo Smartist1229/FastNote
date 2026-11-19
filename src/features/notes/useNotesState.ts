@@ -5,6 +5,7 @@
  * notes 始终是全量列表：分组抽屉、收藏视图、搜索都从它派生，切分组不重新请求。
  */
 import { logAction, SAVE_THROTTLE_MS } from "@/lib/app/actionLog";
+import { buildAutoTitle } from "@/lib/note/autoTitle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { Category, Note } from "@/interface/note/note";
@@ -14,7 +15,7 @@ import type { AiAccessLevel } from "@/interface/ai/aiAccess";
 import { AI_ACCESS_LABELS } from "@/interface/ai/aiAccess";
 import * as notesApi from "@/api/note/notes";
 import * as categoriesApi from "@/api/note/categories";
-import { emitAppEvent, onAppEvent } from "@/shared/bus";
+import { onAppEvent } from "@/shared/bus";
 import { activeTabEditor } from "@/features/tabs/activeEditor";
 import { pluginContributions } from "@/plugins/contributions";
 import { useI18n } from "@/i18n";
@@ -135,40 +136,47 @@ export function useNotesState({
   useEffect(() => { notesRef.current = notes; }, [notes, notesRef]);
 
   /**
-   * 新建笔记并选中；省略 categoryId 用当前分组，title 省略时叫「无标题」。
+   * 新建笔记：**先只落库，不打开编辑面板**。
    *
-   * 只开一个笔记标签，不再清理其它标签：电脑文件与 AI 预览现在是独立标签，
-   * 新建笔记不该把它们关掉（旧版那套叠放语义已经是历史）。
+   * 没给标题时用「新笔记 + 时间戳」命名，由 App 接着在侧栏里就地改名；
+   * 用户回车（哪怕什么都没输）之后，App 才把它打开成常驻标签。
+   * 命令面板带标题参数的调用属于「已经想好名字」，照旧直接打开。
    */
-  const handleCreateNote = async (categoryId?: string | null, title?: string) => {
+  const handleCreateNote = async (categoryId?: string | null, title?: string): Promise<Note | undefined> => {
     const targetCategory = categoryId === undefined ? selectedCategoryId : categoryId;
     // 锁着的加密分组不能写入：先解锁，解锁后用户再点一次新建
     if (targetCategory !== null) {
       const category = categoriesRef.current.find((c) => c.id === targetCategory);
       if (category?.is_encrypted && category.is_locked) {
         void requestUnlockRef.current('category', targetCategory);
-        return;
+        return undefined;
       }
     }
     try {
+      const explicitTitle = title?.trim();
       const note = await notesApi.createNote(
-        title?.trim() || t("无标题"),
+        explicitTitle || buildAutoTitle(t("新笔记")),
         "",
         targetCategory,
         defaultNoteAiAccess,
       );
       logAction("note.create", note.title);
       setNotes((prev) => [...prev, note]);
-      setSelectedNote(note);
+      // 就地更新，不再 emit → loadData 全量读回：新笔记已经在内存里，
+      // 重拉一遍只会让侧栏闪一下，还会把刚挂上的命名框冲掉。
+      setAllNotesCount((count) => count + 1);
       setSelectedCategoryId(targetCategory);
       setExpandedDrawer(targetCategory === null ? 'uncategorized' : targetCategory);
-      emitAppEvent("fastnote-data-changed");
       void pluginContributions.emitHook("note-create", { note, isExternal: false });
-      // 新建完之后用户一定是想开始写：把焦点送进新标签的编辑器。
-      // （从侧栏点开已有笔记不走这里，焦点留在列表上，Delete / F2 才好用）
-      requestAnimationFrame(() => activeTabEditor()?.actions?.focus());
+      if (explicitTitle) {
+        // 名字已经有了，不用再命名：直接打开并聚焦，和旧行为一致
+        setSelectedNote(note);
+        requestAnimationFrame(() => activeTabEditor()?.actions?.focus());
+      }
+      return note;
     } catch (error) {
       console.error("Failed to create note:", error);
+      return undefined;
     }
   };
 
@@ -178,12 +186,13 @@ export function useNotesState({
       const note = await notesApi.createNote(title, content, categoryId, defaultNoteAiAccess);
       logAction("note.save_preview", title);
       setNotes((prev) => [...prev, note]);
+      // 同上：就地更新，不做一次全量读回；成功提示放到所有状态落地之后
+      setAllNotesCount((count) => count + 1);
       setSelectedCategoryId(categoryId);
       setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
       setSelectedNote(note);
-      showToast(t("已保存为笔记"), "success");
-      emitAppEvent("fastnote-data-changed");
       void pluginContributions.emitHook("note-create", { note, isExternal: false });
+      showToast(t("已保存为笔记"), "success");
     } catch (error) {
       console.error("Failed to save preview as note:", error);
       showToast(t("保存失败，请重试"), "error");
@@ -314,14 +323,36 @@ export function useNotesState({
     }
   };
 
-  /** 把笔记移动到指定分组（null = 未分类） */
+  /**
+   * 把笔记移动到指定分组（null = 未分类）。拖拽与右键菜单共用这一条。
+   *
+   * 以前走 update_note（整篇正文回传 + 历史/加密/语义索引全套）再 loadData 全量读回，
+   * 大库上要卡几秒；现在后端只 UPDATE category_id，前端就地改内存列表。
+   *
+   * 移动完成后：expandedDrawer 是单槽手风琴，把它指向目标分组就等于「关闭 A、打开 B」；
+   * 同时同步 selectedNote，否则正在编辑的那篇下一次 Ctrl+S 会用旧 category_id 把它挪回去。
+   * 提示放到全部状态更新之后，不会再出现「toast 先到、列表后到」。
+   */
   const handleMoveNoteToCategory = async (note: Note, categoryId: string | null) => {
     if (note.category_id === categoryId) return;
+    // 前端先挡掉两类加密场景，省一次注定失败的往返；后端也做同样的校验兜底
+    if (note.enc_mode !== 0) {
+      showToast(t("加密笔记不能移动到其他分组"), "error");
+      return;
+    }
+    if (categoriesRef.current.find((c) => c.id === categoryId)?.is_encrypted) {
+      showToast(t("该分组已加密，组内笔记不可单独新建或移入"), "error");
+      return;
+    }
     try {
-      await notesApi.updateNote(note.id, note.title, note.content, categoryId);
+      await notesApi.moveNoteToCategory(note.id, categoryId);
       logAction("note.move", `${note.title} -> ${categoryId ?? "(ungrouped)"}`);
-      await loadData();
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? { ...n, category_id: categoryId } : n)));
+      if (selectedNoteRef.current?.id === note.id) {
+        setSelectedNote((prev) => (prev && prev.id === note.id ? { ...prev, category_id: categoryId } : prev));
+      }
       setSelectedCategoryId(categoryId);
+      setExpandedDrawer(categoryId === null ? 'uncategorized' : categoryId);
       showToast(t("移动成功"), "success");
     } catch {
       showToast(t("移动失败"), "error");
@@ -367,6 +398,7 @@ export function useNotesState({
     notes,
     setNotes,
     allNotesCount,
+    setAllNotesCount,
     dataLoaded,
     sortBy,
     setSortBy,

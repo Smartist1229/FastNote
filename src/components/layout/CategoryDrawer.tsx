@@ -121,7 +121,7 @@ export const DrawerNoteItem: React.FC<{
               {isRenaming ? (
                 <InlineRenameInput
                   initial={note.title}
-                  onCommit={(value) => rename?.commit({ kind: "note", note }, value)}
+                  onCommit={(value, reason) => rename?.commit({ kind: "note", note }, value, reason)}
                   onCancel={() => rename?.cancel()}
                 />
               ) : hit ? (
@@ -229,7 +229,7 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
             initial={category.name}
             // 高度与只读态一致（13px / leading-tight ≈ 16px），进入改名时分组头不跳
             className="h-4 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[13px] font-medium leading-4 text-body outline-none"
-            onCommit={(value) => rename?.commit({ kind: "category", category }, value)}
+            onCommit={(value, reason) => rename?.commit({ kind: "category", category }, value, reason)}
             onCancel={() => rename?.cancel()}
           />
         ) : (

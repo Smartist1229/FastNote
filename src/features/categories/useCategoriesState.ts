@@ -1,10 +1,14 @@
 /**
  * 分组域：分组列表、抽屉展开状态、当前选中的分组（新建笔记的归属），
- * 以及新建 / 重命名 / 删除分组的弹窗状态与操作。
+ * 以及新建 / 重命名 / 删除分组的操作。
+ *
+ * 新建不再走弹窗：与笔记一样「先落库自动名 → 侧栏就地改名」，
+ * 弹窗只留下删除确认。
  *
  * loadData 由 notes 域提供，通过 ref 调用，避免两个域互相 import。
  */
 import { logAction } from "@/lib/app/actionLog";
+import { buildAutoTitle } from "@/lib/note/autoTitle";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Category } from "@/interface/note/note";
 import type { EncryptionScope } from "@/interface/system/encryption";
@@ -42,46 +46,47 @@ export function useCategoriesState({
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   /** 抽屉展开状态：'all' | 分组ID | 'uncategorized' | null（全部收起） */
   const [expandedDrawer, setExpandedDrawer] = useState<string | 'all' | 'uncategorized' | null>(null);
-  /** 新建分组弹窗：改名走侧栏就地编辑，弹窗只用于新建 */
-  const [showCategoryModal, setShowCategoryModal] = useState(false);
-  const [categoryName, setCategoryName] = useState("");
   const [showDeleteCategoryModal, setShowDeleteCategoryModal] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
   const [deleteCategoryNotes, setDeleteCategoryNotes] = useState(false);
 
   useEffect(() => { categoriesRef.current = categories; }, [categories]);
 
-  /** 打开新建分组弹窗：清空输入值 */
-  const handleCreateCategory = () => {
-    setCategoryName("");
-    setShowCategoryModal(true);
-  };
-
-  const handleSaveCategory = async () => {
-    if (!categoryName.trim()) return;
+  /**
+   * 新建分组：与新建笔记同一套逻辑——先落库一个「新分组 + 时间戳」的临时名，
+   * 由 App 接着让侧栏那一行进入就地改名，回车 / 失焦都只是把名字留下
+   * （分组没有编辑面板可开）。不再弹「创建分类」窗口。
+   */
+  const handleCreateCategory = async (): Promise<Category | undefined> => {
     try {
-      await categoriesApi.createCategory(categoryName, defaultCategoryAiAccess);
+      const name = buildAutoTitle(t("新分组"));
+      const created = await categoriesApi.createCategory(name, defaultCategoryAiAccess);
+      logAction("group.create", name);
       await loadDataRef.current();
-      setShowCategoryModal(false);
+      return created;
     } catch (error) {
-      console.error("Failed to save category:", error);
+      console.error("Failed to create category:", error);
+      showToast(t("创建分组失败：{error}", { error: errorText(error) }), "error");
+      return undefined;
     }
   };
 
-  /** 命令面板的 create_category <名称>：直接建分组；名称为空时退回新建弹窗 */
-  const handleCreateCategoryNamed = async (name: string) => {
+  /**
+   * 命令面板的 create_category <名称>：
+   * 给了名字就直接建（不打扰用户）；没给就退回「自动命名 + 侧栏命名」那条路。
+   */
+  const handleCreateCategoryNamed = async (name: string): Promise<Category | undefined> => {
     const trimmed = name.trim();
-    if (!trimmed) {
-      handleCreateCategory();
-      return;
-    }
+    if (!trimmed) return handleCreateCategory();
     try {
-      await categoriesApi.createCategory(trimmed, defaultCategoryAiAccess);
+      const created = await categoriesApi.createCategory(trimmed, defaultCategoryAiAccess);
       logAction("group.create", trimmed);
       await loadDataRef.current();
       showToast(t("已创建分组「{name}」", { name: trimmed }), "success");
+      return created;
     } catch (error) {
       showToast(t("创建分组失败：{error}", { error: errorText(error) }), "error");
+      return undefined;
     }
   };
 
@@ -186,17 +191,12 @@ export function useCategoriesState({
     setSelectedCategoryId,
     expandedDrawer,
     setExpandedDrawer,
-    showCategoryModal,
-    setShowCategoryModal,
-    categoryName,
-    setCategoryName,
     showDeleteCategoryModal,
     setShowDeleteCategoryModal,
     deletingCategory,
     deleteCategoryNotes,
     setDeleteCategoryNotes,
     handleCreateCategory,
-    handleSaveCategory,
     handleCreateCategoryNamed,
     handleDeleteCategory,
     handleRenameCategory,

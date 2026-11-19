@@ -480,6 +480,19 @@ textarea:focus-visible {
   box-shadow: none;
 }
 
+/*
+ * 就地改名（笔记标题 / 分组名）：不要全局焦点环。
+ *
+ * 笔记标题行的 h4 带 truncate（overflow:hidden），3px 光晕被裁掉，看起来就是
+ * 「原文直接变成可编辑」；分组头没有裁，光晕+描边会画出一个淡紫色表单框，
+ * 两处输入框于是不一致。统一关掉，让分组改名和笔记改名的样式完全一致。
+ * 选中文本仍走 ::selection 的高亮，编辑状态依然可见。
+ */
+.inline-rename-input:focus-visible {
+  box-shadow: none;
+  border-color: transparent;
+}
+
 /* ---------- 惯性滚动（触屏 / 触控板） ---------- */
 .overflow-y-auto,
 .overflow-x-auto {

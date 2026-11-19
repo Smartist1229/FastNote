@@ -12,6 +12,7 @@ import {
   InlineRenameProvider,
   type InlineRenameApi,
   type InlineRenameTarget,
+  type RenameCommitReason,
 } from "@/components/layout/inlineRename";
 import type { Note } from "@/interface/note/note";
 import { hasOpenModalLayer } from "@/lib/app/modalLayer";
@@ -130,6 +131,8 @@ function AppContent() {
    * 同时为真时会出现两个输入框。
    */
   const [renameTarget, setRenameTarget] = useState<InlineRenameTarget | null>(null);
+  /** 刚建好、等着在侧栏进入命名态的条目（下一轮渲染再挂输入框，见下方 effect） */
+  const [pendingRename, setPendingRename] = useState<InlineRenameTarget | null>(null);
   /** 改名动作的实现（放在 ref 里，让 Context 值只随 renameTarget 变化） */
   const renameImplRef = useRef<Omit<InlineRenameApi, "target">>({
     start: () => {},
@@ -174,6 +177,8 @@ function AppContent() {
   const lockOnceUnlockedRef = useRef<(scope: EncryptionScope, id: string, clearSelected?: boolean) => void>(() => {});
   const flashFocusRef = useRef<(noteId: string) => void>(() => {});
   const pendingUnlockNoteRef = useRef<string | null>(null);
+  /** 刚建好、正在侧栏就地命名的那篇笔记：命名结算后要把它打开成常驻标签 */
+  const pendingNewNoteIdRef = useRef<string | null>(null);
   const notesRef = useRef<import("@/interface/note/note").Note[]>([]);
 
   const settings = useSettingsState({ confirm, runtime: settingsRuntimeRef.current });
@@ -338,6 +343,7 @@ function AppContent() {
     requestUnlockRef,
     defaultNoteAiAccess: ai.defaultNoteAiAccess,
     setNotes: notes.setNotes,
+    setAllNotesCount: notes.setAllNotesCount,
     setSelectedNote: tabs.setSelectedNote,
     setSelectedCategoryId: categories.setSelectedCategoryId,
     setExpandedDrawer: categories.setExpandedDrawer,
@@ -377,29 +383,102 @@ function AppContent() {
       }
       setRenameTarget(target);
     },
-    commit: (target: InlineRenameTarget, value: string) => {
+    commit: (target: InlineRenameTarget, value: string, reason: RenameCommitReason = "enter") => {
       setRenameTarget(null);
       const next = value.trim();
-      // 空名与「没改动」都不写库：留个空标题等于把笔记 / 分组变成无名条目
-      if (!next) return;
       if (target.kind === "note") {
-        if (next === target.note.title) return;
-        void notes.handleRenameNote(target.note, next);
-      } else {
-        if (next === target.category.name) return;
-        void categories.handleRenameCategory(target.category, next);
+        /*
+         * 新建笔记的命名结算：空着回车就沿用创建时的自动名（不必再写库）。
+         * 「回车」代表名字起好了、开始写，结算完把这篇打开成常驻标签；
+         * 「点到别处失焦」只把名字留下，不打开，免得抢走用户正在做的事。
+         */
+        const isNew = pendingNewNoteIdRef.current === target.note.id;
+        if (isNew) pendingNewNoteIdRef.current = null;
+        if (next && next !== target.note.title) void notes.handleRenameNote(target.note, next);
+        if (isNew && reason === "enter") {
+          // 传新标题进去，省得打开的一瞬间还显示自动名
+          const opened = next && next !== target.note.title ? { ...target.note, title: next } : target.note;
+          tabs.openNote(opened, "pinned");
+          requestAnimationFrame(() => activeTabEditor()?.actions?.focus());
+        }
+        return;
       }
+      // 分组：空名与「没改动」都不写库，留个空名字等于把它变成无名条目
+      if (!next || next === target.category.name) return;
+      void categories.handleRenameCategory(target.category, next);
     },
-    cancel: () => setRenameTarget(null),
+    cancel: () => {
+      setRenameTarget(null);
+      // 取消命名：笔记已经用自动名落库了，就留在列表里，不打开编辑面板
+      pendingNewNoteIdRef.current = null;
+    },
   };
   const renameApi = useMemo<InlineRenameApi>(
     () => ({
       target: renameTarget,
       start: (target) => renameImplRef.current.start(target),
-      commit: (target, value) => renameImplRef.current.commit(target, value),
+      commit: (target, value, reason) => renameImplRef.current.commit(target, value, reason),
       cancel: () => renameImplRef.current.cancel(),
     }),
     [renameTarget],
+  );
+
+  /**
+   * 新建笔记的统一入口：先落库、在侧栏就地命名，**回车之后**才打开编辑面板。
+   *
+   * 命令面板带了标题参数（`title` 非空）时不进命名流程——名字已经定了，直接打开。
+   * 搜索词与收藏视图都会把新行挡在列表外，所以先把列表恢复成「分组」全量视图；
+   * 命名框本身由 `pendingRename` 的 effect 挂上（那里有执行顺序的说明）。
+   */
+  const handleCreateNote = useCallback(
+    async (categoryId?: string | null, title?: string) => {
+      if (!title?.trim()) {
+        if (notes.searchQuery) notes.setSearchQuery("");
+        if (sidebarView !== "groups") setSidebarView("groups");
+      }
+      const created = await notes.handleCreateNote(categoryId, title);
+      if (!created || title?.trim()) return;
+      setPendingRename({ kind: "note", note: created });
+    },
+    [notes.handleCreateNote, notes.searchQuery, notes.setSearchQuery, sidebarView],
+  );
+
+  /**
+   * 新建分组：与新建笔记同一套逻辑（先落库自动名 → 侧栏就地命名，回车确认）。
+   * 分组头只存在于「分组」视图，所以新建前必须把列表切回全量分组视图。
+   */
+  const handleCreateCategory = useCallback(async () => {
+    if (notes.searchQuery) notes.setSearchQuery("");
+    if (sidebarView !== "groups") setSidebarView("groups");
+    const created = await categories.handleCreateCategory();
+    if (!created) return;
+    setPendingRename({ kind: "category", category: created });
+  }, [categories.handleCreateCategory, notes.searchQuery, notes.setSearchQuery, sidebarView]);
+
+  /** 命令面板 create_category：给了名字就直接建，没给就走上面那条自动命名 + 改名 */
+  const handleCreateCategoryNamed = useCallback(
+    async (name: string) => {
+      const created = await categories.handleCreateCategoryNamed(name);
+      if (!created || name.trim()) return;
+      if (notes.searchQuery) notes.setSearchQuery("");
+      if (sidebarView !== "groups") setSidebarView("groups");
+      setPendingRename({ kind: "category", category: created });
+    },
+    [categories.handleCreateCategoryNamed, notes.searchQuery, notes.setSearchQuery, sidebarView],
+  );
+
+  /**
+   * 移动笔记到分组的统一入口（拖拽 / 右键 / 属性窗共用）。
+   *
+   * 收藏视图是一条扁平列表，分组抽屉根本不渲染；移动完要「打开目标分组」，
+   * 就得先把侧栏切回分组视图（搜索视图下 view 被忽略，切了也不影响结果列表）。
+   */
+  const handleMoveNoteToCategory = useCallback(
+    (note: Note, categoryId: string | null) => {
+      if (sidebarView !== "groups") setSidebarView("groups");
+      return notes.handleMoveNoteToCategory(note, categoryId);
+    },
+    [notes.handleMoveNoteToCategory, sidebarView],
   );
 
   /**
@@ -477,8 +556,8 @@ function AppContent() {
     sidebarView,
     setSidebarView,
     enableAI: settings.appSettings.general.enableAI,
-    handleCreateNote: notes.handleCreateNote,
-    handleCreateCategoryNamed: categories.handleCreateCategoryNamed,
+    handleCreateNote,
+    handleCreateCategoryNamed,
     handleOpenTrash: trash.handleOpenTrash,
     handleOpenTextFileDialog: externalFiles.handleOpenTextFileDialog,
     toggleAiPanel: ai.toggleAiPanel,
@@ -504,8 +583,8 @@ function AppContent() {
   }, [settings.appSettings.shortcuts]);
 
   /* 宿主动作：键位在 config/shortcuts 里，这里只关心「按下之后干什么」 */
-  useShortcutAction("app.newNote", () => notes.handleCreateNote());
-  useShortcutAction("app.quickNote", () => notes.handleCreateNote());
+  useShortcutAction("app.newNote", () => void handleCreateNote());
+  useShortcutAction("app.quickNote", () => void handleCreateNote());
   useShortcutAction("app.settings", () => settings.openSettings("general"));
   useShortcutAction("app.toggleSidebar", () => setIsSidebarCollapsed((collapsed) => !collapsed));
   useShortcutAction("app.toggleAi", () => {
@@ -563,6 +642,19 @@ function AppContent() {
     setRenameTarget((prev) => (prev?.kind === "note" ? null : prev));
   }, [notes.searchQuery, sidebarView]);
 
+  /**
+   * 新建条目（笔记 / 分组）的命名框：必须排在上面那个 effect 之后挂。
+   *
+   * 创建时可能同时把列表从搜索 / 收藏切回分组视图，那条 effect 会把「当前改名目标」清掉；
+   * 同一个渲染里本 effect 后执行，set 完才是最终状态。
+   */
+  useEffect(() => {
+    if (!pendingRename) return;
+    if (pendingRename.kind === "note") pendingNewNoteIdRef.current = pendingRename.note.id;
+    renameImplRef.current.start(pendingRename);
+    setPendingRename(null);
+  }, [pendingRename]);
+
   // 生产环境屏蔽原生右键菜单；开发环境保留，方便审查元素
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
@@ -614,10 +706,10 @@ function AppContent() {
               isCollapsed={isSidebarCollapsed}
               onToggleAiPanel={settings.appSettings.general.enableAI ? ai.toggleAiPanel : undefined}
               isAiPanelOpen={settings.appSettings.general.enableAI && ai.aiPanelOpen}
-              onCreateCategory={categories.handleCreateCategory}
+              onCreateCategory={() => void handleCreateCategory()}
               onDeleteCategory={categories.handleDeleteCategory}
-              onCreateNote={notes.handleCreateNote}
-              onMoveToCategory={notes.handleMoveNoteToCategory}
+              onCreateNote={handleCreateNote}
+              onMoveToCategory={handleMoveNoteToCategory}
               onDeleteNote={notes.handleDeleteNoteFromSidebar}
               onOpenTrash={trash.handleOpenTrash}
               onShowNoteProperties={(note) => properties.setPropertiesTarget({ kind: "note", note })}
@@ -626,7 +718,6 @@ function AppContent() {
               onOpenSettings={() => settings.openSettings("general")}
               onExportGroup={exportState.setExportTarget}
               onSaveNote={exportState.handleExportNoteFromMenu}
-              onNotesUpdated={notes.loadData}
               hoverDropCategoryId={externalFiles.hoverDropCategoryId}
               isFileDragActive={externalFiles.isFileDragActive}
               view={sidebarView}
@@ -703,7 +794,7 @@ function AppContent() {
                   showRecentList={settings.appSettings.layout.welcomeRecentList}
                   onOpenRecentFile={(path) => void externalFiles.openExternalFile(path)}
                   onRemoveRecentFile={removeRecentFile}
-                  onCreateNote={() => notes.handleCreateNote()}
+                  onCreateNote={() => void handleCreateNote()}
                   onOpenTrash={trash.handleOpenTrash}
                   onOpenTextFile={externalFiles.handleOpenTextFileDialog}
                   onSelectNote={tabs.openNote}
@@ -804,28 +895,7 @@ function AppContent() {
         </div>
       </div>
 
-      {/* 分类弹窗 */}
-      <Modal isOpen={categories.showCategoryModal} onClose={() => categories.setShowCategoryModal(false)} title={t("创建分类")}>
-        <div className="space-y-4">
-          <input
-            type="text"
-            value={categories.categoryName}
-            onChange={(e) => categories.setCategoryName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") categories.handleSaveCategory(); }}
-            placeholder={t("输入分类名称...")}
-            autoFocus
-            className="w-full px-4 py-2.5 input-modern text-sm"
-          />
-          <div className="flex gap-2 justify-end">
-            <button onClick={() => categories.setShowCategoryModal(false)} className="btn-ghost px-4 py-2 text-sm">
-              {t("取消")}
-            </button>
-            <button onClick={categories.handleSaveCategory} className="btn-primary px-4 py-2 text-sm">
-              {t("保存")}
-            </button>
-          </div>
-        </div>
-      </Modal>
+      {/* 新建分组不再有弹窗：落库自动名后直接在侧栏就地改名（与新建笔记同一条路） */}
 
       {/* 删除分类弹窗 */}
       <Modal isOpen={categories.showDeleteCategoryModal} onClose={() => categories.setShowDeleteCategoryModal(false)} title={t("删除分类")}>
@@ -1036,7 +1106,7 @@ function AppContent() {
             categories={categories.categories}
             onClose={() => properties.setPropertiesTarget(null)}
             onRenameNote={notes.handleRenameNote}
-            onMoveNote={notes.handleMoveNoteToCategory}
+            onMoveNote={handleMoveNoteToCategory}
             onTogglePin={notes.handleTogglePin}
             onRenameCategory={categories.handleRenameCategory}
             onSetNoteAiAccess={notes.handleSetNoteAiAccess}

@@ -389,6 +389,7 @@ pub fn run() {
             get_notes,
             get_note,
             update_note,
+            move_note_to_category,
             get_note_history,
             delete_note_history_entry,
             clear_note_history,

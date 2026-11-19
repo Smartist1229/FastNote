@@ -172,6 +172,58 @@ pub fn get_note(id: String, state: State<AppState>) -> Result<Note, String> {
     Ok(note)
 }
 
+/// 只改笔记所属分组：move_note_to_category。
+///
+/// 「移动分组」以前走 update_note，那会把整篇正文回传、开封/解密、判历史快照、
+/// 重写正文、清空语义索引分片并触发 worker 重建，前端还要 loadData 全量读回一次。
+/// 换分组时正文一个字没变，这些全是无用功，大笔记上能卡好几秒。
+/// 这里只做一次查 + 一次 UPDATE：不动正文、不写历史、不碰 updated_at（移动不是编辑，
+/// 不该让笔记在「按更新时间」里跳位）、不失效语义索引（分片按 note_id 存，与分组无关）。
+///
+/// 加密约束与 update_note 保持一致：密文绑的是原分组密钥，换组会变孤儿；
+/// 明文笔记也不能直接落进加密分组。错误用同一套 code，前端能按后端错误给文案。
+#[tauri::command(async)]
+pub fn move_note_to_category(
+    id: String,
+    category_id: Option<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+
+    let (old_category, old_enc_mode): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT category_id, COALESCE(enc_mode, 0) FROM notes
+             WHERE id = ?1 AND COALESCE(is_deleted, 0) = 0",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 落点与当前分组相同：直接成功，别白写一次库（拖拽落点经常落回原组）
+    if old_category == category_id {
+        return Ok(());
+    }
+    if old_enc_mode != 0 {
+        return Err(json!({ "code": "note_encrypted", "reason": "move" }).to_string());
+    }
+    if let Some(target) = &category_id {
+        if encryption::category_is_encrypted(&conn, target)? {
+            return Err(json!({ "code": "category_encrypted" }).to_string());
+        }
+    }
+
+    let changed = conn
+        .execute(
+            "UPDATE notes SET category_id = ?1 WHERE id = ?2",
+            params![category_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("笔记不存在".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub fn update_note(
     id: String,

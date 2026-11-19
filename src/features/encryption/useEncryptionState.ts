@@ -215,6 +215,8 @@ export function useEncryptionState({
   ) => {
     if (!encryptTarget) return;
     const target = encryptTarget;
+    // 成功提示统一放到「写库 + 刷新状态」之后，别让 toast 比加密状态落地还早
+    let successMessage: string;
     if (target.scope === "note") {
       const updated = await encryptionApi.encryptNote(target.id, password, hint, rootPassword);
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
@@ -223,7 +225,7 @@ export function useEncryptionState({
         selectedNoteRef.current = null;
         setSelectedNote(null);
       }
-      showToast(t("笔记已加密并锁定，打开时需要输入密码"), "success");
+      successMessage = t("笔记已加密并锁定，打开时需要输入密码");
     } else {
       await encryptionApi.encryptCategory(target.id, password, hint, rootPassword);
       // 组内笔记在库里已变密文：关闭正打开的组内笔记，避免编辑器还显示明文
@@ -236,9 +238,10 @@ export function useEncryptionState({
       // 收起后列表长度与「点开要解锁」的预期一致；下次展开会先弹解锁框
       setExpandedDrawer((prev) => (prev === target.id ? null : prev));
       await loadData();
-      showToast(t("分组已加密，组内笔记全部锁定"), "success");
+      successMessage = t("分组已加密，组内笔记全部锁定");
     }
     await refreshEncryptionStatus();
+    showToast(successMessage, "success");
   };
 
   /** 临时解锁 / 永久解密的提交 */
@@ -249,6 +252,8 @@ export function useEncryptionState({
   ) => {
     if (!unlockTarget) return;
     const target = unlockTarget;
+    // 与加密提交同理：提示等解锁/解密与状态刷新全部完成再弹
+    let successMessage: string;
     if (target.permanent) {
       if (target.scope === "note") {
         const updated = await encryptionApi.decryptNote(target.id, password, useRoot);
@@ -276,14 +281,14 @@ export function useEncryptionState({
           prev && prev.kind === "category" && prev.category.id === target.id ? null : prev,
         );
       }
-      showToast(t(target.scope === "note" ? "笔记已解密" : "分组已解密"), "success");
+      successMessage = t(target.scope === "note" ? "笔记已解密" : "分组已解密");
     } else if (target.scope === "note") {
       pendingUnlockNoteRef.current = null;
       const updated = await encryptionApi.unlockNote(target.id, password, useRoot, scope);
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
       // 解锁是从「点开笔记」触发的：解锁成功后顺势打开它
       openNote(updated);
-      showToast(t("解锁成功"), "success");
+      successMessage = t("解锁成功");
     } else {
       await encryptionApi.unlockCategory(target.id, password, useRoot, scope);
       await loadData();
@@ -299,9 +304,10 @@ export function useEncryptionState({
           // 笔记可能已被删除，分组已展开即可
         }
       }
-      showToast(t("解锁成功"), "success");
+      successMessage = t("解锁成功");
     }
     await refreshEncryptionStatus();
+    showToast(successMessage, "success");
   };
 
   /** 手动锁定单篇加密笔记（分组加密的笔记要锁分组） */

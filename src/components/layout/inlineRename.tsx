@@ -1,44 +1,22 @@
 /**
- * 就地改名的共享通道（Context）：侧栏里的笔记标题和分组名都走这一条。
+ * 就地改名的输入框与 Provider。
  *
- * 为什么不层层传 props：笔记行 `DrawerNoteItem` 有四个渲染点（分组抽屉 / 未分类 /
- * 未归类 / 收藏视图），分组头也有三个（真实分组 / 全部笔记 / 未分类），
- * 改名状态却只有「当前这一条」。走 Context 后，抽屉组件签名一行不用改，
- * 各组件自己判断「我是不是正在被改名的那一条」。
- *
- * 状态归 App 持有：F2 快捷键、右键「重命名笔记 / 分组」、行内输入框三处入口
- * 都要落到同一个目标上，所以笔记和分组共用一个 `target`，而不是两个独立状态
- * （两个状态同时为真时会出现两个输入框）。
+ * 状态与 Context 本身在 `renameContext.ts`（那里有「为什么必须单独一个文件」的说明）：
+ * 这个文件只放组件，改样式 / 改输入框行为时不会把 Context 换成一个新对象。
+ * 为了让调用方只 import 一处，这里把类型与 hook 原样转发出去。
  */
-import { createContext, useContext, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type React from "react";
-import type { Category, Note } from "@/interface/note/note";
+import { InlineRenameContext } from "./renameContext";
+import type { InlineRenameApi, RenameCommitReason } from "./renameContext";
 
-/** 正在就地改名的目标：笔记或分组，互斥 */
-export type InlineRenameTarget =
-  | { kind: "note"; note: Note }
-  | { kind: "category"; category: Category };
-
-export interface InlineRenameApi {
-  /** 当前正在改名的目标；null 表示没有 */
-  target: InlineRenameTarget | null;
-  /** 开始改名（笔记会把所在分组展开，保证输入框可见） */
-  start: (target: InlineRenameTarget) => void;
-  /** 提交新名字；空值与「没改动」都不会写库 */
-  commit: (target: InlineRenameTarget, value: string) => void;
-  /** 取消，回到只读状态 */
-  cancel: () => void;
-}
-
-const InlineRenameContext = createContext<InlineRenameApi | null>(null);
+export { InlineRenameContext, useInlineRename } from "./renameContext";
+export type { InlineRenameApi, InlineRenameTarget, RenameCommitReason } from "./renameContext";
 
 export const InlineRenameProvider: React.FC<{ value: InlineRenameApi; children: React.ReactNode }> = ({
   value,
   children,
 }) => <InlineRenameContext.Provider value={value}>{children}</InlineRenameContext.Provider>;
-
-/** 没有 Provider（例如单独渲染某一行）时返回 null，组件退化成只读展示 */
-export const useInlineRename = (): InlineRenameApi | null => useContext(InlineRenameContext);
 
 /**
  * 就地改名的输入框：看起来就是「原来那行文字变成可编辑」。
@@ -46,12 +24,17 @@ export const useInlineRename = (): InlineRenameApi | null => useContext(InlineRe
  * 刻意不加边框、不加底色、不加内边距——加任何一样都会让它像「弹出来的表单」，
  * 而这里要的是「标题本身就在编辑」。高度由调用方通过 className 锁死成与只读态一致，
  * 这样进入改名时列表高度不会跳。
+ *
+ * `inline-rename-input` 必须带上：App.css 里全局的 `input:focus-visible` 会给所有输入框
+ * 画一圈 3px 主色光晕 + 描边。笔记标题那行被外层 truncate 的 overflow:hidden 裁掉了，
+ * 分组头没有裁，于是分组改名看起来像个带底色的表单框、和笔记那个不一样。
+ * 这个 class 把焦点环统一关掉，两处都只留「原文变可编辑 + 选中高亮」。
  */
 export const InlineRenameInput: React.FC<{
   initial: string;
   /** 尺寸覆盖：笔记标题行与分组头字号不同，高度必须各自锁准 */
   className?: string;
-  onCommit: (value: string) => void;
+  onCommit: (value: string, reason: RenameCommitReason) => void;
   onCancel: () => void;
 }> = ({ initial, className, onCommit, onCancel }) => {
   const [value, setValue] = useState(initial);
@@ -60,10 +43,10 @@ export const InlineRenameInput: React.FC<{
    * 那会多打一次 update 请求。用 ref 记「已经结算过」，两条路径只走一条。
    */
   const doneRef = useRef(false);
-  const settle = (submit: boolean) => {
+  const settle = (submit: boolean, reason: RenameCommitReason = "enter") => {
     if (doneRef.current) return;
     doneRef.current = true;
-    if (submit) onCommit(value);
+    if (submit) onCommit(value, reason);
     else onCancel();
   };
 
@@ -86,11 +69,11 @@ export const InlineRenameInput: React.FC<{
           settle(false);
         }
       }}
-      onBlur={() => settle(true)}
-      className={
+      onBlur={() => settle(true, "blur")}
+      className={`inline-rename-input ${
         className ??
         "h-[17px] w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-[12.5px] font-medium leading-[17px] text-body outline-none"
-      }
+      }`}
     />
   );
 };

@@ -7,7 +7,7 @@
  * 交互约束：
  * - expandedDrawer 由 App 持有，同一时刻只展开一个抽屉（手风琴）。
  * - searchQuery 非空时忽略 view，扁平展示三组搜索结果。
- * - 副作用：内部拖拽落点直接调 notesApi.updateNote 写 category_id，成功后 onNotesUpdated() 刷新全局。
+ * - 副作用：内部拖拽落点与右键菜单共用 App 传入的 onMoveToCategory（写库 + 就地刷新 + 开关抽屉）。
  * - 主列表带正文（AI 需要读未打开的笔记），搜索直接在 notes 上匹配，无需额外请求。
  */
 import { useI18n } from "@/i18n";
@@ -15,7 +15,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Category, Note } from "@/interface/note/note";
 import type { SidebarProps } from "@/interface/note/sidebar";
 import type { ContextMenuItem } from "@/interface/app/ui";
-import * as notesApi from "@/api/note/notes";
 import { useToast } from '@/components/common/Toast';
 import { ContextMenu, useContextMenu } from '@/components/common/ContextMenu';
 import { CategoryDrawer, UncategorizedDrawer, ChildNotesDrawer, DrawerNoteItem } from '@/components/layout/CategoryDrawer';
@@ -103,7 +102,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onShowNoteProperties,
   onShowCategoryProperties,
   onShowGroupProperties,
-  onNotesUpdated,
   hoverDropCategoryId = null,
   isFileDragActive = false,
   onEncryptNote,
@@ -398,28 +396,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       submenu: item.submenu?.map((sub, index) => index === 0 ? { ...sub, label: t(sub.label) } : sub),
     }));
   /**
-   * 拖拽落点写库：侧边栏里唯一直接改数据的地方。
-   * 落点与笔记当前分组相同时直接返回——否则会白白触发一次 update + 全量刷新，列表还会闪一下。
+   * 拖拽落点：与右键「移动到分组」共用同一个入口。
+   *
+   * 以前这里自己 updateNote 再 onNotesUpdated() 全量刷新，既慢又会「toast 先弹、列表后到」；
+   * 现在统一交给 App 传入的 handleMoveNoteToCategory：轻量写库 + 就地更新 + 关闭源分组 /
+   * 打开目标分组 + 全部完成后才提示。落点没变时直接返回，连一次往返都省掉。
    */
   const handleDropToCategory = async (noteId: string, categoryId: string | null) => {
     const note = notes.find((n) => n.id === noteId);
     if (!note || note.category_id === categoryId) return;
-    // 加密内容不能靠拖拽换分组：笔记的密文与分组密钥绑定，加密分组也不接受明文笔记
-    if (note.enc_mode !== 0) {
-      showToast(t("加密笔记不能移动到其他分组"), 'error');
-      return;
-    }
-    if (categories.find((c) => c.id === categoryId)?.is_encrypted) {
-      showToast(t("该分组已加密，组内笔记不可单独新建或移入"), 'error');
-      return;
-    }
-    try {
-      await notesApi.updateNote(note.id, note.title, note.content, categoryId);
-      showToast(t("笔记分组已更新"), 'success');
-      await onNotesUpdated();
-    } catch {
-      showToast(t("更新笔记分组失败"), 'error');
-    }
+    await onMoveToCategory(note, categoryId);
   };
   /** 供指针事件回调调用，始终指向最新一次渲染的 handler（避免闭包里的 notes 过期） */
   const dropToCategoryRef = useRef(handleDropToCategory);

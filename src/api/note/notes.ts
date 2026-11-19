@@ -47,6 +47,17 @@ export const updateNote = async (id: string, title: string, content: string, cat
   return await invoke('update_note', { id, title, content, categoryId });
 };
 
+/**
+ * 移动笔记到指定分组（move_note_to_category），categoryId 为 null 表示未分类。
+ *
+ * 后端只 UPDATE category_id：不回传正文、不写历史版本、不重建语义索引，
+ * 也不改 updated_at（移动不是编辑，不该让笔记在「按更新时间」里跳位）。
+ * 前端随后就地更新内存列表即可，不要再 loadData 全量读回。
+ */
+export const moveNoteToCategory = async (id: string, categoryId: string | null): Promise<void> => {
+  return await invoke('move_note_to_category', { id, categoryId });
+};
+
 /** 切换收藏/置顶（pin_note）：所在分组内置顶并进入收藏视图；不改变 updated_at */
 export const pinNote = async (id: string, pinned: boolean): Promise<void> => {
   return await invoke('pin_note', { id, pinned });
