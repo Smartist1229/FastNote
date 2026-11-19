@@ -571,3 +571,23 @@ markdown-editor/
 `index.ts` 已是公共出口，`package.json` 的 `exports` 指过去即可。
 
 `peerDependencies` 需要 `react` / `react-dom`（>=18），`highlight.js` / `katex` / `mermaid` 按需引入。
+
+---
+
+## 9. 宿主 CSP 要求（重要）
+
+组件会把三类 HTML 直接放进 DOM：Mermaid 图（SVG 自带 `<style>` + 元素 `style` 属性）、KaTeX 公式（大量内联样式）、`allowHtml` 的原始 HTML 块。它们全部依赖**内联样式**才能正常排版。
+
+宿主若使用「带 nonce 的 CSP」（典型：Tauri 打包版 —— 编译期给入口 HTML 的内联 `<style>` 注入 nonce），按 CSP3 规定，`style-src` 里一旦出现 nonce 或 hash，同一行的 `'unsafe-inline'` 就会被忽略，于是这些内联样式被整批丢弃：
+
+- Mermaid：节点变黑、label 溢出色块、箭头错位（**dev 不复现**，因为 dev server 不注入 nonce）
+- KaTeX：公式上下标错位、行高崩塌
+
+两种处理任选其一：
+
+1. 保证最终生效的 CSP 里 `style-src` 含 `'unsafe-inline'` 且**不带** nonce/hash。Tauri 应用加一行即可：
+   ```json
+   "app": { "security": { "dangerousDisableAssetCspModification": ["style-src"] } }
+   ```
+2. 不配置也能用，但只有 Mermaid 有兜底：`mountMermaidSvg` 把图的 `<style>` 转成 Constructable Stylesheet（CSSOM 注入不走 inline 检查），并用 `style.cssText` 重套元素的内联样式（`setAttribute("style", …)` 照样会被拦）。公式与 HTML 块仍依赖第 1 条。
+

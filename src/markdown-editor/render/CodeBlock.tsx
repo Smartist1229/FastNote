@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BlockNode, MarkdownEditorConfig } from "../types";
 import { MdeIcon } from "../icons";
 import { parseCodeMeta } from "./codeMeta";
-import { escapeHtml, highlightCode, renderMermaid, splitHighlightedLines } from "./highlight";
+import { escapeHtml, highlightCode, mountMermaidSvg, renderMermaid, splitHighlightedLines } from "./highlight";
 
 type CodeNode = Extract<BlockNode, { type: "code" }>;
 
@@ -369,6 +369,7 @@ const MermaidBlock: React.FC<PlainCodeBlockProps> = (props) => {
   const { node, config } = props;
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -384,6 +385,13 @@ const MermaidBlock: React.FC<PlainCodeBlockProps> = (props) => {
     };
   }, [node.code, config.preview.mermaidTheme]);
 
+  /* SVG 里的 <style> 走 CSSOM 注入，见 mountMermaidSvg 的注释（CSP nonce 会让内联样式失效） */
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!svg || !host) return;
+    return mountMermaidSvg(host, svg);
+  }, [svg]);
+
   if (failed) return <div title={props.labels.mermaidRenderFailed}><PlainCodeBlock {...props} /></div>;
 
   if (!svg) {
@@ -394,7 +402,7 @@ const MermaidBlock: React.FC<PlainCodeBlockProps> = (props) => {
     );
   }
 
-  return <div className="mde-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div className="mde-mermaid" ref={hostRef} />;
 };
 
 export const CodeBlock: React.FC<CodeBlockProps> = (props) => {

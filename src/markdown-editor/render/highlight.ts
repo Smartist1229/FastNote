@@ -153,6 +153,74 @@ const loadMermaid = (): Promise<Mermaid | null> => {
 
 let mermaidSeq = 0;
 
+/**
+ * 把 mermaid 产出的 SVG 挂进容器。
+ *
+ * 图不只是几何：节点填充、label 的 nowrap / 字号 / 居中对齐、箭头 marker 颜色，
+ * 全在 SVG 自带的那段 `<style>` 里，另外还有一堆写在元素 `style` 属性上。
+ * 而生产构建的 WebView 带的是「带 nonce 的 CSP」—— Tauri 在编译期给入口 HTML 的内联
+ * `<style>` 注入了 nonce，按 CSP3 的规定，同一条 style-src 里一旦出现 nonce，
+ * 'unsafe-inline' 就被忽略；于是 `innerHTML` 塞进去的、没有 nonce 的 `<style>` 和
+ * style 属性整段失效。表现就是打包版里节点变黑、label 溢出色块、箭头错位，
+ * dev 走 vite server 不过这道处理所以看不出问题。
+ *
+ * 两条绕法都走 CSSOM（CSP 只拦「解析 HTML 时的 inline」，不拦脚本设样式）：
+ * - `<style>` 转成 Constructable Stylesheet 注入 document，规则以 `#mde-mermaid-N`
+ *   开头，不会污染别处；与插件宿主注入 CSS 是同一套办法；
+ * - style 属性的值在解析阶段只是被「忽略」，仍在 DOM 上，用 `style.cssText` 重新套一遍
+ *   就生效（`setAttribute("style", …)` 不行，那个照样被拦 —— 实测过）。
+ * 两者都不可用时回退到原样插入，交给浏览器。
+ */
+const applyInlineStyles = (root: Element): void => {
+  const apply = (el: Element) => {
+    const css = el.getAttribute("style");
+    if (!css) return;
+    try {
+      (el as HTMLElement | SVGElement).style.cssText = css;
+    } catch {
+      /* 个别元素（如 foreignObject 里的 SVG 节点）拿不到 style，忽略 */
+    }
+  };
+  apply(root);
+  for (const el of root.querySelectorAll("[style]")) apply(el);
+};
+
+export const mountMermaidSvg = (host: HTMLElement, svg: string): (() => void) => {
+  const template = document.createElement("template");
+  template.innerHTML = svg;
+  const root = template.content.firstElementChild;
+  if (!root) {
+    host.innerHTML = svg;
+    return () => {
+      host.innerHTML = "";
+    };
+  }
+
+  applyInlineStyles(root);
+
+  const styles = Array.from(root.querySelectorAll("style"));
+  let sheet: CSSStyleSheet | null = null;
+  if (styles.length > 0 && typeof CSSStyleSheet === "function" && "adoptedStyleSheets" in document) {
+    try {
+      sheet = new CSSStyleSheet();
+      sheet.replaceSync(styles.map((el) => el.textContent ?? "").join("\n"));
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      for (const el of styles) el.remove();
+    } catch {
+      sheet = null;
+    }
+  }
+
+  host.replaceChildren(root);
+
+  return () => {
+    host.replaceChildren();
+    if (sheet) {
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((item) => item !== sheet);
+    }
+  };
+};
+
 /** 渲染 Mermaid 图：返回 SVG 字符串；失败返回 null 由调用方回退到源码 */
 export const renderMermaid = async (
   code: string,
