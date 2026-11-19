@@ -242,7 +242,20 @@ export const buildNoteEditorConfig = (
       calloutCollapsible: settings.calloutCollapsible,
       math: settings.math,
       mermaid: settings.mermaid,
-      mermaidTheme: settings.mermaidTheme,
+      /*
+       * 固定 auto：图跟着主题走（明暗 / 强调色 / 自定义配色），
+       * 不再单独维护一套「流程图主题」，换肤时整篇笔记与图表是同一个色系。
+       */
+      mermaidTheme: "auto",
+      mermaidPreview: settings.mermaidPreview,
+      mermaidMaxWidth: clamp(settings.mermaidMaxWidth, 1, 100),
+      mermaidMaxHeight: clamp(settings.mermaidMaxHeight, 15, 100),
+      // 与图片放大同一条约束：最小值不能高过最大值，否则滚轮一滚就顶到边界
+      mermaidZoom: {
+        step: clamp(settings.mermaidZoomStep, 1.05, 3),
+        min: clamp(settings.mermaidZoomMin, 0.1, 1),
+        max: clamp(settings.mermaidZoomMax, 2, 20),
+      },
       taskInteractive: settings.taskInteractive,
       allowHtml: settings.allowHtml,
       breaks: settings.breaks,
@@ -389,7 +402,16 @@ export const buildAiRenderConfig = (
     },
     math: true,
     mermaid: true,
-    mermaidTheme: settings.mermaidTheme,
+    // 图配色固定跟随主题；尺寸与放大沿用用户设置，AI 回复里的图也能点开看细节
+    mermaidTheme: "auto",
+    mermaidPreview: settings.mermaidPreview,
+    mermaidMaxWidth: clamp(settings.mermaidMaxWidth, 1, 100),
+    mermaidMaxHeight: clamp(settings.mermaidMaxHeight, 15, 100),
+    mermaidZoom: {
+      step: clamp(settings.mermaidZoomStep, 1.05, 3),
+      min: clamp(settings.mermaidZoomMin, 0.1, 1),
+      max: clamp(settings.mermaidZoomMax, 2, 20),
+    },
     // 表格样式必须和笔记编辑器同源：AI 回复里的表格常常比正文更宽，
     // 用户调了「表格边框 / 紧凑 / 撑满」却发现只有笔记里变、对话里不变，会以为开关坏了
     tables: {

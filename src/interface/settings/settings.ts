@@ -112,9 +112,6 @@ export type EditorTabKey = "indent" | "spaces" | "none";
 /** 分栏同步滚动策略：anchor 按编辑行锚点插值 | ratio 按滚动比例 */
 export type EditorSyncScrollMode = "anchor" | "ratio";
 
-/** Mermaid 图表主题 */
-export type EditorMermaidTheme = "default" | "dark" | "forest" | "neutral" | "base";
-
 /** 代码块配色预设（与 MarkdownThemeConfig.codeTheme 同源） */
 export type EditorCodeTheme = CodeThemePreset;
 
@@ -237,8 +234,18 @@ export interface EditorSettings {
   math: boolean;
   /** 渲染 Mermaid 图表 */
   mermaid: boolean;
-  /** Mermaid 图表主题 */
-  mermaidTheme: EditorMermaidTheme;
+  /** 点击流程图放大查看（窗口级浮层，与图片同一套交互） */
+  mermaidPreview: boolean;
+  /** 流程图最大宽度（内容区宽度的百分比，1–100；只封顶不拉伸） */
+  mermaidMaxWidth: number;
+  /** 流程图最大高度（窗口高度的百分比，15–100） */
+  mermaidMaxHeight: number;
+  /** 流程图放大每格滚轮的倍率（>1，缩小取倒数） */
+  mermaidZoomStep: number;
+  /** 流程图放大最小倍率 */
+  mermaidZoomMin: number;
+  /** 流程图放大最大倍率 */
+  mermaidZoomMax: number;
   /** 任务列表勾选框可点击 */
   taskInteractive: boolean;
   /** 单个换行即换行（GFM breaks）：每行的 \n 都渲染成换行，不用行尾补两个空格；开启后 Setext 标题停用 */
@@ -293,6 +300,10 @@ export interface EditorSettings {
   /* ---------- 工具栏 ---------- */
   /** 是否显示顶部工具栏 */
   showToolbar: boolean;
+  /** 关闭编辑器工具栏后，在笔记面板工具栏右侧显示「分栏 / 编辑 / 阅读」切换 */
+  showPanelModeSwitch: boolean;
+  /** 关闭编辑器工具栏后，在笔记面板工具栏右侧显示大纲按钮 */
+  showPanelOutline: boolean;
   /** 工具栏吸顶 */
   toolbarSticky: boolean;
   /** 紧凑模式：按钮更小、间距更窄 */

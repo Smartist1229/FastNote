@@ -12,7 +12,7 @@ import { useI18n } from "@/i18n";
 import { DEFAULT_EDITOR_SETTINGS } from "@/config/app/appDefaults";
 import { buildNoteEditorConfig } from "@/config/editor/markdownEditor";
 import { useActiveThemeTokens, useResolvedThemeMode } from "@/lib/theme/themeRuntime";
-import { MarkdownPreview, parseMarkdown, resolveConfig, resolveLabels } from "@/markdown-editor";
+import { MarkdownPreview, buildThemeVars, parseMarkdown, resolveConfig, resolveLabels } from "@/markdown-editor";
 import { resolveImageSource } from "@/lib/markdown/imageSrc";
 
 export interface MarkdownRenderProps {
@@ -33,6 +33,11 @@ export const MarkdownRenderView: React.FC<MarkdownRenderProps> = ({ markdown }) 
   );
   const doc = useMemo(() => parseMarkdown(markdown), [markdown]);
   const labels = useMemo(() => resolveLabels(config), [config]);
+  /*
+   * 放大浮层 portal 到 body，脱离了 `.mde-root` 的继承链，
+   * 只有把变量显式传进去，图片 / 流程图浮层才会用当前主题的底色与文字色。
+   */
+  const themeVars = useMemo(() => buildThemeVars(config, mode).vars, [config, mode]);
 
   return (
     <MarkdownPreview
@@ -40,6 +45,7 @@ export const MarkdownRenderView: React.FC<MarkdownRenderProps> = ({ markdown }) 
       config={config}
       labels={labels}
       readOnly
+      themeVars={themeVars}
       resolveImage={resolveImageSource}
     />
   );

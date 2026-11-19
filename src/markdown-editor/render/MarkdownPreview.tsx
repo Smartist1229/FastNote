@@ -769,9 +769,10 @@ const MarkdownPreviewBase: React.FC<MarkdownPreviewProps> = ({
       onTaskToggle,
       onImageClick,
       resolveImage,
+      themeVars,
       showImage: (src: string, alt: string) => setViewing({ src, alt }),
     }),
-    [config, labels, readOnly, onLinkClick, onTaskToggle, onImageClick, resolveImage],
+    [config, labels, readOnly, onLinkClick, onTaskToggle, onImageClick, resolveImage, themeVars],
   );
   return (
     <PreviewCtx.Provider value={ctx}>

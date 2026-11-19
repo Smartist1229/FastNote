@@ -411,8 +411,44 @@ export interface MarkdownPreviewConfig {
   math: boolean;
   /** Mermaid 图表 */
   mermaid: boolean;
-  /** Mermaid 主题 */
-  mermaidTheme: "default" | "dark" | "forest" | "neutral" | "base";
+  /**
+   * Mermaid 配色。
+   *
+   * `auto`（默认）跟着组件主题走：底色、节点填充、边框、文字、连线都从当前主题的
+   * `--mde-*` 变量推导，切明暗 / 换强调色 / 自定义配色时图会一起变。
+   * 其余值是 mermaid 的内置主题，只在需要固定一套配色时才用。
+   */
+  mermaidTheme: "auto" | "default" | "dark" | "forest" | "neutral" | "base";
+  /**
+   * 点击流程图放大查看（分栏预览区 / 阅读视图）。
+   *
+   * 放大后与图片预览同一套交互：滚轮缩放、按住拖动平移、双击复位、Esc / 点空白关闭。
+   * 关掉后流程图就是普通静态图，点击不弹浮层；此开关同时受 `mermaid` 控制。
+   */
+  mermaidPreview: boolean;
+  /**
+   * 流程图在正文里的最大宽度，取内容区宽度的百分比（1–100）。
+   *
+   * 只封顶不放大：图表自然宽度比这个值小时保持原样，超了才等比缩小。
+   * 100 = 与正文同宽（长流程图的默认观感），想留白就调小。
+   */
+  mermaidMaxWidth: number;
+  /**
+   * 流程图的最大高度，取窗口高度的百分比（15–100）。
+   *
+   * 竖向很长的流程图（时序图、多层分支）在正文里会拉出好几屏，这里封顶，
+   * 宽度等比跟着缩；要看细节点开放大浮层。
+   */
+  mermaidMaxHeight: number;
+  /** 放大浮层的缩放参数（`mermaidPreview` 为 true 时生效） */
+  mermaidZoom: {
+    /** 每格滚轮的倍率（>1；缩小取倒数） */
+    step: number;
+    /** 最小倍率 */
+    min: number;
+    /** 最大倍率 */
+    max: number;
+  };
   /** 表格样式 */
   tables: {
     bordered: boolean;
@@ -782,6 +818,8 @@ export interface MarkdownEditorProps {
   onTaskToggle?: (checked: boolean, taskOffset: number, value: string) => string | void;
   /** 大纲变化 */
   onOutlineChange?: (outline: OutlineItem[]) => void;
+  /** 大纲面板开合（挂载时先回调一次初始值） */
+  onOutlineOpenChange?: (open: boolean) => void;
   /** 统计变化 */
   onStatsChange?: (stats: MarkdownStats) => void;
   /**

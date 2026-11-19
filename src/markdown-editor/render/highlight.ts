@@ -140,7 +140,6 @@ export const renderMath = async (
 type Mermaid = typeof import("mermaid").default;
 
 let mermaidModule: Promise<Mermaid | null> | null = null;
-let mermaidTheme = "";
 
 const loadMermaid = (): Promise<Mermaid | null> => {
   if (!mermaidModule) {
@@ -221,24 +220,86 @@ export const mountMermaidSvg = (host: HTMLElement, svg: string): (() => void) =>
   };
 };
 
-/** 渲染 Mermaid 图：返回 SVG 字符串；失败返回 null 由调用方回退到源码 */
+/**
+ * 从元素实际生效的 `--mde-*` 变量推导 mermaid 的 themeVariables。
+ *
+ * 整份主题色（明暗、强调色、用户自定义配色）都写在 `.mde-root` 的 CSS 变量上，
+ * 所以 `auto` 模式不该再另起一套色板：直接读计算样式，图就和正文同色系，
+ * 换主题时跟着一起变。读不到（还没挂进文档）时退回 mermaid 的浅色默认值。
+ */
+export const mermaidThemeVariables = (host: Element | null): Record<string, string> => {
+  const style = host ? getComputedStyle(host) : null;
+  const read = (name: string, fallback: string) => style?.getPropertyValue(name).trim() || fallback;
+
+  const bg = read("--mde-preview-bg", "#ffffff");
+  const text = read("--mde-text-body", "#334155");
+  const accent = read("--mde-accent", "#6366f1");
+  const accentSoft = read("--mde-accent-soft", "#eef2ff");
+  const border = read("--mde-border", "#e5e9f0");
+  // 图的底色取「面板色」，与 svg 自己的背景一致（见 styles.css）
+  const panel = read("--mde-quote-bg", bg);
+  /*
+   * 连线 / 箭头：mermaid 默认拿边框色画线，`--mde-border-strong` 是一档几乎白灰的线，
+   * 缩到正文尺寸就看不见了。这里基本用强调色（掺一点正文色压亮），既跟主题走又清楚。
+   */
+  const line = `color-mix(in srgb, ${accent} 85%, ${text})`;
+
+  return {
+    background: panel,
+    fontFamily: read("--mde-preview-font-family", "inherit"),
+    fontSize: "14px",
+    primaryColor: accentSoft,
+    primaryTextColor: text,
+    primaryBorderColor: accent,
+    secondaryColor: panel,
+    tertiaryColor: bg,
+    lineColor: line,
+    textColor: text,
+    mainBkg: accentSoft,
+    nodeBorder: accent,
+    nodeTextColor: text,
+    clusterBkg: panel,
+    clusterBorder: border,
+    titleColor: text,
+    // 连线标签盖在线上，露出来的应该是图自己的底色，否则会在面板上挖一块白色
+    edgeLabelBackground: panel,
+    noteBkgColor: accentSoft,
+    noteTextColor: text,
+    noteBorderColor: accent,
+    activationBkgColor: accentSoft,
+    activationBorderColor: accent,
+    sequenceNumberColor: bg,
+    attributeBackgroundColorOdd: bg,
+    attributeBackgroundColorEven: panel,
+  };
+};
+
+/**
+ * 渲染 Mermaid 图：返回 SVG 字符串；失败返回 null 由调用方回退到源码。
+ *
+ * `theme` 传 `"auto"` 表示跟随主题：用 mermaid 的 base 主题 + `variables`（见
+ * `mermaidThemeVariables`）把配色改写成本组件的主题色。
+ */
 export const renderMermaid = async (
   code: string,
   theme: string,
+  variables?: Record<string, string>,
 ): Promise<string | null> => {
   const mermaid = await loadMermaid();
   if (!mermaid) return null;
   try {
-    if (mermaidTheme !== theme) {
-      mermaid.initialize({
-        startOnLoad: false,
-        suppressErrorRendering: true,
-        theme: theme as never,
-        securityLevel: "loose",
-        fontFamily: "inherit",
-      });
-      mermaidTheme = theme;
-    }
+    /*
+     * 每次都 initialize：`auto` 的 variables 随主题变（明暗、强调色、自定义配色），
+     * 只按主题名缓存会让换肤后的图仍停在旧配色上。initialize 只是写一份全局配置，代价很小。
+     */
+    mermaid.initialize({
+      startOnLoad: false,
+      suppressErrorRendering: true,
+      theme: (theme === "auto" ? "base" : theme) as never,
+      securityLevel: "loose",
+      fontFamily: "inherit",
+      ...(theme === "auto" && variables ? { themeVariables: variables as never } : {}),
+    });
     const id = `mde-mermaid-${++mermaidSeq}`;
     const { svg } = await mermaid.render(id, code);
     return svg;

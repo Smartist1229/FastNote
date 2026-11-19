@@ -7,10 +7,20 @@
  * Mermaid 渲染是异步的，失败时退回普通代码块，不让一句写错的图语句把整篇预览拖崩。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { BlockNode, MarkdownEditorConfig } from "../types";
 import { MdeIcon } from "../icons";
 import { parseCodeMeta } from "./codeMeta";
-import { escapeHtml, highlightCode, mountMermaidSvg, renderMermaid, splitHighlightedLines } from "./highlight";
+import { MermaidViewer } from "../components/overlays/MermaidViewer";
+import { usePreview } from "./context";
+import {
+  escapeHtml,
+  highlightCode,
+  mermaidThemeVariables,
+  mountMermaidSvg,
+  renderMermaid,
+  splitHighlightedLines,
+} from "./highlight";
 
 type CodeNode = Extract<BlockNode, { type: "code" }>;
 
@@ -367,42 +377,123 @@ const PlainCodeBlock: React.FC<PlainCodeBlockProps> = ({ node, config, labels, l
 /** Mermaid 图：渲染失败自动回退为代码块 */
 const MermaidBlock: React.FC<PlainCodeBlockProps> = (props) => {
   const { node, config } = props;
+  const ctx = usePreview();
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
-  const hostRef = useRef<HTMLDivElement>(null);
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [zoomSvg, setZoomSvg] = useState<SVGSVGElement | null>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+
+  const theme = config.preview.mermaidTheme;
+  /*
+   * 主题变了要重画：`auto` 的配色来自主题变量，只盯 mermaidTheme 会让换肤后的图停在旧色。
+   * `config.theme` 每次换肤 / 换配色都是新对象（MarkdownEditor 侧 useMemo 出来），拿来当依赖即可。
+   */
+  const themeKey = `${config.theme.mode}|${JSON.stringify(config.theme.colors)}`;
 
   useEffect(() => {
     let alive = true;
-    setFailed(false);
-    setSvg(null);
-    renderMermaid(node.code, config.preview.mermaidTheme).then((result) => {
+    // 读的是容器实际继承到的 `--mde-*`：换肤后的最终色（含自定义配色）只有 CSS 知道
+    const vars = theme === "auto" ? mermaidThemeVariables(frameRef.current) : undefined;
+    renderMermaid(node.code, theme, vars).then((result) => {
       if (!alive) return;
-      if (result) setSvg(result);
-      else setFailed(true);
+      /*
+       * 换主题时不先清空旧图：清空会让容器在「骨架屏 / 图」之间来回切一帧，
+       * 视觉上闪一下白，放大浮层也会跟着重建。等新图到位直接替换即可。
+       */
+      if (result) {
+        setSvg(result);
+        setFailed(false);
+      } else {
+        setFailed(true);
+      }
     });
     return () => {
       alive = false;
     };
-  }, [node.code, config.preview.mermaidTheme]);
+  }, [node.code, theme, themeKey]);
 
-  /* SVG 里的 <style> 走 CSSOM 注入，见 mountMermaidSvg 的注释（CSP nonce 会让内联样式失效） */
+  /*
+   * SVG 里的 <style> 走 CSSOM 注入，见 mountMermaidSvg 的注释（CSP nonce 会让内联样式失效）。
+   *
+   * 挂载点是**画布**（`mde-mermaid-canvas`），与 React 自己渲染的骨架屏是两个元素：
+   * 之前两者共用同一个 div，换主题时 React 刚插回骨架屏，这个 effect 的清理函数
+   * 就把 div 清空了，随后 React 再去移除骨架屏就报
+   * `NotFoundError: The node to be removed is not a child of this node`。
+   */
   useEffect(() => {
-    const host = hostRef.current;
+    const host = canvasRef.current;
     if (!svg || !host) return;
     return mountMermaidSvg(host, svg);
   }, [svg]);
 
+  /* 放大中的克隆图跟着重画走：换主题后大图不能停在旧配色 */
+  useEffect(() => {
+    if (!zoomOpen) return;
+    const el = canvasRef.current?.querySelector("svg");
+    if (el) setZoomSvg(el.cloneNode(true) as SVGSVGElement);
+  }, [zoomOpen, svg]);
+
+  /* 渲染失败退回源码时收掉浮层，免得下次渲染成功又自己弹出来 */
+  useEffect(() => {
+    if (!failed) return;
+    setZoomOpen(false);
+    setZoomSvg(null);
+  }, [failed]);
+
+  /*
+   * 尺寸走容器变量：`.mde-mermaid` 只负责把宽度收窄，里面的 svg 仍是自己的自然尺寸
+   * （mermaid 写在根节点上的 `max-width`），所以「最大宽度」是封顶而不是拉伸。
+   */
+  const frame = {
+    "--mde-mermaid-max-width": `${Math.min(100, Math.max(1, config.preview.mermaidMaxWidth || 100))}%`,
+    "--mde-mermaid-max-height": `${Math.min(100, Math.max(15, config.preview.mermaidMaxHeight || 90))}vh`,
+  } as CSSProperties;
+
   if (failed) return <div title={props.labels.mermaidRenderFailed}><PlainCodeBlock {...props} /></div>;
 
-  if (!svg) {
-    return (
-      <div className="mde-mermaid mde-mermaid-loading" aria-busy="true" aria-label={props.labels.mermaidLoading}>
-        <span className="mde-mermaid-skeleton" />
-      </div>
-    );
-  }
+  const ready = svg !== null;
+  const canZoom = ready && config.preview.mermaidPreview;
 
-  return <div className="mde-mermaid" ref={hostRef} />;
+  return (
+    <>
+      <div
+        className={`mde-mermaid${ready ? "" : " mde-mermaid-loading"}${canZoom ? " is-zoomable" : ""}`}
+        ref={frameRef}
+        style={frame}
+        onClick={
+          canZoom
+            ? () => {
+                const el = canvasRef.current?.querySelector("svg");
+                if (el) {
+                  setZoomSvg(el.cloneNode(true) as SVGSVGElement);
+                  setZoomOpen(true);
+                }
+              }
+            : undefined
+        }
+        title={canZoom ? props.labels.mermaidPreview : undefined}
+        aria-busy={ready ? undefined : true}
+        aria-label={ready ? undefined : props.labels.mermaidLoading}
+      >
+        {ready ? <div className="mde-mermaid-canvas" ref={canvasRef} /> : <span className="mde-mermaid-skeleton" />}
+      </div>
+      {zoomOpen && zoomSvg && (
+        <MermaidViewer
+          svg={zoomSvg}
+          config={config.preview.mermaidZoom}
+          labels={props.labels}
+          locale={config.locale}
+          themeVars={ctx.themeVars}
+          onClose={() => {
+            setZoomOpen(false);
+            setZoomSvg(null);
+          }}
+        />
+      )}
+    </>
+  );
 };
 
 export const CodeBlock: React.FC<CodeBlockProps> = (props) => {

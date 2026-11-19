@@ -28,6 +28,13 @@ export interface PreviewContextValue {
    * 组件只知道「一个 src 字符串」，不关心它在磁盘、图床还是 data URI。
    */
   resolveImage?: (src: string) => ImageResolveResult;
+  /**
+   * 主题变量（`--mde-*`）。
+   *
+   * 浮层类组件（图片放大、流程图放大）portal 到 `document.body`，脱离了 `.mde-root`
+   * 的继承链，得靠这份变量重新铺一遍配色。
+   */
+  themeVars?: Record<string, string>;
 }
 
 export const PreviewCtx = createContext<PreviewContextValue | null>(null);

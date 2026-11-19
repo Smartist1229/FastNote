@@ -6,6 +6,11 @@
  */
 export { MarkdownEditor } from "./components/MarkdownEditor";
 export { MarkdownPreview } from "./render/MarkdownPreview";
+/**
+ * 主题变量构建：宿主若把预览里的浮层（图片 / 流程图放大）挂到自己的根节点上，
+ * 需要同一份 `--mde-*` 变量来铺配色。
+ */
+export { buildThemeVars } from "./theme";
 
 /**
  * 默认键位表：软件层的「设置 → 快捷键」直接读它，避免文档与实际键位漂移。

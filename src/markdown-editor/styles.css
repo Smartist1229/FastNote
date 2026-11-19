@@ -2174,23 +2174,92 @@ button.mde-code-lang.is-open svg {
 }
 
 /* Mermaid */
+/*
+ * 尺寸走容器：`--mde-mermaid-max-width` 收窄的是盒子宽度，里面的 svg 仍是自己的
+ * 自然宽度（mermaid 写在根节点上的 max-width），所以这一项是「封顶」而不是拉伸。
+ * 两个变量由 CodeBlock 按 config.preview.mermaidMax* 内联写进来。
+ *
+ * 底色**只铺在图（svg）自己身上**，不铺容器：容器是整行宽，涂上去会在图旁边留下一大片
+ * 空底色。图自己不带底，放大到半透明遮罩上又会跟遮罩糊成一片，所以底色跟着 svg 走，
+ * 取 `--mde-mermaid-bg`（默认 `--mde-quote-bg`，比正文底深一档的主题面板色）。
+ */
 .mde-root .mde-mermaid {
+  --mde-mermaid-max-width: 100%;
+  --mde-mermaid-max-height: none;
+  --mde-mermaid-bg: var(--mde-quote-bg);
   display: flex;
   justify-content: center;
-  margin: 0.4em 0 var(--mde-preview-para);
-  padding: 10px 0;
+  width: 100%;
+  max-width: var(--mde-mermaid-max-width);
+  margin: 0.4em auto var(--mde-preview-para);
   overflow-x: auto;
+}
+
+/* 画布：只做 SVG 的挂载点，不参与布局（`display: contents` 让 svg 仍是 flex 子项） */
+.mde-root .mde-mermaid-canvas {
+  display: contents;
 }
 
 .mde-root .mde-mermaid svg {
   max-width: 100%;
+  max-height: var(--mde-mermaid-max-height);
   height: auto;
+  border-radius: 8px;
+  background: var(--mde-mermaid-bg);
+  /* 圆角与节点的外沿之间留一点余量，边框不会被切掉 */
+  padding: 8px 10px;
+}
+
+/* 可点击放大：光标提示 + 悬停时在底色上掺一点强调色 */
+.mde-root .mde-mermaid.is-zoomable {
+  cursor: zoom-in;
+}
+
+.mde-root .mde-mermaid.is-zoomable:hover svg {
+  background: color-mix(in srgb, var(--mde-accent) 6%, var(--mde-mermaid-bg));
 }
 
 .mde-root .mde-mermaid-loading {
   min-height: 60px;
   align-items: center;
 }
+
+/*
+ * 放大浮层里的图：mermaid 的根节点尺寸已被 MermaidViewer 清成 `width:100%`，
+ * 这里按窗口给它一个上下限，拖拽/缩放由外层 transform 负责。
+ * 浮层容器本身完全透明，只有图那一块带主题底色（实心），没图的地方看到的是遮罩。
+ */
+.mde-mermaid-zoom {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(88vw, 1400px);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  will-change: transform;
+  transition: transform 80ms ease-out;
+}
+
+/* 拖动中跟手：去掉过渡，否则图会落后指针一截 */
+.mde-mermaid-zoom.is-dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+.mde-mermaid-zoom svg {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 78vh;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--mde-mermaid-bg, var(--mde-quote-bg, #ffffff));
+  box-shadow: var(--mde-shadow);
+}
+
 
 .mde-mermaid-skeleton {
   width: 200px;

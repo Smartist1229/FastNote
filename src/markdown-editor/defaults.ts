@@ -479,7 +479,14 @@ export const DEFAULT_CONFIG: MarkdownEditorConfig = {
     calloutCollapsible: true,
     math: true,
     mermaid: true,
-    mermaidTheme: "default",
+    // 跟随主题：明暗、强调色、自定义配色都会带到图上，不用再单独选一套图表配色
+    mermaidTheme: "auto",
+    // 点击流程图放大：与图片预览同一套浮层交互
+    mermaidPreview: true,
+    mermaidZoom: { step: 1.2, min: 0.4, max: 8 },
+    // 默认按内容区宽度显示（只封顶不放大），高度封顶在视口 90%：超长流程图文内不拉出几屏
+    mermaidMaxWidth: 100,
+    mermaidMaxHeight: 90,
     tables: { bordered: false, compact: false, fullWidth: true },
     taskInteractive: true,
     // 点击图片放大预览：分栏预览区与阅读视图里点图弹浮层，滚轮缩放

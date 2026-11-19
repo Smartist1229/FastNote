@@ -161,6 +161,11 @@ const DEFAULT_UPGRADES = [
    */
   { category: "editor", field: "imageMaxWidth", from: 60, to: 20, flag: "app.migrations.editorImageMaxWidth" },
   { category: "editor", field: "imageMaxHeight", from: 80, to: 20, flag: "app.migrations.editorImageMaxHeight" },
+  /*
+   * 工具栏出厂默认改为不显示（视图切换 / 大纲已搬到面板工具栏）。
+   * 老库里仍是 `true` 的多半停在旧默认上，升级一次；用户手动开过的之后不会再被顶。
+   */
+  { category: "editor", field: "showToolbar", from: true, to: false, flag: "app.migrations.editorShowToolbar" },
 ] as const;
 
 /**

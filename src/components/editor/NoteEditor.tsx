@@ -41,6 +41,18 @@ const MarkdownEditor = lazy(() =>
 const FONT_SIZE_FALLBACK = DEFAULT_EDITOR_SETTINGS.fontSize;
 
 /**
+ * 面板工具栏上的视图切换项。
+ *
+ * 编辑器自己的工具栏被关掉后，视图切换与大纲按钮改由软件面板工具栏承担，
+ * 所以图标用软件自己的图标集（`src/assets/icons/mode-*.svg`），文案复用已有词条。
+ */
+const PANEL_MODES: { mode: MarkdownEditorMode; icon: string; label: string }[] = [
+  { mode: "split", icon: "mode-split", label: "分栏" },
+  { mode: "code", icon: "mode-code", label: "编辑" },
+  { mode: "read", icon: "mode-read", label: "阅读" },
+];
+
+/**
  * 底部统计（非空白字符数 / 行数）。
  *
  * 百万字文档上 `replace(/\s/g)` + `split("\n")` 是十几毫秒的全文扫描，
@@ -107,6 +119,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   useEffect(() => {
     setMode(settings.defaultMode);
   }, [settings.defaultMode]);
+  /**
+   * 大纲面板开合：编辑器自己报上来（它才是状态的持有者）。
+   * 面板工具栏上的大纲按钮只在编辑器工具栏关闭时出现，但状态镜像始终维护，切回来即准。
+   */
+  const [outlineOpen, setOutlineOpen] = useState(settings.showOutline);
   const lastNoteIdRef = useRef<string | null>(null);
   /** note 的镜像：命令式动作（如回滚前丢弃草稿）要读当前内容，但不能进 effect 依赖 */
   const noteRef = useRef(note);
@@ -946,7 +963,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             <div className="flex-1 min-w-0" />
           )}
 
-          {/* ③ 固定右组：统计 + 字号，永不滚动 */}
+          {/* ③ 固定右组：统计 + 字号 + 视图切换 / 大纲（后两项仅在编辑器工具栏关闭时），永不滚动 */}
           <div className="flex items-center gap-2 shrink-0 ml-auto">
             {/* 统计 */}
             <div
@@ -969,6 +986,51 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             >
               {editorFontSize} px
             </button>
+
+            {/*
+              编辑器工具栏关掉后，视图切换与大纲就只剩快捷键了，这里把它们搬到面板工具栏右缘。
+              两项各自有开关；都不显示时整块（含分隔线）都不出现。
+            */}
+            {!settings.showToolbar && (settings.showPanelModeSwitch || settings.showPanelOutline) && (
+              <div className="flex items-center gap-1 shrink-0">
+                <div className="divider" />
+                {settings.showPanelModeSwitch && (
+                  <div
+                    className="flex items-center gap-0.5 p-0.5 rounded-md bg-surface-alt"
+                    role="group"
+                    aria-label={t("视图")}
+                  >
+                    {PANEL_MODES.map((item) => (
+                      <button
+                        key={item.mode}
+                        type="button"
+                        onClick={() => setMode(item.mode)}
+                        aria-pressed={mode === item.mode}
+                        title={t(item.label)}
+                        className={`flex items-center justify-center w-7 h-[22px] rounded-[5px] transition-colors ${
+                          mode === item.mode
+                            ? "bg-surface text-primary-500 shadow-sm"
+                            : "text-muted hover:text-body"
+                        }`}
+                      >
+                        <Icon name={item.icon} className="w-3.5 h-3.5" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {settings.showPanelOutline && (
+                  <button
+                    type="button"
+                    onClick={() => editorApiRef.current?.toggleOutline()}
+                    aria-pressed={outlineOpen}
+                    title={t("大纲")}
+                    className={`toolbar-btn ${outlineOpen ? "bg-primary-50! text-primary-500!" : ""}`}
+                  >
+                    <Icon name="editor-outline" className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -993,6 +1055,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               onChange={handleContentChange}
               onReady={handleEditorReady}
               onFontSizeChange={handleFontSizeChange}
+              onOutlineOpenChange={setOutlineOpen}
               onImagePaste={handleImagePaste}
               resolveImage={resolveImage}
               onLinkClick={(href) => {

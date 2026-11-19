@@ -400,6 +400,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
     onTaskToggle,
     resolveImage,
     onOutlineChange,
+    onOutlineOpenChange,
     onStatsChange,
     onFontSizeChange,
     onFullscreenChange,
@@ -1520,6 +1521,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorInstance, MarkdownEditorP
   useEffect(() => {
     onOutlineChange?.(doc.outline);
   }, [doc.outline, onOutlineChange]);
+
+  /* 大纲面板开合：宿主在面板工具栏上放自己的大纲按钮时，靠它同步选中态 */
+  useEffect(() => {
+    onOutlineOpenChange?.(outlineOpen);
+  }, [outlineOpen, onOutlineOpenChange]);
 
   /*
    * 统计拆成两档：「文档级」（字数/段数/阅读时长）只在文本变化时算，

@@ -188,8 +188,18 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   math: true,
   /** Mermaid 流程图 */
   mermaid: true,
-  /** Mermaid 主题 */
-  mermaidTheme: "default",
+  /** 点击流程图放大查看（与图片同一套浮层） */
+  mermaidPreview: true,
+  /** 流程图最大宽度（内容区百分比）：默认与正文同宽，只封顶不拉伸 */
+  mermaidMaxWidth: 100,
+  /** 流程图最大高度（窗口百分比）：超长流程图在正文里不拉出几屏 */
+  mermaidMaxHeight: 90,
+  /** 流程图放大每格滚轮倍率 */
+  mermaidZoomStep: 1.2,
+  /** 流程图放大最小倍率 */
+  mermaidZoomMin: 0.4,
+  /** 流程图放大最大倍率 */
+  mermaidZoomMax: 8,
   /** 预览里任务项可勾选 */
   taskInteractive: true,
   /** 单个换行即换行（GFM breaks） */
@@ -242,8 +252,12 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   headingWeight: 650,
 
   /* 工具栏 */
-  /** 顶部工具栏 */
-  showToolbar: true,
+  /** 顶部工具栏默认关闭，把空间留给正文（视图切换 / 大纲在面板工具栏上） */
+  showToolbar: false,
+  /** 编辑器工具栏关闭后，面板工具栏右侧显示视图切换 */
+  showPanelModeSwitch: true,
+  /** 编辑器工具栏关闭后，面板工具栏右侧显示大纲按钮 */
+  showPanelOutline: true,
   /** 工具栏不吸顶（编辑器自己就是内部滚动容器） */
   toolbarSticky: false,
   /** 工具栏紧凑（笔记区宽度有限） */
