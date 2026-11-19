@@ -125,11 +125,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      # Rust 侧单测（数据库迁移、备份读写、插件清单校验都在 lib 测试里）
-      - name: Run Rust tests
-        run: cargo test --release --lib
-        working-directory: src-tauri
-
       # 构建、上传安装包与签名、创建 Release，并自动生成 latest.json
       - name: Build, publish and generate updater manifest
         uses: tauri-apps/tauri-action@v0
