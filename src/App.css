@@ -579,6 +579,28 @@ textarea:focus-visible {
   transition: background-color var(--transition-fast);
 }
 
+/* 分组标题的「+」：背景必须是正方形，但不能改变标题行高度。
+   原来把 hover:bg-* 直接加在 p-1 的 inline span 上，行盒会被整行高度撑成长条；
+   改用不参与布局的伪元素画 20×20 背景，行盒尺寸与原来完全一致。 */
+.drawer-create-note {
+  position: relative;
+}
+.drawer-create-note::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-md);
+  background: transparent;
+  pointer-events: none;
+}
+.drawer-create-note:hover::before {
+  background: var(--color-surface-alt);
+}
+
 /* AI 打开笔记时的一次性聚焦脉冲；!important 用于压过选中态边框色 */
 .note-focus-ring {
   animation: noteFocusPulse 2.4s ease-out 1;

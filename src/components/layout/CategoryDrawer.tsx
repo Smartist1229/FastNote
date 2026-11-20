@@ -254,14 +254,14 @@ export const CategoryDrawer: React.FC<CategoryDrawerProps> = ({
           <span className="flex items-center gap-0.5 flex-shrink-0 text-faint">
             <span
               data-drawer-action={lockedEncrypted ? undefined : "create-note"}
-              className={`p-1 rounded-md transition-opacity ${
+              className={`drawer-create-note p-1 rounded-md transition-opacity ${
                 lockedEncrypted
                   ? "opacity-0 pointer-events-none"
-                  : "opacity-0 group-hover/drawer:opacity-100 hover:bg-surface-alt"
+                  : "opacity-0 group-hover/drawer:opacity-100"
               }`}
               title={lockedEncrypted ? undefined : t("在此分组新建笔记")}
             >
-              <Icon name="sidebar-plus-bold" className="w-3 h-3 pointer-events-none" />
+              <Icon name="sidebar-plus-bold" className="relative z-10 w-3 h-3 pointer-events-none" />
             </span>
           </span>
         )}
