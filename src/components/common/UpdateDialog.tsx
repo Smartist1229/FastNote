@@ -16,11 +16,13 @@ import {
   clearSkippedVersion,
   closeUpdateDialog,
   downloadUpdate,
+  refreshLines,
   selectUpdateLine,
   skipVersion,
   useUpdater,
 } from "@/stores/updaterStore";
 import type { UpdateLineId, UpdateLineProbe } from "@/stores/updaterStore";
+import { fastestLine } from "@/lib/updater/lines";
 
 /**
  * 更新说明正文单独懒加载：它依赖整个 Markdown 渲染层（以及 Mermaid / KaTeX 的动态入口），
@@ -31,22 +33,20 @@ const NotesBody = lazy(() => import("@/components/common/ReleaseNotesBody"));
 /** 线路单选行：自动线路和两条固定线路共用同一套样式与无障碍语义 */
 const LineOption: React.FC<{
   selected: boolean;
-  disabled?: boolean;
   label: string;
   status: string;
   onSelect: () => void;
-}> = ({ selected, disabled, label, status, onSelect }) => (
+}> = ({ selected, label, status, onSelect }) => (
   <button
     type="button"
     role="radio"
     aria-checked={selected}
-    disabled={disabled}
     onClick={onSelect}
     className={`flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors ${
       selected
         ? "border-primary-400 bg-primary-50"
         : "border-line-soft bg-surface-alt hover:bg-app"
-    } ${disabled ? "cursor-not-allowed opacity-45" : ""}`}
+    }`}
   >
     <span
       aria-hidden
@@ -77,7 +77,7 @@ export const UpdateDialog: React.FC = () => {
 
   const lineLabel = (id: UpdateLineId) => (id === "cnb" ? t("CNB（国内）") : t("GitHub"));
   const statusText = (line: UpdateLineProbe) => {
-    if (line.error) return t("不可用");
+    if (line.error) return t("连不上");
     const latency = line.latencyMs != null ? `${line.latencyMs} ms` : "";
     if (!line.version) return latency ? `${latency} · ${t("已是最新")}` : t("已是最新");
     return latency ? `${latency} · v${line.version}` : `v${line.version}`;
@@ -86,11 +86,26 @@ export const UpdateDialog: React.FC = () => {
   const activeLine = updater.lines.find((line) => line.id === updater.activeLine) ?? null;
   const activeLabel = activeLine ? lineLabel(activeLine.id) : "";
   const showLinePicker = updater.phase === "available" && updater.lines.length > 0;
-  // 手动选的线路这次没有新版本时，store 会回落到最快线路，这里把回落原因说清楚
-  const fallbackLine =
-    updater.lineChoice !== "auto" && activeLine != null && activeLine.id !== updater.lineChoice;
-  const autoStatus = activeLine
-    ? `${lineLabel(activeLine.id)} · ${statusText(activeLine)}`
+  /**
+   * 手选线路的探测状态。
+   * 连不上 / 已是最新都**不阻止选择**：探测只代表这一次请求，开代理后 GitHub 往往反而更快；
+   * 选中之后下载会先试它，失败再自动换到另一条，这里只负责把这件事说清楚。
+   */
+  const chosenLine =
+    updater.lineChoice === "auto"
+      ? null
+      : updater.lines.find((line) => line.id === updater.lineChoice) ?? null;
+  const chosenHint = chosenLine
+    ? chosenLine.error
+      ? t("该线路当前连不上，下载时会重新尝试；仍然失败则自动改用另一条线路。")
+      : !chosenLine.version
+        ? t("该线路暂未发现新版本，下载时会先尝试它，必要时改用另一条线路。")
+        : null
+    : null;
+  // 「自动」这一行的状态说的是「自动会选谁」，不是当前手选的线路
+  const autoLine = fastestLine(updater.lines);
+  const autoStatus = autoLine
+    ? `${lineLabel(autoLine.id)} · ${statusText(autoLine)}`
     : t("无可用线路");
   const progressText =
     updater.progress == null
@@ -158,7 +173,17 @@ export const UpdateDialog: React.FC = () => {
 
         {showLinePicker && (
           <div className="mt-3 rounded-xl border border-line-soft bg-app px-3.5 py-3">
-            <p className="text-xs font-medium text-body">{t("下载线路")}</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-medium text-body">{t("下载线路")}</p>
+              <button
+                type="button"
+                onClick={() => void refreshLines()}
+                disabled={updater.linesBusy}
+                className="flex-none text-[11px] font-medium text-primary-600 hover:text-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {updater.linesBusy ? t("测速中...") : t("重新测速")}
+              </button>
+            </div>
             <div role="radiogroup" aria-label={t("下载线路")} className="mt-2 space-y-1.5">
               <LineOption
                 selected={updater.lineChoice === "auto"}
@@ -170,18 +195,13 @@ export const UpdateDialog: React.FC = () => {
                 <LineOption
                   key={line.id}
                   selected={updater.lineChoice === line.id}
-                  disabled={Boolean(line.error) || !line.version}
                   label={lineLabel(line.id)}
                   status={statusText(line)}
                   onSelect={() => selectUpdateLine(line.id)}
                 />
               ))}
             </div>
-            {fallbackLine && activeLine && (
-              <p className="mt-2 text-[11px] text-faint">
-                {t("所选线路暂无更新，已自动使用 {value1}", { value1: lineLabel(activeLine.id) })}
-              </p>
-            )}
+            {chosenHint && <p className="mt-2 text-[11px] text-faint">{chosenHint}</p>}
           </div>
         )}
 
@@ -205,7 +225,7 @@ export const UpdateDialog: React.FC = () => {
 
         {updater.lineFallback && (
           <p className="mt-1.5 text-[11px] text-faint">
-            {t("从 {value1} 下载失败，已自动改用 {value2} 重试", {
+            {t("未能从 {value1} 下载，已自动改用 {value2}", {
               value1: lineLabel(updater.lineFallback.from),
               value2: lineLabel(updater.lineFallback.to),
             })}

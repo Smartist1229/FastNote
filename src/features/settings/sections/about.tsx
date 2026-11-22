@@ -32,8 +32,19 @@ const UPDATE_CHECK_INTERVAL_OPTIONS: EnumOption[] = [
   { value: "60", label: "1 小时" },
 ];
 
+/**
+ * 检查时间：当天只显示时分，跨天补上月日。
+ * 软件可能连开好几天，「10:42」却不说是哪天，等于没写。
+ */
+const formatCheckTime = (at: number, locale: string): string => {
+  const date = new Date(at);
+  const time = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${date.toLocaleDateString(locale, { month: "numeric", day: "numeric" })} ${time}`;
+};
+
 export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx }) => {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { showToast } = useToast();
   const { appSettings, setApp, onRequestRootPasswordChange } = ctx;
   const updater = useUpdater();
@@ -125,13 +136,7 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
             <span className="text-body font-medium">{appVersion || "—"}</span>
             <button
               type="button"
-              onClick={() => {
-                // 手动检查到新版本就直接打开更新弹窗；
-                // 启动/定时静默检查仍只点亮更新提示，不打断用户
-                void checkForUpdates().then((info) => {
-                  if (info) openUpdateDialog();
-                });
-              }}
+              onClick={() => void checkForUpdates()}
               disabled={
                 updater.phase === "checking" ||
                 updater.phase === "downloading" ||
@@ -156,6 +161,20 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
             onChange={(value) => setApp("general", "updateCheckIntervalMinutes", Number(value))}
           />
         </div>
+
+        {/* 自动检查完全静默，这里留一行痕迹：最近一次是何时、由谁触发 */}
+        {updater.lastCheck && (
+          <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+            <span className="text-faint">{t("上次检查")}</span>
+            <span className="text-body">
+              {formatCheckTime(updater.lastCheck.at, locale)}
+              <span className="text-faint">
+                {" · "}
+                {updater.lastCheck.mode === "auto" ? t("自动") : t("手动")}
+              </span>
+            </span>
+          </div>
+        )}
 
         {/* 更新地址：想自己去发布页看版本/下载安装包时用 */}
         <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
@@ -209,6 +228,10 @@ export const AboutSection: React.FC<{ ctx: SettingsSectionContext }> = ({ ctx })
                 <span className="text-faint">
                   {" "}
                   · {updater.activeLine === "cnb" ? t("CNB（国内）") : "GitHub"}
+                  {/* 手选的线路可能当前连不上：仍然会用它下载，但要让人知道状态 */}
+                  {updater.lines.find((line) => line.id === updater.activeLine)?.error
+                    ? ` · ${t("连不上")}`
+                    : ""}
                 </span>
               )}
               {updater.skippedVersion === updater.version && (

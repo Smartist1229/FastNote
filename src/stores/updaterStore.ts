@@ -16,6 +16,10 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useSyncExternalStore } from "react";
 import { t } from "@/i18n";
+import { downloadCandidates, lineName, resolveUpdateTarget } from "@/lib/updater/lines";
+import type { UpdateLineChoice, UpdateLineId, UpdateLineProbe } from "@/lib/updater/lines";
+
+export type { UpdateLineChoice, UpdateLineId, UpdateLineProbe } from "@/lib/updater/lines";
 
 export type UpdaterPhase =
   | "idle"
@@ -29,27 +33,11 @@ export type UpdaterPhase =
   | "installing"
   | "error";
 
-export type UpdateLineId = "cnb" | "github";
-/** auto = 按延迟自动选最快；指定线路 = 用户手动选择 */
-export type UpdateLineChoice = "auto" | UpdateLineId;
-
-/** Rust `probe_update_lines` 的返回结构（字段已转成 camelCase） */
-export interface UpdateLineProbe {
-  id: UpdateLineId;
-  endpoint: string;
-  /** 清单请求耗时；不可达时为 null */
-  latencyMs: number | null;
-  /** 该线路可提供的新版本；已是最新或不可达时为 null */
-  version: string | null;
-  notes: string | null;
-  error: string | null;
-}
-
 export interface UpdaterSnapshot {
   phase: UpdaterPhase;
-  /** 当前生效线路提供的新版本；仅在 available / downloading 时有值 */
+  /** 本次要下载的新版本；仅在 available / downloading 时有值 */
   version: string | null;
-  /** 当前生效线路的更新说明（latest.json 的 notes） */
+  /** 该版本的更新说明（latest.json 的 notes） */
   notes: string | null;
   /** 下载进度百分比；未知总大小或不在下载中时为 null */
   progress: number | null;
@@ -69,9 +57,16 @@ export interface UpdaterSnapshot {
   dialogOpen: boolean;
   /** 两条线路的探测结果，按 Rust 返回顺序（cnb、github） */
   lines: UpdateLineProbe[];
-  /** 用户选择：auto 或固定某条线 */
+  /** 是否正在重新测速：只影响「重新测速」按钮的文案与禁用态 */
+  linesBusy: boolean;
+  /**
+   * 最近一次检查更新的时间与触发方式。
+   * 自动检查完全静默（不弹窗、不占「检查中」），这一行是它唯一留下的痕迹。
+   */
+  lastCheck: { at: number; mode: "auto" | "manual" } | null;
+  /** 用户选择：auto 或固定某条线（固定线路即使连不上也保持选中） */
   lineChoice: UpdateLineChoice;
-  /** 实际使用的线路：手动线路可用时用它，否则回落到最快线路 */
+  /** 本次下载优先尝试的线路：手选就是所选线路，auto 时是最快线路 */
   activeLine: UpdateLineId | null;
 }
 
@@ -136,6 +131,8 @@ const INITIAL: UpdaterSnapshot = {
   skippedVersion: readSkippedVersion(),
   dialogOpen: false,
   lines: [],
+  linesBusy: false,
+  lastCheck: null,
   lineChoice: readLineChoice(),
   activeLine: null,
 };
@@ -155,21 +152,27 @@ const subscribe = (listener: () => void) => {
 
 const getSnapshot = () => snapshot;
 
-/** 正在进行的检查：并发调用共用同一个 Promise，避免重复请求远端 */
-let checkTask: Promise<UpdateInfo | null> | null = null;
-
 const describeError = (error: unknown): string => {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return String(error);
 };
 
-/** Rust 的安装错误是 `code|detail`，在这里按当前语言翻译 */
-const describeInstallError = (error: unknown): string => {
+/** Rust 的错误统一是 `code|detail`：code 用于分支，detail 用于展示 */
+const splitError = (error: unknown): { code: string; detail: string } => {
   const raw = describeError(error);
   const index = raw.indexOf("|");
-  const code = index === -1 ? raw : raw.slice(0, index);
-  const detail = index === -1 ? "" : raw.slice(index + 1);
+  return index === -1
+    ? { code: raw, detail: "" }
+    : { code: raw.slice(0, index), detail: raw.slice(index + 1) };
+};
+
+/** 只取错误码：下载失败后据此决定是否重测线路 */
+const errorCode = (error: unknown): string => splitError(error).code;
+
+/** Rust 的安装错误是 `code|detail`，在这里按当前语言翻译 */
+const describeInstallError = (error: unknown): string => {
+  const { code, detail } = splitError(error);
   switch (code) {
     case "no_update":
       return t("该线路当前没有可用更新，请重新检查。");
@@ -182,132 +185,166 @@ const describeInstallError = (error: unknown): string => {
     case "not_downloaded":
       return t("没有可安装的更新包，请重新下载。");
     default:
-      return raw;
+      return describeError(error);
   }
 };
 
-const lineName = (id: UpdateLineId): string => (id === "cnb" ? "CNB" : "GitHub");
+/**
+ * 正在进行的探测。静默检查、手动检查、「重新测速」共用同一份结果：
+ * 同一时刻最多只打两次 HTTP，谁也不必为别人的请求再等一轮。
+ */
+let probeTask: Promise<ProbeOutcome> | null = null;
 
-const hasUpdate = (line: UpdateLineProbe): boolean =>
-  !line.error && Boolean(line.version);
+/** 一次探测的原始结果。怎么展示（静默/手动/重测）由调用方决定，不在这里定 */
+interface ProbeOutcome {
+  lines: UpdateLineProbe[];
+  /** 两条线都连不上、或命令本身失败；null 表示至少有一条线给了答复 */
+  failure: string | null;
+}
 
-/** 最快且真有新版本的线路；延迟未知的排最后 */
-const fastestLine = (lines: UpdateLineProbe[]): UpdateLineProbe | null => {
-  const candidates = lines.filter(hasUpdate);
-  if (candidates.length === 0) return null;
-  return [...candidates].sort(
-    (a, b) =>
-      (a.latencyMs ?? Number.MAX_SAFE_INTEGER) -
-      (b.latencyMs ?? Number.MAX_SAFE_INTEGER),
-  )[0];
-};
+const runProbe = (): Promise<ProbeOutcome> => {
+  if (probeTask) return probeTask;
 
-const resolveLine = (
-  lines: UpdateLineProbe[],
-  choice: UpdateLineChoice,
-): UpdateLineProbe | null => {
-  if (choice !== "auto") {
-    const chosen = lines.find((line) => line.id === choice);
-    if (chosen && hasUpdate(chosen)) return chosen;
-  }
-  return fastestLine(lines);
+  probeTask = (async (): Promise<ProbeOutcome> => {
+    try {
+      const probed = await invoke<UpdateLineProbe[]>("probe_update_lines");
+      const lines = Array.isArray(probed) ? probed : [];
+      const unreachable = lines.length === 0 || lines.every((line) => line.error);
+      const detail = lines
+        .map((line) => `${lineName(line.id)}: ${line.error ?? t("未知错误")}`)
+        .join("; ");
+      return { lines, failure: unreachable ? detail || t("无法连接更新服务器") : null };
+    } catch (error) {
+      return { lines: [], failure: describeError(error) };
+    }
+  })().finally(() => {
+    probeTask = null;
+  });
+
+  return probeTask;
 };
 
 /**
  * 检查更新（同时探测两条线路）。
  *
- * @param silent 启动时的静默检查：失败只回到 idle，不展示错误
+ * 两种语义共用一次探测，**互不排挤**：
+ * - `silent = true`（启动 / 定时）：只更新状态，不弹窗、失败不打扰；
+ * - `silent = false`（设置里手动点）：显示「检查中...」，有更新就弹窗，失败显示原因。
+ *
+ * 自动检查不占用「检查中」这个界面状态，所以手动按钮不会被锁住；
+ * 手动点击时如果后台正好在探测，直接等同一份结果，不会白跑第二趟。
+ *
+ * @param silent 静默检查：失败只保持现状，不展示错误
  * @returns 有更新时返回版本与说明，否则 null
  */
 export const checkForUpdates = async (silent = false): Promise<UpdateInfo | null> => {
   if (!isTauri()) return null;
-  if (checkTask) return checkTask;
+  // 只有手动检查才让界面进入「检查中」：自动检查是后台行为，不该锁住入口
+  if (!silent) publish({ phase: "checking", error: null });
 
-  checkTask = (async () => {
-    // 跳过状态与线路偏好不属于「这一次检查」，重置展示状态时要保留
-    const choice = readLineChoice();
-    publish({
-      ...INITIAL,
-      phase: "checking",
-      skippedVersion: readSkippedVersion(),
-      lineChoice: choice,
-    });
-    try {
-      const lines = await invoke<UpdateLineProbe[]>("probe_update_lines");
-      const available = Array.isArray(lines) ? lines.filter(hasUpdate) : [];
+  const outcome = await runProbe();
+  // 探测一结束就记下时间：无论有没有新版本、成功还是失败，「检查过」这件事是真的
+  publish({ lastCheck: { at: Date.now(), mode: silent ? "auto" : "manual" } });
+  // 线路偏好在探测期间可能被改（弹窗里换线），这里按当前值重新解析
+  const target = resolveUpdateTarget(outcome.lines, snapshot.lineChoice);
+  const version = target.versionLine?.version ?? null;
+  const notes = target.versionLine?.notes ?? null;
+  const activeLine = target.downloadLine?.id ?? null;
 
-      if (available.length === 0) {
-        const reachable = Array.isArray(lines) && lines.some((line) => !line.error);
-        if (!reachable) {
-          const detail = (lines ?? [])
-            .map((line) => `${lineName(line.id)}: ${line.error ?? t("未知错误")}`)
-            .join("; ");
-          if (silent) {
-            publish({ phase: "idle" });
-          } else {
-            publish({
-              phase: "error",
-              lines: lines ?? [],
-              error: detail || t("无法连接更新服务器"),
-            });
-          }
-          return null;
-        }
-        publish({ phase: "current", lines });
-        return null;
-      }
-
-      const active = resolveLine(lines, choice);
-      if (!active || !active.version) {
-        publish({ phase: "current", lines });
-        return null;
-      }
-      // 用户跳过的版本：启动时的静默检查不再提示，手动检查仍然照常返回
-      if (silent && active.version === readSkippedVersion()) {
-        publish({ phase: "idle", lines, activeLine: active.id });
-        return null;
-      }
-
-      const info: UpdateInfo = { version: active.version, notes: active.notes };
-      // 手动检查直接弹窗展示更新说明；启动时的静默检查只发一条提示，不打断用户
-      publish({
-        phase: "available",
-        version: info.version,
-        notes: info.notes,
-        lines,
-        activeLine: active.id,
-        dialogOpen: !silent,
-      });
-      return info;
-    } catch (error) {
-      if (silent) {
-        publish({ phase: "idle" });
-      } else {
-        publish({ phase: "error", error: describeError(error) });
+  if (!version) {
+    if (outcome.failure) {
+      // 静默检查失败时保持现状：把已经探测到的更新抹掉（侧栏图标闪一下）比不报错更糟
+      if (!silent) {
+        publish({ phase: "error", lines: outcome.lines, error: outcome.failure });
       }
       return null;
-    } finally {
-      checkTask = null;
     }
-  })();
+    publish({ phase: "current", lines: outcome.lines, activeLine });
+    return null;
+  }
 
-  return checkTask;
+  // 用户跳过的版本：启动时的静默检查不再提示，手动检查仍然照常返回
+  if (silent && version === readSkippedVersion()) {
+    publish({ phase: "idle", lines: outcome.lines, activeLine });
+    return null;
+  }
+
+  // 手动检查直接弹窗展示更新说明；静默检查只发一条提示，不打断用户
+  publish({
+    phase: "available",
+    version,
+    notes,
+    lines: outcome.lines,
+    activeLine,
+    dialogOpen: silent ? snapshot.dialogOpen : true,
+    error: null,
+  });
+  return { version, notes };
 };
 
-/** 切换下载线路：auto 或固定某条线；立即刷新弹窗里展示的版本与说明 */
-export const selectUpdateLine = (choice: UpdateLineChoice) => {
-  if (choice !== "auto") {
-    const line = snapshot.lines.find((item) => item.id === choice);
-    // 不可用/没有新版本的线路不允许选中，避免下载按钮指向空线路
-    if (!line || line.error || !line.version) return;
+/**
+ * 探测两条线路并把结果写回状态（供「重新测速」与下载失败恢复共用）。
+ *
+ * 不做阶段守卫：`version_changed` 的恢复要在 downloading 阶段执行。
+ * 阶段判断留给调用方——「重新测速」按钮不该在下载中生效，而恢复路径必须生效。
+ */
+const probeLines = async (): Promise<void> => {
+  publish({ linesBusy: true });
+  try {
+    const outcome = await runProbe();
+    // 命令本身失败（IPC 异常）时保留上一次结果：用户手上可能正对着一个可下载的版本
+    if (outcome.failure && outcome.lines.length === 0) return;
+    const target = resolveUpdateTarget(outcome.lines, snapshot.lineChoice);
+    const version = target.versionLine?.version ?? null;
+    publish({
+      lines: outcome.lines,
+      activeLine: target.downloadLine?.id ?? null,
+      version,
+      notes: target.versionLine?.notes ?? null,
+    });
+    // 重测后两条线都没有新版本（例如发布被撤回）：从「可更新」退回首屏状态
+    if (!version && snapshot.phase === "available") {
+      publish({ phase: "current", progress: null, speed: null, downloaded: null, total: null });
+    }
+  } finally {
+    publish({ linesBusy: false });
   }
+};
+
+/**
+ * 重新测速（不动当前阶段与已下载的安装包）。
+ *
+ * 用途：自动选线路看的是上一次探测结果，开/关代理后延迟会翻转；
+ * 用户可以随时重测而不必走一遍「检查更新」（后者会重置整个状态、关掉弹窗）。
+ * 下载中 / 已下载 / 安装中不测速：这些阶段的结果已经与界面上的安装包绑定。
+ */
+export const refreshLines = async (): Promise<void> => {
+  if (!isTauri()) return;
+  if (
+    snapshot.phase === "downloading" ||
+    snapshot.phase === "ready" ||
+    snapshot.phase === "installing"
+  ) {
+    return;
+  }
+  await probeLines();
+};
+
+/**
+ * 切换下载线路（auto 或固定某条线），立即刷新弹窗里展示的版本与说明。
+ *
+ * **不做可用性拦截**：探测失败只说明这一次请求没通，开代理 / 换网络后仍然可能连上；
+ * 用探测结果禁用选项，等于把「GitHub 走代理更快」这类场景彻底封死。
+ * 版本号取自「能提供新版本的那条线」，所以手选一条连不上的线路时弹窗照样显示新版本是什么。
+ */
+export const selectUpdateLine = (choice: UpdateLineChoice) => {
   writeLineChoice(choice);
-  const active = resolveLine(snapshot.lines, choice);
+  const target = resolveUpdateTarget(snapshot.lines, choice);
   publish({
     lineChoice: choice,
-    activeLine: active?.id ?? null,
-    version: active?.version ?? snapshot.version,
-    notes: active?.notes ?? snapshot.notes,
+    activeLine: target.downloadLine?.id ?? null,
+    version: target.versionLine?.version ?? snapshot.version,
+    notes: target.versionLine?.notes ?? snapshot.notes,
     lineFallback: null,
   });
 };
@@ -381,19 +418,15 @@ export const applyUpdate = async (): Promise<void> => {
  * 之后从弹窗或侧栏图标都能直接安装，不需要重新下载。
  *
  * 只回退到版本相同的线路：版本不同会装出与弹窗里更新说明对不上的包。
- * 换线只影响这次会话的目标与展示，不写入用户保存的线路偏好。
+ * 换线只影响这次会话的目标与展示，不写入用户保存的线路偏好——
+ * 用户手选的线路是长期偏好，不能因为一次下载失败就被悄悄改掉。
  */
 export const downloadUpdate = async (): Promise<void> => {
   const first = snapshot.activeLine;
   const version = snapshot.version;
   if (!first || !version || snapshot.phase !== "available") return;
 
-  const candidates: UpdateLineId[] = [
-    first,
-    ...snapshot.lines
-      .filter((line) => line.id !== first && hasUpdate(line) && line.version === version)
-      .map((line) => line.id),
-  ];
+  const candidates = downloadCandidates(snapshot.lines, first, version);
 
   publish({
     phase: "downloading",
@@ -411,7 +444,6 @@ export const downloadUpdate = async (): Promise<void> => {
     if (index > 0) {
       publish({
         activeLine: line,
-        lineChoice: line,
         progress: 0,
         speed: null,
         downloaded: null,
@@ -429,6 +461,20 @@ export const downloadUpdate = async (): Promise<void> => {
   }
 
   if (!downloaded) {
+    // 线路上的版本在检查与下载之间变了：重测一次，让弹窗里的版本号与说明跟上，
+    // 否则用户会对着旧版本反复重试，每次都撞同一个 version_changed
+    if (errorCode(lastError) === "version_changed") {
+      await probeLines();
+      publish({
+        phase: snapshot.version ? "available" : "current",
+        error: describeInstallError(lastError),
+        progress: null,
+        speed: null,
+        downloaded: null,
+        total: null,
+      });
+      return;
+    }
     // 保留线路与更新资源：回到「可更新」状态，用户可以重试或换线
     publish({
       phase: "available",
@@ -484,6 +530,8 @@ export const scheduleStartupCheck = () => {
   if (startupCheckScheduled || import.meta.env.DEV) return;
   startupCheckScheduled = true;
   window.setTimeout(() => {
+    // 用户已经自己点了「检查更新」或正开着更新弹窗：让手动操作说了算，别再插一脚
+    if (snapshot.phase === "checking" || snapshot.dialogOpen) return;
     void checkForUpdates(true);
   }, 5000);
 };
@@ -508,7 +556,8 @@ export const schedulePeriodicCheck = (minutes: number) => {
   if (minutes <= 0 || import.meta.env.DEV) return;
   periodicTimer = window.setInterval(() => {
     const busy =
-      checkTask !== null ||
+      probeTask !== null ||
+      snapshot.linesBusy ||
       snapshot.dialogOpen ||
       snapshot.phase === "checking" ||
       snapshot.phase === "downloading" ||
